@@ -10,4 +10,3 @@ class ResolutionEstimate:
     resolution: int
     coverage_error: float
     cell_count: int
-

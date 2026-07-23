@@ -24,4 +24,3 @@ class HazardQuery(BaseModel):
     hazard_name: str
     horizon: Optional[int] = None
     pathway: Optional[str] = None
-

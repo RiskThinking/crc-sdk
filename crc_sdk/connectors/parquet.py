@@ -1,2 +1,1 @@
 """Parquet connector placeholder."""
-

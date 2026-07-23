@@ -16,4 +16,3 @@ def test_hazard_schema_matches_initial_contract() -> None:
     assert HAZARD_FIELDS[0].data_type == "uint64"
     assert HAZARD_FIELDS[1].nullable
     assert HAZARD_FIELDS[6].nullable
-

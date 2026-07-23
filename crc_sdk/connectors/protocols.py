@@ -11,4 +11,3 @@ class HazardReader(Protocol):
     def read(self, query: HazardQuery) -> Any:
         """Return an Arrow-compatible batch or relation."""
         ...
-

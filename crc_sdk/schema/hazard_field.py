@@ -23,4 +23,3 @@ HAZARD_FIELDS: tuple[HazardField, ...] = (
     HazardField("curve_location", "float64"),
     HazardField("curve_scale", "float64"),
 )
-

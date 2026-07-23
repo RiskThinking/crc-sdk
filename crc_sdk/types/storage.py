@@ -9,4 +9,3 @@ class StorageLocation(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     uri: str
-

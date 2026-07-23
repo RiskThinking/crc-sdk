@@ -20,4 +20,3 @@ def test_h3_resolution_is_validated() -> None:
             h3_resolution=16,
             value_unit="metres",
         )
-

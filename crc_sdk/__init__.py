@@ -7,13 +7,14 @@ from .core import (
     TabulatedDistribution,
     fit_distribution,
 )
-from .providers import LocalProvider, Provider
+from .providers import LocalProvider, OSClimateProvider, Provider
 
 __all__ = [
     "Distribution",
     "EmpiricalDistribution",
     "FittedDistribution",
     "LocalProvider",
+    "OSClimateProvider",
     "Provider",
     "TabulatedDistribution",
     "fit_distribution",

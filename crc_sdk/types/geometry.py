@@ -10,4 +10,3 @@ class GeometryMetadata(BaseModel):
 
     encoding: str = "WKB"
     crs: str = "EPSG:4326"
-

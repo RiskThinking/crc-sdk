@@ -21,10 +21,16 @@ dependencies = [
     "pydantic>=2,<3",
 ]
 
+# temp source until crc-framework is published to PyPI
+[tool.uv.sources]
+crc-framework = { git = "ssh://git@github.com/RiskThinking/crc-framework-rs.git" }
+
 [project.optional-dependencies]
 connectors = [
-    "duckdb>=1",
+    "duckdb>=1,<2",
     "pyarrow>=14",
+    "s3fs>=2024",
+    "zarr>=2.18,<3",
 ]
 geometry = [
     "h3>=4",

@@ -16,4 +16,3 @@ class HazardDatasetMetadata(BaseModel):
     value_unit: str
     geometry_crs: str = "EPSG:4326"
     source: Optional[str] = None
-

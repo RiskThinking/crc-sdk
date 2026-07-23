@@ -1,2 +1,1 @@
 """Cross-module analytical workflows."""
-

@@ -21,4 +21,3 @@ import pytest
 )
 def test_public_modules_import(module_name: str) -> None:
     assert importlib.import_module(module_name)
-

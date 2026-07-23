@@ -8,6 +8,21 @@ provided by the versioned
 
 ## Development
 
+uv is the recommended tool for managing the development environment:
+
+```shell
+uv sync \
+  --extra connectors \
+  --extra geometry \
+  --extra test
+
+uv run pytest
+uv run mypy
+uv run ruff check .
+```
+
+Or simply:
+
 ```shell
 python -m venv .venv
 .venv/bin/python -m pip install -e ".[connectors,geometry,test]"

@@ -9,4 +9,3 @@ class LocalProvider:
     """Configuration for datasets rooted in a local directory."""
 
     root: Path
-
