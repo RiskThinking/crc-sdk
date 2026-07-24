@@ -28,6 +28,7 @@ crc-framework = { git = "ssh://git@github.com/RiskThinking/crc-framework-rs.git"
 [project.optional-dependencies]
 connectors = [
     "duckdb>=1,<2",
+    "psutil>=5",
     "pyarrow>=14",
     "s3fs>=2024",
     "zarr>=2.18,<3",

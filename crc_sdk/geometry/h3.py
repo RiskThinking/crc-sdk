@@ -1,4 +1,4 @@
-"""H3 conversion, resolution selection, and spatial indexing utilities for vector geometries."""
+"""H3 conversion, resolution selection, and DuckDB spatial indexing utilities."""
 
 from __future__ import annotations
 
@@ -7,19 +7,24 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
-from crc_sdk.connectors.duckdb.connection import DuckDBConnection
+from crc_sdk.connectors.duckdb.connection import DuckDBConnection, ensure_extensions
 
 if TYPE_CHECKING:
     from duckdb import DuckDBPyConnection
 
 
 class PolyfillMode(str, Enum):
-    CENTROID = "centroid"  # H3 index of the geometry's centroid
-    OVERLAP = "overlap"  # H3 cells touching/overlapping geometry BBox / Polygon
-    CONTAINS = "contains"  # H3 cells whose centers/polygons are fully contained
-    EXACT_INTERSECTION = (
-        "exact_intersection"  # Overlap + exact area intersection ratio calculation
-    )
+    CENTROID = "centroid"
+    OVERLAP = "overlap"
+    CONTAINS = "contains"
+    EXACT_INTERSECTION = "exact_intersection"
+
+
+_CONTAINMENT = {
+    PolyfillMode.OVERLAP: "overlap",
+    PolyfillMode.CONTAINS: "full",
+    PolyfillMode.EXACT_INTERSECTION: "overlap",
+}
 
 
 class H3Indexer:
@@ -27,24 +32,7 @@ class H3Indexer:
 
     def __init__(self, con: DuckDBPyConnection | None = None):
         self.con = con or DuckDBConnection().connect()
-        self._init_extensions()
-
-    def _init_extensions(self) -> None:
-        """Loads required DuckDB spatial and H3 extensions with explicit error handling."""
-
-        try:
-            self.con.execute("INSTALL spatial; LOAD spatial;")
-        except Exception as e:
-            raise RuntimeError(f"Failed to load DuckDB spatial extension: {e}") from e
-
-        try:
-            self.con.execute("INSTALL h3 FROM community; LOAD h3;")
-        except Exception as e:
-            raise RuntimeError(
-                "Failed to initialize DuckDB H3 extension ('h3 FROM community'). "
-                "Ensure community extensions are enabled and accessible in your environment. "
-                f"Original error: {e}"
-            ) from e
+        ensure_extensions(self.con, "spatial", "h3")
 
     @staticmethod
     def _polyfill_sql(
@@ -52,13 +40,21 @@ class H3Indexer:
         resolution: int,
         geom_col: str,
         h3_col: str,
+        containment: str,
+        *,
+        as_string: bool = False,
     ) -> str:
-        """Dump multiparts, then polyfill each polygon.
+        """Dump multiparts, then polyfill each polygon with the requested containment.
 
-        DuckDB's ``h3_polygon_wkt_to_cells`` does not reliably handle MULTIPOLYGON
-        WKT, so geometries are decomposed with ``ST_Dump`` first. The original
-        geometry column is preserved for downstream spatial predicates.
+        DuckDB's polygon polyfill does not reliably handle MULTIPOLYGON WKT, so
+        geometries are decomposed with ``ST_Dump`` first. The original geometry
+        column is preserved for downstream spatial predicates.
         """
+        cell_fn = (
+            "h3_polygon_wkt_to_cells_experimental_string"
+            if as_string
+            else "h3_polygon_wkt_to_cells_experimental"
+        )
         return f"""
             WITH parts AS (
                 SELECT src.*,
@@ -67,7 +63,9 @@ class H3Indexer:
             ),
             expanded AS (
                 SELECT * EXCLUDE(_poly),
-                       h3_polygon_wkt_to_cells(ST_AsText(_poly), {resolution}) AS _cells
+                       {cell_fn}(
+                           ST_AsText(_poly), {resolution}, '{containment}'
+                       ) AS _cells
                 FROM parts
             ),
             flattened AS (
@@ -77,56 +75,62 @@ class H3Indexer:
             SELECT DISTINCT * FROM flattened
         """
 
+    @staticmethod
     def build_h3_query(
-        self,
         input_relation_sql: str,
         resolution: int,
         mode: PolyfillMode = PolyfillMode.OVERLAP,
         geom_col: str = "geometry",
         h3_col: str = "h3_index",
+        *,
+        as_string: bool = False,
     ) -> str:
-        """Constructs an un-materialized SQL query streaming geometry through H3 polyfilling."""
+        """Construct un-materialized SQL streaming geometry through H3 polyfill."""
         mode = PolyfillMode(mode.lower()) if isinstance(mode, str) else mode
 
         if mode == PolyfillMode.CENTROID:
+            lat = f"ST_Y(ST_Centroid({geom_col}))"
+            lng = f"ST_X(ST_Centroid({geom_col}))"
+            cell_expr = (
+                f"h3_h3_to_string(h3_latlng_to_cell({lat}, {lng}, {resolution}))"
+                if as_string
+                else f"h3_latlng_to_cell({lat}, {lng}, {resolution})"
+            )
             return f"""
                 SELECT *,
-                       h3_latlng_to_cell(ST_Y(ST_Centroid({geom_col})), ST_X(ST_Centroid({geom_col})), {resolution}) AS {h3_col}
+                       {cell_expr} AS {h3_col}
                 FROM {input_relation_sql}
             """
 
-        elif mode in (PolyfillMode.OVERLAP, PolyfillMode.EXACT_INTERSECTION):
-            base_sql = self._polyfill_sql(
-                input_relation_sql, resolution, geom_col, h3_col
-            )
-            if mode == PolyfillMode.EXACT_INTERSECTION:
-                # Division guarded against zero-area geometries (points, lines, degenerate polygons)
-                return f"""
-                    WITH indexed AS ({base_sql})
-                    SELECT *,
-                           CASE
-                               WHEN ST_Area({geom_col}) > 0 THEN
-                                   ST_Area(ST_Intersection({geom_col}, ST_GeomFromText(h3_cell_to_boundary_wkt({h3_col})))) / ST_Area({geom_col})
-                               ELSE 0.0
-                           END AS intersection_ratio
-                    FROM indexed
-                """
-            return base_sql
+        if mode not in _CONTAINMENT:
+            raise ValueError(f"Unsupported PolyfillMode: {mode}")
 
-        elif mode == PolyfillMode.CONTAINS:
-            indexed_sql = self._polyfill_sql(
-                input_relation_sql, resolution, geom_col, h3_col
+        base_sql = H3Indexer._polyfill_sql(
+            input_relation_sql,
+            resolution,
+            geom_col,
+            h3_col,
+            _CONTAINMENT[mode],
+            as_string=as_string,
+        )
+        if mode == PolyfillMode.EXACT_INTERSECTION:
+            boundary = (
+                f"ST_GeomFromText(h3_cell_to_boundary_wkt(h3_string_to_h3({h3_col})))"
+                if as_string
+                else f"ST_GeomFromText(h3_cell_to_boundary_wkt({h3_col}))"
             )
             return f"""
-                WITH indexed AS ({indexed_sql})
-                SELECT * FROM indexed
-                WHERE ST_Contains(
-                    {geom_col},
-                    ST_GeomFromText(h3_cell_to_boundary_wkt({h3_col}))
-                )
+                WITH indexed AS ({base_sql})
+                SELECT *,
+                       CASE
+                           WHEN ST_Area({geom_col}) > 0 THEN
+                               ST_Area(ST_Intersection({geom_col}, {boundary}))
+                               / ST_Area({geom_col})
+                           ELSE 0.0
+                       END AS intersection_ratio
+                FROM indexed
             """
-        else:
-            raise ValueError(f"Unsupported PolyfillMode: {mode}")
+        return base_sql
 
 
 @dataclass(frozen=True)
