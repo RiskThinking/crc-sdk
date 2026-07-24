@@ -46,6 +46,54 @@ The initial package contains interfaces and placeholders only. Concrete
 provider, connector, geometry, and workflow behavior will be added alongside
 their first use cases.
 
+## Canonical hazard datasets
+
+The SDK internalizes fitted hazards as one versioned Arrow/Parquet contract.
+Rows contain a canonical unsigned H3 `cell_index`, stable `source_id`, optional
+source WKB, scenario dimensions, and the parameters needed to reconstruct
+either a `crc_framework.FittedDistribution` or `HurdleDistribution`.
+`curve_shape` is nullable because Gumbel families do not use a shape parameter;
+atom probability and location are present only when `curve_kind` is `hurdle`.
+
+The logical row key is
+`(hazard_name, horizon, pathway, cell_index, source_id)`. `cell_index` is the
+spatial join key, not a globally unique identifier. Canonical files are sorted
+by that row key for predicate pruning and merge joins.
+
+Dataset-wide facts are stored once as a complete JSON payload under the
+`crc.hazard.metadata` Parquet key: schema version, one uncompacted H3
+resolution, non-exceedance probability convention, value unit and semantics,
+WKB CRS, producer, source provenance, and creation version.
+
+Each dataset is one self-describing Parquet file, expanded by H3 cell for
+spatial joins. The caller chooses its full destination path and filename.
+Writes use DuckDB, and an optional configured DuckDB connection allows the same
+API to use its local or cloud filesystems, extensions, secrets, and settings.
+Source knots and fit diagnostics are transient ingest inputs, not a second
+persisted data contract.
+
+External connectors remain source-format readers. Ingest adapters perform the
+explicit conversion:
+
+```text
+external raster/table -> source curves and geometry -> selected family fit
+  -> conservative intersecting H3 cells -> canonical Arrow -> Parquet
+```
+
+Boundary candidate generation uses H3 overlap coverage, not center polyfill.
+This makes the integer join a conservative superset before an exact
+`ST_Contains(source_geometry, asset_point)` refinement. Resolution estimates
+report measured coverage error and expanded row count, while ingest policy
+selects and records the dataset resolution.
+
+OS-Climate return-period rasters can be canonicalized with
+`OSClimateIngestPolicy` and `canonicalize_os_climate`. The caller must choose
+the distribution family and, for zero-heavy hazards, provide an explicit
+`HurdleFitPolicy`; the SDK does not infer an exact point mass from sparse
+knots. Plain curves use `fit_quantiles`, while hurdle curves use
+`fit_hurdle_quantiles`. `LocalProvider` queries persisted hazard rows through
+`HazardQuery`.
+
 ## License
 
 CRC SDK is licensed under the GNU Affero General Public License, version 3 or

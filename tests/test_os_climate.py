@@ -1,12 +1,20 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pytest
 
+from crc_sdk.connectors import (
+    HurdleFitPolicy,
+    OSClimateIngestPolicy,
+    canonicalize_os_climate,
+    write_hazard_stream,
+)
 from crc_sdk.connectors.duckdb import RasterMetadata, ZarrRaster
-from crc_sdk.providers import OSClimateInventory
+from crc_sdk.providers import LocalProvider, OSClimateInventory
+from crc_sdk.types import HazardQuery
 
 
 class FakeZarrArray:
@@ -28,6 +36,27 @@ class FakeZarrArray:
     def get_coordinate_selection(self, coordinates: Any) -> Any:
         self.reads.append(coordinates)
         return self.data[coordinates]
+
+
+class FakeReturnPeriodArray:
+    def __init__(self) -> None:
+        self.data = np.asarray(
+            [0.0, 0.2, 0.5, 1.0, 2.0], dtype=np.float64
+        ).reshape(
+            5, 1, 1
+        )
+        self.shape = self.data.shape
+        self.chunks = self.data.shape
+        self.attrs = {
+            "index_name": "return period (years)",
+            "index_values": [2, 5, 10, 100, 1000],
+            "transform_mat3x3": [1, 0, 0, 0, -1, 1, 0, 0, 1],
+        }
+        self.reads: list[Any] = []
+
+    def __getitem__(self, key: Any) -> Any:
+        self.reads.append(key)
+        return self.data[key]
 
 
 def test_inventory_validates_parameters_and_resolves_paths() -> None:
@@ -140,3 +169,71 @@ def test_inventory_requires_unambiguous_resource_selection() -> None:
         model_gcm="model-1",
     )
     assert selected.model_gcm == "model-1"
+
+
+def test_os_climate_canonical_stream_persists_and_queries(
+    tmp_path: Path,
+) -> None:
+    array = FakeReturnPeriodArray()
+    raster = ZarrRaster(
+        array,
+        RasterMetadata(
+            hazard_type="Wind",
+            indicator_id="max_speed",
+            scenario="ssp585",
+            year=2050,
+            units="m/s",
+            path="test/wind/ssp585/2050",
+        ),
+    )
+    policy = OSClimateIngestPolicy(
+        h3_resolution=3,
+        family="gumbel_r",
+        producer="tests",
+        creation_version="1",
+        batch_rows=2,
+        hurdle=HurdleFitPolicy(
+            atom_probability=0.5,
+            atom_location=0.0,
+        ),
+        maximum_normalized_rmse=0.2,
+    )
+    stream = canonicalize_os_climate(raster, policy)
+    destination = tmp_path / "wind-ssp585-2050.parquet"
+    write_hazard_stream(stream, destination)
+
+    table = LocalProvider(destination).read(
+        HazardQuery(hazard_name="Wind", horizon=2050, pathway="ssp585")
+    )
+    assert table.num_rows > 0
+    assert set(table["curve_type"].to_pylist()) == {"gumbel_r"}
+    assert set(table["curve_kind"].to_pylist()) == {"hurdle"}
+    assert set(table["curve_atom_probability"].to_pylist()) == {0.5}
+    assert len(set(table["source_id"].to_pylist())) == 1
+    assert len(array.reads) == 1
+
+
+def test_os_climate_plain_quantile_fit_remains_available() -> None:
+    raster = ZarrRaster(
+        FakeReturnPeriodArray(),
+        RasterMetadata(
+            hazard_type="Wind",
+            indicator_id="max_speed",
+            scenario="ssp585",
+            year=2050,
+            units="m/s",
+            path="test/wind/ssp585/2050",
+        ),
+    )
+    stream = canonicalize_os_climate(
+        raster,
+        OSClimateIngestPolicy(
+            h3_resolution=3,
+            family="gumbel_r",
+            producer="tests",
+            creation_version="1",
+        ),
+    )
+    table = stream.read_all()
+
+    assert set(table["curve_kind"].to_pylist()) == {"fitted"}

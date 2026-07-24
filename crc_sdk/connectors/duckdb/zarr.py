@@ -3,7 +3,7 @@
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from math import ceil, floor
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 import numpy as np
 
@@ -27,6 +27,17 @@ class RasterMetadata:
     year: int
     units: str
     path: str
+
+
+@dataclass(frozen=True)
+class RasterCurve:
+    """One source raster pixel and all values along its leading axis."""
+
+    row: int
+    column: int
+    boundary: tuple[Point, Point, Point, Point]
+    axis_values: np.ndarray[Any, np.dtype[np.float64]]
+    values: np.ndarray[Any, np.dtype[np.float64]]
 
 
 class ZarrRaster:
@@ -138,7 +149,7 @@ class ZarrRaster:
         longitude: float,
         latitude: float,
         *,
-        tail: str = "upper",
+        tail: Literal["upper", "lower"] = "upper",
     ) -> Any:
         """Build a core distribution when the raster axis is return period."""
         if "return period" not in self.axis_name.lower():
@@ -160,6 +171,56 @@ class ZarrRaster:
             values,
             tail=tail,
         )
+
+    def pixel_boundary(
+        self, row: int, column: int
+    ) -> tuple[Point, Point, Point, Point]:
+        """Return a source pixel boundary in counter-clockwise WGS84 order."""
+        _, height, width = self.shape
+        if not 0 <= row < height or not 0 <= column < width:
+            raise ValueError("pixel coordinates fall outside the raster")
+        return (
+            self._pixel_to_world(column, row),
+            self._pixel_to_world(column, row + 1),
+            self._pixel_to_world(column + 1, row + 1),
+            self._pixel_to_world(column + 1, row),
+        )
+
+    def iter_curves(self, bounds: Optional[Bounds] = None) -> Iterator[RasterCurve]:
+        """Stream source pixels with complete leading-axis curves."""
+        column_start, column_stop, row_start, row_stop = self._pixel_window(
+            bounds or self.bounds
+        )
+        chunk_shape = getattr(self.array, "chunks", self.shape)
+        chunk_height = int(chunk_shape[-2])
+        chunk_width = int(chunk_shape[-1])
+        for row in range(row_start, row_stop, chunk_height):
+            row_end = min(row + chunk_height, row_stop)
+            for column in range(column_start, column_stop, chunk_width):
+                column_end = min(column + chunk_width, column_stop)
+                if len(self.array.shape) == 2:
+                    values = np.asarray(
+                        self.array[row:row_end, column:column_end],
+                        dtype=np.float64,
+                    )[np.newaxis, :, :]
+                else:
+                    values = np.asarray(
+                        self.array[:, row:row_end, column:column_end],
+                        dtype=np.float64,
+                    )
+                for source_row in range(row, row_end):
+                    for source_column in range(column, column_end):
+                        yield RasterCurve(
+                            row=source_row,
+                            column=source_column,
+                            boundary=self.pixel_boundary(source_row, source_column),
+                            axis_values=self._axis_values.copy(),
+                            values=values[
+                                :,
+                                source_row - row,
+                                source_column - column,
+                            ].copy(),
+                        )
 
     def _read_axis(
         self,

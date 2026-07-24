@@ -245,3 +245,19 @@ class OSClimateProvider:
             ),
             connection=self.connection,
         )
+
+    def canonicalize(
+        self,
+        selection: OSClimateSelection,
+        policy: Any,
+        *,
+        bounds: Optional[tuple[float, float, float, float]] = None,
+    ) -> Any:
+        """Open a selection and lazily adapt it to canonical hazard batches."""
+        from crc_sdk.connectors.adapters import canonicalize_os_climate
+
+        return canonicalize_os_climate(
+            self.open(selection),
+            policy,
+            bounds=bounds,
+        )
