@@ -43,34 +43,37 @@ class H3Indexer:
         containment: str,
         *,
         as_string: bool = False,
+        preserve_geom: bool = True,
     ) -> str:
         """Dump multiparts, then polyfill each polygon with the requested containment.
 
         DuckDB's polygon polyfill does not reliably handle MULTIPOLYGON WKT, so
-        geometries are decomposed with ``ST_Dump`` first. The original geometry
-        column is preserved for downstream spatial predicates.
+        geometries are decomposed with ``ST_Dump`` first. Geometry is dropped from
+        the expansion path unless ``preserve_geom`` is set, so cell unnest does not
+        replicate large polygons onto every output row.
         """
-        cell_fn = (
-            "h3_polygon_wkt_to_cells_experimental_string"
+        keep_geom = f", src.{geom_col}" if preserve_geom else ""
+        cell_expr = (
+            f"h3_h3_to_string(CAST(cell AS UBIGINT)) AS {h3_col}"
             if as_string
-            else "h3_polygon_wkt_to_cells_experimental"
+            else f"CAST(cell AS UBIGINT) AS {h3_col}"
         )
         return f"""
             WITH parts AS (
-                SELECT src.*,
+                SELECT src.* EXCLUDE ({geom_col}){keep_geom},
                        (unnest(ST_Dump(src.{geom_col}))).geom AS _poly
                 FROM {input_relation_sql} AS src
             ),
             expanded AS (
-                SELECT * EXCLUDE(_poly),
-                       {cell_fn}(
+                SELECT * EXCLUDE (_poly),
+                       h3_polygon_wkt_to_cells_experimental(
                            ST_AsText(_poly), {resolution}, '{containment}'
                        ) AS _cells
                 FROM parts
             ),
             flattened AS (
-                SELECT * EXCLUDE(_cells), UNNEST(_cells) AS {h3_col}
-                FROM expanded
+                SELECT e.* EXCLUDE (_cells), {cell_expr}
+                FROM expanded AS e, UNNEST(e._cells) AS _u(cell)
             )
             SELECT DISTINCT * FROM flattened
         """
@@ -84,6 +87,7 @@ class H3Indexer:
         h3_col: str = "h3_index",
         *,
         as_string: bool = False,
+        preserve_geom: bool = True,
     ) -> str:
         """Construct un-materialized SQL streaming geometry through H3 polyfill."""
         mode = PolyfillMode(mode.lower()) if isinstance(mode, str) else mode
@@ -105,6 +109,11 @@ class H3Indexer:
         if mode not in _CONTAINMENT:
             raise ValueError(f"Unsupported PolyfillMode: {mode}")
 
+        # Exact intersection / contains need the source geom for predicates.
+        keep_geom = preserve_geom or mode in (
+            PolyfillMode.EXACT_INTERSECTION,
+            PolyfillMode.CONTAINS,
+        )
         base_sql = H3Indexer._polyfill_sql(
             input_relation_sql,
             resolution,
@@ -112,6 +121,7 @@ class H3Indexer:
             h3_col,
             _CONTAINMENT[mode],
             as_string=as_string,
+            preserve_geom=keep_geom,
         )
         if mode == PolyfillMode.EXACT_INTERSECTION:
             boundary = (

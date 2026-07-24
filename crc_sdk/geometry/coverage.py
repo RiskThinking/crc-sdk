@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from crc_sdk.connectors.duckdb.connection import sql_quote
-from crc_sdk.geometry.h3 import H3Indexer, PolyfillMode
 
 
 def build_candidates_sql(
@@ -16,18 +15,29 @@ def build_candidates_sql(
     id_col: str = "poly_rid",
     hex_col: str = "hex_id",
 ) -> str:
-    """Overlap-polyfill polygons into string H3 cell candidates."""
-    indexed = H3Indexer.build_h3_query(
-        polygon_relation,
-        resolution,
-        mode=PolyfillMode.OVERLAP,
-        geom_col=geom_col,
-        h3_col=hex_col,
-        as_string=True,
-    )
+    """Overlap-polyfill polygons into string H3 cell candidates.
+
+    Only the polygon id is carried through the expansion. Geometry is dumped to
+    parts for polyfill and then discarded so cell unnest does not replicate
+    large multipolygons onto every candidate row.
+    """
     return f"""
-        SELECT DISTINCT {hex_col}, {id_col} AS poly_rid
-        FROM ({indexed}) AS indexed
+        WITH parts AS (
+            SELECT src.{id_col} AS poly_rid,
+                   (unnest(ST_Dump(src.{geom_col}))).geom AS _poly
+            FROM {polygon_relation} AS src
+        ),
+        expanded AS (
+            SELECT poly_rid,
+                   h3_polygon_wkt_to_cells_experimental(
+                       ST_AsText(_poly), {int(resolution)}, 'overlap'
+                   ) AS _cells
+            FROM parts
+        )
+        SELECT DISTINCT
+               h3_h3_to_string(CAST(cell AS UBIGINT)) AS {hex_col},
+               poly_rid
+        FROM expanded AS e, UNNEST(e._cells) AS _u(cell)
     """
 
 
@@ -42,9 +52,7 @@ def materialize_cell_geometries_sql(
     When ``cache_parquet`` is provided, cached WKT rows are joined with predicate
     pushdown and only missing cells are generated.
     """
-    boundary = (
-        f"ST_GeomFromText(h3_cell_to_boundary_wkt(h3_string_to_h3({hex_col})))"
-    )
+    boundary = f"ST_GeomFromText(h3_cell_to_boundary_wkt(h3_string_to_h3({hex_col})))"
     if cache_parquet is None:
         return f"""
             SELECT {hex_col}, {boundary} AS geom
