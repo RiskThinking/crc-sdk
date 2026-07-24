@@ -531,7 +531,7 @@ wheels = [
 [[package]]
 name = "crc-framework"
 version = "0.1.0"
-source = { git = "ssh://git@github.com/RiskThinking/crc-framework-rs.git#bd369b0e1ffa1edb25d890c1161c1811a874b99e" }
+source = { git = "ssh://git@github.com/RiskThinking/crc-framework-rs.git?branch=main#3fa881aad621fce67701f4b4ee56eb457b3f41c6" }
 dependencies = [
     { name = "numpy", version = "2.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.10.*'" },
@@ -576,7 +576,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "crc-framework", git = "ssh://git@github.com/RiskThinking/crc-framework-rs.git" },
+    { name = "crc-framework", git = "ssh://git@github.com/RiskThinking/crc-framework-rs.git?branch=main" },
     { name = "duckdb", marker = "extra == 'connectors'", specifier = ">=1,<2" },
     { name = "h3", marker = "extra == 'geometry'", specifier = ">=4" },
     { name = "mypy", marker = "extra == 'test'", specifier = ">=1.10" },
