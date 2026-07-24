@@ -2,6 +2,7 @@
 
 from .connection import DuckDBConnection
 from .zarr import Bounds, Point, RasterCurve, RasterMetadata, ZarrRaster, ZarrScan
+from .stream_engine import DuckDBStreamEngine
 
 __all__ = [
     "Bounds",
@@ -9,6 +10,7 @@ __all__ = [
     "Point",
     "RasterCurve",
     "RasterMetadata",
+    "DuckDBStreamEngine",
     "ZarrRaster",
     "ZarrScan",
 ]
