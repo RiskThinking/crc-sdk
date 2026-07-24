@@ -57,12 +57,12 @@ def test_h3_indexer_polyfills_multipolygon_and_polygon() -> None:
         resolution=5,
         mode=PolyfillMode.OVERLAP,
     )
-    rows = indexer.con.execute(sql).fetchall()
-    by_kind: dict[str, list[int]] = {
-        kind: [] for kind in ("polygon", "multipolygon")
-    }
-    for _geometry, kind, h3_index in rows:
-        by_kind[str(kind)].append(int(h3_index))
+    result = indexer.con.execute(sql)
+    columns = [col[0] for col in result.description]
+    rows = [dict(zip(columns, row, strict=True)) for row in result.fetchall()]
+    by_kind: dict[str, list[int]] = {kind: [] for kind in ("polygon", "multipolygon")}
+    for row in rows:
+        by_kind[str(row["kind"])].append(int(row["h3_index"]))
 
     assert by_kind["polygon"]
     assert by_kind["multipolygon"]
@@ -92,10 +92,12 @@ def test_h3_indexer_overlap_covers_adjacent_and_small_polygons() -> None:
         mode=PolyfillMode.OVERLAP,
         as_string=True,
     )
-    rows = indexer.con.execute(sql).fetchall()
+    result = indexer.con.execute(sql)
+    columns = [col[0] for col in result.description]
+    rows = [dict(zip(columns, row, strict=True)) for row in result.fetchall()]
     by_kind: dict[str, set[str]] = {"a": set(), "b": set(), "small": set()}
-    for _geometry, kind, hex_id in rows:
-        by_kind[str(kind)].add(str(hex_id))
+    for row in rows:
+        by_kind[str(row["kind"])].add(str(row["h3_index"]))
 
     assert by_kind["a"]
     assert by_kind["b"]
@@ -109,4 +111,3 @@ def test_h3_indexer_overlap_covers_adjacent_and_small_polygons() -> None:
     )
     small_rows = indexer.con.execute(small_sql).fetchall()
     assert small_rows
-
