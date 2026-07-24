@@ -2,7 +2,10 @@
 
 from crc_framework import lookup_continent, lookup_geography, lookup_ipcc_region
 
+from .formats import FormatAdapter, GeoFormat
 from .h3 import (
+    H3Indexer,
+    PolyfillMode,
     ResolutionEstimate,
     cell_polygon,
     estimate_resolutions,
@@ -11,6 +14,10 @@ from .h3 import (
 )
 
 __all__ = [
+    "FormatAdapter",
+    "GeoFormat",
+    "H3Indexer",
+    "PolyfillMode",
     "ResolutionEstimate",
     "cell_polygon",
     "estimate_resolutions",
