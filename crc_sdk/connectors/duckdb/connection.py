@@ -1,22 +1,25 @@
 """DuckDB connection and extension lifecycle."""
 
+from __future__ import annotations
+
+import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Optional
-import os
+from typing import TYPE_CHECKING, Any
 
-from duckdb import DuckDBPyConnection
+if TYPE_CHECKING:
+    from duckdb import DuckDBPyConnection
 
 
 @dataclass(frozen=True)
 class DuckDBConnection:
     """Configuration for a lazily created DuckDB connection."""
 
-    database: Optional[str] = None
+    database: str | None = None
     read_only: bool = False
     config: Mapping[str, Any] = field(default_factory=dict)
 
-    def connect(self):
+    def connect(self) -> DuckDBPyConnection:
         """Create a connection without imposing SDK-level resource limits."""
         try:
             import duckdb
@@ -43,9 +46,9 @@ class DuckDBStreamEngine:
     @staticmethod
     def create_streaming_connection(
         max_memory: str = "4GB",
-        threads: Optional[int] = None,
-        temp_dir: Optional[str] = None,
-    ):
+        threads: int | None = None,
+        temp_dir: str | None = None,
+    ) -> DuckDBPyConnection:
         con = DuckDBConnection().connect()
 
         # Prevent insertion ordering overhead for streaming queries

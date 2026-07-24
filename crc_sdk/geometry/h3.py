@@ -1,13 +1,16 @@
 """H3 conversion, resolution selection, and spatial indexing utilities for vector geometries."""
 
+from __future__ import annotations
+
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Optional
-
-from duckdb import DuckDBPyConnection
+from typing import TYPE_CHECKING, Any
 
 from crc_sdk.connectors.duckdb.connection import DuckDBConnection
+
+if TYPE_CHECKING:
+    from duckdb import DuckDBPyConnection
 
 
 class PolyfillMode(str, Enum):
@@ -22,7 +25,7 @@ class PolyfillMode(str, Enum):
 class H3Indexer:
     """Out-of-core DuckDB-native H3 indexer for vector geometries."""
 
-    def __init__(self, con: Optional[DuckDBPyConnection] = None):
+    def __init__(self, con: DuckDBPyConnection | None = None):
         self.con = con or DuckDBConnection().connect()
         self._init_extensions()
 
@@ -43,6 +46,37 @@ class H3Indexer:
                 f"Original error: {e}"
             ) from e
 
+    @staticmethod
+    def _polyfill_sql(
+        input_relation_sql: str,
+        resolution: int,
+        geom_col: str,
+        h3_col: str,
+    ) -> str:
+        """Dump multiparts, then polyfill each polygon.
+
+        DuckDB's ``h3_polygon_wkt_to_cells`` does not reliably handle MULTIPOLYGON
+        WKT, so geometries are decomposed with ``ST_Dump`` first. The original
+        geometry column is preserved for downstream spatial predicates.
+        """
+        return f"""
+            WITH parts AS (
+                SELECT src.*,
+                       (unnest(ST_Dump(src.{geom_col}))).geom AS _poly
+                FROM {input_relation_sql} AS src
+            ),
+            expanded AS (
+                SELECT * EXCLUDE(_poly),
+                       h3_polygon_wkt_to_cells(ST_AsText(_poly), {resolution}) AS _cells
+                FROM parts
+            ),
+            flattened AS (
+                SELECT * EXCLUDE(_cells), UNNEST(_cells) AS {h3_col}
+                FROM expanded
+            )
+            SELECT DISTINCT * FROM flattened
+        """
+
     def build_h3_query(
         self,
         input_relation_sql: str,
@@ -62,15 +96,9 @@ class H3Indexer:
             """
 
         elif mode in (PolyfillMode.OVERLAP, PolyfillMode.EXACT_INTERSECTION):
-            base_sql = f"""
-                WITH expanded AS (
-                    SELECT *,
-                           h3_polygon_wkt_to_cells(ST_AsText({geom_col}), {resolution}) AS _cells
-                    FROM {input_relation_sql}
-                )
-                SELECT * EXCLUDE(_cells), UNNEST(_cells) AS {h3_col}
-                FROM expanded
-            """
+            base_sql = self._polyfill_sql(
+                input_relation_sql, resolution, geom_col, h3_col
+            )
             if mode == PolyfillMode.EXACT_INTERSECTION:
                 # Division guarded against zero-area geometries (points, lines, degenerate polygons)
                 return f"""
@@ -86,18 +114,16 @@ class H3Indexer:
             return base_sql
 
         elif mode == PolyfillMode.CONTAINS:
+            indexed_sql = self._polyfill_sql(
+                input_relation_sql, resolution, geom_col, h3_col
+            )
             return f"""
-                WITH expanded AS (
-                    SELECT *,
-                           h3_polygon_wkt_to_cells(ST_AsText({geom_col}), {resolution}) AS _cells
-                    FROM {input_relation_sql}
-                ),
-                flattened AS (
-                    SELECT * EXCLUDE(_cells), UNNEST(_cells) AS {h3_col}
-                    FROM expanded
+                WITH indexed AS ({indexed_sql})
+                SELECT * FROM indexed
+                WHERE ST_Contains(
+                    {geom_col},
+                    ST_GeomFromText(h3_cell_to_boundary_wkt({h3_col}))
                 )
-                SELECT * FROM flattened
-                WHERE ST_Contains({geom_col}, ST_GeomFromText(h3_cell_to_boundary_wkt({h3_col})))
             """
         else:
             raise ValueError(f"Unsupported PolyfillMode: {mode}")
