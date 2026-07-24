@@ -35,16 +35,21 @@ python -m venv .venv
 
 - `crc_sdk.core`, `crc_sdk.fitting`, and `crc_sdk.impacts` expose the stable
   public API of `crc_framework`.
-- `crc_sdk.connectors` handles external formats and query engines.
+- `crc_sdk.connectors` handles external formats and query engines, including
+  DuckDB connection helpers (`DuckDBConnection`, `RuntimeResources`,
+  streaming Parquet writes) and OS-Climate Zarr ingest.
 - `crc_sdk.providers` describes storage and dataset discovery.
-- `crc_sdk.geometry` contains geometry conversion and H3 resolution helpers.
+- `crc_sdk.geometry` contains geometry conversion, DuckDB-native H3 polyfill
+  (`H3Indexer`), coverage SQL builders, and H3 administrative lookup contracts
+  (`LookupCatalog`, `write_lookup_contract`, `write_partitioned_lookup`).
 - `crc_sdk.schema` defines columnar data contracts.
 - `crc_sdk.types` contains SDK-owned Pydantic configuration and metadata.
 - `crc_sdk.workflows` coordinates data access and computation.
 
-The initial package contains interfaces and placeholders only. Concrete
-provider, connector, geometry, and workflow behavior will be added alongside
-their first use cases.
+DuckDB resource limits are detected when requested
+(`RuntimeResources.detect` / `DuckDBConnection.for_analytics`) and relayed
+through the connection `config` mapping. Override with `CRC_DUCKDB_THREADS` /
+`CRC_DUCKDB_MEMORY`, or pass an explicit `config` dict.
 
 ## Canonical hazard datasets
 

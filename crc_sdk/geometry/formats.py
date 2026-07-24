@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from crc_sdk.connectors.duckdb.connection import sql_quote
+from crc_sdk.connectors.duckdb.connection import ensure_extensions, sql_quote
 
 if TYPE_CHECKING:
     from duckdb import DuckDBPyConnection
@@ -33,7 +33,7 @@ class FormatAdapter:
         source_geom_col_name: str = "source_geometry",
     ) -> str:
         """Yields standard GEOMETRY and source_geometry."""
-        con.execute("INSTALL spatial; LOAD spatial;")
+        ensure_extensions(con, "spatial")
 
         fmt = GeoFormat(fmt.lower()) if isinstance(fmt, str) else fmt
         quoted_path = sql_quote(file_path)
