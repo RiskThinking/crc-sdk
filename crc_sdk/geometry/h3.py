@@ -5,7 +5,9 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Optional
 
-import duckdb
+from duckdb import DuckDBPyConnection
+
+from crc_sdk.connectors.duckdb.connection import DuckDBConnection
 
 
 class PolyfillMode(str, Enum):
@@ -20,17 +22,26 @@ class PolyfillMode(str, Enum):
 class H3Indexer:
     """Out-of-core DuckDB-native H3 indexer for vector geometries."""
 
-    def __init__(self, con: Optional[duckdb.DuckDBPyConnection] = None):
-        self.con = con or duckdb.connect()
+    def __init__(self, con: Optional[DuckDBPyConnection] = None):
+        self.con = con or DuckDBConnection().connect()
         self._init_extensions()
 
     def _init_extensions(self) -> None:
-        self.con.execute("INSTALL spatial; LOAD spatial;")
+        """Loads required DuckDB spatial and H3 extensions with explicit error handling."""
+
+        try:
+            self.con.execute("INSTALL spatial; LOAD spatial;")
+        except Exception as e:
+            raise RuntimeError(f"Failed to load DuckDB spatial extension: {e}") from e
+
         try:
             self.con.execute("INSTALL h3 FROM community; LOAD h3;")
-        except Exception:
-            # Fallback macro definition if community extension is loaded differently
-            pass
+        except Exception as e:
+            raise RuntimeError(
+                "Failed to initialize DuckDB H3 extension ('h3 FROM community'). "
+                "Ensure community extensions are enabled and accessible in your environment. "
+                f"Original error: {e}"
+            ) from e
 
     def build_h3_query(
         self,
@@ -41,6 +52,7 @@ class H3Indexer:
         h3_col: str = "h3_index",
     ) -> str:
         """Constructs an un-materialized SQL query streaming geometry through H3 polyfilling."""
+        mode = PolyfillMode(mode.lower()) if isinstance(mode, str) else mode
 
         if mode == PolyfillMode.CENTROID:
             return f"""
@@ -50,7 +62,6 @@ class H3Indexer:
             """
 
         elif mode in (PolyfillMode.OVERLAP, PolyfillMode.EXACT_INTERSECTION):
-            # Polygon polyfill logic using DuckDB spatial BBox/Grid decomposition
             base_sql = f"""
                 WITH expanded AS (
                     SELECT *,
@@ -61,12 +72,15 @@ class H3Indexer:
                 FROM expanded
             """
             if mode == PolyfillMode.EXACT_INTERSECTION:
-                # Compute exact area intersection ratio between geometry and H3 cell
+                # Division guarded against zero-area geometries (points, lines, degenerate polygons)
                 return f"""
                     WITH indexed AS ({base_sql})
                     SELECT *,
-                           ST_Area(ST_Intersection({geom_col}, ST_GeomFromText(h3_cell_to_boundary_wkt({h3_col}))))
-                           / ST_Area({geom_col}) AS intersection_ratio
+                           CASE
+                               WHEN ST_Area({geom_col}) > 0 THEN
+                                   ST_Area(ST_Intersection({geom_col}, ST_GeomFromText(h3_cell_to_boundary_wkt({h3_col})))) / ST_Area({geom_col})
+                               ELSE 0.0
+                           END AS intersection_ratio
                     FROM indexed
                 """
             return base_sql
