@@ -82,6 +82,47 @@ def test_catalog_exposes_stable_artifact_names() -> None:
     assert "pct > 0" in r8_sql
 
 
+def test_contract_accepts_adm0_only_coverage(tmp_path: Path) -> None:
+    con = duckdb.connect()
+    _stub_h3(con)
+    exploded = tmp_path / "adm0_exploded.parquet"
+    lookup = tmp_path / "adm0.parquet"
+    con.execute(
+        """
+        CREATE TABLE coverage(
+            hex_id VARCHAR, adm0_iso VARCHAR, pct DOUBLE
+        )
+        """
+    )
+    con.execute(
+        """
+        INSERT INTO coverage VALUES
+          ('h1', 'LUX', 1.0),
+          ('h2', 'LUX', 0.6),
+          ('h2', 'BEL', 0.4)
+        """
+    )
+    con.execute(f"COPY coverage TO '{exploded}' (FORMAT PARQUET)")
+    write_lookup_contract(
+        con,
+        exploded,
+        lookup,
+        resolution=5,
+        include_coverage=True,
+    )
+    rows = con.execute(
+        f"""
+        SELECT hex_id, best_adm0, best_adm1_id, best_adm1, best_adm2_id, best_adm2,
+               is_adm2_interior
+        FROM '{lookup}' ORDER BY hex_id
+        """
+    ).fetchall()
+    assert rows == [
+        ("h1", "LUX", None, None, None, None, True),
+        ("h2", "LUX", None, None, None, None, False),
+    ]
+
+
 def test_nested_lookup_can_be_partitioned_without_exploded_rows(tmp_path: Path) -> None:
     con = duckdb.connect()
     _stub_h3(con)

@@ -163,16 +163,19 @@ def build_coverage_sql(
             JOIN {hex_geoms_relation} AS h ON c.{hex_col} = h.{hex_col}
         """
 
+    # Full coverage is valid only when the hex is fully inside its polygon.
+    # Coastal / dataset-edge hexes often have cnt=1 but only partial overlap.
+    contained = "ST_Contains(ST_MakeValid(a.geom), h.geom)"
     if border_hexes_relation is None:
-        single_pred = "hc.cnt = 1"
-        exact_pred = "hc.cnt > 1"
+        single_pred = f"hc.cnt = 1 AND {contained}"
+        exact_pred = f"hc.cnt > 1 OR NOT ({contained})"
     else:
         single_pred = (
-            f"hc.cnt = 1 AND c.{hex_col} NOT IN "
+            f"hc.cnt = 1 AND {contained} AND c.{hex_col} NOT IN "
             f"(SELECT {hex_col} FROM {border_hexes_relation})"
         )
         exact_pred = (
-            f"hc.cnt > 1 OR c.{hex_col} IN "
+            f"hc.cnt > 1 OR NOT ({contained}) OR c.{hex_col} IN "
             f"(SELECT {hex_col} FROM {border_hexes_relation})"
         )
 
@@ -185,6 +188,7 @@ def build_coverage_sql(
         FROM {candidates_relation} AS c
         JOIN {counts_join} AS hc ON c.{hex_col} = hc.{hex_col}
         JOIN {polygons_relation} AS a ON c.{poly_id_col} = a.{polygon_id_col}
+        JOIN {hex_geoms_relation} AS h ON c.{hex_col} = h.{hex_col}
         WHERE {single_pred}
         UNION ALL
         SELECT
@@ -216,22 +220,36 @@ def build_border_hexes_sql(
     *,
     hex_col: str = "hex_id",
     adm0_col: str = "adm0_iso",
+    poly_id_col: str = "poly_rid",
+    polygon_id_col: str = "adm2_rid",
 ) -> str:
-    """Single-candidate hexes that still intersect a foreign ADM0 polygon."""
+    """Single-candidate hexes that need exact intersection coverage.
+
+    Includes coastal / dataset-edge hexes that are not fully contained in their
+    candidate polygon, and hexes that still intersect a foreign ADM0 polygon.
+    """
     return f"""
         WITH hex_counts AS (
             SELECT {hex_col}, COUNT(*) AS cnt
             FROM {candidates_relation}
             GROUP BY {hex_col}
+        ),
+        single AS (
+            SELECT c.{hex_col}, c.{poly_id_col}
+            FROM {candidates_relation} AS c
+            JOIN hex_counts AS hc USING ({hex_col})
+            WHERE hc.cnt = 1
         )
-        SELECT DISTINCT hc.{hex_col}
-        FROM hex_counts AS hc
+        SELECT DISTINCT s.{hex_col}
+        FROM single AS s
         JOIN {hex_geoms_relation} AS h USING ({hex_col})
-        WHERE hc.cnt = 1
-          AND EXISTS (
+        JOIN {polygons_relation} AS a
+          ON s.{poly_id_col} = a.{polygon_id_col}
+        WHERE NOT ST_Contains(ST_MakeValid(a.geom), h.geom)
+           OR EXISTS (
               SELECT 1
-              FROM {polygons_relation} AS a
-              WHERE ST_Intersects(h.geom, a.geom)
-                AND a.{adm0_col} != {sql_quote(country_iso)}
+              FROM {polygons_relation} AS foreign_a
+              WHERE ST_Intersects(h.geom, foreign_a.geom)
+                AND foreign_a.{adm0_col} != {sql_quote(country_iso)}
           )
     """

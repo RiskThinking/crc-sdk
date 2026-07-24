@@ -82,8 +82,13 @@ def write_lookup_contract(
             f"DESCRIBE SELECT * FROM read_parquet({escaped_input})"
         ).fetchall()
     }
-    adm1_id = "adm1_id" if "adm1_id" in columns else "NULL::VARCHAR AS adm1_id"
-    adm2_id = "adm2_id" if "adm2_id" in columns else "NULL::VARCHAR AS adm2_id"
+    def _optional(column: str) -> str:
+        return column if column in columns else f"NULL::VARCHAR AS {column}"
+
+    adm1_id = _optional("adm1_id")
+    adm1_name = _optional("adm1_name")
+    adm2_id = _optional("adm2_id")
+    adm2_name = _optional("adm2_name")
     parents = []
     for parent_resolution in range(3, 8):
         expression = (
@@ -112,8 +117,8 @@ def write_lookup_contract(
         COPY (
             WITH source AS (
                 SELECT hex_id, adm0_iso,
-                       {adm1_id}, adm1_name,
-                       {adm2_id}, adm2_name,
+                       {adm1_id}, {adm1_name},
+                       {adm2_id}, {adm2_name},
                        greatest(0.0, least(1.0, pct))::DOUBLE AS pct
                 FROM read_parquet({escaped_input})
                 WHERE pct > 0
