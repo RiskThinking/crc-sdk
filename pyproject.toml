@@ -37,6 +37,10 @@ geometry = [
     "h3>=4",
     "shapely>=2",
 ]
+geometry-vector = [
+    "h3ronpy>=0.19",
+    "pyarrow>=14",
+]
 test = [
     "mypy>=1.10",
     "pytest>=8",

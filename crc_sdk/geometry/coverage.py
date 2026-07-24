@@ -20,6 +20,11 @@ def build_candidates_sql(
     Only the polygon id is carried through the expansion. Geometry is dumped to
     parts for polyfill and then discarded so cell unnest does not replicate
     large multipolygons onto every candidate row.
+
+    For complex real-world multipolygons (e.g. CGAZ ADM), DuckDB's experimental
+    overlap polyfill can under-fill relative to h3ronpy Covers. Prefer
+    ``expand_polygon_candidates`` / ``polyfill_wkb`` with ``COVERS`` when
+    published-lookup parity is required.
     """
     return f"""
         WITH parts AS (
@@ -108,6 +113,19 @@ def missing_cell_wkt_sql(
     """
 
 
+def build_hex_counts_sql(
+    candidates_relation: str,
+    *,
+    hex_col: str = "hex_id",
+) -> str:
+    """Per-cell candidate counts used by single-cell coverage optimization."""
+    return f"""
+        SELECT {hex_col}, COUNT(*) AS cnt
+        FROM {candidates_relation}
+        GROUP BY {hex_col}
+    """
+
+
 def build_coverage_sql(
     candidates_relation: str,
     polygons_relation: str,
@@ -115,6 +133,7 @@ def build_coverage_sql(
     *,
     optimize_single_cell: bool = True,
     border_hexes_relation: str | None = None,
+    hex_counts_relation: str | None = None,
     hex_col: str = "hex_id",
     poly_id_col: str = "poly_rid",
     polygon_id_col: str = "adm2_rid",
@@ -144,11 +163,6 @@ def build_coverage_sql(
             JOIN {hex_geoms_relation} AS h ON c.{hex_col} = h.{hex_col}
         """
 
-    counts = f"""
-        SELECT {hex_col}, COUNT(*) AS cnt
-        FROM {candidates_relation}
-        GROUP BY {hex_col}
-    """
     if border_hexes_relation is None:
         single_pred = "hc.cnt = 1"
         exact_pred = "hc.cnt > 1"
@@ -162,14 +176,14 @@ def build_coverage_sql(
             f"(SELECT {hex_col} FROM {border_hexes_relation})"
         )
 
-    return f"""
-        WITH hex_counts AS ({counts})
+    counts_join = hex_counts_relation or "hex_counts"
+    body = f"""
         SELECT
             c.{hex_col},
             {attrs},
             1.0 AS pct
         FROM {candidates_relation} AS c
-        JOIN hex_counts AS hc USING ({hex_col})
+        JOIN {counts_join} AS hc ON c.{hex_col} = hc.{hex_col}
         JOIN {polygons_relation} AS a ON c.{poly_id_col} = a.{polygon_id_col}
         WHERE {single_pred}
         UNION ALL
@@ -179,10 +193,18 @@ def build_coverage_sql(
             ST_Area(ST_Intersection(ST_MakeValid(h.geom), ST_MakeValid(a.geom)))
                 / ST_Area(h.geom) AS pct
         FROM {candidates_relation} AS c
-        JOIN hex_counts AS hc USING ({hex_col})
+        JOIN {counts_join} AS hc ON c.{hex_col} = hc.{hex_col}
         JOIN {polygons_relation} AS a ON c.{poly_id_col} = a.{polygon_id_col}
         JOIN {hex_geoms_relation} AS h ON c.{hex_col} = h.{hex_col}
         WHERE {exact_pred}
+    """
+    if hex_counts_relation is not None:
+        return body
+
+    counts_sql = build_hex_counts_sql(candidates_relation, hex_col=hex_col)
+    return f"""
+        WITH hex_counts AS ({counts_sql})
+        {body}
     """
 
 

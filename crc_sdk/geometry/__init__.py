@@ -12,6 +12,7 @@ from .coverage import (
     build_border_hexes_sql,
     build_candidates_sql,
     build_coverage_sql,
+    build_hex_counts_sql,
     materialize_cell_geometries_sql,
     missing_cell_wkt_sql,
 )
@@ -25,6 +26,7 @@ from .h3 import (
     intersecting_cells,
     point_to_cell,
 )
+from .vector import VectorContainment, expand_polygon_candidates, polyfill_wkb
 
 __all__ = [
     "FormatAdapter",
@@ -33,12 +35,15 @@ __all__ = [
     "LookupCatalog",
     "PolyfillMode",
     "ResolutionEstimate",
+    "VectorContainment",
     "build_border_hexes_sql",
     "build_candidates_sql",
     "build_coverage_sql",
+    "build_hex_counts_sql",
     "cell_polygon",
     "enrich_adm2_with_adm1_sql",
     "estimate_resolutions",
+    "expand_polygon_candidates",
     "intersecting_cells",
     "lookup_continent",
     "lookup_geography",
@@ -46,6 +51,7 @@ __all__ = [
     "materialize_cell_geometries_sql",
     "missing_cell_wkt_sql",
     "point_to_cell",
+    "polyfill_wkb",
     "write_lookup_contract",
     "write_partitioned_lookup",
 ]
