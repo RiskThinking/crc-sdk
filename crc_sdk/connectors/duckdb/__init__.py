@@ -1,8 +1,7 @@
 """DuckDB-backed connector helpers."""
 
-from .connection import DuckDBConnection
+from .connection import DuckDBConnection, DuckDBStreamEngine, sql_quote
 from .zarr import Bounds, Point, RasterCurve, RasterMetadata, ZarrRaster, ZarrScan
-from .stream_engine import DuckDBStreamEngine
 
 __all__ = [
     "Bounds",
@@ -13,4 +12,5 @@ __all__ = [
     "DuckDBStreamEngine",
     "ZarrRaster",
     "ZarrScan",
+    "sql_quote",
 ]
