@@ -65,11 +65,16 @@ def test_catalog_exposes_stable_artifact_names() -> None:
     catalog = LookupCatalog("gs://bucket/h3-lookup/")
     assert catalog.lookup_uri(8) == "gs://bucket/h3-lookup/r8.parquet"
     assert catalog.exploded_uri(8) == "gs://bucket/h3-lookup/r8_exploded.parquet"
+    assert catalog.partitioned_lookup_root(7) == "gs://bucket/h3-lookup/r7"
     assert catalog.partitioned_lookup_uri(7, 1, "81") == (
         "gs://bucket/h3-lookup/r7/h3_r1=81/*.parquet"
     )
     assert "x.adm0_iso" in catalog.country_cells_sql("lux")
     assert "best_adm0='LUX'" in catalog.country_cells_sql("lux")
+
+    no_coverage = catalog.country_cells_sql("lux", resolution=7, has_coverage=False)
+    assert "r7_exploded.parquet" in no_coverage
+    assert "coverage" not in no_coverage
 
     r8_sql = catalog.country_cells_sql("lux", resolution=8)
     assert "r8_exploded.parquet" in r8_sql

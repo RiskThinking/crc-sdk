@@ -246,13 +246,17 @@ class LookupCatalog:
         """Optional analytical coverage artifact; OBF does not require it."""
         return f"{self.root.rstrip('/')}/r{resolution}_exploded.parquet"
 
+    def partitioned_lookup_root(self, resolution: int) -> str:
+        """Hive directory root for a partitioned lookup (no partition filter)."""
+        return f"{self.root.rstrip('/')}/r{resolution}"
+
     def partitioned_lookup_uri(
         self,
         resolution: int,
         partition_resolution: int,
         parent: str | None = None,
     ) -> str:
-        root = f"{self.root.rstrip('/')}/r{resolution}"
+        root = self.partitioned_lookup_root(resolution)
         value = parent or "*"
         return f"{root}/h3_r{partition_resolution}={value}/*.parquet"
 
@@ -266,12 +270,22 @@ class LookupCatalog:
         resolution: int = 3,
         *,
         coverage_adm0_field: str = "adm0_iso",
+        has_coverage: bool | None = None,
     ) -> str:
+        """SQL for distinct hexes touching an ADM0.
+
+        Lookup files only expose a nested ``coverage`` list when they were
+        written with ``include_coverage=True`` (h3geo default for r<8). When
+        that column is absent — r8+, or an explicit ``include_coverage=False``
+        write — pass ``has_coverage=False`` (or rely on the r>=8 default) so
+        the query uses the exploded artifact instead.
+        """
         iso3 = adm0_iso.upper()
         if not coverage_adm0_field.replace("_", "").isalnum():
             raise ValueError("unsafe coverage ADM0 field")
 
-        if resolution >= 8:
+        use_coverage = (resolution < 8) if has_coverage is None else has_coverage
+        if not use_coverage:
             uri = sql_quote(self.exploded_uri(resolution))
             return (
                 "SELECT DISTINCT hex_id "

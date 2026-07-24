@@ -242,4 +242,9 @@ def _cpu_quota() -> int | None:
 
 def _env_int(name: str, default: int, maximum: int) -> int:
     raw = os.getenv(name)
-    return max(1, min(int(raw), maximum)) if raw else default
+    if not raw:
+        return default
+    try:
+        return max(1, min(int(raw), maximum))
+    except ValueError:
+        return default
