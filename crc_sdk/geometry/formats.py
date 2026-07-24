@@ -26,52 +26,69 @@ class FormatAdapter:
         preserve_source_geom: bool = True,
         source_geom_col_name: str = "source_geometry",
     ) -> str:
-        """Generates a DuckDB SQL subquery expression yielding standard geometry and source_geometry."""
-
+        """Yields standard GEOMETRY and source_geometry."""
         con.execute("INSTALL spatial; LOAD spatial;")
 
+        fmt = GeoFormat(fmt.lower()) if isinstance(fmt, str) else fmt
+
         if fmt in (GeoFormat.SHAPEFILE, GeoFormat.GEOJSON):
-            # ST_Read handles SHP and GeoJSON
-            base_select = f"SELECT * FROM ST_Read('{file_path}')"
-            geom_expr = f"geom AS {geometry_column}"
-            source_expr = (
-                f"ST_AsWKB(geom) AS {source_geom_col_name}"
-                if preserve_source_geom
-                else ""
+            raw_geom_col = "geom"
+            from_clause = f"ST_Read('{file_path}') AS _src"
+
+            select_cols = [
+                f"_src.* EXCLUDE({raw_geom_col})",
+                f"_src.{raw_geom_col} AS {geometry_column}",
+            ]
+            if preserve_source_geom:
+                select_cols.append(
+                    f"ST_AsWKB(_src.{raw_geom_col}) AS {source_geom_col_name}"
+                )
+
+            return f"(SELECT {', '.join(select_cols)} FROM {from_clause})"
+
+        elif fmt == GeoFormat.GEOPARQUET:
+            from_clause = f"read_parquet('{file_path}') AS _src"
+            select_cols = ["_src.*"]
+            if preserve_source_geom:
+                select_cols.append(
+                    f"ST_AsWKB(_src.{geometry_column}) AS {source_geom_col_name}"
+                )
+
+            return f"(SELECT {', '.join(select_cols)} FROM {from_clause})"
+
+        elif fmt == GeoFormat.PARQUET:
+            from_clause = f"read_parquet('{file_path}') AS _src"
+            select_cols = [f"_src.* EXCLUDE({geometry_column})"]
+            if preserve_source_geom:
+                # Direct passthrough explicitly bound to raw table column
+                select_cols.append(f"_src.{geometry_column} AS {source_geom_col_name}")
+            select_cols.append(
+                f"ST_GeomFromWKB(_src.{geometry_column}) AS {geometry_column}"
             )
-        elif fmt == GeoFormat.PARQUET or fmt == GeoFormat.GEOPARQUET:
-            base_select = f"SELECT * FROM read_parquet('{file_path}')"
-            geom_expr = (
-                f"ST_GeomFromWKB({geometry_column}) AS {geometry_column}"
-                if geometry_column != "geom"
-                else f"{geometry_column}"
-            )
-            source_expr = (
-                f"ST_AsWKB({geometry_column}) AS {source_geom_col_name}"
-                if preserve_source_geom
-                else ""
-            )
+
+            return f"(SELECT {', '.join(select_cols)} FROM {from_clause})"
+
         elif fmt == GeoFormat.WKT:
-            base_select = f"SELECT * FROM read_csv_auto('{file_path}')"
-            geom_expr = f"ST_GeomFromText({geometry_column}) AS {geometry_column}"
-            source_expr = (
-                f"{geometry_column} AS {source_geom_col_name}"
-                if preserve_source_geom
-                else ""
+            from_clause = f"read_csv_auto('{file_path}') AS _src"
+            select_cols = [f"_src.* EXCLUDE({geometry_column})"]
+            if preserve_source_geom:
+                select_cols.append(f"_src.{geometry_column} AS {source_geom_col_name}")
+            select_cols.append(
+                f"ST_GeomFromText(_src.{geometry_column}) AS {geometry_column}"
             )
+
+            return f"(SELECT {', '.join(select_cols)} FROM {from_clause})"
+
         elif fmt == GeoFormat.WKB:
-            base_select = f"SELECT * FROM read_csv_auto('{file_path}')"
-            geom_expr = f"ST_GeomFromWKB({geometry_column}) AS {geometry_column}"
-            source_expr = (
-                f"{geometry_column} AS {source_geom_col_name}"
-                if preserve_source_geom
-                else ""
+            from_clause = f"read_csv_auto('{file_path}') AS _src"
+            select_cols = [f"_src.* EXCLUDE({geometry_column})"]
+            if preserve_source_geom:
+                select_cols.append(f"_src.{geometry_column} AS {source_geom_col_name}")
+            select_cols.append(
+                f"ST_GeomFromWKB(_src.{geometry_column}) AS {geometry_column}"
             )
+
+            return f"(SELECT {', '.join(select_cols)} FROM {from_clause})"
+
         else:
             raise ValueError(f"Unsupported geometry format: {fmt}")
-
-        select_cols = [f"* EXCLUDE({geometry_column})", geom_expr]
-        if preserve_source_geom and source_expr:
-            select_cols.append(source_expr)
-
-        return f"(SELECT {', '.join(select_cols)} FROM {base_select})"
