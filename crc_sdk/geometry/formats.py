@@ -1,10 +1,14 @@
 """Multi-format GIS ingestion and DuckDB spatial expression builder."""
 
-from enum import Enum
+from __future__ import annotations
 
-from duckdb import DuckDBPyConnection
+from enum import Enum
+from typing import TYPE_CHECKING
 
 from crc_sdk.connectors.duckdb.connection import sql_quote
+
+if TYPE_CHECKING:
+    from duckdb import DuckDBPyConnection
 
 
 class GeoFormat(str, Enum):
