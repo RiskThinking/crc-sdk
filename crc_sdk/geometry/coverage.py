@@ -170,50 +170,86 @@ def build_coverage_sql(
         """
 
     counts_join = hex_counts_relation or "hex_counts"
-    border_pred = (
+    is_border = (
         f"c.{hex_col} IN (SELECT {hex_col} FROM {border_hexes_relation})"
         if border_hexes_relation is not None
         else "FALSE"
     )
-    # Single pass: evaluate containment once, then CASE for pct.
-    body = f"""
-        SELECT
-            j.{hex_col},
-            j.adm0_iso,
-            j.adm1_id,
-            j.adm1_name,
-            j.adm2_id,
-            j.adm2_name,
-            CASE
-                WHEN j.cnt = 1 AND j.contained AND NOT j.is_border THEN 1.0
-                ELSE ST_Area(
-                    ST_Intersection(
-                        ST_MakeValid(j.hex_geom),
-                        ST_MakeValid(j.poly_geom)
-                    )
-                ) / ST_Area(j.hex_geom)
-            END AS pct
-        FROM (
+    # Competing pairs never need ST_Contains. Singles compute it once in a CTE,
+    # then split into interior (pct=1.0) vs edge/border (intersection). Avoid a
+    # CASE ELSE that can force ST_Intersection across the full candidate set.
+    intersection_pct = """
+        ST_Area(
+            ST_Intersection(ST_MakeValid(h.geom), ST_MakeValid(a.geom))
+        ) / ST_Area(h.geom)
+    """
+    singles_cte = f"""
+        singles AS (
             SELECT
-                c.{hex_col},
-                {attrs},
-                hc.cnt,
+                c.{hex_col} AS {hex_col},
+                a.{adm0_col} AS adm0_iso,
+                a.{adm1_id_col} AS adm1_id,
+                a.{adm1_name_col} AS adm1_name,
+                a.{adm2_id_col} AS adm2_id,
+                a.{adm2_name_col} AS adm2_name,
                 a.geom AS poly_geom,
                 h.geom AS hex_geom,
                 ST_Contains(a.geom, h.geom) AS contained,
-                ({border_pred}) AS is_border
+                ({is_border}) AS is_border
             FROM {candidates_relation} AS c
             JOIN {counts_join} AS hc ON c.{hex_col} = hc.{hex_col}
             JOIN {polygons_relation} AS a ON c.{poly_id_col} = a.{polygon_id_col}
             JOIN {hex_geoms_relation} AS h ON c.{hex_col} = h.{hex_col}
-        ) AS j
+            WHERE hc.cnt = 1
+        )
     """
-    if hex_counts_relation is not None:
-        return body
-
+    body = f"""
+        SELECT
+            s.{hex_col},
+            s.adm0_iso,
+            s.adm1_id,
+            s.adm1_name,
+            s.adm2_id,
+            s.adm2_name,
+            1.0 AS pct
+        FROM singles AS s
+        WHERE s.contained AND NOT s.is_border
+        UNION ALL
+        SELECT
+            s.{hex_col},
+            s.adm0_iso,
+            s.adm1_id,
+            s.adm1_name,
+            s.adm2_id,
+            s.adm2_name,
+            ST_Area(
+                ST_Intersection(
+                    ST_MakeValid(s.hex_geom),
+                    ST_MakeValid(s.poly_geom)
+                )
+            ) / ST_Area(s.hex_geom) AS pct
+        FROM singles AS s
+        WHERE NOT s.contained OR s.is_border
+        UNION ALL
+        SELECT
+            c.{hex_col},
+            {attrs},
+            {intersection_pct} AS pct
+        FROM {candidates_relation} AS c
+        JOIN {counts_join} AS hc ON c.{hex_col} = hc.{hex_col}
+        JOIN {polygons_relation} AS a ON c.{poly_id_col} = a.{polygon_id_col}
+        JOIN {hex_geoms_relation} AS h ON c.{hex_col} = h.{hex_col}
+        WHERE hc.cnt > 1
+    """
     counts_sql = build_hex_counts_sql(candidates_relation, hex_col=hex_col)
+    if hex_counts_relation is not None:
+        return f"""
+            WITH {singles_cte}
+            {body}
+        """
     return f"""
-        WITH hex_counts AS ({counts_sql})
+        WITH hex_counts AS ({counts_sql}),
+        {singles_cte}
         {body}
     """
 
