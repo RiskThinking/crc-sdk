@@ -57,7 +57,11 @@ class RuntimeResources:
         memory_bytes = _memory_limit_bytes(int(psutil.virtual_memory().total))
         disk_free_bytes = int(psutil.disk_usage(str(root)).free)
         usable_memory = max(_GIB, int(memory_bytes * 0.60))
-        safe_threads = max(1, min(cpus, usable_memory // (3 * _GIB)))
+        # Geo analytics is often CPU-bound on spatial predicates; 1.5 GiB/thread
+        # uses more cores than the old 3 GiB join-spill heuristic while keeping
+        # memory_limit and max_temp_directory_size as hard caps.
+        per_thread = _bytes_per_thread()
+        safe_threads = max(1, min(cpus, max(2, usable_memory // per_thread)))
         threads = _env_int("CRC_DUCKDB_THREADS", safe_threads, cpus)
         memory_gib = max(1, usable_memory // _GIB)
         memory_limit = os.getenv("CRC_DUCKDB_MEMORY", f"{memory_gib}GiB")
@@ -248,3 +252,17 @@ def _env_int(name: str, default: int, maximum: int) -> int:
         return max(1, min(int(raw), maximum))
     except ValueError:
         return default
+
+
+def _bytes_per_thread() -> int:
+    """GiB-per-thread budget for geo analytics (default 1.5 GiB)."""
+    raw = os.getenv("CRC_DUCKDB_BYTES_PER_THREAD_GIB")
+    if not raw:
+        return int(1.5 * _GIB)
+    try:
+        gib = float(raw)
+    except ValueError:
+        return int(1.5 * _GIB)
+    if gib <= 0:
+        return int(1.5 * _GIB)
+    return max(_GIB // 4, int(gib * _GIB))

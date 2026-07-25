@@ -1,7 +1,11 @@
 import os
 from pathlib import Path
 
-from crc_sdk.connectors.duckdb.connection import RuntimeResources, _env_int
+from crc_sdk.connectors.duckdb.connection import (
+    RuntimeResources,
+    _bytes_per_thread,
+    _env_int,
+)
 
 
 def test_env_int_falls_back_on_non_numeric(monkeypatch) -> None:
@@ -15,3 +19,22 @@ def test_detect_tolerates_invalid_thread_env(tmp_path: Path, monkeypatch) -> Non
     resources = RuntimeResources.detect(tmp_path)
     assert resources.threads >= 1
     assert os.getenv("CRC_DUCKDB_THREADS") == "not-a-number"
+
+
+def test_bytes_per_thread_defaults_to_1_5_gib(monkeypatch) -> None:
+    monkeypatch.delenv("CRC_DUCKDB_BYTES_PER_THREAD_GIB", raising=False)
+    assert _bytes_per_thread() == int(1.5 * 1024**3)
+
+
+def test_geo_profile_uses_more_threads_than_3gib_heuristic(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.delenv("CRC_DUCKDB_THREADS", raising=False)
+    monkeypatch.delenv("CRC_DUCKDB_MEMORY", raising=False)
+    monkeypatch.delenv("CRC_DUCKDB_BYTES_PER_THREAD_GIB", raising=False)
+    resources = RuntimeResources.detect(tmp_path)
+    usable = max(1024**3, int(resources.memory_bytes * 0.60))
+    old_safe = max(1, min(resources.cpus, usable // (3 * 1024**3)))
+    # On machines with enough RAM, 1.5 GiB/thread should not under-thread vs 3 GiB.
+    assert resources.threads >= old_safe
+    assert resources.threads <= resources.cpus

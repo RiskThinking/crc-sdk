@@ -23,18 +23,33 @@ def enrich_adm2_with_adm1_sql(
     adm2_name_expr: str = "shapeName",
     adm2_group_expr: str = "shapeGroup",
     geom_col: str = "geom",
+    adm1_relation: str | None = None,
+    adm2_relation: str | None = None,
 ) -> str:
-    """Max-overlap join of child ADM2 polygons onto parent ADM1 attributes."""
-    adm1 = sql_quote(adm1_source)
-    adm2 = sql_quote(adm2_source)
+    """Max-overlap join of child ADM2 polygons onto parent ADM1 attributes.
+
+    When ``adm1_relation`` / ``adm2_relation`` are provided they are used as
+    already-materialized sources (with optional RTREE indexes). Otherwise the
+    SQL reads ``adm1_source`` / ``adm2_source`` via ``ST_Read``.
+    """
+    adm1_from = (
+        adm1_relation
+        if adm1_relation is not None
+        else f"ST_Read({sql_quote(adm1_source)})"
+    )
+    adm2_from = (
+        adm2_relation
+        if adm2_relation is not None
+        else f"ST_Read({sql_quote(adm2_source)})"
+    )
     return f"""
         WITH adm1_data AS (
             SELECT row_number() OVER () AS adm1_rid, *
-            FROM ST_Read({adm1})
+            FROM {adm1_from}
         ),
         adm2_data AS (
             SELECT row_number() OVER () AS adm2_rid, *
-            FROM ST_Read({adm2})
+            FROM {adm2_from}
         ),
         adm2_adm1_join AS (
             SELECT
@@ -48,8 +63,9 @@ def enrich_adm2_with_adm1_sql(
                 ST_Area(ST_Intersection(a2.{geom_col}, a1.{geom_col})) AS overlap_area
             FROM adm2_data AS a2
             LEFT JOIN adm1_data AS a1
-              ON ST_Intersects(a2.{geom_col}, a1.{geom_col})
-             AND a2.{adm2_group_expr} = a1.{adm1_group_expr}
+              ON a2.{adm2_group_expr} = a1.{adm1_group_expr}
+             AND ST_Intersects(ST_Envelope(a2.{geom_col}), ST_Envelope(a1.{geom_col}))
+             AND ST_Intersects(a2.{geom_col}, a1.{geom_col})
         )
         SELECT
             adm2_rid,
@@ -64,6 +80,55 @@ def enrich_adm2_with_adm1_sql(
     """
 
 
+def enrich_adm2_with_adm1(
+    con: DuckDBPyConnection,
+    adm1_source: str,
+    adm2_source: str,
+    *,
+    output_table: str = "adm2_global",
+    adm1_id_expr: str = "shapeID::VARCHAR",
+    adm1_name_expr: str = "shapeName",
+    adm1_group_expr: str = "shapeGroup",
+    adm2_id_expr: str = "shapeID::VARCHAR",
+    adm2_name_expr: str = "shapeName",
+    adm2_group_expr: str = "shapeGroup",
+    geom_col: str = "geom",
+) -> int:
+    """Materialize ADM sources, optionally RTREE-index them, then enrich."""
+    con.execute("DROP TABLE IF EXISTS _crc_adm1_src")
+    con.execute("DROP TABLE IF EXISTS _crc_adm2_src")
+    con.execute(
+        f"CREATE TEMPORARY TABLE _crc_adm1_src AS SELECT * FROM ST_Read({sql_quote(adm1_source)})"
+    )
+    con.execute(
+        f"CREATE TEMPORARY TABLE _crc_adm2_src AS SELECT * FROM ST_Read({sql_quote(adm2_source)})"
+    )
+    for table in ("_crc_adm1_src", "_crc_adm2_src"):
+        try:
+            con.execute(f"CREATE INDEX ON {table} USING RTREE ({geom_col})")
+        except Exception:
+            pass
+    join_sql = enrich_adm2_with_adm1_sql(
+        adm1_source,
+        adm2_source,
+        adm1_id_expr=adm1_id_expr,
+        adm1_name_expr=adm1_name_expr,
+        adm1_group_expr=adm1_group_expr,
+        adm2_id_expr=adm2_id_expr,
+        adm2_name_expr=adm2_name_expr,
+        adm2_group_expr=adm2_group_expr,
+        geom_col=geom_col,
+        adm1_relation="_crc_adm1_src",
+        adm2_relation="_crc_adm2_src",
+    )
+    con.execute(f"DROP TABLE IF EXISTS {output_table}")
+    con.execute(f"CREATE TABLE {output_table} AS {join_sql}")
+    count = int(con.execute(f"SELECT COUNT(*) FROM {output_table}").fetchone()[0])
+    con.execute("DROP TABLE IF EXISTS _crc_adm1_src")
+    con.execute("DROP TABLE IF EXISTS _crc_adm2_src")
+    return count
+
+
 def write_lookup_contract(
     con: DuckDBPyConnection,
     exploded_path: str | Path,
@@ -72,6 +137,7 @@ def write_lookup_contract(
     resolution: int,
     include_coverage: bool,
     interior_threshold: float = 0.999999,
+    sort_output: bool = True,
 ) -> None:
     """Derive a flat, coherent ADM assignment contract from exact cell coverage."""
     escaped_input = sql_quote(exploded_path)
@@ -186,7 +252,7 @@ def write_lookup_contract(
              AND b.adm0_iso = a1.adm0_iso
              AND b.adm1_name IS NOT DISTINCT FROM a1.adm1_name
              AND b.adm1_id IS NOT DISTINCT FROM a1.adm1_id
-            ORDER BY h3_r3, hex_id
+            {"ORDER BY h3_r3, hex_id" if sort_output else ""}
         ) TO {escaped_output}
         (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 122880)
         """

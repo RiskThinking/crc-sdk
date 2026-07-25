@@ -82,6 +82,35 @@ def test_catalog_exposes_stable_artifact_names() -> None:
     assert "pct > 0" in r8_sql
 
 
+def test_contract_sort_output_can_be_disabled(tmp_path: Path) -> None:
+    con = duckdb.connect()
+    _stub_h3(con)
+    exploded = tmp_path / "sorted_exploded.parquet"
+    lookup = tmp_path / "unsorted.parquet"
+    con.execute(
+        """
+        CREATE TABLE coverage(
+            hex_id VARCHAR, adm0_iso VARCHAR,
+            adm1_id VARCHAR, adm1_name VARCHAR,
+            adm2_id VARCHAR, adm2_name VARCHAR, pct DOUBLE
+        )
+        """
+    )
+    con.execute(
+        "INSERT INTO coverage VALUES ('h1', 'LUX', 'a1', 'C', 'a2', 'T', 1.0)"
+    )
+    con.execute(f"COPY coverage TO '{exploded}' (FORMAT PARQUET)")
+    write_lookup_contract(
+        con,
+        exploded,
+        lookup,
+        resolution=5,
+        include_coverage=False,
+        sort_output=False,
+    )
+    assert con.execute(f"SELECT COUNT(*) FROM '{lookup}'").fetchone() == (1,)
+
+
 def test_contract_accepts_adm0_only_coverage(tmp_path: Path) -> None:
     con = duckdb.connect()
     _stub_h3(con)
