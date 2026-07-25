@@ -17,14 +17,9 @@ def build_candidates_sql(
 ) -> str:
     """Overlap-polyfill polygons into string H3 cell candidates.
 
-    Only the polygon id is carried through the expansion. Geometry is dumped to
-    parts for polyfill and then discarded so cell unnest does not replicate
-    large multipolygons onto every candidate row.
-
-    For complex real-world multipolygons (e.g. CGAZ ADM), DuckDB's experimental
-    overlap polyfill can under-fill relative to h3ronpy Covers. Prefer
+    Only polygon ids are carried through expansion. Prefer
     ``expand_polygon_candidates`` / ``polyfill_wkb`` with ``COVERS`` when
-    published-lookup parity is required.
+    CGAZ admin-lookup parity is required (DuckDB overlap can under-fill).
     """
     return f"""
         WITH parts AS (
@@ -52,11 +47,7 @@ def materialize_cell_geometries_sql(
     hex_col: str = "hex_id",
     cache_parquet: str | Path | None = None,
 ) -> str:
-    """SQL that yields (hex_id, geom) for distinct candidate cells.
-
-    When ``cache_parquet`` is provided, cached WKT rows are joined with predicate
-    pushdown and only missing cells are generated.
-    """
+    """SQL yielding (hex_id, geom) for distinct candidate cells."""
     boundary = f"ST_GeomFromText(h3_cell_to_boundary_wkt(h3_string_to_h3({hex_col})))"
     if cache_parquet is None:
         return f"""
@@ -118,12 +109,61 @@ def build_hex_counts_sql(
     *,
     hex_col: str = "hex_id",
 ) -> str:
-    """Per-cell candidate counts used by single-cell coverage optimization."""
+    """Per-cell candidate counts for single-cell coverage optimization."""
     return f"""
         SELECT {hex_col}, COUNT(*) AS cnt
         FROM {candidates_relation}
         GROUP BY {hex_col}
     """
+
+
+def _clipped_intersection_pct() -> str:
+    """Intersection fraction after clipping admin geom to the hex envelope."""
+    return """
+        ST_Area(
+            ST_Intersection(
+                ST_MakeValid(h.geom),
+                ST_MakeValid(ST_Intersection(a.geom, ST_Envelope(h.geom)))
+            )
+        ) / ST_Area(h.geom) AS pct
+    """
+
+
+def _with_hex_counts_cte(
+    candidates_relation: str,
+    body: str,
+    *,
+    hex_col: str,
+    hex_counts_relation: str | None,
+) -> str:
+    if hex_counts_relation is not None:
+        return body
+    counts_sql = build_hex_counts_sql(candidates_relation, hex_col=hex_col)
+    return f"""
+        WITH hex_counts AS ({counts_sql})
+        {body}
+    """
+
+
+def _hex_counts_prefix(
+    candidates_relation: str,
+    *,
+    hex_col: str,
+    hex_counts_relation: str | None,
+) -> tuple[str, str]:
+    """Return (optional WITH prefix including trailing comma, counts relation)."""
+    if hex_counts_relation is not None:
+        return "", hex_counts_relation
+    return (
+        f"""
+            hex_counts AS (
+                SELECT {hex_col}, COUNT(*) AS cnt
+                FROM {candidates_relation}
+                GROUP BY {hex_col}
+            ),
+        """,
+        "hex_counts",
+    )
 
 
 def build_edge_hexes_sql(
@@ -136,23 +176,12 @@ def build_edge_hexes_sql(
     polygon_id_col: str = "adm2_rid",
     hex_counts_relation: str | None = None,
 ) -> str:
-    """IDs of single-candidate hexes that are not fully inside their polygon.
-
-    Returns only ``hex_id`` (no geometries) so the result can be spilled as a
-    tiny membership table. Coverage then uses the pre-refactor pattern: interior
-    singles get ``pct=1.0`` without joining hex geometries.
-    """
-    counts = hex_counts_relation or "hex_counts"
-    counts_cte = ""
-    if hex_counts_relation is None:
-        counts_cte = f"""
-            hex_counts AS (
-                SELECT {hex_col}, COUNT(*) AS cnt
-                FROM {candidates_relation}
-                GROUP BY {hex_col}
-            ),
-        """
-        counts = "hex_counts"
+    """IDs of single-candidate hexes not fully contained in their polygon."""
+    counts_cte, counts = _hex_counts_prefix(
+        candidates_relation,
+        hex_col=hex_col,
+        hex_counts_relation=hex_counts_relation,
+    )
     return f"""
         WITH {counts_cte}
         single AS (
@@ -189,12 +218,9 @@ def build_coverage_sql(
 ) -> str:
     """Coverage fraction of each hex covered by each intersecting admin polygon.
 
-    When ``optimize_single_cell`` is set, callers should materialize a small
-    ``border_hexes_relation`` of hex IDs that need exact intersection among
-    single-candidate cells (coastal/edge and optional foreign-border IDs via
-    ``build_edge_hexes_sql`` / ``build_border_hexes_sql``). Interior singles
-    then take ``pct=1.0`` **without** joining hex geometries — the memory-safe
-    pattern from the original h3geo pipeline.
+    With ``optimize_single_cell``, pass ``border_hexes_relation`` (edge/border
+    hex IDs from ``build_edge_hexes_sql`` / ``build_border_hexes_sql``) so
+    interior singles can use ``pct=1.0`` without joining hex geometries.
     """
     attrs = f"""
         a.{adm0_col} AS adm0_iso,
@@ -203,89 +229,56 @@ def build_coverage_sql(
         a.{adm2_id_col} AS adm2_id,
         a.{adm2_name_col} AS adm2_name
     """
-    if not optimize_single_cell:
+    intersection_pct = _clipped_intersection_pct()
+
+    if not optimize_single_cell or border_hexes_relation is None:
         return f"""
             SELECT
                 c.{hex_col},
                 {attrs},
-                ST_Area(
-                    ST_Intersection(
-                        ST_MakeValid(h.geom),
-                        ST_MakeValid(ST_Intersection(a.geom, ST_Envelope(h.geom)))
-                    )
-                ) / ST_Area(h.geom) AS pct
+                {intersection_pct}
             FROM {candidates_relation} AS c
             JOIN {polygons_relation} AS a ON c.{poly_id_col} = a.{polygon_id_col}
             JOIN {hex_geoms_relation} AS h ON c.{hex_col} = h.{hex_col}
         """
 
     counts_join = hex_counts_relation or "hex_counts"
-    # Clip admin geom to the hex envelope before overlay. Coastal ADM2
-    # multipolygons average ~40x more vertices than interior competitors;
-    # without clipping, ~50k edge intersections dominate wall time.
-    intersection_pct = f"""
-        ST_Area(
-            ST_Intersection(
-                ST_MakeValid(h.geom),
-                ST_MakeValid(ST_Intersection(a.geom, ST_Envelope(h.geom)))
-            )
-        ) / ST_Area(h.geom) AS pct
+    body = f"""
+        SELECT
+            c.{hex_col},
+            {attrs},
+            1.0 AS pct
+        FROM {candidates_relation} AS c
+        JOIN {counts_join} AS hc ON c.{hex_col} = hc.{hex_col}
+        JOIN {polygons_relation} AS a ON c.{poly_id_col} = a.{polygon_id_col}
+        LEFT JOIN {border_hexes_relation} AS p ON c.{hex_col} = p.{hex_col}
+        WHERE hc.cnt = 1 AND p.{hex_col} IS NULL
+        UNION ALL
+        SELECT
+            c.{hex_col},
+            {attrs},
+            {intersection_pct}
+        FROM {candidates_relation} AS c
+        JOIN {counts_join} AS hc ON c.{hex_col} = hc.{hex_col}
+        JOIN {polygons_relation} AS a ON c.{poly_id_col} = a.{polygon_id_col}
+        JOIN {hex_geoms_relation} AS h ON c.{hex_col} = h.{hex_col}
+        WHERE hc.cnt > 1
+        UNION ALL
+        SELECT
+            c.{hex_col},
+            {attrs},
+            {intersection_pct}
+        FROM {candidates_relation} AS c
+        JOIN {border_hexes_relation} AS p ON c.{hex_col} = p.{hex_col}
+        JOIN {polygons_relation} AS a ON c.{poly_id_col} = a.{polygon_id_col}
+        JOIN {hex_geoms_relation} AS h ON c.{hex_col} = h.{hex_col}
     """
-
-    if border_hexes_relation is None:
-        # No membership table: every candidate needs exact intersection.
-        body = f"""
-            SELECT
-                c.{hex_col},
-                {attrs},
-                {intersection_pct}
-            FROM {candidates_relation} AS c
-            JOIN {polygons_relation} AS a ON c.{poly_id_col} = a.{polygon_id_col}
-            JOIN {hex_geoms_relation} AS h ON c.{hex_col} = h.{hex_col}
-        """
-    else:
-        # Three disjoint branches so hex_geoms are never joined onto interior
-        # singles. Interior → pct=1.0; competing (cnt>1) and edge/partial IDs
-        # take the clipped intersection path.
-        body = f"""
-            SELECT
-                c.{hex_col},
-                {attrs},
-                1.0 AS pct
-            FROM {candidates_relation} AS c
-            JOIN {counts_join} AS hc ON c.{hex_col} = hc.{hex_col}
-            JOIN {polygons_relation} AS a ON c.{poly_id_col} = a.{polygon_id_col}
-            LEFT JOIN {border_hexes_relation} AS p ON c.{hex_col} = p.{hex_col}
-            WHERE hc.cnt = 1 AND p.{hex_col} IS NULL
-            UNION ALL
-            SELECT
-                c.{hex_col},
-                {attrs},
-                {intersection_pct}
-            FROM {candidates_relation} AS c
-            JOIN {counts_join} AS hc ON c.{hex_col} = hc.{hex_col}
-            JOIN {polygons_relation} AS a ON c.{poly_id_col} = a.{polygon_id_col}
-            JOIN {hex_geoms_relation} AS h ON c.{hex_col} = h.{hex_col}
-            WHERE hc.cnt > 1
-            UNION ALL
-            SELECT
-                c.{hex_col},
-                {attrs},
-                {intersection_pct}
-            FROM {candidates_relation} AS c
-            JOIN {border_hexes_relation} AS p ON c.{hex_col} = p.{hex_col}
-            JOIN {polygons_relation} AS a ON c.{poly_id_col} = a.{polygon_id_col}
-            JOIN {hex_geoms_relation} AS h ON c.{hex_col} = h.{hex_col}
-        """
-
-    if hex_counts_relation is not None:
-        return body
-
-    counts_sql = build_hex_counts_sql(candidates_relation, hex_col=hex_col)
-    return f"""
-        WITH hex_counts AS ({counts_sql})
-        {body}
-    """
+    return _with_hex_counts_cte(
+        candidates_relation,
+        body,
+        hex_col=hex_col,
+        hex_counts_relation=hex_counts_relation,
+    )
 
 
 def build_border_hexes_sql(
@@ -302,21 +295,15 @@ def build_border_hexes_sql(
 ) -> str:
     """Single-candidate hex IDs needing exact coverage in country-partition mode.
 
-    Union of coastal/edge (not contained) and hexes whose envelope intersects a
-    foreign ADM0 envelope. Result is ID-only for cheap membership tests.
+    Coastal/edge (not contained) plus hexes whose envelope intersects a foreign
+    ADM0 envelope. Returns IDs only.
     """
     iso = sql_quote(country_iso)
-    counts = hex_counts_relation or "hex_counts"
-    counts_cte = ""
-    if hex_counts_relation is None:
-        counts_cte = f"""
-            hex_counts AS (
-                SELECT {hex_col}, COUNT(*) AS cnt
-                FROM {candidates_relation}
-                GROUP BY {hex_col}
-            ),
-        """
-        counts = "hex_counts"
+    counts_cte, counts = _hex_counts_prefix(
+        candidates_relation,
+        hex_col=hex_col,
+        hex_counts_relation=hex_counts_relation,
+    )
     return f"""
         WITH {counts_cte}
         single AS (
