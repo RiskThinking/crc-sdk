@@ -50,12 +50,14 @@ python -m venv .venv
 
 DuckDB resource limits are detected when requested
 (`RuntimeResources.detect` / `DuckDBConnection.for_analytics`) and relayed
-through the connection `config` mapping. The geo analytics profile budgets
-~1.5 GiB RAM per thread (still capped by `memory_limit` and
-`max_temp_directory_size`). Override with `CRC_DUCKDB_THREADS`,
-`CRC_DUCKDB_MEMORY`, and/or `CRC_DUCKDB_BYTES_PER_THREAD_GIB`, or pass an
-explicit `config` dict. Set `CRC_DUCKDB_PROFILE=1` to enable detailed query
-profiling around enrich/coverage stages in h3geo.
+through the connection `config` mapping. Thread count is
+`min(cpus, usable_RAM / GiB_per_thread)` with usable RAM ≈ 60% of detected
+memory and a default of ~2.5 GiB/thread (GEOS spatial work often slows when
+over-threaded). `memory_limit` and `max_temp_directory_size` remain hard
+process caps. Override with `CRC_DUCKDB_THREADS`, `CRC_DUCKDB_MEMORY`, and/or
+`CRC_DUCKDB_BYTES_PER_THREAD_GIB`, or pass an explicit `config` dict. Set
+`CRC_DUCKDB_PROFILE=1` to enable detailed query profiling around
+enrich/coverage stages in h3geo.
 
 ## Canonical hazard datasets
 
