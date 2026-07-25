@@ -57,11 +57,7 @@ class RuntimeResources:
         memory_bytes = _memory_limit_bytes(int(psutil.virtual_memory().total))
         disk_free_bytes = int(psutil.disk_usage(str(root)).free)
         usable_memory = max(_GIB, int(memory_bytes * 0.60))
-        # Thread count is derived from a GiB/thread budget (not "use all CPUs
-        # then split RAM"). GEOS-backed spatial work often regresses past a
-        # handful of threads due to allocator/contention, so default ~2.5 GiB
-        # keeps concurrency moderate; override with CRC_DUCKDB_THREADS or
-        # CRC_DUCKDB_BYTES_PER_THREAD_GIB. memory_limit remains the process cap.
+        # ~2.5 GiB/thread; spatial work often regresses when over-threaded.
         per_thread = _bytes_per_thread()
         safe_threads = max(1, min(cpus, usable_memory // per_thread))
         threads = _env_int("CRC_DUCKDB_THREADS", safe_threads, cpus)
@@ -257,7 +253,7 @@ def _env_int(name: str, default: int, maximum: int) -> int:
 
 
 def _bytes_per_thread() -> int:
-    """GiB-per-thread budget for geo analytics (default 2.5 GiB)."""
+    """Bytes-per-thread budget (default 2.5 GiB; override via env GiB float)."""
     default = int(2.5 * _GIB)
     raw = os.getenv("CRC_DUCKDB_BYTES_PER_THREAD_GIB")
     if not raw:

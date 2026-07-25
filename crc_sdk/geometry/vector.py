@@ -185,7 +185,6 @@ def _expand_batched(
     for batch in reader:
         if batch.num_rows == 0:
             continue
-        # Chunk large record batches to the requested size.
         for start in range(0, batch.num_rows, batch_rows):
             chunk = batch.slice(start, min(batch_rows, batch.num_rows - start))
             cells = polyfill_wkb(

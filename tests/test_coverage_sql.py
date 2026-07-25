@@ -21,6 +21,13 @@ def test_build_coverage_sql_shares_hex_counts_cte_by_default() -> None:
     assert build_hex_counts_sql("candidates").count("GROUP BY hex_id") == 1
 
 
+def test_build_coverage_sql_omits_hex_counts_without_border() -> None:
+    sql = build_coverage_sql("candidates", "admins", "hex_geoms")
+    assert "hex_counts" not in sql
+    assert "UNION ALL" not in sql
+    assert "ST_Envelope(h.geom)" in sql
+
+
 def test_build_coverage_sql_splits_competing_and_edge_branches() -> None:
     sql = build_coverage_sql(
         "candidates",
@@ -33,7 +40,7 @@ def test_build_coverage_sql_splits_competing_and_edge_branches() -> None:
     assert "WHERE hc.cnt > 1" in sql
     assert "LEFT JOIN partial_hexes AS p" in sql
     assert "JOIN partial_hexes AS p" in sql
-    # Hex geoms only on the two exact branches, never on interior singles.
+    # Hex geoms only on the two exact branches.
     assert sql.count("JOIN hex_geoms AS h") == 2
     assert "cnt > 1 OR" not in sql
 
