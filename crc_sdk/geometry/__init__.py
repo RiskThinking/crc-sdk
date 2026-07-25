@@ -4,6 +4,7 @@ from crc_framework import lookup_continent, lookup_geography, lookup_ipcc_region
 
 from .admin import (
     LookupCatalog,
+    enrich_adm2_with_adm1,
     enrich_adm2_with_adm1_sql,
     write_lookup_contract,
     write_partitioned_lookup,
@@ -41,6 +42,7 @@ __all__ = [
     "build_coverage_sql",
     "build_hex_counts_sql",
     "cell_polygon",
+    "enrich_adm2_with_adm1",
     "enrich_adm2_with_adm1_sql",
     "estimate_resolutions",
     "expand_polygon_candidates",

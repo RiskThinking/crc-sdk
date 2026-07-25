@@ -143,7 +143,12 @@ def build_coverage_sql(
     adm2_id_col: str = "adm2_id",
     adm2_name_col: str = "adm2_name",
 ) -> str:
-    """Coverage fraction of each hex covered by each intersecting admin polygon."""
+    """Coverage fraction of each hex covered by each intersecting admin polygon.
+
+    Admin polygons are assumed already validated (e.g. by
+    ``enrich_adm2_with_adm1_sql``). Hex geometries are validated once in the
+    joined row set. Single-candidate full coverage requires ``ST_Contains``.
+    """
     attrs = f"""
         a.{adm0_col} AS adm0_iso,
         a.{adm1_id_col} AS adm1_id,
@@ -156,51 +161,52 @@ def build_coverage_sql(
             SELECT
                 c.{hex_col},
                 {attrs},
-                ST_Area(ST_Intersection(ST_MakeValid(h.geom), ST_MakeValid(a.geom)))
-                    / ST_Area(h.geom) AS pct
+                ST_Area(
+                    ST_Intersection(ST_MakeValid(h.geom), ST_MakeValid(a.geom))
+                ) / ST_Area(h.geom) AS pct
             FROM {candidates_relation} AS c
             JOIN {polygons_relation} AS a ON c.{poly_id_col} = a.{polygon_id_col}
             JOIN {hex_geoms_relation} AS h ON c.{hex_col} = h.{hex_col}
         """
 
-    # Full coverage is valid only when the hex is fully inside its polygon.
-    # Coastal / dataset-edge hexes often have cnt=1 but only partial overlap.
-    contained = "ST_Contains(ST_MakeValid(a.geom), h.geom)"
-    if border_hexes_relation is None:
-        single_pred = f"hc.cnt = 1 AND {contained}"
-        exact_pred = f"hc.cnt > 1 OR NOT ({contained})"
-    else:
-        single_pred = (
-            f"hc.cnt = 1 AND {contained} AND c.{hex_col} NOT IN "
-            f"(SELECT {hex_col} FROM {border_hexes_relation})"
-        )
-        exact_pred = (
-            f"hc.cnt > 1 OR NOT ({contained}) OR c.{hex_col} IN "
-            f"(SELECT {hex_col} FROM {border_hexes_relation})"
-        )
-
     counts_join = hex_counts_relation or "hex_counts"
+    border_pred = (
+        f"c.{hex_col} IN (SELECT {hex_col} FROM {border_hexes_relation})"
+        if border_hexes_relation is not None
+        else "FALSE"
+    )
+    # Single pass: evaluate containment once, then CASE for pct.
     body = f"""
         SELECT
-            c.{hex_col},
-            {attrs},
-            1.0 AS pct
-        FROM {candidates_relation} AS c
-        JOIN {counts_join} AS hc ON c.{hex_col} = hc.{hex_col}
-        JOIN {polygons_relation} AS a ON c.{poly_id_col} = a.{polygon_id_col}
-        JOIN {hex_geoms_relation} AS h ON c.{hex_col} = h.{hex_col}
-        WHERE {single_pred}
-        UNION ALL
-        SELECT
-            c.{hex_col},
-            {attrs},
-            ST_Area(ST_Intersection(ST_MakeValid(h.geom), ST_MakeValid(a.geom)))
-                / ST_Area(h.geom) AS pct
-        FROM {candidates_relation} AS c
-        JOIN {counts_join} AS hc ON c.{hex_col} = hc.{hex_col}
-        JOIN {polygons_relation} AS a ON c.{poly_id_col} = a.{polygon_id_col}
-        JOIN {hex_geoms_relation} AS h ON c.{hex_col} = h.{hex_col}
-        WHERE {exact_pred}
+            j.{hex_col},
+            j.adm0_iso,
+            j.adm1_id,
+            j.adm1_name,
+            j.adm2_id,
+            j.adm2_name,
+            CASE
+                WHEN j.cnt = 1 AND j.contained AND NOT j.is_border THEN 1.0
+                ELSE ST_Area(
+                    ST_Intersection(
+                        ST_MakeValid(j.hex_geom),
+                        ST_MakeValid(j.poly_geom)
+                    )
+                ) / ST_Area(j.hex_geom)
+            END AS pct
+        FROM (
+            SELECT
+                c.{hex_col},
+                {attrs},
+                hc.cnt,
+                a.geom AS poly_geom,
+                h.geom AS hex_geom,
+                ST_Contains(a.geom, h.geom) AS contained,
+                ({border_pred}) AS is_border
+            FROM {candidates_relation} AS c
+            JOIN {counts_join} AS hc ON c.{hex_col} = hc.{hex_col}
+            JOIN {polygons_relation} AS a ON c.{poly_id_col} = a.{polygon_id_col}
+            JOIN {hex_geoms_relation} AS h ON c.{hex_col} = h.{hex_col}
+        ) AS j
     """
     if hex_counts_relation is not None:
         return body
@@ -226,8 +232,10 @@ def build_border_hexes_sql(
     """Single-candidate hexes that need exact intersection coverage.
 
     Includes coastal / dataset-edge hexes that are not fully contained in their
-    candidate polygon, and hexes that still intersect a foreign ADM0 polygon.
+    candidate polygon, and hexes whose envelope intersects a foreign ADM0
+    envelope (cheap probe vs scanning every foreign ADM2 polygon).
     """
+    iso = sql_quote(country_iso)
     return f"""
         WITH hex_counts AS (
             SELECT {hex_col}, COUNT(*) AS cnt
@@ -239,17 +247,24 @@ def build_border_hexes_sql(
             FROM {candidates_relation} AS c
             JOIN hex_counts AS hc USING ({hex_col})
             WHERE hc.cnt = 1
+        ),
+        foreign_adm0 AS (
+            SELECT
+                a.{adm0_col} AS adm0_iso,
+                ST_Envelope(ST_Extent_Agg(a.geom)) AS bbox
+            FROM {polygons_relation} AS a
+            WHERE a.{adm0_col} != {iso}
+            GROUP BY a.{adm0_col}
         )
         SELECT DISTINCT s.{hex_col}
         FROM single AS s
         JOIN {hex_geoms_relation} AS h USING ({hex_col})
         JOIN {polygons_relation} AS a
           ON s.{poly_id_col} = a.{polygon_id_col}
-        WHERE NOT ST_Contains(ST_MakeValid(a.geom), h.geom)
+        WHERE NOT ST_Contains(a.geom, h.geom)
            OR EXISTS (
               SELECT 1
-              FROM {polygons_relation} AS foreign_a
-              WHERE ST_Intersects(h.geom, foreign_a.geom)
-                AND foreign_a.{adm0_col} != {sql_quote(country_iso)}
+              FROM foreign_adm0 AS f
+              WHERE ST_Intersects(h.geom, f.bbox)
           )
     """

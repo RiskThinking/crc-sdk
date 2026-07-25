@@ -56,7 +56,7 @@ def test_covers_polyfill_finds_cells_for_small_and_adjacent_polygons() -> None:
     assert rows[2]
 
 
-def test_expand_polygon_candidates_streams_batches(tmp_path: Path) -> None:
+def test_expand_polygon_candidates_one_shot_and_batched() -> None:
     con = duckdb.connect()
     ensure_extensions(con, "spatial", "h3")
     con.execute(
@@ -73,14 +73,27 @@ def test_expand_polygon_candidates_streams_batches(tmp_path: Path) -> None:
             "POLYGON((1 0, 2 0, 2 1, 1 1, 1 0))",
         ],
     )
-    count = expand_polygon_candidates(
+    one_shot = expand_polygon_candidates(
+        con,
+        "SELECT poly_rid, wkb FROM polys",
+        2,
+        containment=VectorContainment.COVERS,
+        batch_rows=None,
+    )
+    assert one_shot > 0
+    assert con.execute(
+        "SELECT COUNT(DISTINCT poly_rid) FROM candidates"
+    ).fetchone() == (2,)
+
+    batched = expand_polygon_candidates(
         con,
         "SELECT poly_rid, wkb FROM polys",
         2,
         containment=VectorContainment.COVERS,
         batch_rows=1,
+        candidates_table="candidates_batched",
     )
-    assert count > 0
+    assert batched == one_shot
     assert con.execute(
-        "SELECT COUNT(DISTINCT poly_rid) FROM candidates"
+        "SELECT COUNT(DISTINCT poly_rid) FROM candidates_batched"
     ).fetchone() == (2,)
