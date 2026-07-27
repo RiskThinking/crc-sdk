@@ -197,6 +197,60 @@ def _drop_relation(con: DuckDBPyConnection, relation: str) -> None:
         pass
 
 
+_HEX_GEOMS_TABLE = "_crc_hex_geoms"
+
+
+def _materialize_needed_hex_geoms(
+    con: DuckDBPyConnection,
+    needed_relation: str,
+    *,
+    hex_geoms_parquet: str | Path | None,
+    populate: bool,
+    hex_col: str,
+) -> None:
+    """(Re)create the private hex geometry staging table for exact overlay.
+
+    Temporary so the buffer manager can offload it to ``temp_directory``; a
+    persistent table would pin every boundary geometry in the memory budget
+    and outlive the call on a reused connection.
+    """
+    _drop_relation(con, _HEX_GEOMS_TABLE)
+    con.execute(
+        f"CREATE TEMPORARY TABLE {_HEX_GEOMS_TABLE} "
+        f"({hex_col} VARCHAR, geom GEOMETRY)"
+    )
+    if not populate:
+        return
+    if hex_geoms_parquet is not None and Path(hex_geoms_parquet).exists():
+        con.execute(
+            f"""
+            INSERT INTO {_HEX_GEOMS_TABLE}
+            SELECT n.{hex_col},
+                   COALESCE(
+                       ST_GeomFromText(c.hex_wkt),
+                       ST_GeomFromText(
+                           h3_cell_to_boundary_wkt(h3_string_to_h3(n.{hex_col}))
+                       )
+                   ) AS geom
+            FROM {needed_relation} AS n
+            LEFT JOIN read_parquet({sql_quote(hex_geoms_parquet)}) AS c
+              USING ({hex_col})
+            """
+        )
+    else:
+        con.execute(
+            f"""
+            INSERT INTO {_HEX_GEOMS_TABLE}
+            SELECT
+                {hex_col},
+                ST_GeomFromText(
+                    h3_cell_to_boundary_wkt(h3_string_to_h3({hex_col}))
+                ) AS geom
+            FROM {needed_relation}
+            """
+        )
+
+
 def _spill_relation_to_parquet_view(
     con: DuckDBPyConnection,
     relation: str,
@@ -336,119 +390,99 @@ def _write_flat_exploded_coverage(
     adm2_name_col: str,
 ) -> dict[str, int | str]:
     """Batched edge detection + coverage for resolutions without hierarchy."""
-    logger.info("exploded: flat hex_counts")
-    con.execute("DROP TABLE IF EXISTS hex_counts")
-    con.execute(
-        f"""
-        CREATE TEMPORARY TABLE hex_counts AS
-        SELECT {hex_col}, COUNT(*) AS cnt
-        FROM {candidates_relation}
-        GROUP BY {hex_col}
-        """
-    )
-    stats = con.execute(
-        """
-        SELECT
-            COUNT(*) FILTER (WHERE cnt = 1),
-            COUNT(*) FILTER (WHERE cnt > 1),
-            COALESCE(SUM(cnt) FILTER (WHERE cnt > 1), 0)
-        FROM hex_counts
-        """
-    ).fetchone()
-    single_count = int(stats[0])
-    competing_count = int(stats[1])
-    competing_ops = int(stats[2])
+    try:
+        logger.info("exploded: flat hex_counts")
+        con.execute("DROP TABLE IF EXISTS hex_counts")
+        con.execute(
+            f"""
+            CREATE TEMPORARY TABLE hex_counts AS
+            SELECT {hex_col}, COUNT(*) AS cnt
+            FROM {candidates_relation}
+            GROUP BY {hex_col}
+            """
+        )
+        stats = con.execute(
+            """
+            SELECT
+                COUNT(*) FILTER (WHERE cnt = 1),
+                COUNT(*) FILTER (WHERE cnt > 1),
+                COALESCE(SUM(cnt) FILTER (WHERE cnt > 1), 0)
+            FROM hex_counts
+            """
+        ).fetchone()
+        single_count = int(stats[0])
+        competing_count = int(stats[1])
+        competing_ops = int(stats[2])
 
-    logger.info("exploded: flat edge batch classify")
-    edge_count = materialize_edge_hexes(
-        con,
-        candidates_relation,
-        polygons_relation,
-        hex_counts_relation="hex_counts",
-        output_table="partial_hexes",
-        hex_geoms_parquet=hex_geoms_parquet,
-        batch_rows=edge_batch_rows,
-        hex_col=hex_col,
-        poly_id_col=poly_id_col,
-        polygon_id_col=polygon_id_col,
-    )
-    con.execute("DROP TABLE IF EXISTS needed_hexes")
-    con.execute(
-        f"""
-        CREATE TEMPORARY TABLE needed_hexes AS
-        SELECT {hex_col} FROM hex_counts WHERE cnt > 1
-        UNION
-        SELECT {hex_col} FROM partial_hexes
-        """
-    )
-    needed_count = int(con.execute("SELECT COUNT(*) FROM needed_hexes").fetchone()[0])
-    con.execute("DROP TABLE IF EXISTS hex_geoms")
-    con.execute(f"CREATE TABLE hex_geoms ({hex_col} VARCHAR, geom GEOMETRY)")
-    if needed_count:
-        if hex_geoms_parquet is not None and Path(hex_geoms_parquet).exists():
-            con.execute(
-                f"""
-                INSERT INTO hex_geoms
-                SELECT n.{hex_col},
-                       COALESCE(
-                           ST_GeomFromText(c.hex_wkt),
-                           ST_GeomFromText(
-                               h3_cell_to_boundary_wkt(h3_string_to_h3(n.{hex_col}))
-                           )
-                       ) AS geom
-                FROM needed_hexes AS n
-                LEFT JOIN read_parquet({sql_quote(hex_geoms_parquet)}) AS c
-                  USING ({hex_col})
-                """
-            )
-        else:
-            con.execute(
-                f"""
-                INSERT INTO hex_geoms
-                SELECT
-                    {hex_col},
-                    ST_GeomFromText(
-                        h3_cell_to_boundary_wkt(h3_string_to_h3({hex_col}))
-                    ) AS geom
-                FROM needed_hexes
-                """
-            )
-    coverage_sql = build_coverage_sql(
-        candidates_relation,
-        polygons_relation,
-        "hex_geoms",
-        optimize_single_cell=True,
-        border_hexes_relation="partial_hexes",
-        hex_counts_relation="hex_counts",
-        hex_col=hex_col,
-        poly_id_col=poly_id_col,
-        polygon_id_col=polygon_id_col,
-        adm0_col=adm0_col,
-        adm1_id_col=adm1_id_col,
-        adm1_name_col=adm1_name_col,
-        adm2_id_col=adm2_id_col,
-        adm2_name_col=adm2_name_col,
-    )
-    logger.info("exploded: flat stream coverage")
-    con.execute(
-        f"""
-        COPY ({coverage_sql}) TO {sql_quote(output_parquet)}
-        (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 122880)
-        """
-    )
-    row_count = int(
+        logger.info("exploded: flat edge batch classify")
+        edge_count = materialize_edge_hexes(
+            con,
+            candidates_relation,
+            polygons_relation,
+            hex_counts_relation="hex_counts",
+            output_table="partial_hexes",
+            hex_geoms_parquet=hex_geoms_parquet,
+            batch_rows=edge_batch_rows,
+            hex_col=hex_col,
+            poly_id_col=poly_id_col,
+            polygon_id_col=polygon_id_col,
+        )
+        con.execute("DROP TABLE IF EXISTS needed_hexes")
         con.execute(
-            f"SELECT COUNT(*) FROM read_parquet({sql_quote(output_parquet)})"
-        ).fetchone()[0]
-    )
-    partial_count = int(
+            f"""
+            CREATE TEMPORARY TABLE needed_hexes AS
+            SELECT {hex_col} FROM hex_counts WHERE cnt > 1
+            UNION
+            SELECT {hex_col} FROM partial_hexes
+            """
+        )
+        needed_count = int(
+            con.execute("SELECT COUNT(*) FROM needed_hexes").fetchone()[0]
+        )
+        _materialize_needed_hex_geoms(
+            con,
+            "needed_hexes",
+            hex_geoms_parquet=hex_geoms_parquet,
+            populate=bool(needed_count),
+            hex_col=hex_col,
+        )
+        coverage_sql = build_coverage_sql(
+            candidates_relation,
+            polygons_relation,
+            _HEX_GEOMS_TABLE,
+            optimize_single_cell=True,
+            border_hexes_relation="partial_hexes",
+            hex_counts_relation="hex_counts",
+            hex_col=hex_col,
+            poly_id_col=poly_id_col,
+            polygon_id_col=polygon_id_col,
+            adm0_col=adm0_col,
+            adm1_id_col=adm1_id_col,
+            adm1_name_col=adm1_name_col,
+            adm2_id_col=adm2_id_col,
+            adm2_name_col=adm2_name_col,
+        )
+        logger.info("exploded: flat stream coverage")
         con.execute(
-            f"SELECT COUNT(*) FROM read_parquet({sql_quote(output_parquet)}) "
-            f"WHERE pct < 1.0"
-        ).fetchone()[0]
-    )
-    for table in ("needed_hexes", "partial_hexes", "hex_geoms"):
-        con.execute(f"DROP TABLE IF EXISTS {table}")
+            f"""
+            COPY ({coverage_sql}) TO {sql_quote(output_parquet)}
+            (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 122880)
+            """
+        )
+        row_count = int(
+            con.execute(
+                f"SELECT COUNT(*) FROM read_parquet({sql_quote(output_parquet)})"
+            ).fetchone()[0]
+        )
+        partial_count = int(
+            con.execute(
+                f"SELECT COUNT(*) FROM read_parquet({sql_quote(output_parquet)}) "
+                f"WHERE pct < 1.0"
+            ).fetchone()[0]
+        )
+    finally:
+        for table in ("needed_hexes", "partial_hexes", "hex_counts", _HEX_GEOMS_TABLE):
+            _drop_relation(con, table)
     return {
         "mode": "flat",
         "single": single_count,
@@ -738,38 +772,13 @@ def write_hierarchical_coverage(
                 """
             )
         else:
-            con.execute("DROP TABLE IF EXISTS hex_geoms")
-            con.execute(f"CREATE TABLE hex_geoms ({hex_col} VARCHAR, geom GEOMETRY)")
-            if hex_geoms_parquet is not None and Path(hex_geoms_parquet).exists():
-                con.execute(
-                    f"""
-                    INSERT INTO hex_geoms
-                    SELECT n.{hex_col},
-                           COALESCE(
-                               ST_GeomFromText(c.hex_wkt),
-                               ST_GeomFromText(
-                                   h3_cell_to_boundary_wkt(
-                                       h3_string_to_h3(n.{hex_col})
-                                   )
-                               )
-                           ) AS geom
-                    FROM needed_hexes AS n
-                    LEFT JOIN read_parquet({sql_quote(hex_geoms_parquet)}) AS c
-                      USING ({hex_col})
-                    """
-                )
-            else:
-                con.execute(
-                    f"""
-                    INSERT INTO hex_geoms
-                    SELECT
-                        {hex_col},
-                        ST_GeomFromText(
-                            h3_cell_to_boundary_wkt(h3_string_to_h3({hex_col}))
-                        ) AS geom
-                    FROM needed_hexes
-                    """
-                )
+            _materialize_needed_hex_geoms(
+                con,
+                "needed_hexes",
+                hex_geoms_parquet=hex_geoms_parquet,
+                populate=True,
+                hex_col=hex_col,
+            )
             con.execute(
                 f"""
                 COPY (
@@ -781,7 +790,7 @@ def write_hierarchical_coverage(
                     JOIN _crc_edge_singles AS e USING ({hex_col})
                     JOIN {polygons_relation} AS a
                       ON s.{poly_id_col} = a.{polygon_id_col}
-                    JOIN hex_geoms AS h USING ({hex_col})
+                    JOIN {_HEX_GEOMS_TABLE} AS h USING ({hex_col})
                     UNION ALL
                     SELECT
                         c.{hex_col},
@@ -791,7 +800,7 @@ def write_hierarchical_coverage(
                     JOIN hex_counts AS hc USING ({hex_col})
                     JOIN {polygons_relation} AS a
                       ON c.{poly_id_col} = a.{polygon_id_col}
-                    JOIN hex_geoms AS h USING ({hex_col})
+                    JOIN {_HEX_GEOMS_TABLE} AS h USING ({hex_col})
                     WHERE hc.cnt > 1
                 ) TO {sql_quote(exact_path)}
                 (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 122880)
@@ -832,7 +841,8 @@ def write_hierarchical_coverage(
             "_crc_edge_singles",
             "_crc_boundary_children",
             "needed_hexes",
-            "hex_geoms",
+            "hex_counts",
+            _HEX_GEOMS_TABLE,
         ):
             _drop_relation(con, table)
     return {

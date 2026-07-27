@@ -325,6 +325,100 @@ def test_write_exploded_coverage_dispatches_hierarchical(
     assert Path(out).exists()
 
 
+def test_hierarchical_coverage_keeps_contained_children_of_boundary_parent(
+    tmp_path: Path,
+) -> None:
+    """Parent fails ST_Contains while its only candidate child is contained."""
+    from crc_sdk.geometry import write_hierarchical_coverage
+
+    con = duckdb.connect()
+    ensure_extensions(con, "spatial", "h3")
+    cell = con.execute(
+        "SELECT h3_h3_to_string(h3_latlng_to_cell(49.6, 6.1, 6))"
+    ).fetchone()[0]
+    cell_wkt = con.execute(
+        f"SELECT h3_cell_to_boundary_wkt(h3_string_to_h3('{cell}'))"
+    ).fetchone()[0]
+    # Snug buffer around the child only: contains the child, not its r4 parent.
+    con.execute(
+        f"""
+        CREATE TABLE admins AS
+        SELECT
+            1::BIGINT AS adm2_rid,
+            'LUX' AS adm0_iso,
+            'a1' AS adm1_id,
+            'Canton' AS adm1_name,
+            'a2' AS adm2_id,
+            'Commune' AS adm2_name,
+            ST_Buffer(ST_GeomFromText({sql_quote(cell_wkt)}), 0.005) AS geom
+        """
+    )
+    con.execute(
+        f"CREATE TABLE candidates AS SELECT '{cell}' AS hex_id, 1::BIGINT AS poly_rid"
+    )
+    out = tmp_path / "cov.parquet"
+    stats = write_hierarchical_coverage(
+        con,
+        "candidates",
+        "admins",
+        out,
+        resolution=6,
+        parent_resolution=4,
+    )
+    assert stats["boundary_parents"] >= 1
+    assert stats["interior_parents"] == 0
+    assert stats["needed_hexes"] == 0
+    assert stats["coverage_rows"] == 1
+    assert con.execute(f"SELECT hex_id, pct FROM read_parquet('{out}')").fetchall() == [
+        (cell, 1.0)
+    ]
+
+
+def test_hierarchical_coverage_leaves_no_hex_geom_tables(tmp_path: Path) -> None:
+    from crc_sdk.geometry import write_hierarchical_coverage
+
+    con = duckdb.connect()
+    ensure_extensions(con, "spatial", "h3")
+    cell = con.execute(
+        "SELECT h3_h3_to_string(h3_latlng_to_cell(49.6, 6.1, 6))"
+    ).fetchone()[0]
+    con.execute(
+        """
+        CREATE TABLE admins AS
+        SELECT
+            1::BIGINT AS adm2_rid,
+            'LUX' AS adm0_iso,
+            'a1' AS adm1_id,
+            'Canton' AS adm1_name,
+            'a2' AS adm2_id,
+            'Commune' AS adm2_name,
+            ST_GeomFromText(
+                'POLYGON((6.09 49.59, 6.11 49.59, 6.11 49.61, 6.09 49.61, 6.09 49.59))'
+            ) AS geom
+        """
+    )
+    con.execute(
+        f"CREATE TABLE candidates AS SELECT '{cell}' AS hex_id, 1::BIGINT AS poly_rid"
+    )
+    write_hierarchical_coverage(
+        con,
+        "candidates",
+        "admins",
+        tmp_path / "cov.parquet",
+        resolution=6,
+        parent_resolution=4,
+    )
+    remaining = {
+        row[0]
+        for row in con.execute(
+            "SELECT table_name FROM duckdb_tables()"
+        ).fetchall()
+    }
+    assert "_crc_hex_geoms" not in remaining
+    assert "hex_geoms" not in remaining
+    assert "hex_counts" not in remaining
+
+
 def test_hierarchical_coverage_boundary_parent_gets_partial_pct(
     tmp_path: Path,
 ) -> None:
