@@ -41,9 +41,9 @@ python -m venv .venv
 - `crc_sdk.providers` describes storage and dataset discovery.
 - `crc_sdk.geometry` contains geometry conversion, DuckDB-native H3 polyfill
   (`H3Indexer`), Arrow batch polyfill (`polyfill_wkb`, optional
-  `geometry-vector` extra for h3ronpy Covers), coverage SQL builders, and H3
-  administrative lookup contracts (`LookupCatalog`, `write_lookup_contract`,
-  `write_partitioned_lookup`).
+  `geometry-vector` extra for h3ronpy Covers), exploded coverage writers
+  (`write_exploded_coverage`), and optional nested lookup derivation
+  (`LookupCatalog`, `write_lookup_contract`, `write_partitioned_lookup`).
 - `crc_sdk.schema` defines columnar data contracts.
 - `crc_sdk.types` contains SDK-owned Pydantic configuration and metadata.
 - `crc_sdk.workflows` coordinates data access and computation.

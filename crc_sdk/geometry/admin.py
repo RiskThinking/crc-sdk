@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shutil
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -137,17 +139,32 @@ def write_lookup_contract(
     resolution: int,
     include_coverage: bool,
     interior_threshold: float = 0.999999,
-    sort_output: bool = True,
+    sort_output: bool = False,
+    work_dir: str | Path | None = None,
+    buckets: int | None = None,
 ) -> None:
-    """Derive a flat, coherent ADM assignment contract from exact cell coverage."""
-    escaped_input = sql_quote(exploded_path)
-    escaped_output = sql_quote(output_path)
+    """Derive a nested ADM assignment lookup from exact exploded coverage.
+
+    Pure secondary derivation: input is the canonical exploded
+    ``(hex_id, adm*, pct)`` Parquet from :func:`write_exploded_coverage`.
+    Prefer a clean DuckDB session (no pipeline geom tables) so window/list
+    aggregates can use the full memory budget.
+
+    Hash-buckets the exploded input so aggregates stay bounded. Physical row
+    order is not part of the contract; ``sort_output`` is an optional locality
+    compaction (off by default).
+    """
+    exploded = Path(exploded_path)
+    output = Path(output_path)
+    escaped_input = sql_quote(exploded)
+    escaped_output = sql_quote(output)
     columns = {
         row[0]
         for row in con.execute(
             f"DESCRIBE SELECT * FROM read_parquet({escaped_input})"
         ).fetchall()
     }
+
     def _optional(column: str) -> str:
         return column if column in columns else f"NULL::VARCHAR AS {column}"
 
@@ -178,85 +195,142 @@ def write_lookup_contract(
         if include_coverage
         else ""
     )
-    con.execute(
-        f"""
-        COPY (
-            WITH source AS (
+
+    stage_root = Path(work_dir) if work_dir is not None else output.parent
+    stage_root.mkdir(parents=True, exist_ok=True)
+    stage_dir = Path(
+        tempfile.mkdtemp(prefix=f"{output.stem}_contract_", dir=str(stage_root))
+    )
+    parts_dir = stage_dir / "parts"
+    parts_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        source_path = stage_dir / "source.parquet"
+        con.execute(
+            f"""
+            COPY (
                 SELECT hex_id, adm0_iso,
                        {adm1_id}, {adm1_name},
                        {adm2_id}, {adm2_name},
                        greatest(0.0, least(1.0, pct))::DOUBLE AS pct
                 FROM read_parquet({escaped_input})
                 WHERE pct > 0
-            ), paths AS (
-                SELECT *,
-                       row_number() OVER (
-                           PARTITION BY hex_id
-                           ORDER BY pct DESC, adm0_iso,
-                                    adm1_id NULLS LAST, adm1_name,
-                                    adm2_id NULLS LAST, adm2_name
-                       ) AS path_rank
-                FROM source
-            ), best_path AS (
-                SELECT * EXCLUDE (path_rank)
-                FROM paths
-                WHERE path_rank = 1
-            ), adm0_rollup AS (
-                SELECT hex_id, adm0_iso, least(1.0, sum(pct)) AS pct
-                FROM source GROUP BY hex_id, adm0_iso
-            ), adm1_rollup AS (
-                SELECT hex_id, adm0_iso, adm1_id, adm1_name,
-                       least(1.0, sum(pct)) AS pct
-                FROM source
-                GROUP BY hex_id, adm0_iso, adm1_id, adm1_name
-            ), counts AS (
-                SELECT hex_id,
-                       count(DISTINCT adm0_iso)::INTEGER AS adm0_candidate_count,
-                       count(DISTINCT struct_pack(
-                           adm0_iso := adm0_iso,
-                           adm1 := coalesce(adm1_id, adm1_name)
-                       ))::INTEGER AS adm1_candidate_count,
-                       count(*)::INTEGER AS adm2_candidate_count
-                       {coverage_sql}
-                FROM source
-                GROUP BY hex_id
+            ) TO {sql_quote(source_path)}
+            (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 122880)
+            """
+        )
+        source = sql_quote(source_path)
+        row_count = int(
+            con.execute(
+                f"SELECT COUNT(*) FROM read_parquet({source})"
+            ).fetchone()[0]
+        )
+        if buckets is None:
+            # ~400k exploded rows/bucket keeps list/window aggs under 9GiB.
+            buckets = 1 if row_count <= 500_000 else max(8, (row_count + 399_999) // 400_000)
+        buckets = max(1, int(buckets))
+
+        part_files: list[Path] = []
+        for bucket in range(buckets):
+            part_path = parts_dir / f"part_{bucket:04d}.parquet"
+            bucket_filter = (
+                ""
+                if buckets == 1
+                else f"WHERE hash(hex_id) % {buckets} = {bucket}"
             )
-            SELECT b.hex_id,
-                   {parent_sql},
-                   b.adm0_iso AS best_adm0,
-                   b.adm1_id AS best_adm1_id,
-                   b.adm1_name AS best_adm1,
-                   b.adm2_id AS best_adm2_id,
-                   b.adm2_name AS best_adm2,
-                   a0.pct::DOUBLE AS best_adm0_pct,
-                   a1.pct::DOUBLE AS best_adm1_pct,
-                   b.pct::DOUBLE AS best_adm2_pct,
-                   b.pct::DOUBLE AS best_pct,
-                   c.adm0_candidate_count,
-                   c.adm1_candidate_count,
-                   c.adm2_candidate_count,
-                   c.adm2_candidate_count AS candidate_count,
-                   c.adm0_candidate_count = 1
-                       AND a0.pct >= {interior_threshold} AS is_adm0_interior,
-                   c.adm1_candidate_count = 1
-                       AND a1.pct >= {interior_threshold} AS is_adm1_interior,
-                   c.adm2_candidate_count = 1
-                       AND b.pct >= {interior_threshold} AS is_adm2_interior
-                   {", c.coverage" if include_coverage else ""}
-            FROM best_path AS b
-            JOIN counts AS c USING (hex_id)
-            JOIN adm0_rollup AS a0
-              ON b.hex_id = a0.hex_id AND b.adm0_iso = a0.adm0_iso
-            JOIN adm1_rollup AS a1
-              ON b.hex_id = a1.hex_id
-             AND b.adm0_iso = a1.adm0_iso
-             AND b.adm1_name IS NOT DISTINCT FROM a1.adm1_name
-             AND b.adm1_id IS NOT DISTINCT FROM a1.adm1_id
-            {"ORDER BY h3_r3, hex_id" if sort_output else ""}
-        ) TO {escaped_output}
-        (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 122880)
-        """
-    )
+            con.execute(
+                f"""
+                COPY (
+                    WITH source AS (
+                        SELECT *
+                        FROM read_parquet({source})
+                        {bucket_filter}
+                    ), paths AS (
+                        SELECT *,
+                               row_number() OVER (
+                                   PARTITION BY hex_id
+                                   ORDER BY pct DESC, adm0_iso,
+                                            adm1_id NULLS LAST, adm1_name,
+                                            adm2_id NULLS LAST, adm2_name
+                               ) AS path_rank
+                        FROM source
+                    ), best_path AS (
+                        SELECT * EXCLUDE (path_rank)
+                        FROM paths
+                        WHERE path_rank = 1
+                    ), adm0_rollup AS (
+                        SELECT hex_id, adm0_iso, least(1.0, sum(pct)) AS pct
+                        FROM source GROUP BY hex_id, adm0_iso
+                    ), adm1_rollup AS (
+                        SELECT hex_id, adm0_iso, adm1_id, adm1_name,
+                               least(1.0, sum(pct)) AS pct
+                        FROM source
+                        GROUP BY hex_id, adm0_iso, adm1_id, adm1_name
+                    ), counts AS (
+                        SELECT hex_id,
+                               count(DISTINCT adm0_iso)::INTEGER
+                                   AS adm0_candidate_count,
+                               count(DISTINCT struct_pack(
+                                   adm0_iso := adm0_iso,
+                                   adm1 := coalesce(adm1_id, adm1_name)
+                               ))::INTEGER AS adm1_candidate_count,
+                               count(*)::INTEGER AS adm2_candidate_count
+                               {coverage_sql}
+                        FROM source
+                        GROUP BY hex_id
+                    )
+                    SELECT b.hex_id,
+                           {parent_sql},
+                           b.adm0_iso AS best_adm0,
+                           b.adm1_id AS best_adm1_id,
+                           b.adm1_name AS best_adm1,
+                           b.adm2_id AS best_adm2_id,
+                           b.adm2_name AS best_adm2,
+                           a0.pct::DOUBLE AS best_adm0_pct,
+                           a1.pct::DOUBLE AS best_adm1_pct,
+                           b.pct::DOUBLE AS best_adm2_pct,
+                           b.pct::DOUBLE AS best_pct,
+                           c.adm0_candidate_count,
+                           c.adm1_candidate_count,
+                           c.adm2_candidate_count,
+                           c.adm2_candidate_count AS candidate_count,
+                           c.adm0_candidate_count = 1
+                               AND a0.pct >= {interior_threshold}
+                               AS is_adm0_interior,
+                           c.adm1_candidate_count = 1
+                               AND a1.pct >= {interior_threshold}
+                               AS is_adm1_interior,
+                           c.adm2_candidate_count = 1
+                               AND b.pct >= {interior_threshold}
+                               AS is_adm2_interior
+                           {", c.coverage" if include_coverage else ""}
+                    FROM best_path AS b
+                    JOIN counts AS c USING (hex_id)
+                    JOIN adm0_rollup AS a0
+                      ON b.hex_id = a0.hex_id AND b.adm0_iso = a0.adm0_iso
+                    JOIN adm1_rollup AS a1
+                      ON b.hex_id = a1.hex_id
+                     AND b.adm0_iso = a1.adm0_iso
+                     AND b.adm1_name IS NOT DISTINCT FROM a1.adm1_name
+                     AND b.adm1_id IS NOT DISTINCT FROM a1.adm1_id
+                ) TO {sql_quote(part_path)}
+                (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 122880)
+                """
+            )
+            part_files.append(part_path)
+
+        parts_sql = ", ".join(sql_quote(path) for path in part_files)
+        con.execute(
+            f"""
+            COPY (
+                SELECT *
+                FROM read_parquet([{parts_sql}], union_by_name=true)
+                {"ORDER BY h3_r3, hex_id" if sort_output else ""}
+            ) TO {escaped_output}
+            (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 122880)
+            """
+        )
+    finally:
+        shutil.rmtree(stage_dir, ignore_errors=True)
 
 
 def write_partitioned_lookup(
@@ -314,7 +388,7 @@ class LookupCatalog:
         return f"{self.root.rstrip('/')}/r{resolution}.parquet"
 
     def exploded_uri(self, resolution: int) -> str:
-        """Optional analytical coverage artifact; OBF does not require it."""
+        """Canonical exact cell-to-ADM coverage artifact."""
         return f"{self.root.rstrip('/')}/r{resolution}_exploded.parquet"
 
     def partitioned_lookup_root(self, resolution: int) -> str:

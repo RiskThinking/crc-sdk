@@ -82,11 +82,44 @@ def test_catalog_exposes_stable_artifact_names() -> None:
     assert "pct > 0" in r8_sql
 
 
-def test_contract_sort_output_can_be_disabled(tmp_path: Path) -> None:
+def test_contract_sort_output_defaults_off(tmp_path: Path) -> None:
+    con = duckdb.connect()
+    _stub_h3(con)
+    exploded = tmp_path / "exploded.parquet"
+    lookup = tmp_path / "lookup.parquet"
+    con.execute(
+        """
+        CREATE TABLE coverage(
+            hex_id VARCHAR, adm0_iso VARCHAR,
+            adm1_id VARCHAR, adm1_name VARCHAR,
+            adm2_id VARCHAR, adm2_name VARCHAR, pct DOUBLE
+        )
+        """
+    )
+    con.execute(
+        "INSERT INTO coverage VALUES "
+        "('h2', 'LUX', 'a1', 'C', 'a2', 'T', 1.0), "
+        "('h1', 'BEL', 'b1', 'P', 'b2', 'X', 1.0)"
+    )
+    con.execute(f"COPY coverage TO '{exploded}' (FORMAT PARQUET)")
+    write_lookup_contract(
+        con,
+        exploded,
+        lookup,
+        resolution=5,
+        include_coverage=False,
+    )
+    rows = con.execute(
+        f"SELECT hex_id FROM '{lookup}' ORDER BY hex_id"
+    ).fetchall()
+    assert rows == [("h1",), ("h2",)]
+
+
+def test_contract_sort_output_can_be_enabled(tmp_path: Path) -> None:
     con = duckdb.connect()
     _stub_h3(con)
     exploded = tmp_path / "sorted_exploded.parquet"
-    lookup = tmp_path / "unsorted.parquet"
+    lookup = tmp_path / "sorted.parquet"
     con.execute(
         """
         CREATE TABLE coverage(
@@ -106,7 +139,7 @@ def test_contract_sort_output_can_be_disabled(tmp_path: Path) -> None:
         lookup,
         resolution=5,
         include_coverage=False,
-        sort_output=False,
+        sort_output=True,
     )
     assert con.execute(f"SELECT COUNT(*) FROM '{lookup}'").fetchone() == (1,)
 
