@@ -3,14 +3,21 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import duckdb
 import pyarrow as pa  # type: ignore[import-untyped]
+import pyarrow.parquet as pq  # type: ignore[import-untyped]
 import pytest
 from shapely.geometry import box  # type: ignore[import-untyped]
 
 from crc_sdk.connectors import HurdleFitPolicy, OSClimateIngestPolicy
 from crc_sdk.connectors.parquet import hazard_arrow_schema, read_hazard_dataset
-from crc_sdk.types import HazardDatasetMetadata, SourceProvenance
-from crc_sdk.workflows import OSClimateSelectionSpec, curve_quantiles_at, tile_bounds
+from crc_sdk.types import CurveParameters, HazardDatasetMetadata, SourceProvenance
+from crc_sdk.workflows import (
+    OSClimateSelectionSpec,
+    curve_quantiles_at,
+    stream_curve_quantiles_to_parquet,
+    tile_bounds,
+)
 from crc_sdk.workflows.tiling import _tile_owns_point, run_tiled_canonicalization
 
 
@@ -411,3 +418,138 @@ def test_curve_quantiles_at_reconstructs_expected_values() -> None:
 def test_curve_quantiles_at_empty_table_returns_empty_list() -> None:
     table = pa.Table.from_pylist([], schema=hazard_arrow_schema())
     assert curve_quantiles_at(table, 0.9) == []
+
+
+_SOURCE_SCHEMA = pa.schema(
+    [
+        ("cell_index", pa.int64()),
+        ("province", pa.string()),
+        ("curve_kind", pa.string()),
+        ("curve_type", pa.string()),
+        ("curve_shape", pa.float64()),
+        ("curve_location", pa.float64()),
+        ("curve_scale", pa.float64()),
+        ("curve_atom_probability", pa.float64()),
+        ("curve_atom_location", pa.float64()),
+    ]
+)
+
+
+def _curve_row(cell_index: int, province: str, location: float) -> dict[str, Any]:
+    return {
+        "cell_index": cell_index,
+        "province": province,
+        "curve_kind": "fitted",
+        "curve_type": "gumbel_r",
+        "curve_shape": None,
+        "curve_location": location,
+        "curve_scale": 2.0,
+        "curve_atom_probability": None,
+        "curve_atom_location": None,
+    }
+
+
+def _expected_depth(location: float, probability: float) -> float:
+    return float(
+        CurveParameters(
+            curve_kind="fitted",
+            curve_type="gumbel_r",
+            curve_shape=None,
+            curve_location=location,
+            curve_scale=2.0,
+            curve_atom_probability=None,
+            curve_atom_location=None,
+        )
+        .to_distribution()
+        .quantiles([probability])[0]
+    )
+
+
+def test_stream_curve_quantiles_to_parquet_matches_direct_computation(
+    tmp_path: Path,
+) -> None:
+    rows = [_curve_row(index, "P", float(index)) for index in range(5)]
+    con = duckdb.connect()
+    con.register("source", pa.Table.from_pylist(rows, schema=_SOURCE_SCHEMA))
+    output = tmp_path / "depths.parquet"
+
+    written = stream_curve_quantiles_to_parquet(
+        con,
+        "SELECT * FROM source",
+        0.9,
+        output,
+        passthrough_columns=["cell_index", "province"],
+        batch_rows=2,  # forces 3 batches over 5 rows
+        max_workers=1,
+    )
+
+    assert written == 5
+    result = pq.read_table(output).to_pylist()
+    assert {row["cell_index"] for row in result} == set(range(5))
+    for row in result:
+        assert row["province"] == "P"
+        assert row["depth_m"] == pytest.approx(
+            _expected_depth(float(row["cell_index"]), 0.9)
+        )
+
+
+def test_stream_curve_quantiles_to_parquet_parallel_matches_sequential(
+    tmp_path: Path,
+) -> None:
+    rows = [_curve_row(index, "P", float(index)) for index in range(10)]
+
+    sequential_path = tmp_path / "sequential.parquet"
+    con = duckdb.connect()
+    con.register("source", pa.Table.from_pylist(rows, schema=_SOURCE_SCHEMA))
+    stream_curve_quantiles_to_parquet(
+        con,
+        "SELECT * FROM source",
+        0.9,
+        sequential_path,
+        passthrough_columns=["cell_index", "province"],
+        batch_rows=3,
+        max_workers=1,
+    )
+
+    parallel_path = tmp_path / "parallel.parquet"
+    con2 = duckdb.connect()
+    con2.register("source", pa.Table.from_pylist(rows, schema=_SOURCE_SCHEMA))
+    stream_curve_quantiles_to_parquet(
+        con2,
+        "SELECT * FROM source",
+        0.9,
+        parallel_path,
+        passthrough_columns=["cell_index", "province"],
+        batch_rows=3,
+        max_workers=2,
+        chunk_rows=2,
+    )
+
+    sequential = sorted(
+        pq.read_table(sequential_path).to_pylist(), key=lambda row: row["cell_index"]
+    )
+    parallel = sorted(
+        pq.read_table(parallel_path).to_pylist(), key=lambda row: row["cell_index"]
+    )
+    assert sequential == parallel
+
+
+def test_stream_curve_quantiles_to_parquet_empty_source_writes_valid_file(
+    tmp_path: Path,
+) -> None:
+    con = duckdb.connect()
+    con.register("source", pa.Table.from_pylist([], schema=_SOURCE_SCHEMA))
+    output = tmp_path / "empty.parquet"
+
+    written = stream_curve_quantiles_to_parquet(
+        con,
+        "SELECT * FROM source",
+        0.9,
+        output,
+        passthrough_columns=["cell_index", "province"],
+    )
+
+    assert written == 0
+    table = pq.read_table(output)
+    assert table.num_rows == 0
+    assert table.column_names == ["cell_index", "province", "depth_m"]
