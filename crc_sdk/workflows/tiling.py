@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 import pyarrow as pa  # type: ignore[import-untyped]
+import pyarrow.parquet as pq  # type: ignore[import-untyped]
 from shapely import wkb  # type: ignore[import-untyped]
 
 from crc_sdk.connectors import (
@@ -223,6 +224,29 @@ def _curve_quantiles(
     ]
 
 
+def _evaluate_in_chunks(
+    records: Sequence[Mapping[str, Any]],
+    probability: float,
+    chunk_rows: int,
+    executor: ProcessPoolExecutor | None,
+) -> list[float]:
+    """Evaluate ``records`` directly, or chunked across an already-open pool.
+
+    Takes an *existing* executor (or none) rather than owning its lifetime,
+    so a caller processing many batches (:func:`stream_curve_quantiles_to_parquet`)
+    can reuse one pool across all of them instead of paying process-spawn
+    overhead per batch.
+    """
+    if not records or executor is None or len(records) <= chunk_rows:
+        return _curve_quantiles(records, probability)
+    chunks = [
+        records[start : start + chunk_rows]
+        for start in range(0, len(records), chunk_rows)
+    ]
+    results = executor.map(_curve_quantiles, chunks, [probability] * len(chunks))
+    return [value for chunk in results for value in chunk]
+
+
 def curve_quantiles_at(
     table: Any,
     probability: float,
@@ -240,15 +264,90 @@ def curve_quantiles_at(
     records = table.to_pylist()
     if not records:
         return []
-    chunks = [
-        records[start : start + chunk_rows]
-        for start in range(0, len(records), chunk_rows)
-    ]
     workers = max_workers or os.cpu_count() or 1
-
-    if len(chunks) == 1 or workers <= 1:
+    if workers <= 1 or len(records) <= chunk_rows:
         return _curve_quantiles(records, probability)
-
     with ProcessPoolExecutor(max_workers=workers) as executor:
-        results = executor.map(_curve_quantiles, chunks, [probability] * len(chunks))
-        return [value for chunk in results for value in chunk]
+        return _evaluate_in_chunks(records, probability, chunk_rows, executor)
+
+
+_CURVE_COLUMNS = (
+    "curve_kind",
+    "curve_type",
+    "curve_shape",
+    "curve_location",
+    "curve_scale",
+    "curve_atom_probability",
+    "curve_atom_location",
+)
+
+
+def stream_curve_quantiles_to_parquet(
+    con: Any,
+    source_sql: str,
+    probability: float,
+    output_path: str | Path,
+    *,
+    passthrough_columns: Sequence[str],
+    batch_rows: int = 50_000,
+    max_workers: int | None = None,
+    chunk_rows: int = 20_000,
+) -> int:
+    """Stream a curve-bearing query through quantile evaluation, writing incrementally.
+
+    ``source_sql`` must select the seven canonical curve columns
+    (``curve_kind`` .. ``curve_atom_location``) plus whatever
+    ``passthrough_columns`` should ride along (e.g. ``cell_index``,
+    ``province``) — DuckDB does the join/filtering that produces this query
+    out-of-core, spilling to disk under memory pressure on its own.
+
+    Curve reconstruction is the one step in a hazard pipeline DuckDB/Arrow
+    can't vectorize, so rows are pulled via DuckDB's own Arrow batch reader
+    (``batch_rows`` at a time) rather than materialized in one Python/pandas
+    structure; each batch is evaluated and appended to ``output_path``
+    immediately, so peak memory is bounded by one batch, not the query's full
+    result size, however large the upstream join is. One process pool is
+    opened for the whole stream (not per batch) when ``max_workers`` calls
+    for one, so spawn overhead is paid once rather than per batch. Returns
+    the row count written. The output schema (``passthrough_columns`` +
+    ``depth_m``) is fixed from the query's own schema up front, so a
+    zero-row source still produces a valid, correctly-typed empty Parquet
+    file rather than none.
+    """
+    reader = con.execute(source_sql).to_arrow_reader(batch_rows)
+    output_schema = pa.schema(
+        [reader.schema.field(name) for name in passthrough_columns]
+        + [pa.field("depth_m", pa.float64())]
+    )
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    workers = max_workers or os.cpu_count() or 1
+    written = 0
+
+    def _drain(executor: ProcessPoolExecutor | None) -> None:
+        nonlocal written
+        with pq.ParquetWriter(output, output_schema, compression="zstd") as writer:
+            for batch in reader:
+                if batch.num_rows == 0:
+                    continue
+                curve_table = pa.Table.from_arrays(
+                    [batch.column(name) for name in _CURVE_COLUMNS],
+                    names=list(_CURVE_COLUMNS),
+                )
+                depths = _evaluate_in_chunks(
+                    curve_table.to_pylist(), probability, chunk_rows, executor
+                )
+                out_batch = pa.RecordBatch.from_arrays(
+                    [batch.column(name) for name in passthrough_columns]
+                    + [pa.array(depths, type=pa.float64())],
+                    schema=output_schema,
+                )
+                writer.write_batch(out_batch)
+                written += out_batch.num_rows
+
+    if workers <= 1:
+        _drain(None)
+    else:
+        with ProcessPoolExecutor(max_workers=workers) as executor:
+            _drain(executor)
+    return written
