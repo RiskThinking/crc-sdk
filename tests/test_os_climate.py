@@ -59,6 +59,29 @@ class FakeReturnPeriodArray:
         return self.data[key]
 
 
+class FakeMixedReturnPeriodArray:
+    """Two pixels: one constant/unfittable, one with a real return-level curve."""
+
+    def __init__(self) -> None:
+        flat = [0.0, 0.0, 0.0, 0.0, 0.0]
+        varying = [0.0, 0.2, 0.5, 1.0, 2.0]
+        self.data = np.asarray(
+            [[flat[i], varying[i]] for i in range(5)], dtype=np.float64
+        ).reshape(5, 1, 2)
+        self.shape = self.data.shape
+        self.chunks = self.data.shape
+        self.attrs = {
+            "index_name": "return period (years)",
+            "index_values": [2, 5, 10, 100, 1000],
+            "transform_mat3x3": [1, 0, 0, 0, -1, 1, 0, 0, 1],
+        }
+        self.reads: list[Any] = []
+
+    def __getitem__(self, key: Any) -> Any:
+        self.reads.append(key)
+        return self.data[key]
+
+
 def test_inventory_validates_parameters_and_resolves_paths() -> None:
     inventory = OSClimateInventory.from_dict(
         {
@@ -237,3 +260,61 @@ def test_os_climate_plain_quantile_fit_remains_available() -> None:
     table = stream.read_all()
 
     assert set(table["curve_kind"].to_pylist()) == {"fitted"}
+
+
+def test_on_fit_failure_raise_aborts_on_constant_pixel() -> None:
+    raster = ZarrRaster(
+        FakeMixedReturnPeriodArray(),
+        RasterMetadata(
+            hazard_type="RiverineInundation",
+            indicator_id="flood_depth",
+            scenario="historical",
+            year=1980,
+            units="metres",
+            path="test/flood/mixed",
+        ),
+    )
+    policy = OSClimateIngestPolicy(
+        h3_resolution=3,
+        family="gumbel_r",
+        producer="tests",
+        creation_version="1",
+    )
+    with pytest.raises(ValueError, match="failed to fit source pixel"):
+        canonicalize_os_climate(raster, policy).read_all()
+
+
+def test_on_fit_failure_skip_drops_unfittable_pixels() -> None:
+    raster = ZarrRaster(
+        FakeMixedReturnPeriodArray(),
+        RasterMetadata(
+            hazard_type="RiverineInundation",
+            indicator_id="flood_depth",
+            scenario="historical",
+            year=1980,
+            units="metres",
+            path="test/flood/mixed",
+        ),
+    )
+    policy = OSClimateIngestPolicy(
+        h3_resolution=3,
+        family="gumbel_r",
+        producer="tests",
+        creation_version="1",
+        on_fit_failure="skip",
+    )
+    table = canonicalize_os_climate(raster, policy).read_all()
+
+    assert table.num_rows > 0
+    assert len(set(table["source_id"].to_pylist())) == 1
+
+
+def test_on_fit_failure_rejects_unknown_value() -> None:
+    with pytest.raises(ValueError, match="on_fit_failure"):
+        OSClimateIngestPolicy(
+            h3_resolution=3,
+            family="gumbel_r",
+            producer="tests",
+            creation_version="1",
+            on_fit_failure="ignore",  # type: ignore[arg-type]
+        )
