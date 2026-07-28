@@ -17,6 +17,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import pyarrow as pa  # type: ignore[import-untyped]
+from shapely import wkb  # type: ignore[import-untyped]
+
 from crc_sdk.connectors import (
     OSClimateIngestPolicy,
     write_hazard_dataset,
@@ -64,10 +67,56 @@ def tile_bounds(bounds: Bounds, tile_degrees: float) -> tuple[Bounds, ...]:
     return tuple(tiles)
 
 
+def _tile_owns_point(
+    longitude: float, latitude: float, tile: Bounds, aoi_bounds: Bounds
+) -> bool:
+    """Assign a source pixel to exactly one tile when a shared edge bisects it.
+
+    ``ZarrRaster._pixel_window`` conservatively expands each tile's world
+    bounds outward to the nearest whole pixels, so a pixel straddling a
+    shared tile edge gets fit and emitted by both neighboring tiles. Treating
+    each tile's interval as half-open — closed only where it meets the true
+    outer edge of the whole AOI — keeps every pixel in exactly one shard
+    without dropping the AOI's own last row/column of pixels.
+    """
+    tile_min_lon, tile_min_lat, tile_max_lon, tile_max_lat = tile
+    _, _, aoi_max_lon, aoi_max_lat = aoi_bounds
+    longitude_ok = (
+        tile_min_lon <= longitude <= tile_max_lon
+        if tile_max_lon >= aoi_max_lon
+        else tile_min_lon <= longitude < tile_max_lon
+    )
+    latitude_ok = (
+        tile_min_lat <= latitude <= tile_max_lat
+        if tile_max_lat >= aoi_max_lat
+        else tile_min_lat <= latitude < tile_max_lat
+    )
+    return longitude_ok and latitude_ok
+
+
+def _owns_row(geometry: bytes | None, tile: Bounds, aoi_bounds: Bounds) -> bool:
+    if geometry is None:
+        return True
+    longitude, latitude = wkb.loads(geometry).centroid.coords[0]
+    return _tile_owns_point(longitude, latitude, tile, aoi_bounds)
+
+
+def _drop_shared_edge_duplicates(
+    table: pa.Table, tile: Bounds, aoi_bounds: Bounds
+) -> pa.Table:
+    """Keep only rows whose source pixel centroid this tile owns."""
+    owned = [
+        _owns_row(geometry, tile, aoi_bounds)
+        for geometry in table.column("source_geometry").to_pylist()
+    ]
+    return table.filter(pa.array(owned))
+
+
 def _canonicalize_tile(
     spec: OSClimateSelectionSpec,
     policy: OSClimateIngestPolicy,
-    bounds: Bounds,
+    tile: Bounds,
+    aoi_bounds: Bounds,
     output_path: Path,
     provider_kwargs: Mapping[str, Any],
 ) -> Path | None:
@@ -78,8 +127,19 @@ def _canonicalize_tile(
         model_gcm=spec.model_gcm,
     )
     selection = resource.resolve(scenario=spec.scenario, year=spec.year)
-    stream = provider.canonicalize(selection, policy, bounds=bounds)
-    table = stream.read_all()
+    stream = provider.canonicalize(selection, policy, bounds=tile)
+    try:
+        table = stream.read_all()
+    except ValueError as error:
+        # A tile can legitimately fall entirely outside the raster's own
+        # coverage (e.g. an AOI wider than a regional-only hazard raster);
+        # that's an empty tile to skip, not a fit failure to propagate.
+        if "bounds do not intersect" in str(error):
+            return None
+        raise
+    if table.num_rows == 0:
+        return None
+    table = _drop_shared_edge_duplicates(table, tile, aoi_bounds)
     if table.num_rows == 0:
         return None
     write_hazard_dataset(table, output_path, stream.metadata)
@@ -99,8 +159,11 @@ def run_tiled_canonicalization(
     """Canonicalize one OS-Climate raster over an AOI as parallel tile shards.
 
     Splits ``bounds`` into a ``tile_degrees`` grid and canonicalizes each tile
-    in its own worker process — tiles with no fittable pixels are skipped
-    rather than written empty. Read the result back with a glob, e.g.
+    in its own worker process. Tiles are skipped (no shard written) rather
+    than raising when they have no fittable pixels, and also when they fall
+    entirely outside the raster's own coverage. Pixels straddling a shared
+    tile edge are conservatively fit by both neighboring tiles but attributed
+    to exactly one shard, so a plain glob read never double-counts, e.g.
     ``read_parquet(f"{output_dir}/*.parquet")``; ``cell_index`` values are
     stable across tiles, so downstream joins don't need to know about shards.
 
@@ -120,7 +183,7 @@ def run_tiled_canonicalization(
 
     if len(tiles) == 1 or workers <= 1:
         sequential = (
-            _canonicalize_tile(spec, policy, tile, path, kwargs)
+            _canonicalize_tile(spec, policy, tile, bounds, path, kwargs)
             for tile, path in zip(tiles, shard_paths)
         )
         return tuple(path for path in sequential if path is not None)
@@ -131,6 +194,7 @@ def run_tiled_canonicalization(
             [spec] * len(tiles),
             [policy] * len(tiles),
             tiles,
+            [bounds] * len(tiles),
             shard_paths,
             [kwargs] * len(tiles),
         )
