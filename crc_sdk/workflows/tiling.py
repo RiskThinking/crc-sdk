@@ -73,23 +73,24 @@ def _tile_owns_point(
     """Assign a source pixel to exactly one tile when a shared edge bisects it.
 
     ``ZarrRaster._pixel_window`` conservatively expands each tile's world
-    bounds outward to the nearest whole pixels, so a pixel straddling a
-    shared tile edge gets fit and emitted by both neighboring tiles. Treating
-    each tile's interval as half-open — closed only where it meets the true
-    outer edge of the whole AOI — keeps every pixel in exactly one shard
-    without dropping the AOI's own last row/column of pixels.
+    bounds outward to the nearest whole pixels, so a pixel overlapping a
+    queried boundary is fit and its centroid can legitimately land on either
+    side of that boundary — not just at internal tile-to-tile edges, but at
+    the AOI's own outer edges too (a pixel need only overlap the AOI, not be
+    centered inside it). A side is only tested against the tile's own bound
+    when a neighboring tile actually shares that edge (``tile_min > aoi_min``
+    / ``tile_max < aoi_max``); the AOI's true outer edges are left unbounded
+    on that side, since no other tile's query can reach there to duplicate
+    it. A single tile spanning the whole AOI is therefore unbounded on every
+    side and keeps everything unfiltered.
     """
     tile_min_lon, tile_min_lat, tile_max_lon, tile_max_lat = tile
-    _, _, aoi_max_lon, aoi_max_lat = aoi_bounds
-    longitude_ok = (
-        tile_min_lon <= longitude <= tile_max_lon
-        if tile_max_lon >= aoi_max_lon
-        else tile_min_lon <= longitude < tile_max_lon
+    aoi_min_lon, aoi_min_lat, aoi_max_lon, aoi_max_lat = aoi_bounds
+    longitude_ok = (longitude >= tile_min_lon or tile_min_lon <= aoi_min_lon) and (
+        longitude < tile_max_lon or tile_max_lon >= aoi_max_lon
     )
-    latitude_ok = (
-        tile_min_lat <= latitude <= tile_max_lat
-        if tile_max_lat >= aoi_max_lat
-        else tile_min_lat <= latitude < tile_max_lat
+    latitude_ok = (latitude >= tile_min_lat or tile_min_lat <= aoi_min_lat) and (
+        latitude < tile_max_lat or tile_max_lat >= aoi_max_lat
     )
     return longitude_ok and latitude_ok
 

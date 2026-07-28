@@ -97,6 +97,35 @@ def test_tile_owns_point_closes_the_true_aoi_edge() -> None:
     assert _tile_owns_point(4.0, 2.0, tile_b, aoi) is True
 
 
+def test_tile_owns_point_keeps_pixels_spilling_past_the_aoi_edge() -> None:
+    # A pixel merely overlapping the AOI (not centered inside it) can have a
+    # centroid outside the AOI entirely; the one tile that could have fetched
+    # it must keep it rather than drop it looking for a neighbor to own it.
+    aoi = (0.0, 0.0, 4.0, 2.0)
+    tile_a = (0.0, 0.0, 2.0, 2.0)  # westmost/southmost: shares the AOI's true edge
+    assert _tile_owns_point(-0.2, 1.0, tile_a, aoi) is True
+    assert _tile_owns_point(1.0, -0.2, tile_a, aoi) is True
+
+
+def test_tile_owns_point_single_tile_keeps_everything() -> None:
+    aoi = (0.0, 0.0, 4.0, 2.0)
+    # A single tile spans the whole AOI, so every side is a true outer edge
+    # with no neighbor to hand anything off to.
+    assert _tile_owns_point(-1.0, -1.0, aoi, aoi) is True
+    assert _tile_owns_point(5.0, 3.0, aoi, aoi) is True
+
+
+def test_tile_owns_point_middle_tile_stays_bounded_on_both_sides() -> None:
+    aoi = (0.0, 0.0, 6.0, 1.0)
+    tile_middle = (2.0, 0.0, 4.0, 1.0)
+    # Both edges are internal (shared with a real neighbor), so the middle
+    # tile must not fall back to the AOI-edge escape hatch on either side.
+    assert _tile_owns_point(2.0, 0.5, tile_middle, aoi) is True
+    assert _tile_owns_point(1.9, 0.5, tile_middle, aoi) is False
+    assert _tile_owns_point(4.0, 0.5, tile_middle, aoi) is False
+    assert _tile_owns_point(3.9, 0.5, tile_middle, aoi) is True
+
+
 class _FakeSelection:
     pass
 
@@ -169,6 +198,56 @@ def test_run_tiled_canonicalization_skips_empty_tiles(
     table = read_hazard_dataset(shards[0])
     assert table.num_rows == 2
     assert set(table["cell_index"].to_pylist()) == {1, 2}
+
+
+class _EdgeSpillProvider:
+    """A single tile whose only pixel overlaps the AOI but centers outside it."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        pass
+
+    def select(self, **kwargs: Any) -> _FakeResource:
+        return _FakeResource()
+
+    def canonicalize(
+        self, selection: _FakeSelection, policy: OSClimateIngestPolicy, *, bounds: Any
+    ) -> _FakeStream:
+        # centroid at (-0.2, 0.5) is outside bounds=(0,0,1,1) on the west side,
+        # exactly like a pixel _pixel_window conservatively included because
+        # it merely overlaps that edge rather than sitting inside it.
+        rows = [_row(1, "spills-west", centroid=(-0.2, 0.5))]
+        return _FakeStream(
+            pa.Table.from_pylist(rows, schema=hazard_arrow_schema()), _metadata()
+        )
+
+
+def test_run_tiled_canonicalization_keeps_pixels_spilling_past_aoi_edge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "crc_sdk.workflows.tiling.OSClimateProvider", _EdgeSpillProvider
+    )
+    shards = run_tiled_canonicalization(
+        OSClimateSelectionSpec(
+            hazard_type="RiverineInundation",
+            indicator_id="flood_depth",
+            model_gcm="historical",
+            scenario="historical",
+            year=1980,
+        ),
+        OSClimateIngestPolicy(
+            h3_resolution=5,
+            family="gumbel_r",
+            producer="tests",
+            creation_version="1",
+            hurdle=HurdleFitPolicy(atom_probability=0.5),
+        ),
+        bounds=(0.0, 0.0, 1.0, 1.0),
+        output_dir=tmp_path,
+        max_workers=1,
+    )
+    assert len(shards) == 1
+    assert read_hazard_dataset(shards[0]).num_rows == 1
 
 
 def _spec() -> OSClimateSelectionSpec:
