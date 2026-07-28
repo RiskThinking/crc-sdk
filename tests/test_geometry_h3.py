@@ -1,8 +1,17 @@
+import json
+from pathlib import Path
+
 import pytest
-from shapely.geometry import MultiPolygon, Polygon, box  # type: ignore[import-untyped]
+from shapely.geometry import (  # type: ignore[import-untyped]
+    MultiPolygon,
+    Polygon,
+    box,
+    mapping,
+)
 from shapely.ops import unary_union  # type: ignore[import-untyped]
 
 from crc_sdk.geometry import (
+    GeoFormat,
     H3Indexer,
     PolyfillMode,
     cell_polygon,
@@ -111,3 +120,35 @@ def test_h3_indexer_overlap_covers_adjacent_and_small_polygons() -> None:
     )
     small_rows = indexer.con.execute(small_sql).fetchall()
     assert small_rows
+
+
+def test_build_h3_query_from_file_composes_format_and_polyfill(
+    tmp_path: Path,
+) -> None:
+    polygon = box(-0.25, 51.25, 0.25, 51.75)
+    geojson_path = tmp_path / "aoi.geojson"
+    geojson_path.write_text(
+        json.dumps(
+            {
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "type": "Feature",
+                        "properties": {"name": "aoi"},
+                        "geometry": mapping(polygon),
+                    }
+                ],
+            }
+        )
+    )
+    indexer = H3Indexer()
+    sql = indexer.build_h3_query_from_file(
+        str(geojson_path), GeoFormat.GEOJSON, resolution=5
+    )
+    result = indexer.con.execute(sql)
+    columns = [col[0] for col in result.description]
+    cells = {
+        int(dict(zip(columns, row, strict=True))["h3_index"])
+        for row in result.fetchall()
+    }
+    assert cells == set(intersecting_cells(polygon, 5))

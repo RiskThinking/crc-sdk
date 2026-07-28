@@ -56,6 +56,10 @@ class OSClimateIngestPolicy:
     hurdle: HurdleFitPolicy | None = None
     maximum_normalized_rmse: float | None = None
     maximum_absolute_residual: float | None = None
+    # Most pixels in an area (as opposed to a single known-exposed point) never
+    # exceed the hazard threshold and carry a constant, unfittable curve;
+    # "skip" drops those rather than aborting the whole area ingest.
+    on_fit_failure: Literal["raise", "skip"] = "raise"
 
     def __post_init__(self) -> None:
         if not 0 <= self.h3_resolution <= 15:
@@ -66,6 +70,8 @@ class OSClimateIngestPolicy:
             raise ValueError("producer and creation_version must be non-empty")
         if self.batch_rows < 1:
             raise ValueError("batch_rows must be positive")
+        if self.on_fit_failure not in ("raise", "skip"):
+            raise ValueError("on_fit_failure must be 'raise' or 'skip'")
         for name, value in (
             ("maximum_normalized_rmse", self.maximum_normalized_rmse),
             ("maximum_absolute_residual", self.maximum_absolute_residual),
@@ -216,6 +222,8 @@ def _canonical_batches(
         try:
             distribution, base = _fit_curve(tabulated, policy)
         except ValueError as error:
+            if policy.on_fit_failure == "skip":
+                continue
             raise ValueError(
                 f"failed to fit source pixel row={curve.row}, "
                 f"column={curve.column}: {error}"

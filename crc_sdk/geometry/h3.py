@@ -8,6 +8,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 from crc_sdk.connectors.duckdb.connection import DuckDBConnection, ensure_extensions
+from crc_sdk.geometry.formats import FormatAdapter, GeoFormat
 
 if TYPE_CHECKING:
     from duckdb import DuckDBPyConnection
@@ -141,6 +142,42 @@ class H3Indexer:
                 FROM indexed
             """
         return base_sql
+
+    def build_h3_query_from_file(
+        self,
+        file_path: str,
+        fmt: GeoFormat,
+        resolution: int,
+        mode: PolyfillMode = PolyfillMode.OVERLAP,
+        *,
+        geometry_column: str = "geometry",
+        h3_col: str = "h3_index",
+        as_string: bool = False,
+        preserve_geom: bool = True,
+    ) -> str:
+        """Polyfill any :class:`GeoFormat` source straight to H3 cells.
+
+        Composes :meth:`FormatAdapter.build_read_relation` with
+        :meth:`build_h3_query` for the common case of indexing one vector
+        file (GeoJSON, Shapefile, GeoParquet, ...) without hand-wiring the
+        two SQL builders together. Still un-materialized, streamed SQL.
+        """
+        relation_sql = FormatAdapter.build_read_relation(
+            self.con,
+            file_path,
+            fmt,
+            geometry_column=geometry_column,
+            preserve_source_geom=False,
+        )
+        return self.build_h3_query(
+            relation_sql,
+            resolution,
+            mode,
+            geom_col=geometry_column,
+            h3_col=h3_col,
+            as_string=as_string,
+            preserve_geom=preserve_geom,
+        )
 
 
 @dataclass(frozen=True)
