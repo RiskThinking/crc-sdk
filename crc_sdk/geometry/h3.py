@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
+
+import numpy as np
 
 from crc_sdk.connectors.duckdb.connection import (
     DuckDBConnection,
@@ -291,3 +294,123 @@ def estimate_resolutions(
             )
         )
     return tuple(estimates)
+
+
+# Average hexagon edge lengths in km (res 0-15), excluding pentagons.
+# https://h3geo.org/docs/core-library/restable#edge-lengths
+_H3_AVERAGE_EDGE_LENGTH_KM = (
+    1281.256011,
+    483.0568391,
+    182.5129565,
+    68.97922179,
+    26.07175968,
+    9.854090990,
+    3.724532667,
+    1.406475763,
+    0.531414010,
+    0.200786148,
+    0.075863783,
+    0.028663897,
+    0.010830188,
+    0.004092010,
+    0.001546100,
+    0.000584169,
+)
+
+# Absorbs H3 edge-length variation around the tabulated averages and residual
+# projection distortion in max_pixel_spacing_m's coverage guarantee.
+_COVERAGE_SAFETY = 0.85
+
+
+def average_edge_length_m(resolution: int) -> float:
+    """Average H3 hexagon edge length in meters at `resolution` (0-15)."""
+    try:
+        return _H3_AVERAGE_EDGE_LENGTH_KM[resolution] * 1000.0
+    except IndexError as error:
+        raise ValueError(
+            f"unsupported H3 resolution {resolution} (supported: 0-15)"
+        ) from error
+
+
+def max_pixel_spacing_m(resolution: int) -> float:
+    """Largest per-axis sample spacing that still guarantees a point in every
+    cell of `resolution` (see :func:`pixel_grid_resolution` for the proof)."""
+    return math.sqrt(6) / 2 * average_edge_length_m(resolution) * _COVERAGE_SAFETY
+
+
+def pixel_grid_resolution(pixel_size_m: float, *, max_subsample: float = 2.0) -> int:
+    """Finest H3 resolution covered by a pixel grid of `pixel_size_m` spacing.
+
+    A rectangular sample grid with per-axis spacing s contains a point in any
+    region enclosing a disc of radius r >= s*sqrt(2)/2. A hexagon of edge e
+    encloses a disc of radius (sqrt(3)/2)*e, so s <= (sqrt(6)/2)*e guarantees
+    at least one sample point per cell. `max_subsample` bounds how many
+    subsample points per pixel axis the caller is willing to place to reach a
+    finer resolution than the pixel spacing alone would allow.
+    """
+    if max_subsample <= 0:
+        raise ValueError("max_subsample must be positive")
+    for resolution in range(len(_H3_AVERAGE_EDGE_LENGTH_KM) - 1, -1, -1):
+        if max_pixel_spacing_m(resolution) * max_subsample >= pixel_size_m:
+            return resolution
+    return 0
+
+
+def subsample_offsets(count: int) -> np.ndarray:
+    """Centered fractional pixel offsets for `count` samples along one axis."""
+    if count < 1:
+        raise ValueError("count must be positive")
+    return -0.5 + (np.arange(count, dtype=np.float64) + 0.5) / count
+
+
+def reduce_h3_values(
+    cells: Any,
+    values: Any,
+    *,
+    reduce: Literal["max", "min"] = "max",
+) -> tuple[np.ndarray, np.ndarray]:
+    """Collapse repeated H3 cell ids to one value per cell.
+
+    `reduce` is applied associatively, so this is safe to call once per
+    partial batch and again to merge those partial results.
+    """
+    if reduce not in ("max", "min"):
+        raise ValueError(f"unsupported reduce {reduce!r}; use 'max' or 'min'")
+    cells = np.asarray(cells, dtype=np.uint64)
+    values = np.asarray(values, dtype=np.float64)
+    if len(cells) == 0:
+        return cells, values
+    order = np.argsort(cells, kind="stable")
+    cells = cells[order]
+    values = values[order]
+    starts = np.flatnonzero(np.r_[True, cells[1:] != cells[:-1]])
+    ufunc = np.maximum if reduce == "max" else np.minimum
+    return cells[starts], ufunc.reduceat(values, starts)
+
+
+def sample_grid_to_h3(
+    longitudes: Any,
+    latitudes: Any,
+    values: Any,
+    *,
+    resolution: int,
+    reduce: Literal["max", "min"] = "max",
+) -> tuple[np.ndarray, np.ndarray]:
+    """Reduce WGS84 point samples to one value per H3 cell.
+
+    Vectorized via h3ronpy; requires `pip install crc-sdk[geometry-vector]`.
+    """
+    if not 0 <= resolution <= 15:
+        raise ValueError("H3 resolution must be between 0 and 15")
+    try:
+        from h3ronpy.vector import coordinates_to_cells  # type: ignore[import-untyped]
+    except ImportError as error:
+        raise ImportError(
+            "Grid-to-H3 sampling requires `pip install crc-sdk[geometry-vector]`"
+        ) from error
+    cells = coordinates_to_cells(
+        np.asarray(latitudes, dtype=np.float64),
+        np.asarray(longitudes, dtype=np.float64),
+        resolution,
+    )
+    return reduce_h3_values(cells, values, reduce=reduce)
