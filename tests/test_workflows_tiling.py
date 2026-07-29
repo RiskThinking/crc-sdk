@@ -19,6 +19,7 @@ from crc_sdk.connectors.parquet import (
 from crc_sdk.types import CurveParameters, HazardDatasetMetadata, SourceProvenance
 from crc_sdk.workflows import (
     OSClimateSelectionSpec,
+    curve_parameters_from_row,
     curve_quantiles_at,
     stream_curve_quantiles_to_parquet,
     tile_bounds,
@@ -519,6 +520,29 @@ def test_curve_quantiles_at_reconstructs_expected_values() -> None:
     assert len(values) == 2
     assert all(isinstance(value, float) for value in values)
     assert values[0] == values[1]  # identical curve params
+
+
+def test_curve_quantiles_at_uses_shared_row_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    def _recording_adapter(row: Any) -> CurveParameters:
+        nonlocal calls
+        calls += 1
+        return curve_parameters_from_row(row)
+
+    monkeypatch.setattr(
+        "crc_sdk.workflows.tiling.curve_parameters_from_row",
+        _recording_adapter,
+    )
+    table = pa.Table.from_pylist(
+        [_row(1, "a"), _row(2, "b")], schema=hazard_arrow_schema()
+    )
+
+    curve_quantiles_at(table, 0.9, max_workers=1)
+
+    assert calls == 2
 
 
 def test_curve_quantiles_at_empty_table_returns_empty_list() -> None:

@@ -110,6 +110,19 @@ def test_parquet_round_trip_sorts_filters_and_reconstructs(
     assert LocalProvider(destination).list_hazards() == ("flood",)
 
 
+def test_read_hazard_dataset_filters_by_cell_index(tmp_path: Path) -> None:
+    destination = tmp_path / "hazards.parquet"
+    write_hazard_dataset(_table(), destination, _metadata())
+
+    table = read_hazard_dataset(
+        destination,
+        HazardQuery(hazard_name="flood", cell_index=2),
+    )
+
+    assert table.num_rows == 1
+    assert table["source_id"].to_pylist() == ["source-b"]
+
+
 def test_validation_rejects_duplicate_row_keys() -> None:
     table = _table()
     duplicate = pa.concat_tables([table.slice(0, 1), table.slice(0, 1)])
