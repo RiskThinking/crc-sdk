@@ -3,11 +3,12 @@
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from math import ceil, floor
-from typing import Any, Literal, Optional
+from pathlib import Path
+from typing import Any, Literal, Optional, Union
 
 import numpy as np
 
-from .connection import DuckDBConnection
+from .connection import DuckDBConnection, default_work_dir
 
 Bounds = tuple[float, float, float, float]
 Point = tuple[float, float]
@@ -49,6 +50,7 @@ class ZarrRaster:
         metadata: RasterMetadata,
         *,
         connection: Optional[DuckDBConnection] = None,
+        work_dir: Optional[Union[str, Path]] = None,
     ) -> None:
         if len(array.shape) not in (2, 3):
             raise ValueError(
@@ -56,7 +58,11 @@ class ZarrRaster:
             )
         self.array = array
         self.metadata = metadata
-        self.connection = connection or DuckDBConnection()
+        # An explicit connection means the caller is already in control; only
+        # build (and resource-tune) one when they didn't supply their own.
+        self.connection = connection or DuckDBConnection.for_analytics(
+            work_dir or default_work_dir()
+        )
         self._axis_name, self._axis_values = self._read_axis()
         self._transform = self._read_transform()
 

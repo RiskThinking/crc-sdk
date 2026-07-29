@@ -113,3 +113,67 @@ def test_validation_rejects_duplicate_row_keys() -> None:
 
     with pytest.raises(ValueError, match="duplicate canonical row key"):
         validate_hazard_table(duplicate)
+
+
+def test_validation_rejects_empty_required_strings() -> None:
+    rows = _table().to_pylist()
+    rows[0]["hazard_name"] = ""
+    table = pa.Table.from_pylist(rows, schema=hazard_arrow_schema())
+
+    with pytest.raises(ValueError, match="hazard_name must contain non-empty strings"):
+        validate_hazard_table(table)
+
+
+def _many_rows(count: int) -> pa.Table:
+    rows = [
+        {
+            "cell_index": index,
+            "source_id": f"source-{index}",
+            "source_geometry": None,
+            "hazard_name": "flood",
+            "horizon": 1980,
+            "pathway": "historical",
+            "curve_kind": "fitted",
+            "curve_type": "gumbel_r",
+            "curve_shape": None,
+            "curve_location": float(index % 100) / 10.0,
+            "curve_scale": 2.0,
+            "curve_atom_probability": None,
+            "curve_atom_location": None,
+        }
+        for index in range(count)
+    ]
+    return pa.Table.from_pylist(rows, schema=hazard_arrow_schema())
+
+
+def test_validation_parallel_matches_sequential_above_chunk_threshold() -> None:
+    table = _many_rows(50)
+
+    sequential = validate_hazard_table(table, max_workers=1)
+    parallel = validate_hazard_table(table, max_workers=2, chunk_rows=10)
+
+    assert sequential.equals(parallel)
+    assert sequential.num_rows == 50
+
+
+def test_validation_still_raises_when_parallelized() -> None:
+    rows = _many_rows(50).to_pylist()
+    rows[25]["curve_scale"] = -1.0  # invalid: scale must be positive
+    table = pa.Table.from_pylist(rows, schema=hazard_arrow_schema())
+
+    with pytest.raises(Exception):  # noqa: B017 - Pydantic ValidationError, cross-process
+        validate_hazard_table(table, max_workers=2, chunk_rows=10)
+
+
+def test_write_hazard_dataset_default_connection_is_resource_tuned(
+    tmp_path: Path,
+) -> None:
+    """No explicit connection still gets RuntimeResources tuning applied."""
+    destination = tmp_path / "tuned.parquet"
+    write_hazard_dataset(_table(), destination, _metadata())
+
+    assert destination.exists()
+    # DuckDBConnection.for_analytics(work_dir) stages its spill directory
+    # under work_dir/duckdb-temp; its presence confirms the tuned path ran
+    # rather than a bare duckdb.connect().
+    assert (tmp_path / "duckdb-temp").is_dir()

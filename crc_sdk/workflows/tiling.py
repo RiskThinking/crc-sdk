@@ -14,6 +14,7 @@ import os
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -115,13 +116,20 @@ def _drop_shared_edge_duplicates(
 
 
 def _canonicalize_tile(
+    tile: Bounds,
+    output_path: Path,
+    *,
     spec: OSClimateSelectionSpec,
     policy: OSClimateIngestPolicy,
-    tile: Bounds,
     aoi_bounds: Bounds,
-    output_path: Path,
     provider_kwargs: Mapping[str, Any],
+    validate_max_workers: int | None = None,
 ) -> Path | None:
+    """Canonicalize one tile. ``tile``/``output_path`` vary per call; bind the
+    rest once via :func:`functools.partial` (see :func:`run_tiled_canonicalization`)
+    rather than passing them — and a bare ``None`` for ``validate_max_workers``
+    — through every call site.
+    """
     provider = OSClimateProvider(**provider_kwargs)
     resource = provider.select(
         hazard_type=spec.hazard_type,
@@ -144,7 +152,14 @@ def _canonicalize_tile(
     table = _drop_shared_edge_duplicates(table, tile, aoi_bounds)
     if table.num_rows == 0:
         return None
-    write_hazard_dataset(table, output_path, stream.metadata)
+    # validate_max_workers=1 when called from inside the outer tile pool:
+    # otherwise validate_hazard_table's own chunk-parallel validation would
+    # nest a second ProcessPoolExecutor inside each tile worker, fanning out
+    # tile_workers x validation_workers processes instead of just using the
+    # outer pool.
+    write_hazard_dataset(
+        table, output_path, stream.metadata, max_workers=validate_max_workers
+    )
     return output_path
 
 
@@ -172,7 +187,11 @@ def run_tiled_canonicalization(
     ``max_workers`` defaults to the host's detected CPU count (via
     :meth:`RuntimeResources.detect`, consistent with the rest of the SDK's
     resource-aware defaults). A single tile, or ``max_workers=1``, runs
-    in-process with no pool at all.
+    in-process with no pool at all. Parallelism is bounded by tile count, not
+    just ``max_workers``: a ``tile_degrees`` coarse enough to produce fewer
+    tiles than workers leaves some workers idle regardless of how many are
+    requested — pick ``tile_degrees`` so the resulting grid has at least
+    ``max_workers`` tiles for full utilization.
     """
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
@@ -184,22 +203,32 @@ def run_tiled_canonicalization(
     workers = max_workers or RuntimeResources.detect(output).cpus
 
     if len(tiles) == 1 or workers <= 1:
+        # No outer pool here, so each tile's own write is free to let
+        # validation parallelize itself (validate_max_workers defaults to
+        # None -> auto).
+        sequential_tile = partial(
+            _canonicalize_tile,
+            spec=spec,
+            policy=policy,
+            aoi_bounds=bounds,
+            provider_kwargs=kwargs,
+        )
         sequential = (
-            _canonicalize_tile(spec, policy, tile, bounds, path, kwargs)
-            for tile, path in zip(tiles, shard_paths)
+            sequential_tile(tile, path) for tile, path in zip(tiles, shard_paths)
         )
         return tuple(path for path in sequential if path is not None)
 
+    # validate_max_workers=1: avoid nesting a second pool inside each tile worker.
+    parallel_tile = partial(
+        _canonicalize_tile,
+        spec=spec,
+        policy=policy,
+        aoi_bounds=bounds,
+        provider_kwargs=kwargs,
+        validate_max_workers=1,
+    )
     with ProcessPoolExecutor(max_workers=workers) as executor:
-        parallel = executor.map(
-            _canonicalize_tile,
-            [spec] * len(tiles),
-            [policy] * len(tiles),
-            tiles,
-            [bounds] * len(tiles),
-            shard_paths,
-            [kwargs] * len(tiles),
-        )
+        parallel = executor.map(parallel_tile, tiles, shard_paths)
         return tuple(path for path in parallel if path is not None)
 
 
@@ -243,7 +272,7 @@ def _evaluate_in_chunks(
         records[start : start + chunk_rows]
         for start in range(0, len(records), chunk_rows)
     ]
-    results = executor.map(_curve_quantiles, chunks, [probability] * len(chunks))
+    results = executor.map(partial(_curve_quantiles, probability=probability), chunks)
     return [value for chunk in results for value in chunk]
 
 

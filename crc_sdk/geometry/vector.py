@@ -66,6 +66,10 @@ def polyfill_wkb(
         )
 
 
+_AUTO_BATCH_THRESHOLD_ROWS = 500_000
+_AUTO_BATCH_ROWS = 200_000
+
+
 def expand_polygon_candidates(
     con: DuckDBPyConnection,
     polygon_sql: str,
@@ -80,11 +84,14 @@ def expand_polygon_candidates(
 ) -> int:
     """Expand polygon WKB from DuckDB into string H3 cell candidates.
 
-    ``batch_rows=None`` (default) uses one-shot polyfill + a single DuckDB
-    ingest — fastest when the Arrow WKB+cell payload fits in memory (CGAZ
-    global at modest resolutions). Pass a positive ``batch_rows`` to polyfill
-    and insert in chunks; when batching, input is streamed via record batches
-    so not all WKB must live in Arrow at once.
+    ``batch_rows=None`` (default) auto-detects: a cheap ``COUNT(*)`` decides
+    between one-shot polyfill (fastest when the Arrow WKB+cell payload fits
+    in memory — the common notebook-scale case) and chunked ingest once the
+    input is large enough (CGAZ-global scale) that one-shot risks not
+    fitting. Pass an explicit positive ``batch_rows`` to force a specific
+    chunk size regardless of input size, or ``0``/a negative value to force
+    one-shot regardless of size. When batching, input is streamed via record
+    batches so not all WKB must live in Arrow at once.
     """
     try:
         import pyarrow as pa
@@ -97,7 +104,15 @@ def expand_polygon_candidates(
     con.execute(f"DROP TABLE IF EXISTS {candidates_table}")
     con.execute(f"CREATE TABLE {candidates_table} ({hex_col} VARCHAR, {id_col} BIGINT)")
 
-    if batch_rows is None or batch_rows <= 0:
+    resolved_batch_rows = batch_rows
+    if resolved_batch_rows is None:
+        row_count = con.execute(
+            f"SELECT COUNT(*) FROM ({polygon_sql}) AS _crc_polygon_count"
+        ).fetchone()[0]
+        if row_count > _AUTO_BATCH_THRESHOLD_ROWS:
+            resolved_batch_rows = _AUTO_BATCH_ROWS
+
+    if resolved_batch_rows is None or resolved_batch_rows <= 0:
         return _expand_one_shot(
             con,
             polygon_sql,
@@ -119,7 +134,7 @@ def expand_polygon_candidates(
         wkb_col=wkb_col,
         hex_col=hex_col,
         candidates_table=candidates_table,
-        batch_rows=int(batch_rows),
+        batch_rows=int(resolved_batch_rows),
         pa=pa,
     )
 
