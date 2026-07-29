@@ -48,6 +48,34 @@ _BASE_CONFIG: dict[str, Any] = {
 }
 
 
+def detected_cpu_count() -> int:
+    """CPU count clamped to cgroup quota and process affinity, whichever is tightest.
+
+    Unlike ``os.cpu_count()``, this reflects container CPU quotas and
+    affinity masks. Anything sizing a process pool — not just DuckDB's own
+    thread count — should use this instead, or it can spawn far more workers
+    than a constrained host/container is actually allotted.
+    """
+    try:
+        import psutil  # type: ignore[import-untyped]
+    except ImportError as error:
+        raise ImportError(
+            "CPU detection requires `pip install crc-sdk[connectors]`"
+        ) from error
+
+    cpu_limits = [psutil.cpu_count(logical=True) or 1]
+    try:
+        affinity = psutil.Process().cpu_affinity()
+        if affinity:
+            cpu_limits.append(len(affinity))
+    except (AttributeError, OSError, Exception):
+        pass
+    quota = _cpu_quota()
+    if quota is not None:
+        cpu_limits.append(quota)
+    return max(1, min(cpu_limits))
+
+
 @dataclass(frozen=True)
 class RuntimeResources:
     """Detected host/container limits and recommended DuckDB settings."""
@@ -80,7 +108,7 @@ class RuntimeResources:
         overrides either case.
         """
         try:
-            import psutil  # type: ignore[import-untyped]
+            import psutil
         except ImportError as error:
             raise ImportError(
                 "Runtime resource detection requires `pip install crc-sdk[connectors]`"
@@ -91,18 +119,7 @@ class RuntimeResources:
         temp_directory = root / "duckdb-temp"
         temp_directory.mkdir(parents=True, exist_ok=True)
 
-        cpu_limits = [psutil.cpu_count(logical=True) or 1]
-        try:
-            affinity = psutil.Process().cpu_affinity()
-            if affinity:
-                cpu_limits.append(len(affinity))
-        except (AttributeError, OSError, Exception):
-            pass
-        quota = _cpu_quota()
-        if quota is not None:
-            cpu_limits.append(quota)
-        cpus = max(1, min(cpu_limits))
-
+        cpus = detected_cpu_count()
         memory_bytes = _memory_limit_bytes(int(psutil.virtual_memory().total))
         disk_free_bytes = int(psutil.disk_usage(str(root)).free)
         usable_memory = max(_GIB, int(memory_bytes * 0.60))

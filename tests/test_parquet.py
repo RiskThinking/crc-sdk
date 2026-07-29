@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 from pathlib import Path
+from typing import Any
 
 import duckdb
 import pyarrow as pa  # type: ignore[import-untyped]
@@ -163,6 +166,40 @@ def test_validation_still_raises_when_parallelized() -> None:
 
     with pytest.raises(Exception):  # noqa: B017 - Pydantic ValidationError, cross-process
         validate_hazard_table(table, max_workers=2, chunk_rows=10)
+
+
+def test_validate_hazard_table_pool_uses_detected_cpu_count_and_spawn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A constrained container's cgroup/affinity cap must bound this pool
+    too (not os.cpu_count(), which ignores cgroup quotas), and the pool must
+    force spawn so workers never inherit a live connection via fork."""
+    captured: dict[str, Any] = {}
+
+    class _FakeExecutor:
+        def __init__(
+            self, max_workers: int | None = None, mp_context: Any = None
+        ) -> None:
+            captured["max_workers"] = max_workers
+            captured["mp_context"] = mp_context
+
+        def __enter__(self) -> _FakeExecutor:
+            return self
+
+        def __exit__(self, *exc_info: Any) -> None:
+            return None
+
+        def map(self, func: Any, *iterables: Any) -> Any:
+            return [func(*args) for args in zip(*iterables)]
+
+    monkeypatch.setattr("crc_sdk.connectors.parquet.detected_cpu_count", lambda: 4)
+    monkeypatch.setattr("crc_sdk.connectors.parquet.ProcessPoolExecutor", _FakeExecutor)
+
+    table = _many_rows(50)
+    validate_hazard_table(table, chunk_rows=10)  # max_workers unset -> stub exercised
+
+    assert captured["max_workers"] == 4
+    assert captured["mp_context"].get_start_method() == "spawn"
 
 
 def test_write_hazard_dataset_default_connection_is_resource_tuned(

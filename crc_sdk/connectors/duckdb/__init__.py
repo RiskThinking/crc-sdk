@@ -5,6 +5,7 @@ from .connection import (
     DuckDBStreamEngine,
     RuntimeResources,
     default_work_dir,
+    detected_cpu_count,
     ensure_extensions,
     sql_quote,
 )
@@ -21,6 +22,7 @@ __all__ = [
     "ZarrRaster",
     "ZarrScan",
     "default_work_dir",
+    "detected_cpu_count",
     "ensure_extensions",
     "sql_quote",
 ]

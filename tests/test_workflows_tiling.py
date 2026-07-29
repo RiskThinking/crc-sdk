@@ -275,8 +275,11 @@ def test_run_tiled_canonicalization_parallel_path_pins_validate_max_workers(
     captured: dict[str, Any] = {}
 
     class _FakeExecutor:
-        def __init__(self, max_workers: int | None = None) -> None:
+        def __init__(
+            self, max_workers: int | None = None, mp_context: Any = None
+        ) -> None:
             captured["max_workers"] = max_workers
+            captured["mp_context"] = mp_context
 
         def __enter__(self) -> _FakeExecutor:
             return self
@@ -305,6 +308,9 @@ def test_run_tiled_canonicalization_parallel_path_pins_validate_max_workers(
     assert captured["func"].func is _canonicalize_tile
     assert captured["func"].keywords["validate_max_workers"] == 1
     assert len(captured["iterables"]) == 2
+    # DuckDB connections/readers are not fork-safe: every pool must force
+    # "spawn" so workers never inherit a live connection via fork.
+    assert captured["mp_context"].get_start_method() == "spawn"
 
 
 class _EdgeSpillProvider:
@@ -520,6 +526,66 @@ def test_curve_quantiles_at_empty_table_returns_empty_list() -> None:
     assert curve_quantiles_at(table, 0.9) == []
 
 
+class _FakePoolExecutor:
+    """Captures ProcessPoolExecutor construction args without spawning."""
+
+    def __init__(self, max_workers: int | None = None, mp_context: Any = None) -> None:
+        self.captured: dict[str, Any] = {
+            "max_workers": max_workers,
+            "mp_context": mp_context,
+        }
+        _fake_pool_calls.append(self.captured)
+
+    def __enter__(self) -> _FakePoolExecutor:
+        return self
+
+    def __exit__(self, *exc_info: Any) -> None:
+        return None
+
+    def map(self, func: Any, *iterables: Any) -> Any:
+        return (func(*args) for args in zip(*iterables))
+
+
+_fake_pool_calls: list[dict[str, Any]] = []
+
+
+def test_curve_quantiles_at_uses_detected_cpu_count_not_os_cpu_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A constrained container's cgroup/affinity cap must bound the pool
+    size here too, not just DuckDB's own thread count — os.cpu_count()
+    ignores cgroup quotas entirely and can over-spawn workers."""
+    _fake_pool_calls.clear()
+    monkeypatch.setattr("crc_sdk.workflows.tiling.detected_cpu_count", lambda: 1)
+    monkeypatch.setattr(
+        "crc_sdk.workflows.tiling.ProcessPoolExecutor", _FakePoolExecutor
+    )
+    table = pa.Table.from_pylist(
+        [_row(index, "a") for index in range(3)], schema=hazard_arrow_schema()
+    )
+    # chunk_rows=1 forces the multi-chunk path even with only 3 rows, and
+    # max_workers is left unset so the detected_cpu_count() stub is exercised.
+    curve_quantiles_at(table, 0.9, chunk_rows=1)
+    assert not _fake_pool_calls  # detected_cpu_count() stubbed to 1 -> no pool
+
+
+def test_curve_quantiles_at_pool_forces_spawn_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DuckDB connections are not fork-safe; every pool must force spawn."""
+    _fake_pool_calls.clear()
+    monkeypatch.setattr("crc_sdk.workflows.tiling.detected_cpu_count", lambda: 4)
+    monkeypatch.setattr(
+        "crc_sdk.workflows.tiling.ProcessPoolExecutor", _FakePoolExecutor
+    )
+    table = pa.Table.from_pylist(
+        [_row(index, "a") for index in range(3)], schema=hazard_arrow_schema()
+    )
+    curve_quantiles_at(table, 0.9, chunk_rows=1)
+    assert len(_fake_pool_calls) == 1
+    assert _fake_pool_calls[0]["mp_context"].get_start_method() == "spawn"
+
+
 _SOURCE_SCHEMA = pa.schema(
     [
         ("cell_index", pa.int64()),
@@ -632,6 +698,38 @@ def test_stream_curve_quantiles_to_parquet_parallel_matches_sequential(
         pq.read_table(parallel_path).to_pylist(), key=lambda row: row["cell_index"]
     )
     assert sequential == parallel
+
+
+def test_stream_curve_quantiles_to_parquet_pool_uses_detected_cpu_count_and_spawn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A live DuckDB Arrow reader is open in this process when the pool is
+    built — the pool must force spawn (never inherit it via fork), and its
+    size must come from the cgroup-aware detector, not os.cpu_count()."""
+    _fake_pool_calls.clear()
+    monkeypatch.setattr("crc_sdk.workflows.tiling.detected_cpu_count", lambda: 4)
+    monkeypatch.setattr(
+        "crc_sdk.workflows.tiling.ProcessPoolExecutor", _FakePoolExecutor
+    )
+    rows = [_curve_row(index, "P", float(index)) for index in range(5)]
+    con = duckdb.connect()
+    con.register("source", pa.Table.from_pylist(rows, schema=_SOURCE_SCHEMA))
+    output = tmp_path / "depths.parquet"
+
+    written = stream_curve_quantiles_to_parquet(
+        con,
+        "SELECT * FROM source",
+        0.9,
+        output,
+        passthrough_columns=["cell_index", "province"],
+        batch_rows=2,
+        # max_workers left unset -> exercises the detected_cpu_count() stub.
+    )
+
+    assert written == 5
+    assert len(_fake_pool_calls) == 1
+    assert _fake_pool_calls[0]["max_workers"] == 4
+    assert _fake_pool_calls[0]["mp_context"].get_start_method() == "spawn"
 
 
 def test_stream_curve_quantiles_to_parquet_empty_source_writes_valid_file(

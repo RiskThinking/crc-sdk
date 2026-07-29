@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import os
+import multiprocessing
 from collections.abc import Iterable, Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from crc_sdk.connectors.duckdb import DuckDBConnection
+from crc_sdk.connectors.duckdb import DuckDBConnection, detected_cpu_count
 from crc_sdk.schema import HAZARD_FIELDS, HAZARD_ROW_KEY, HAZARD_SORT_ORDER
 from crc_sdk.types import (
     PARQUET_METADATA_KEY,
@@ -144,7 +144,7 @@ def validate_hazard_table(
 
     curve_table = table.select(_CURVE_COLUMNS)
     records = curve_table.to_pylist()
-    workers = max_workers or os.cpu_count() or 1
+    workers = max_workers or detected_cpu_count()
     if records:
         if workers <= 1 or len(records) <= chunk_rows:
             _validate_curves(records)
@@ -153,7 +153,10 @@ def validate_hazard_table(
                 records[start : start + chunk_rows]
                 for start in range(0, len(records), chunk_rows)
             ]
-            with ProcessPoolExecutor(max_workers=workers) as executor:
+            mp_context = multiprocessing.get_context("spawn")
+            with ProcessPoolExecutor(
+                max_workers=workers, mp_context=mp_context
+            ) as executor:
                 for _ in executor.map(_validate_curves, chunks):
                     pass
 
