@@ -6,6 +6,7 @@ import rasterio  # type: ignore[import-untyped]
 from rasterio.transform import from_origin  # type: ignore[import-untyped]
 
 from crc_sdk.connectors.duckdb.geotiff import GeoTiffRaster, trim_cache_dir
+from crc_sdk.geometry.h3 import subsample_offsets as _real_subsample_offsets
 
 # ~0.01 degrees per pixel near the equator, well within the "small pixel"
 # regime so pixel_grid_resolution picks a coarse-enough H3 resolution that
@@ -167,6 +168,59 @@ def test_scan_h3_auto_resolution_covers_every_pixel(
         rows = scan.relation().fetchall()
         assert len(rows) >= 1
         assert scan.h3_resolution > 0
+    finally:
+        raster.close()
+
+
+def test_scan_h3_explicit_resolution_respects_max_subsample_cap(
+    tmp_path: Path, sample_array: np.ndarray, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _write_geotiff(tmp_path / "sample.tif", sample_array, nodata=-9999.0)
+    raster = GeoTiffRaster.open(path, work_dir=tmp_path / "work")
+    seen_counts: list[int] = []
+
+    def spy(count: int) -> np.ndarray:
+        seen_counts.append(count)
+        return _real_subsample_offsets(count)
+
+    monkeypatch.setattr(
+        "crc_sdk.connectors.duckdb.geotiff.subsample_offsets", spy
+    )
+    try:
+        # H3 resolution 15 on this fixture's ~1113m pixels would need
+        # thousands of subsample points per axis to guarantee coverage;
+        # max_subsample must cap it regardless of the resolution being
+        # explicit rather than auto-picked.
+        raster.scan_h3(h3_resolution=15, max_subsample=2.0).relation().fetchall()
+    finally:
+        raster.close()
+
+    assert seen_counts
+    assert max(seen_counts) <= 2
+
+
+def test_scan_h3_rejects_non_positive_max_subsample(
+    tmp_path: Path, sample_array: np.ndarray
+) -> None:
+    path = _write_geotiff(tmp_path / "sample.tif", sample_array, nodata=-9999.0)
+    raster = GeoTiffRaster.open(path, work_dir=tmp_path / "work")
+    try:
+        with pytest.raises(ValueError, match="max_subsample must be positive"):
+            raster.scan_h3(h3_resolution=10, max_subsample=0)
+    finally:
+        raster.close()
+
+
+def test_scan_h3_rejects_out_of_range_explicit_resolution(
+    tmp_path: Path, sample_array: np.ndarray
+) -> None:
+    path = _write_geotiff(tmp_path / "sample.tif", sample_array, nodata=-9999.0)
+    raster = GeoTiffRaster.open(path, work_dir=tmp_path / "work")
+    try:
+        with pytest.raises(ValueError, match="H3 resolution must be between 0 and 15"):
+            raster.scan_h3(h3_resolution=-1)
+        with pytest.raises(ValueError, match="H3 resolution must be between 0 and 15"):
+            raster.scan_h3(h3_resolution=16)
     finally:
         raster.close()
 

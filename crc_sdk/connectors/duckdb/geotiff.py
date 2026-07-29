@@ -308,10 +308,18 @@ class GeoTiffRaster:
         Nodata and non-finite pixels are always excluded; `mask` is an
         optional additional predicate over a raw pixel-value window for
         domain-specific filtering. `reduce` picks how multiple samples
-        landing in one cell are combined.
+        landing in one cell are combined. `max_subsample` always caps
+        subsample points per pixel axis -- including when `h3_resolution` is
+        given explicitly, where it bounds the sample grid instead of
+        guaranteeing every cell gets a sample (that guarantee only holds
+        when the resolution was itself picked to respect this cap).
         """
         if strip_bytes < 1:
             raise ValueError("strip_bytes must be positive")
+        if max_subsample <= 0:
+            raise ValueError("max_subsample must be positive")
+        if h3_resolution is not None and not 0 <= h3_resolution <= 15:
+            raise ValueError("H3 resolution must be between 0 and 15")
         resolution = h3_resolution
         if resolution is None:
             pixel_w, pixel_h = self.pixel_size_meters
@@ -501,8 +509,14 @@ class GeoTiffH3Scan:
         raster = self.raster
         pixel_w, pixel_h = raster.pixel_size_meters
         spacing = max_pixel_spacing_m(self.h3_resolution)
-        columns = max(1, math.ceil(pixel_w / spacing))
-        rows = max(1, math.ceil(pixel_h / spacing))
+        # max_subsample caps points per pixel axis regardless of how the
+        # resolution was chosen -- with an auto-picked resolution this is a
+        # no-op (pixel_grid_resolution already keeps the ratio within the
+        # cap), but an explicit fine h3_resolution on a coarse raster would
+        # otherwise demand an arbitrarily large per-pixel sample grid.
+        max_axis_points = max(1, math.ceil(self.max_subsample))
+        columns = max(1, min(math.ceil(pixel_w / spacing), max_axis_points))
+        rows = max(1, min(math.ceil(pixel_h / spacing), max_axis_points))
         column_offsets = subsample_offsets(columns)
         row_offsets = subsample_offsets(rows)
         n_sub = columns * rows
