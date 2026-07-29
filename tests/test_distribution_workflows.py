@@ -165,6 +165,9 @@ def test_asset_portfolio_infers_point_location_and_passthrough_columns() -> None
             "asset_id": ["asset-a"],
             "longitude": [LONGITUDE],
             "latitude": [LATITUDE],
+            "cell_index": [point_to_cell(LONGITUDE, LATITUDE, H3_RESOLUTION)],
+            "horizon": [2030],
+            "pathway": ["asset-scenario"],
             "sector": ["energy"],
         }
     )
@@ -289,6 +292,10 @@ def test_evaluate_point_portfolio_refines_geometry_and_preserves_coordinates(
             "asset_id": ["asset-a"],
             "longitude": [LONGITUDE],
             "latitude": [LATITUDE],
+            "cell_index": [point_to_cell(LONGITUDE, LATITUDE, H3_RESOLUTION)],
+            "horizon": [2030],
+            "pathway": ["asset-scenario"],
+            "value_rp100": [-1.0],
         }
     )
     output = tmp_path / "point.parquet"
@@ -309,6 +316,10 @@ def test_evaluate_point_portfolio_refines_geometry_and_preserves_coordinates(
     assert row["spatial_match"] == "exact_geometry"
     assert row["longitude"] == LONGITUDE
     assert row["latitude"] == LATITUDE
+    assert row["cell_index"] == point_to_cell(LONGITUDE, LATITUDE, H3_RESOLUTION)
+    assert row["horizon"] == 2050
+    assert row["pathway"] == "ssp585"
+    assert row["value_rp100"] != -1.0
 
 
 def test_evaluate_point_portfolio_marks_null_wkb_as_cell_match(
