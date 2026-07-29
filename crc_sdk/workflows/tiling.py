@@ -10,7 +10,7 @@ a process pool instead of leaving them single-threaded.
 
 from __future__ import annotations
 
-import os
+import multiprocessing
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
@@ -26,9 +26,17 @@ from crc_sdk.connectors import (
     OSClimateIngestPolicy,
     write_hazard_dataset,
 )
-from crc_sdk.connectors.duckdb import Bounds, RuntimeResources
+from crc_sdk.connectors.duckdb import Bounds, RuntimeResources, detected_cpu_count
 from crc_sdk.providers.os_climate import OSClimateProvider
 from crc_sdk.types import CurveParameters
+
+# DuckDB connections/Arrow readers are not fork-safe: a live connection open
+# in the parent (e.g. the reader in stream_curve_quantiles_to_parquet) would
+# be inherited mid-state by fork-based workers, which DuckDB does not
+# support. Every pool below forces "spawn" so workers always start from a
+# clean interpreter, regardless of the platform default (Linux forks by
+# default; macOS/Windows already spawn).
+_MP_CONTEXT = multiprocessing.get_context("spawn")
 
 
 @dataclass(frozen=True)
@@ -227,7 +235,9 @@ def run_tiled_canonicalization(
         provider_kwargs=kwargs,
         validate_max_workers=1,
     )
-    with ProcessPoolExecutor(max_workers=workers) as executor:
+    with ProcessPoolExecutor(
+        max_workers=workers, mp_context=_MP_CONTEXT
+    ) as executor:
         parallel = executor.map(parallel_tile, tiles, shard_paths)
         return tuple(path for path in parallel if path is not None)
 
@@ -293,10 +303,10 @@ def curve_quantiles_at(
     records = table.to_pylist()
     if not records:
         return []
-    workers = max_workers or os.cpu_count() or 1
+    workers = max_workers or detected_cpu_count()
     if workers <= 1 or len(records) <= chunk_rows:
         return _curve_quantiles(records, probability)
-    with ProcessPoolExecutor(max_workers=workers) as executor:
+    with ProcessPoolExecutor(max_workers=workers, mp_context=_MP_CONTEXT) as executor:
         return _evaluate_in_chunks(records, probability, chunk_rows, executor)
 
 
@@ -350,7 +360,7 @@ def stream_curve_quantiles_to_parquet(
     )
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
-    workers = max_workers or os.cpu_count() or 1
+    workers = max_workers or detected_cpu_count()
     written = 0
 
     def _drain(executor: ProcessPoolExecutor | None) -> None:
@@ -377,6 +387,8 @@ def stream_curve_quantiles_to_parquet(
     if workers <= 1:
         _drain(None)
     else:
-        with ProcessPoolExecutor(max_workers=workers) as executor:
+        with ProcessPoolExecutor(
+            max_workers=workers, mp_context=_MP_CONTEXT
+        ) as executor:
             _drain(executor)
     return written
