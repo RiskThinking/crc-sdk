@@ -7,6 +7,8 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Union
 
+import pyarrow.parquet as pq  # type: ignore[import-untyped]
+
 from crc_sdk.providers.local import LocalProvider
 
 from .distributions import (
@@ -67,13 +69,6 @@ AssetLocation = Union[PointColumns, CellColumn]
 
 def _source_columns(value: Any) -> tuple[str, ...] | None:
     if isinstance(value, Path):
-        try:
-            import pyarrow.parquet as pq  # type: ignore[import-untyped]
-        except ImportError as error:
-            raise ImportError(
-                "Asset Parquet inspection requires "
-                "`pip install crc-sdk[connectors]`"
-            ) from error
         return tuple(pq.read_schema(value).names)
     if isinstance(value, str):
         return None

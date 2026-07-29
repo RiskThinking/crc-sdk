@@ -324,12 +324,14 @@ _COVERAGE_SAFETY = 0.85
 
 def average_edge_length_m(resolution: int) -> float:
     """Average H3 hexagon edge length in meters at `resolution` (0-15)."""
-    try:
-        return _H3_AVERAGE_EDGE_LENGTH_KM[resolution] * 1000.0
-    except IndexError as error:
+    # A plain tuple index would accept negative values as valid Python
+    # indexing (e.g. -1 silently returning the resolution-15 edge length)
+    # instead of rejecting them as an out-of-range H3 resolution.
+    if not 0 <= resolution <= 15:
         raise ValueError(
             f"unsupported H3 resolution {resolution} (supported: 0-15)"
-        ) from error
+        )
+    return _H3_AVERAGE_EDGE_LENGTH_KM[resolution] * 1000.0
 
 
 def max_pixel_spacing_m(resolution: int) -> float:
