@@ -11,6 +11,8 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Union, cast
 
+import pyarrow as pa  # type: ignore[import-untyped]
+import pyarrow.parquet as pq  # type: ignore[import-untyped]
 from crc_framework.distributions import FittedDistribution, HurdleDistribution
 
 from crc_sdk.connectors.duckdb import detected_cpu_count
@@ -193,14 +195,6 @@ def stream_curve_quantiles_wide_to_parquet(
     chunk_rows: int = 20_000,
 ) -> int:
     """Stream curve rows to a wide, multi-quantile Parquet dataset."""
-    try:
-        import pyarrow as pa  # type: ignore[import-untyped]
-        import pyarrow.parquet as pq  # type: ignore[import-untyped]
-    except ImportError as error:
-        raise ImportError(
-            "Portfolio evaluation requires `pip install crc-sdk[connectors]`"
-        ) from error
-
     normalized = tuple(float(probability) for probability in probabilities)
     if len(normalized) != len(value_columns):
         raise ValueError("probabilities and value_columns must have equal length")

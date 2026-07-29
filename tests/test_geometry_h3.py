@@ -184,6 +184,15 @@ def test_average_edge_length_m_matches_known_table_values() -> None:
         average_edge_length_m(16)
 
 
+def test_average_edge_length_m_rejects_negative_resolution() -> None:
+    # A plain tuple index would accept -1 as "the last element" (resolution
+    # 15) instead of rejecting it as an out-of-range H3 resolution.
+    with pytest.raises(ValueError):
+        average_edge_length_m(-1)
+    with pytest.raises(ValueError):
+        max_pixel_spacing_m(-1)
+
+
 def test_max_pixel_spacing_m_shrinks_with_finer_resolution() -> None:
     assert max_pixel_spacing_m(5) > max_pixel_spacing_m(10)
 
