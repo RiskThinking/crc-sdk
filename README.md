@@ -158,6 +158,12 @@ Arrow row or table, `distribution_from_hazard_row` and `sample_hazard_row` in
 Sampling defaults to 10,000 values and an unseeded generator; pass `seed` for
 reproducible draws.
 
+Call `sample_hazard_at_cell` when the H3 index is already known. It accepts the
+same provider, hazard/scenario filters, sample size, and seed as the point
+workflow, but queries the canonical `cell_index` directly and therefore does
+not perform source-geometry refinement. Both location workflows require one
+matching canonical curve and raise on missing or ambiguous rows.
+
 ## License
 
 CRC SDK is licensed under the GNU Affero General Public License, version 3 or
