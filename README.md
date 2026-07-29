@@ -59,6 +59,16 @@ process caps. Override with `CRC_DUCKDB_THREADS`, `CRC_DUCKDB_MEMORY`, and/or
 `CRC_DUCKDB_PROFILE=1` to enable detailed query profiling around
 enrich/coverage stages in h3geo.
 
+Constructors with no natural caller-supplied directory of their own
+(`OSClimateProvider`, `ZarrRaster`, `H3Indexer`) build a resource-tuned
+connection by default — via `DuckDBConnection.for_analytics` — instead of a
+bare, untuned one, so this scales out of the box with no configuration.
+Passing an explicit `connection`/`con` always wins and skips this entirely.
+Otherwise the spill/temp directory defaults to a stable location under the
+system temp directory (`default_work_dir()`, not a fresh one per call), and
+can be set per-call via each constructor's own `work_dir` parameter, or
+globally via `CRC_DUCKDB_WORK_DIR`.
+
 ## Canonical hazard datasets
 
 The SDK internalizes fitted hazards as one versioned Arrow/Parquet contract.

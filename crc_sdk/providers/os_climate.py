@@ -3,12 +3,13 @@
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from string import Formatter
 from types import MappingProxyType
-from typing import Any, Optional
+from typing import Any, Optional, Union
 from urllib.request import urlopen
 
-from crc_sdk.connectors.duckdb import DuckDBConnection
+from crc_sdk.connectors.duckdb import DuckDBConnection, default_work_dir
 from crc_sdk.connectors.duckdb.zarr import RasterMetadata, ZarrRaster
 
 DEFAULT_INVENTORY_URL = (
@@ -189,13 +190,18 @@ class OSClimateProvider:
         root: str = "hazard-indicators/hazard.zarr",
         storage_options: Optional[Mapping[str, Any]] = None,
         connection: Optional[DuckDBConnection] = None,
+        work_dir: Optional[Union[str, Path]] = None,
     ) -> None:
         self._inventory = inventory
         self.inventory_url = inventory_url
         self.bucket = bucket
         self.root = root.strip("/")
         self.storage_options = dict(storage_options or {})
-        self.connection = connection or DuckDBConnection()
+        # An explicit connection means the caller is already in control; only
+        # build (and resource-tune) one when they didn't supply their own.
+        self.connection = connection or DuckDBConnection.for_analytics(
+            work_dir or default_work_dir()
+        )
         self._filesystem: Any = None
 
     @property

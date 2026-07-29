@@ -2,9 +2,11 @@ from pathlib import Path
 
 import duckdb
 import pyarrow as pa
+import pytest
 from shapely.geometry import Polygon, box
 from shapely.wkb import dumps
 
+import crc_sdk.geometry.vector as vector_module
 from crc_sdk.connectors.duckdb import ensure_extensions
 from crc_sdk.geometry import (
     VectorContainment,
@@ -97,3 +99,74 @@ def test_expand_polygon_candidates_one_shot_and_batched() -> None:
     assert con.execute(
         "SELECT COUNT(DISTINCT poly_rid) FROM candidates_batched"
     ).fetchone() == (2,)
+
+
+def test_expand_polygon_candidates_auto_batches_past_threshold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """batch_rows=None picks one-shot vs. chunked based on a row-count check."""
+    calls: list[int] = []
+    original_expand_batched = vector_module._expand_batched
+
+    def _spy_expand_batched(*args: object, **kwargs: object) -> int:
+        calls.append(kwargs["batch_rows"])  # type: ignore[arg-type]
+        return original_expand_batched(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(vector_module, "_expand_batched", _spy_expand_batched)
+    monkeypatch.setattr(vector_module, "_AUTO_BATCH_THRESHOLD_ROWS", 1)
+
+    con = duckdb.connect()
+    ensure_extensions(con, "spatial", "h3")
+    con.execute(
+        """
+        CREATE TABLE polys AS
+        SELECT 1::BIGINT AS poly_rid, ST_AsWKB(ST_GeomFromText(?)) AS wkb
+        UNION ALL
+        SELECT 2::BIGINT, ST_AsWKB(ST_GeomFromText(?))
+        """,
+        [
+            "POLYGON((0 0, 1 0, 1 1, 0 1, 0 0))",
+            "POLYGON((1 0, 2 0, 2 1, 1 1, 1 0))",
+        ],
+    )
+    count = vector_module.expand_polygon_candidates(
+        con,
+        "SELECT poly_rid, wkb FROM polys",
+        2,
+        containment=VectorContainment.COVERS,
+        batch_rows=None,
+    )
+    assert count > 0
+    # 2 rows > the monkeypatched threshold of 1, so it auto-selected the
+    # default chunk size and went through the batched path, not one-shot.
+    assert calls == [vector_module._AUTO_BATCH_ROWS]
+
+
+def test_expand_polygon_candidates_stays_one_shot_under_threshold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[object] = []
+    original_expand_one_shot = vector_module._expand_one_shot
+
+    def _spy_expand_one_shot(*args: object, **kwargs: object) -> int:
+        calls.append(True)
+        return original_expand_one_shot(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(vector_module, "_expand_one_shot", _spy_expand_one_shot)
+
+    con = duckdb.connect()
+    ensure_extensions(con, "spatial", "h3")
+    con.execute(
+        "CREATE TABLE polys AS SELECT 1::BIGINT AS poly_rid, "
+        "ST_AsWKB(ST_GeomFromText(?)) AS wkb",
+        ["POLYGON((0 0, 1 0, 1 1, 0 1, 0 0))"],
+    )
+    count = vector_module.expand_polygon_candidates(
+        con,
+        "SELECT poly_rid, wkb FROM polys",
+        2,
+        containment=VectorContainment.COVERS,
+        batch_rows=None,
+    )
+    assert count > 0
+    assert calls == [True]

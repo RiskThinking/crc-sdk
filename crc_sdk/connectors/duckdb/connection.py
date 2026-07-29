@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import os
+import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -14,6 +15,37 @@ if TYPE_CHECKING:
 
 _GIB = 1024**3
 _COMMUNITY_EXTENSIONS = frozenset({"h3"})
+# GEOS-backed spatial operations regress when over-threaded relative to
+# available memory; DuckDB's core engine has no such pathology and is
+# already bounded by memory_limit + spill-to-disk regardless of thread
+# count, so this ceiling applies only when "spatial" is actually requested.
+_SPATIAL_BYTES_PER_THREAD_GIB = 2.5
+
+
+def default_work_dir() -> Path:
+    """The SDK-wide default work/spill directory for resource-tuned connections.
+
+    Constructors that need :meth:`DuckDBConnection.for_analytics` tuning but
+    have no caller-supplied directory of their own (unlike, say,
+    ``write_hazard_dataset``, which derives one from its destination path)
+    use this — a stable, discoverable location under the system temp
+    directory, not a fresh random one per call. Override globally with
+    ``CRC_DUCKDB_WORK_DIR``, or per-call via each constructor's own
+    ``work_dir`` parameter.
+    """
+    override = os.getenv("CRC_DUCKDB_WORK_DIR")
+    return Path(override) if override else Path(tempfile.gettempdir()) / "crc-sdk"
+
+
+# Applied to every connection, even a bare DuckDBConnection() with no config
+# at all — DuckDB's own defaults preserve insertion order (limits some
+# parallel query plans) and cache object metadata unboundedly (unbounded
+# memory growth across repeated reads). self.config always wins if a caller
+# sets either explicitly.
+_BASE_CONFIG: dict[str, Any] = {
+    "preserve_insertion_order": False,
+    "enable_object_cache": False,
+}
 
 
 @dataclass(frozen=True)
@@ -29,7 +61,24 @@ class RuntimeResources:
     max_temp_directory_size: str
 
     @classmethod
-    def detect(cls, work_dir: str | Path) -> RuntimeResources:
+    def detect(
+        cls,
+        work_dir: str | Path,
+        *,
+        bytes_per_thread_gib: float | None = _SPATIAL_BYTES_PER_THREAD_GIB,
+    ) -> RuntimeResources:
+        """Detect host/container limits and recommend DuckDB settings.
+
+        ``bytes_per_thread_gib`` throttles thread count against usable
+        memory — appropriate for GEOS-backed spatial work (the default).
+        Pass ``None`` to skip that throttle entirely and use every detected
+        CPU (DuckDB's core engine bounds total memory via ``memory_limit`` +
+        spill-to-disk regardless of thread count, so nothing else needs it).
+        :meth:`for_analytics` picks this automatically from whether
+        ``"spatial"`` is requested; call this directly only for finer control.
+        ``CRC_DUCKDB_BYTES_PER_THREAD_GIB``, if set to a positive value,
+        overrides either case.
+        """
         try:
             import psutil  # type: ignore[import-untyped]
         except ImportError as error:
@@ -57,9 +106,11 @@ class RuntimeResources:
         memory_bytes = _memory_limit_bytes(int(psutil.virtual_memory().total))
         disk_free_bytes = int(psutil.disk_usage(str(root)).free)
         usable_memory = max(_GIB, int(memory_bytes * 0.60))
-        # ~2.5 GiB/thread; spatial work often regresses when over-threaded.
-        per_thread = _bytes_per_thread()
-        safe_threads = max(1, min(cpus, usable_memory // per_thread))
+        per_thread = _bytes_per_thread(bytes_per_thread_gib)
+        if per_thread is None:
+            safe_threads = cpus
+        else:
+            safe_threads = max(1, min(cpus, usable_memory // per_thread))
         threads = _env_int("CRC_DUCKDB_THREADS", safe_threads, cpus)
         memory_gib = max(1, usable_memory // _GIB)
         memory_limit = os.getenv("CRC_DUCKDB_MEMORY", f"{memory_gib}GiB")
@@ -114,7 +165,7 @@ class DuckDBConnection:
         con = duckdb.connect(
             self.database or ":memory:",
             read_only=self.read_only,
-            config=dict(self.config),
+            config={**_BASE_CONFIG, **self.config},
         )
         if self.extensions:
             ensure_extensions(con, *self.extensions)
@@ -130,8 +181,19 @@ class DuckDBConnection:
         database: str | None = None,
         read_only: bool = False,
     ) -> DuckDBConnection:
-        """Build a connection config from detected resources with optional overrides."""
-        resources = RuntimeResources.detect(work_dir)
+        """Build a connection config from detected resources with optional overrides.
+
+        Thread count is throttled to ``_SPATIAL_BYTES_PER_THREAD_GIB`` only
+        when ``"spatial"`` is among ``extensions`` — that ceiling exists for
+        GEOS's per-thread memory footprint, not a general DuckDB concern.
+        Without it, threads default to every detected CPU.
+        """
+        bytes_per_thread_gib = (
+            _SPATIAL_BYTES_PER_THREAD_GIB if "spatial" in extensions else None
+        )
+        resources = RuntimeResources.detect(
+            work_dir, bytes_per_thread_gib=bytes_per_thread_gib
+        )
         merged = resources.as_duckdb_config()
         if config:
             merged.update(dict(config))
@@ -252,16 +314,19 @@ def _env_int(name: str, default: int, maximum: int) -> int:
         return default
 
 
-def _bytes_per_thread() -> int:
-    """Bytes-per-thread budget (default 2.5 GiB; override via env GiB float)."""
-    default = int(2.5 * _GIB)
+def _bytes_per_thread(default_gib: float | None) -> int | None:
+    """Bytes-per-thread budget, or ``None`` for no per-thread cap.
+
+    ``CRC_DUCKDB_BYTES_PER_THREAD_GIB``, if set to a positive number,
+    overrides ``default_gib`` unconditionally — including forcing a cap
+    where the caller otherwise requested none.
+    """
     raw = os.getenv("CRC_DUCKDB_BYTES_PER_THREAD_GIB")
-    if not raw:
-        return default
-    try:
-        gib = float(raw)
-    except ValueError:
-        return default
-    if gib <= 0:
-        return default
-    return max(_GIB // 4, int(gib * _GIB))
+    if raw:
+        try:
+            gib = float(raw)
+        except ValueError:
+            gib = None
+        if gib is not None and gib > 0:
+            return max(_GIB // 4, int(gib * _GIB))
+    return int(default_gib * _GIB) if default_gib is not None else None

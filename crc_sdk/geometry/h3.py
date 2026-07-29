@@ -5,9 +5,14 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from crc_sdk.connectors.duckdb.connection import DuckDBConnection, ensure_extensions
+from crc_sdk.connectors.duckdb.connection import (
+    DuckDBConnection,
+    default_work_dir,
+    ensure_extensions,
+)
 from crc_sdk.geometry.formats import FormatAdapter, GeoFormat
 
 if TYPE_CHECKING:
@@ -31,8 +36,17 @@ _CONTAINMENT = {
 class H3Indexer:
     """Out-of-core DuckDB-native H3 indexer for vector geometries."""
 
-    def __init__(self, con: DuckDBPyConnection | None = None):
-        self.con = con or DuckDBConnection().connect()
+    def __init__(
+        self,
+        con: DuckDBPyConnection | None = None,
+        *,
+        work_dir: str | Path | None = None,
+    ) -> None:
+        # An explicit connection means the caller is already in control; only
+        # build (and resource-tune) one when they didn't supply their own.
+        self.con = con or DuckDBConnection.for_analytics(
+            work_dir or default_work_dir(), extensions=("spatial", "h3")
+        ).connect()
         ensure_extensions(self.con, "spatial", "h3")
 
     @staticmethod

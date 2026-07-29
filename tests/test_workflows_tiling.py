@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -10,7 +11,11 @@ import pytest
 from shapely.geometry import box  # type: ignore[import-untyped]
 
 from crc_sdk.connectors import HurdleFitPolicy, OSClimateIngestPolicy
-from crc_sdk.connectors.parquet import hazard_arrow_schema, read_hazard_dataset
+from crc_sdk.connectors.parquet import (
+    hazard_arrow_schema,
+    read_hazard_dataset,
+    write_hazard_dataset,
+)
 from crc_sdk.types import CurveParameters, HazardDatasetMetadata, SourceProvenance
 from crc_sdk.workflows import (
     OSClimateSelectionSpec,
@@ -18,7 +23,11 @@ from crc_sdk.workflows import (
     stream_curve_quantiles_to_parquet,
     tile_bounds,
 )
-from crc_sdk.workflows.tiling import _tile_owns_point, run_tiled_canonicalization
+from crc_sdk.workflows.tiling import (
+    _canonicalize_tile,
+    _tile_owns_point,
+    run_tiled_canonicalization,
+)
 
 
 def test_tile_bounds_splits_exact_grid() -> None:
@@ -205,6 +214,97 @@ def test_run_tiled_canonicalization_skips_empty_tiles(
     table = read_hazard_dataset(shards[0])
     assert table.num_rows == 2
     assert set(table["cell_index"].to_pylist()) == {1, 2}
+
+
+def test_canonicalize_tile_forwards_validate_max_workers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """_canonicalize_tile must pass validate_max_workers straight through to
+    write_hazard_dataset's max_workers — that's the only thing preventing a
+    nested ProcessPoolExecutor when this runs inside the outer tile pool."""
+    monkeypatch.setattr("crc_sdk.workflows.tiling.OSClimateProvider", _FakeProvider)
+    captured: list[Any] = []
+
+    def _spy_write_hazard_dataset(
+        table: pa.Table,
+        output_path: Path,
+        metadata: HazardDatasetMetadata,
+        *,
+        max_workers: int | None = None,
+    ) -> str | Path:
+        captured.append(max_workers)
+        return write_hazard_dataset(
+            table, output_path, metadata, max_workers=max_workers
+        )
+
+    monkeypatch.setattr(
+        "crc_sdk.workflows.tiling.write_hazard_dataset", _spy_write_hazard_dataset
+    )
+
+    _canonicalize_tile(
+        (0.0, 0.0, 1.0, 1.0),
+        tmp_path / "tile.parquet",
+        spec=_spec(),
+        policy=_policy(),
+        aoi_bounds=(0.0, 0.0, 1.0, 1.0),
+        provider_kwargs={},
+        validate_max_workers=1,
+    )
+    assert captured == [1]
+
+    captured.clear()
+    _canonicalize_tile(
+        (0.0, 0.0, 1.0, 1.0),
+        tmp_path / "tile2.parquet",
+        spec=_spec(),
+        policy=_policy(),
+        aoi_bounds=(0.0, 0.0, 1.0, 1.0),
+        provider_kwargs={},
+        # validate_max_workers omitted entirely -> defaults to None (auto)
+    )
+    assert captured == [None]
+
+
+def test_run_tiled_canonicalization_parallel_path_pins_validate_max_workers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real (non-fake) ProcessPoolExecutor path must request
+    validate_max_workers=1 for every tile — verified without actually
+    spawning subprocesses, since a nested pool wouldn't reliably fail loudly
+    on every platform, it would just silently fan out too many processes."""
+    captured: dict[str, Any] = {}
+
+    class _FakeExecutor:
+        def __init__(self, max_workers: int | None = None) -> None:
+            captured["max_workers"] = max_workers
+
+        def __enter__(self) -> _FakeExecutor:
+            return self
+
+        def __exit__(self, *exc_info: Any) -> None:
+            return None
+
+        def map(self, func: Any, *iterables: Any) -> Any:
+            captured["func"] = func
+            captured["iterables"] = [list(iterable) for iterable in iterables]
+            return iter(())
+
+    monkeypatch.setattr("crc_sdk.workflows.tiling.ProcessPoolExecutor", _FakeExecutor)
+
+    run_tiled_canonicalization(
+        _spec(),
+        _policy(),
+        bounds=(0.0, 0.0, 4.0, 1.0),
+        output_dir=tmp_path,
+        tile_degrees=2.0,
+        max_workers=2,
+    )
+    # validate_max_workers=1 is bound once via functools.partial, not mapped
+    # per tile — only the genuinely varying args (tile, output_path) are.
+    assert isinstance(captured["func"], partial)
+    assert captured["func"].func is _canonicalize_tile
+    assert captured["func"].keywords["validate_max_workers"] == 1
+    assert len(captured["iterables"]) == 2
 
 
 class _EdgeSpillProvider:

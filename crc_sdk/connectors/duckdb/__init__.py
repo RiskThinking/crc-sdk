@@ -4,6 +4,7 @@ from .connection import (
     DuckDBConnection,
     DuckDBStreamEngine,
     RuntimeResources,
+    default_work_dir,
     ensure_extensions,
     sql_quote,
 )
@@ -19,6 +20,7 @@ __all__ = [
     "RuntimeResources",
     "ZarrRaster",
     "ZarrScan",
+    "default_work_dir",
     "ensure_extensions",
     "sql_quote",
 ]

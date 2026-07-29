@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+import duckdb
 import pytest
 from shapely.geometry import (  # type: ignore[import-untyped]
     MultiPolygon,
@@ -152,3 +153,18 @@ def test_build_h3_query_from_file_composes_format_and_polyfill(
         for row in result.fetchall()
     }
     assert cells == set(intersecting_cells(polygon, 5))
+
+
+def test_h3_indexer_default_connection_is_resource_tuned(tmp_path: Path) -> None:
+    indexer = H3Indexer(work_dir=tmp_path)
+    settings = dict(
+        indexer.con.execute("SELECT name, value FROM duckdb_settings()").fetchall()
+    )
+    assert int(settings["threads"]) > 0
+    assert (tmp_path / "duckdb-temp").is_dir()
+
+
+def test_h3_indexer_explicit_connection_is_not_overridden() -> None:
+    explicit = duckdb.connect()
+    indexer = H3Indexer(explicit)
+    assert indexer.con is explicit

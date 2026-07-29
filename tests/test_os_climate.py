@@ -12,8 +12,9 @@ from crc_sdk.connectors import (
     canonicalize_os_climate,
     write_hazard_stream,
 )
-from crc_sdk.connectors.duckdb import RasterMetadata, ZarrRaster
+from crc_sdk.connectors.duckdb import DuckDBConnection, RasterMetadata, ZarrRaster
 from crc_sdk.providers import LocalProvider, OSClimateInventory
+from crc_sdk.providers.os_climate import OSClimateProvider
 from crc_sdk.types import HazardQuery
 
 
@@ -318,3 +319,52 @@ def test_on_fit_failure_rejects_unknown_value() -> None:
             creation_version="1",
             on_fit_failure="ignore",  # type: ignore[arg-type]
         )
+
+
+def test_os_climate_provider_default_connection_is_resource_tuned(
+    tmp_path: Path,
+) -> None:
+    provider = OSClimateProvider(work_dir=tmp_path)
+    assert provider.connection.config.get("threads")
+    assert provider.connection.config.get("memory_limit")
+    assert (tmp_path / "duckdb-temp").is_dir()
+
+
+def test_os_climate_provider_explicit_connection_is_not_overridden() -> None:
+    explicit = DuckDBConnection()
+    provider = OSClimateProvider(connection=explicit)
+    assert provider.connection is explicit
+
+
+def test_zarr_raster_default_connection_is_resource_tuned(tmp_path: Path) -> None:
+    raster = ZarrRaster(
+        FakeReturnPeriodArray(),
+        RasterMetadata(
+            hazard_type="Wind",
+            indicator_id="max_speed",
+            scenario="historical",
+            year=2010,
+            units="m/s",
+            path="test/wind",
+        ),
+        work_dir=tmp_path,
+    )
+    assert raster.connection.config.get("threads")
+    assert (tmp_path / "duckdb-temp").is_dir()
+
+
+def test_zarr_raster_explicit_connection_is_not_overridden() -> None:
+    explicit = DuckDBConnection()
+    raster = ZarrRaster(
+        FakeReturnPeriodArray(),
+        RasterMetadata(
+            hazard_type="Wind",
+            indicator_id="max_speed",
+            scenario="historical",
+            year=2010,
+            units="m/s",
+            path="test/wind",
+        ),
+        connection=explicit,
+    )
+    assert raster.connection is explicit
