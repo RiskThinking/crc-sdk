@@ -10,12 +10,13 @@ from typing import Any, Union
 from crc_sdk.providers.local import LocalProvider
 
 from .distributions import (
+    CURVE_COLUMNS,
     return_period_value_columns,
     return_periods_to_probabilities,
 )
 
 PORTFOLIO_METADATA_KEY = "crc.hazard.evaluation"
-_PORTFOLIO_OUTPUT_COLUMNS = frozenset(
+_PORTFOLIO_RESERVED_COLUMNS = frozenset(
     {
         "cell_index",
         "hazard_name",
@@ -23,14 +24,15 @@ _PORTFOLIO_OUTPUT_COLUMNS = frozenset(
         "pathway",
         "source_id",
         "spatial_match",
+        *CURVE_COLUMNS,
     }
 )
 
 
-def _reserved_portfolio_output_columns(
+def _reserved_portfolio_columns(
     return_periods: Sequence[float],
 ) -> frozenset[str]:
-    return _PORTFOLIO_OUTPUT_COLUMNS | frozenset(
+    return _PORTFOLIO_RESERVED_COLUMNS | frozenset(
         return_period_value_columns(return_periods)
     )
 
@@ -139,7 +141,8 @@ class AssetPortfolio:
                 tuple(
                     name
                     for name in columns
-                    if name not in required and name not in _PORTFOLIO_OUTPUT_COLUMNS
+                    if name not in required
+                    and name not in _PORTFOLIO_RESERVED_COLUMNS
                 )
                 if columns is not None
                 else ()
@@ -267,7 +270,7 @@ class PortfolioEvaluation:
             cell_index_column = location.name
         passthrough_columns = self.portfolio.passthrough_columns or ()
         if self.portfolio._passthrough_inferred:
-            reserved = _reserved_portfolio_output_columns(self.periods)
+            reserved = _reserved_portfolio_columns(self.periods)
             passthrough_columns = tuple(
                 name for name in passthrough_columns if name not in reserved
             )

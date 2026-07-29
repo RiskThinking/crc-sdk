@@ -25,7 +25,7 @@ from .distributions import (
 from .portfolio import (
     PORTFOLIO_METADATA_KEY,
     PortfolioEvaluationResult,
-    _reserved_portfolio_output_columns,
+    _reserved_portfolio_columns,
 )
 
 
@@ -179,7 +179,7 @@ def evaluate_hazard_portfolio(
         _validate_asset_columns(con, assets_sql, identity_columns)
         if len(set(identity_columns)) != len(identity_columns):
             raise ValueError("asset identity and passthrough columns must be unique")
-        reserved = _reserved_portfolio_output_columns(periods)
+        reserved = _reserved_portfolio_columns(periods)
         collision_candidates = [asset_id_column, *passthrough_columns]
         if point_input:
             assert longitude_column is not None

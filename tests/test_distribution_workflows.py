@@ -168,6 +168,7 @@ def test_asset_portfolio_infers_point_location_and_passthrough_columns() -> None
             "cell_index": [point_to_cell(LONGITUDE, LATITUDE, H3_RESOLUTION)],
             "horizon": [2030],
             "pathway": ["asset-scenario"],
+            "curve_location": [1_000.0],
             "sector": ["energy"],
         }
     )
@@ -296,6 +297,13 @@ def test_evaluate_point_portfolio_refines_geometry_and_preserves_coordinates(
             "horizon": [2030],
             "pathway": ["asset-scenario"],
             "value_rp100": [-1.0],
+            "curve_kind": ["fitted"],
+            "curve_type": ["gumbel_r"],
+            "curve_shape": [None],
+            "curve_location": [1_000.0],
+            "curve_scale": [1.0],
+            "curve_atom_probability": [None],
+            "curve_atom_location": [None],
         }
     )
     output = tmp_path / "point.parquet"
@@ -319,7 +327,8 @@ def test_evaluate_point_portfolio_refines_geometry_and_preserves_coordinates(
     assert row["cell_index"] == point_to_cell(LONGITUDE, LATITUDE, H3_RESOLUTION)
     assert row["horizon"] == 2050
     assert row["pathway"] == "ssp585"
-    assert row["value_rp100"] != -1.0
+    expected = distribution_from_hazard_row(_table(_row())).quantiles([0.99])[0]
+    assert row["value_rp100"] == pytest.approx(expected)
 
 
 def test_evaluate_point_portfolio_marks_null_wkb_as_cell_match(
