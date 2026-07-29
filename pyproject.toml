@@ -41,6 +41,11 @@ geometry-vector = [
     "h3ronpy>=0.19",
     "pyarrow>=14",
 ]
+raster = [
+    "rasterio>=1.4",
+    "fsspec>=2024",
+    "gcsfs>=2024",
+]
 test = [
     "mypy>=1.10",
     "pytest>=8",

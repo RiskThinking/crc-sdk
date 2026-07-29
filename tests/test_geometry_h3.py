@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 import duckdb
+import numpy as np
 import pytest
 from shapely.geometry import (  # type: ignore[import-untyped]
     MultiPolygon,
@@ -15,10 +16,16 @@ from crc_sdk.geometry import (
     GeoFormat,
     H3Indexer,
     PolyfillMode,
+    average_edge_length_m,
     cell_polygon,
     estimate_resolutions,
     intersecting_cells,
+    max_pixel_spacing_m,
+    pixel_grid_resolution,
     point_to_cell,
+    reduce_h3_values,
+    sample_grid_to_h3,
+    subsample_offsets,
 )
 
 
@@ -168,3 +175,76 @@ def test_h3_indexer_explicit_connection_is_not_overridden() -> None:
     explicit = duckdb.connect()
     indexer = H3Indexer(explicit)
     assert indexer.con is explicit
+
+
+def test_average_edge_length_m_matches_known_table_values() -> None:
+    assert average_edge_length_m(0) == pytest.approx(1_281_256.011, rel=1e-6)
+    assert average_edge_length_m(15) == pytest.approx(0.584169, rel=1e-6)
+    with pytest.raises(ValueError):
+        average_edge_length_m(16)
+
+
+def test_max_pixel_spacing_m_shrinks_with_finer_resolution() -> None:
+    assert max_pixel_spacing_m(5) > max_pixel_spacing_m(10)
+
+
+def test_pixel_grid_resolution_picks_finest_covered_resolution() -> None:
+    # A pixel much larger than any cell at high resolution should still
+    # resolve to a coarse, valid resolution rather than overshooting.
+    coarse = pixel_grid_resolution(500_000.0)
+    assert 0 <= coarse <= 3
+
+    # A tiny pixel should resolve to a much finer resolution.
+    fine = pixel_grid_resolution(5.0)
+    assert fine > coarse
+
+    with pytest.raises(ValueError):
+        pixel_grid_resolution(10.0, max_subsample=0.0)
+
+
+def test_subsample_offsets_are_centered_and_span_unit_interval() -> None:
+    offsets = subsample_offsets(4)
+    assert len(offsets) == 4
+    assert offsets[0] == pytest.approx(-0.375)
+    assert offsets[-1] == pytest.approx(0.375)
+    assert np.all(np.diff(offsets) > 0)
+
+    with pytest.raises(ValueError):
+        subsample_offsets(0)
+
+
+def test_reduce_h3_values_collapses_duplicate_cells() -> None:
+    cells = np.array([5, 1, 5, 3, 1], dtype=np.uint64)
+    values = np.array([1.0, 2.0, 4.0, 3.0, 9.0], dtype=np.float64)
+
+    max_cells, max_values = reduce_h3_values(cells, values, reduce="max")
+    assert list(max_cells) == [1, 3, 5]
+    assert list(max_values) == [9.0, 3.0, 4.0]
+
+    min_cells, min_values = reduce_h3_values(cells, values, reduce="min")
+    assert list(min_values) == [2.0, 3.0, 1.0]
+
+    with pytest.raises(ValueError):
+        reduce_h3_values(cells, values, reduce="sum")  # type: ignore[arg-type]
+
+
+def test_reduce_h3_values_handles_empty_input() -> None:
+    cells, values = reduce_h3_values(
+        np.array([], dtype=np.uint64), np.array([], dtype=np.float64)
+    )
+    assert len(cells) == 0
+    assert len(values) == 0
+
+
+def test_sample_grid_to_h3_reduces_points_landing_in_one_cell() -> None:
+    # Two points close enough together to land in the same coarse cell.
+    lons = [-0.001, 0.001, 10.0]
+    lats = [51.5, 51.5, -33.0]
+    values = [1.0, 5.0, 2.0]
+
+    cells, reduced = sample_grid_to_h3(lons, lats, values, resolution=2, reduce="max")
+    assert len(cells) == 2
+    assert set(np.round(reduced, 3)) == {5.0, 2.0}
+
+    with pytest.raises(ValueError):
+        sample_grid_to_h3(lons, lats, values, resolution=16)
