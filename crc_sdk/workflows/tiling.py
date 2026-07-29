@@ -28,7 +28,10 @@ from crc_sdk.connectors import (
 )
 from crc_sdk.connectors.duckdb import Bounds, RuntimeResources, detected_cpu_count
 from crc_sdk.providers.os_climate import OSClimateProvider
-from crc_sdk.types import CurveParameters
+from crc_sdk.workflows.distributions import (
+    CURVE_COLUMNS,
+    curve_parameters_from_row,
+)
 
 # DuckDB connections/Arrow readers are not fork-safe: a live connection open
 # in the parent (e.g. the reader in stream_curve_quantiles_to_parquet) would
@@ -247,15 +250,7 @@ def _curve_quantiles(
 ) -> list[float]:
     return [
         float(
-            CurveParameters(
-                curve_kind=row["curve_kind"],
-                curve_type=row["curve_type"],
-                curve_shape=row["curve_shape"],
-                curve_location=row["curve_location"],
-                curve_scale=row["curve_scale"],
-                curve_atom_probability=row["curve_atom_probability"],
-                curve_atom_location=row["curve_atom_location"],
-            )
+            curve_parameters_from_row(row)
             .to_distribution()
             .quantiles([probability])[0]
         )
@@ -310,17 +305,6 @@ def curve_quantiles_at(
         return _evaluate_in_chunks(records, probability, chunk_rows, executor)
 
 
-_CURVE_COLUMNS = (
-    "curve_kind",
-    "curve_type",
-    "curve_shape",
-    "curve_location",
-    "curve_scale",
-    "curve_atom_probability",
-    "curve_atom_location",
-)
-
-
 def stream_curve_quantiles_to_parquet(
     con: Any,
     source_sql: str,
@@ -370,8 +354,8 @@ def stream_curve_quantiles_to_parquet(
                 if batch.num_rows == 0:
                     continue
                 curve_table = pa.Table.from_arrays(
-                    [batch.column(name) for name in _CURVE_COLUMNS],
-                    names=list(_CURVE_COLUMNS),
+                    [batch.column(name) for name in CURVE_COLUMNS],
+                    names=list(CURVE_COLUMNS),
                 )
                 depths = _evaluate_in_chunks(
                     curve_table.to_pylist(), probability, chunk_rows, executor

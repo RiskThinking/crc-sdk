@@ -8,7 +8,7 @@ from crc_framework.distributions import (
     FittedDistribution,
     HurdleDistribution,
 )
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class CurveParameters(BaseModel):
@@ -80,3 +80,8 @@ class HazardQuery(BaseModel):
     hazard_name: str
     horizon: Optional[int] = None
     pathway: Optional[str] = None
+    cell_index: Optional[int] = Field(
+        default=None,
+        ge=0,
+        le=(1 << 64) - 1,
+    )

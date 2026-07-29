@@ -117,6 +117,47 @@ knots. Plain curves use `fit_quantiles`, while hurdle curves use
 `fit_hurdle_quantiles`. `LocalProvider` queries persisted hazard rows through
 `HazardQuery`.
 
+### Sampling canonical datasets
+
+Persisted curve parameters can be reconstructed and sampled without returning
+to the external source format or refitting the data:
+
+```python
+from crc_sdk.providers import LocalProvider
+from crc_sdk.workflows import sample_hazard_at_point
+
+provider = LocalProvider("flood.parquet")
+result = sample_hazard_at_point(
+    provider,
+    "flood",
+    longitude=6.9603,
+    latitude=50.9375,
+    horizon=2050,
+    pathway="ssp585",
+    size=10_000,
+    seed=42,
+)
+
+samples = result.samples
+distribution = result.distribution
+```
+
+The point workflow reads the dataset H3 resolution from canonical metadata,
+converts the WGS84 point to a `cell_index`, and applies that filter together
+with the requested hazard and scenario dimensions. Because canonical H3 rows
+are conservative overlap candidates, `source_geometry` is used for exact
+point-in-source refinement when present. `result.spatial_match` is
+`"exact_geometry"` in that case; when the selected row has no source WKB it is
+`"h3_cell"` and carries only cell-level spatial precision. No match and
+multiple matches both raise instead of silently selecting or aggregating a
+curve.
+
+Point lookup requires the `geometry` extra. For an already selected canonical
+Arrow row or table, `distribution_from_hazard_row` and `sample_hazard_row` in
+`crc_sdk.workflows` reconstruct or sample directly without spatial lookup.
+Sampling defaults to 10,000 values and an unseeded generator; pass `seed` for
+reproducible draws.
+
 ## License
 
 CRC SDK is licensed under the GNU Affero General Public License, version 3 or

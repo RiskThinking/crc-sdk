@@ -326,6 +326,10 @@ def read_hazard_dataset(
             expression = expression & (ds.field("horizon") == query.horizon)
         if query.pathway is not None:
             expression = expression & (ds.field("pathway") == query.pathway)
+        if query.cell_index is not None:
+            expression = expression & (
+                ds.field("cell_index") == query.cell_index
+            )
     table = ds.dataset(source, format="parquet").to_table(
         columns=columns,
         filter=expression,
