@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Literal, Optional, Union
 
 import numpy as np
+import pyarrow as pa  # type: ignore[import-untyped]
 
 from .connection import DuckDBConnection, default_work_dir
 
@@ -120,12 +121,6 @@ class ZarrRaster:
         if not coordinates:
             raise ValueError("at least one coordinate is required")
         columns = self._point_columns(coordinates)
-        try:
-            import pyarrow as pa  # type: ignore[import-untyped]
-        except ImportError as error:
-            raise ImportError(
-                "Arrow support requires `pip install crc-sdk[connectors]`"
-            ) from error
         arrow_columns = {
             **columns,
             "value": pa.array(
@@ -371,13 +366,6 @@ class ZarrScan:
 
     def relation(self, *, connection: Optional[DuckDBConnection] = None) -> Any:
         """Create a fresh lazy DuckDB relation for one query execution."""
-        try:
-            import pyarrow as pa
-        except ImportError as error:
-            raise ImportError(
-                "Arrow support requires `pip install crc-sdk[connectors]`"
-            ) from error
-
         schema = pa.schema(
             [
                 ("longitude", pa.float64()),

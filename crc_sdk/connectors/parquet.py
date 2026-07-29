@@ -9,6 +9,11 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+import pyarrow as pa  # type: ignore[import-untyped]
+import pyarrow.compute as pc  # type: ignore[import-untyped]
+import pyarrow.dataset as ds  # type: ignore[import-untyped]
+import pyarrow.parquet as pq  # type: ignore[import-untyped]
+
 from crc_sdk.connectors.duckdb import DuckDBConnection, detected_cpu_count
 from crc_sdk.schema import HAZARD_FIELDS, HAZARD_ROW_KEY, HAZARD_SORT_ORDER
 from crc_sdk.types import (
@@ -19,23 +24,10 @@ from crc_sdk.types import (
 )
 
 
-def _pyarrow() -> tuple[Any, Any, Any]:
-    try:
-        import pyarrow as pa  # type: ignore[import-untyped]
-        import pyarrow.dataset as ds  # type: ignore[import-untyped]
-        import pyarrow.parquet as pq  # type: ignore[import-untyped]
-    except ImportError as error:
-        raise ImportError(
-            "Parquet support requires `pip install crc-sdk[connectors]`"
-        ) from error
-    return pa, ds, pq
-
-
 def hazard_arrow_schema(
     metadata: HazardDatasetMetadata | None = None,
 ) -> Any:
     """Return the canonical physical hazard-row schema."""
-    pa, _, _ = _pyarrow()
     types = {
         "uint64": pa.uint64(),
         "binary": pa.binary(),
@@ -55,7 +47,6 @@ def hazard_arrow_schema(
 
 
 def _as_table(value: Any) -> Any:
-    pa, _, _ = _pyarrow()
     if isinstance(value, pa.Table):
         return value
     if isinstance(value, pa.RecordBatch):
@@ -110,9 +101,6 @@ def validate_hazard_table(
     process pool for tables above ``chunk_rows``; smaller tables validate
     in-process with no pool overhead.
     """
-    pa, _, _ = _pyarrow()
-    import pyarrow.compute as pc  # type: ignore[import-untyped]
-
     table = _as_table(value)
     expected = hazard_arrow_schema(metadata)
     expected_names = [field.name for field in HAZARD_FIELDS]
@@ -197,12 +185,6 @@ def _duckdb_connection(
         if not hasattr(connection, "execute") or not hasattr(connection, "register"):
             raise TypeError("connection must be a DuckDBPyConnection")
         return connection, False
-    try:
-        import duckdb  # noqa: F401
-    except ImportError as error:
-        raise ImportError(
-            "Parquet writes require `pip install crc-sdk[connectors]`"
-        ) from error
     if work_dir is not None:
         return DuckDBConnection.for_analytics(work_dir, extensions=()).connect(), True
     return DuckDBConnection().connect(), True
@@ -296,7 +278,6 @@ def write_hazard_stream(
 
 def read_hazard_metadata(source: str | Path) -> HazardDatasetMetadata:
     """Read the complete canonical payload from Parquet key-value metadata."""
-    _, _, pq = _pyarrow()
     parquet_schema = pq.read_schema(source)
     embedded = HazardDatasetMetadata.from_parquet_metadata(
         parquet_schema.metadata
@@ -317,7 +298,6 @@ def read_hazard_dataset(
     columns: list[str] | None = None,
 ) -> Any:
     """Read a validated canonical table with predicate pushdown."""
-    _, ds, _ = _pyarrow()
     metadata = read_hazard_metadata(source)
     expression = None
     if query is not None:

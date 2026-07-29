@@ -8,6 +8,7 @@ from hashlib import sha256
 from typing import Any, Literal, get_args
 
 import numpy as np
+import pyarrow as pa  # type: ignore[import-untyped]
 from crc_framework import (
     FittedDistribution,
     HurdleDistribution,
@@ -96,12 +97,6 @@ class CanonicalHazardStream:
 
     def read_all(self) -> Any:
         """Consume this stream into one canonical Arrow table."""
-        try:
-            import pyarrow as pa  # type: ignore[import-untyped]
-        except ImportError as error:
-            raise ImportError(
-                "OS-Climate ingest requires `crc-sdk[connectors,geometry]`"
-            ) from error
         batches = list(self.batches)
         if batches:
             return pa.concat_tables(
@@ -194,11 +189,10 @@ def _canonical_batches(
     bounds: Bounds | None,
 ) -> Iterator[CanonicalHazardBatch]:
     try:
-        import pyarrow as pa
         from shapely.geometry import Polygon  # type: ignore[import-untyped]
     except ImportError as error:
         raise ImportError(
-            "OS-Climate ingest requires `crc-sdk[connectors,geometry]`"
+            "OS-Climate ingest requires `pip install crc-sdk[geometry]`"
         ) from error
 
     hazard_schema = hazard_arrow_schema(metadata)

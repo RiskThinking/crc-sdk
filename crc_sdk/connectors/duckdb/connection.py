@@ -8,10 +8,11 @@ import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-if TYPE_CHECKING:
-    from duckdb import DuckDBPyConnection
+import duckdb
+import psutil  # type: ignore[import-untyped]
+from duckdb import DuckDBPyConnection
 
 _GIB = 1024**3
 _COMMUNITY_EXTENSIONS = frozenset({"h3"})
@@ -56,13 +57,6 @@ def detected_cpu_count() -> int:
     thread count — should use this instead, or it can spawn far more workers
     than a constrained host/container is actually allotted.
     """
-    try:
-        import psutil  # type: ignore[import-untyped]
-    except ImportError as error:
-        raise ImportError(
-            "CPU detection requires `pip install crc-sdk[connectors]`"
-        ) from error
-
     cpu_limits = [psutil.cpu_count(logical=True) or 1]
     try:
         affinity = psutil.Process().cpu_affinity()
@@ -107,13 +101,6 @@ class RuntimeResources:
         ``CRC_DUCKDB_BYTES_PER_THREAD_GIB``, if set to a positive value,
         overrides either case.
         """
-        try:
-            import psutil
-        except ImportError as error:
-            raise ImportError(
-                "Runtime resource detection requires `pip install crc-sdk[connectors]`"
-            ) from error
-
         root = Path(work_dir)
         root.mkdir(parents=True, exist_ok=True)
         temp_directory = root / "duckdb-temp"
@@ -172,13 +159,6 @@ class DuckDBConnection:
 
     def connect(self) -> DuckDBPyConnection:
         """Create a connection and optionally load requested extensions."""
-        try:
-            import duckdb
-        except ImportError as error:
-            raise ImportError(
-                "DuckDB support requires `pip install crc-sdk[connectors]`"
-            ) from error
-
         con = duckdb.connect(
             self.database or ":memory:",
             read_only=self.read_only,
