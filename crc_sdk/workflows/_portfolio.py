@@ -22,7 +22,11 @@ from .distributions import (
     return_periods_to_probabilities,
     stream_curve_quantiles_wide_to_parquet,
 )
-from .portfolio import PORTFOLIO_METADATA_KEY, PortfolioEvaluationResult
+from .portfolio import (
+    PORTFOLIO_METADATA_KEY,
+    PortfolioEvaluationResult,
+    _reserved_portfolio_output_columns,
+)
 
 
 def _sql_identifier(value: str) -> str:
@@ -175,15 +179,7 @@ def evaluate_hazard_portfolio(
         _validate_asset_columns(con, assets_sql, identity_columns)
         if len(set(identity_columns)) != len(identity_columns):
             raise ValueError("asset identity and passthrough columns must be unique")
-        reserved = {
-            "cell_index",
-            "hazard_name",
-            "horizon",
-            "pathway",
-            "source_id",
-            "spatial_match",
-            *value_columns,
-        }
+        reserved = _reserved_portfolio_output_columns(periods)
         collision_candidates = [asset_id_column, *passthrough_columns]
         if point_input:
             assert longitude_column is not None

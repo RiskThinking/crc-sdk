@@ -3,15 +3,36 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Union
 
 from crc_sdk.providers.local import LocalProvider
 
-from .distributions import return_periods_to_probabilities
+from .distributions import (
+    return_period_value_columns,
+    return_periods_to_probabilities,
+)
 
 PORTFOLIO_METADATA_KEY = "crc.hazard.evaluation"
+_PORTFOLIO_OUTPUT_COLUMNS = frozenset(
+    {
+        "cell_index",
+        "hazard_name",
+        "horizon",
+        "pathway",
+        "source_id",
+        "spatial_match",
+    }
+)
+
+
+def _reserved_portfolio_output_columns(
+    return_periods: Sequence[float],
+) -> frozenset[str]:
+    return _PORTFOLIO_OUTPUT_COLUMNS | frozenset(
+        return_period_value_columns(return_periods)
+    )
 
 
 @dataclass(frozen=True)
@@ -71,6 +92,7 @@ class AssetPortfolio:
     id_column: str = "asset_id"
     location: AssetLocation | None = None
     passthrough_columns: tuple[str, ...] | None = None
+    _passthrough_inferred: bool = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if not self.id_column:
@@ -111,15 +133,21 @@ class AssetPortfolio:
                 raise ValueError(f"asset source is missing columns {missing!r}")
 
         passthrough = self.passthrough_columns
+        inferred_passthrough = passthrough is None
         if passthrough is None:
             passthrough = (
-                tuple(name for name in columns if name not in required)
+                tuple(
+                    name
+                    for name in columns
+                    if name not in required and name not in _PORTFOLIO_OUTPUT_COLUMNS
+                )
                 if columns is not None
                 else ()
             )
         else:
             passthrough = tuple(passthrough)
         object.__setattr__(self, "passthrough_columns", passthrough)
+        object.__setattr__(self, "_passthrough_inferred", inferred_passthrough)
 
 
 @dataclass(frozen=True)
@@ -237,6 +265,12 @@ class PortfolioEvaluation:
             longitude_column = None
             latitude_column = None
             cell_index_column = location.name
+        passthrough_columns = self.portfolio.passthrough_columns or ()
+        if self.portfolio._passthrough_inferred:
+            reserved = _reserved_portfolio_output_columns(self.periods)
+            passthrough_columns = tuple(
+                name for name in passthrough_columns if name not in reserved
+            )
         return evaluate_hazard_portfolio(
             provider=self.dataset.provider,
             assets=self.portfolio.data,
@@ -249,7 +283,7 @@ class PortfolioEvaluation:
             hazard_names=self.selection.hazard_names,
             horizons=self.selection.horizons,
             pathways=self.selection.pathways,
-            passthrough_columns=self.portfolio.passthrough_columns or (),
+            passthrough_columns=passthrough_columns,
             connection=options.connection,
             batch_rows=options.batch_rows,
             max_workers=options.max_workers,
