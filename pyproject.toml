@@ -19,6 +19,12 @@ classifiers = [
 dependencies = [
     "crc-framework>=0.1,<0.2",
     "pydantic>=2,<3",
+    "duckdb>=1,<2",
+    "pyarrow>=14",
+    "psutil>=5",
+    "fsspec>=2024",
+    "s3fs>=2024",
+    "gcsfs>=2024",
 ]
 
 # temp source until crc-framework is published to PyPI
@@ -26,25 +32,16 @@ dependencies = [
 crc-framework = { git = "ssh://git@github.com/RiskThinking/crc-framework-rs.git", branch = "main" }
 
 [project.optional-dependencies]
-connectors = [
-    "duckdb>=1,<2",
-    "psutil>=5",
-    "pyarrow>=14",
-    "s3fs>=2024",
+zarr = [
     "zarr>=2.18,<3",
-]
-geometry = [
-    "h3>=4",
-    "shapely>=2",
-]
-geometry-vector = [
-    "h3ronpy>=0.19",
-    "pyarrow>=14",
 ]
 raster = [
     "rasterio>=1.4",
-    "fsspec>=2024",
-    "gcsfs>=2024",
+]
+geometry = [
+    "h3>=4",
+    "h3ronpy>=0.19",
+    "shapely>=2",
 ]
 test = [
     "mypy>=1.10",

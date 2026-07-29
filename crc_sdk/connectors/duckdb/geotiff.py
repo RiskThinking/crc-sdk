@@ -11,7 +11,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+import fsspec  # type: ignore[import-untyped]
 import numpy as np
+import pyarrow as pa  # type: ignore[import-untyped]
 
 from crc_sdk.geometry.h3 import (
     max_pixel_spacing_m,
@@ -49,13 +51,6 @@ def _materialize_local(uri: str, cache_dir: str | Path) -> Path:
     """Fetch `uri` into `cache_dir` via fsspec if not already cached there."""
     if "://" not in uri:
         return Path(uri)
-
-    try:
-        import fsspec  # type: ignore[import-untyped]
-    except ImportError as error:
-        raise ImportError(
-            "Cached remote raster access requires `pip install crc-sdk[raster]`"
-        ) from error
 
     cache_dir = Path(cache_dir)
     filesystem, path = fsspec.core.url_to_fs(uri)
@@ -420,13 +415,6 @@ class GeoTiffScan:
 
     def relation(self, *, connection: DuckDBConnection | None = None) -> Any:
         """Create a fresh lazy DuckDB relation for one query execution."""
-        try:
-            import pyarrow as pa  # type: ignore[import-untyped]
-        except ImportError as error:
-            raise ImportError(
-                "Arrow support requires `pip install crc-sdk[connectors]`"
-            ) from error
-
         schema = pa.schema(
             [
                 ("longitude", pa.float64()),
@@ -434,11 +422,11 @@ class GeoTiffScan:
                 ("value", pa.float32()),
             ]
         )
-        reader = pa.RecordBatchReader.from_batches(schema, self._batches(pa))
+        reader = pa.RecordBatchReader.from_batches(schema, self._batches())
         active = (connection or self.raster.connection).connect()
         return active.from_arrow(reader)
 
-    def _batches(self, pa: Any) -> Iterator[Any]:
+    def _batches(self) -> Iterator[Any]:
         raster = self.raster
         for window, band in raster._strips(self.bounds, self.strip_bytes):
             valid = np.isfinite(band)
@@ -484,16 +472,9 @@ class GeoTiffH3Scan:
         raster's pixel count) is pure per-query overhead next to a direct
         vectorized reduce.
         """
-        try:
-            import pyarrow as pa
-        except ImportError as error:
-            raise ImportError(
-                "Arrow support requires `pip install crc-sdk[connectors]`"
-            ) from error
-
         cell_parts = []
         value_parts = []
-        for batch in self._batches(pa):
+        for batch in self._batches():
             cell_parts.append(batch.column("cell").to_numpy(zero_copy_only=False))
             value_parts.append(batch.column("value").to_numpy(zero_copy_only=False))
 
@@ -516,7 +497,7 @@ class GeoTiffH3Scan:
         active = (connection or self.raster.connection).connect()
         return active.from_arrow(table)
 
-    def _batches(self, pa: Any) -> Iterator[Any]:
+    def _batches(self) -> Iterator[Any]:
         raster = self.raster
         pixel_w, pixel_h = raster.pixel_size_meters
         spacing = max_pixel_spacing_m(self.h3_resolution)

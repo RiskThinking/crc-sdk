@@ -19,7 +19,6 @@ from pathlib import Path
 from typing import Any
 
 import pyarrow as pa  # type: ignore[import-untyped]
-from shapely import wkb  # type: ignore[import-untyped]
 
 from crc_sdk.connectors import (
     OSClimateIngestPolicy,
@@ -107,7 +106,9 @@ def _tile_owns_point(
     return longitude_ok and latitude_ok
 
 
-def _owns_row(geometry: bytes | None, tile: Bounds, aoi_bounds: Bounds) -> bool:
+def _owns_row(
+    wkb: Any, geometry: bytes | None, tile: Bounds, aoi_bounds: Bounds
+) -> bool:
     if geometry is None:
         return True
     longitude, latitude = wkb.loads(geometry).centroid.coords[0]
@@ -118,8 +119,15 @@ def _drop_shared_edge_duplicates(
     table: pa.Table, tile: Bounds, aoi_bounds: Bounds
 ) -> pa.Table:
     """Keep only rows whose source pixel centroid this tile owns."""
+    try:
+        from shapely import wkb  # type: ignore[import-untyped]
+    except ImportError as error:
+        raise ImportError(
+            "Tile-edge deduplication requires `pip install crc-sdk[geometry]`"
+        ) from error
+
     owned = [
-        _owns_row(geometry, tile, aoi_bounds)
+        _owns_row(wkb, geometry, tile, aoi_bounds)
         for geometry in table.column("source_geometry").to_pylist()
     ]
     return table.filter(pa.array(owned))

@@ -11,10 +11,7 @@ provided by the versioned
 uv is the recommended tool for managing the development environment:
 
 ```shell
-uv sync \
-  --extra connectors \
-  --extra geometry \
-  --extra test
+uv sync --all-extras
 
 uv run pytest
 uv run mypy
@@ -25,23 +22,49 @@ Or simply:
 
 ```shell
 python -m venv .venv
-.venv/bin/python -m pip install -e ".[connectors,geometry,test]"
+.venv/bin/python -m pip install -e ".[zarr,raster,geometry,test]"
 .venv/bin/python -m pytest
 .venv/bin/python -m mypy
 .venv/bin/python -m ruff check .
 ```
 
+## Dependencies
+
+DuckDB, Arrow (`pyarrow`), `psutil` (resource detection), and remote-storage
+transport (`fsspec`, `s3fs`, `gcsfs`) are baseline dependencies — every
+connector and workflow in this SDK is built on that stack, so gating it
+behind an extra would just move the same install onto every real caller.
+
+Everything else is a specific data-format adapter or a pure-geometry
+dependency, opted into only by the callers that need it:
+
+| Extra | Adds | Used by |
+|---|---|---|
+| `zarr` | `zarr` | `OSClimateProvider`/`ZarrRaster` (OS-Climate Zarr raster ingest) |
+| `raster` | `rasterio` | `GeoTiffRaster` (GeoTIFF/COG ingest, streamed via GDAL VSI) |
+| `geometry` | `h3`, `h3ronpy`, `shapely` | `H3Indexer`, `intersecting_cells`, `cell_polygon`, other abstract H3/geometry math, vectorized batch H3 ops on Arrow data (`polyfill_wkb`, `expand_polygon_candidates`, raster-to-H3 sampling) |
+| `test` | `mypy`, `pytest`, `ruff` | Development only |
+
+Every function that needs an extra-gated dependency imports it lazily and
+raises a clear `ImportError` naming the extra to install if it's missing —
+importing `crc_sdk` (or any of its subpackages) itself never requires more
+than the baseline dependencies.
+
 ## Package boundaries
 
 - `crc_sdk.core`, `crc_sdk.fitting`, and `crc_sdk.impacts` expose the stable
   public API of `crc_framework`.
-- `crc_sdk.connectors` handles external formats and query engines, including
-  DuckDB connection helpers (`DuckDBConnection`, `RuntimeResources`,
-  streaming Parquet writes) and OS-Climate Zarr ingest.
+- `crc_sdk.connectors` handles external formats and query engines: DuckDB
+  connection helpers (`DuckDBConnection`, `RuntimeResources`, streaming
+  Parquet writes), OS-Climate Zarr ingest (`zarr` extra), and GeoTIFF/COG
+  ingest (`GeoTiffRaster`, `raster` extra) — the latter streams directly
+  from local paths or `gs://`/`s3://`/`http(s)://` URIs via GDAL's own
+  range-request support, with no local download by default.
 - `crc_sdk.providers` describes storage and dataset discovery.
 - `crc_sdk.geometry` contains geometry conversion, DuckDB-native H3 polyfill
-  (`H3Indexer`), Arrow batch polyfill (`polyfill_wkb`, optional
-  `geometry-vector` extra for h3ronpy Covers), exploded coverage writers
+  (`H3Indexer`), Arrow batch polyfill (`polyfill_wkb`, `geometry`
+  extra for h3ronpy), raster-to-H3 sampling primitives
+  (`pixel_grid_resolution`, `sample_grid_to_h3`), exploded coverage writers
   (`write_exploded_coverage`), and optional nested lookup derivation
   (`LookupCatalog`, `write_lookup_contract`, `write_partitioned_lookup`).
 - `crc_sdk.schema` defines columnar data contracts.

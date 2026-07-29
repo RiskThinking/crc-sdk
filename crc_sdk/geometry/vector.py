@@ -5,6 +5,8 @@ from __future__ import annotations
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
+import pyarrow as pa  # type: ignore[import-untyped]
+
 if TYPE_CHECKING:
     from duckdb import DuckDBPyConnection
 
@@ -36,7 +38,7 @@ def polyfill_wkb(
 ) -> Any:
     """Polyfill WKB polygons into per-row H3 cell lists (Arrow list-array).
 
-    Requires ``pip install crc-sdk[geometry-vector]`` (h3ronpy + pyarrow).
+    Requires ``pip install crc-sdk[geometry]`` (h3ronpy).
     """
     if not 0 <= resolution <= 15:
         raise ValueError("H3 resolution must be between 0 and 15")
@@ -47,7 +49,7 @@ def polyfill_wkb(
         import h3ronpy.vector
     except ImportError as error:
         raise ImportError(
-            "Batch polyfill requires `pip install crc-sdk[geometry-vector]`"
+            "Batch polyfill requires `pip install crc-sdk[geometry]`"
         ) from error
 
     containment_mode = getattr(h3ronpy.vector.ContainmentMode, _H3RONPY_MODE[mode])
@@ -93,13 +95,6 @@ def expand_polygon_candidates(
     one-shot regardless of size. When batching, input is streamed via record
     batches so not all WKB must live in Arrow at once.
     """
-    try:
-        import pyarrow as pa
-    except ImportError as error:
-        raise ImportError(
-            "Batch polyfill requires `pip install crc-sdk[geometry-vector]`"
-        ) from error
-
     mode = VectorContainment(containment)
     con.execute(f"DROP TABLE IF EXISTS {candidates_table}")
     con.execute(f"CREATE TABLE {candidates_table} ({hex_col} VARCHAR, {id_col} BIGINT)")
@@ -122,7 +117,6 @@ def expand_polygon_candidates(
             wkb_col=wkb_col,
             hex_col=hex_col,
             candidates_table=candidates_table,
-            pa=pa,
         )
 
     return _expand_batched(
@@ -135,7 +129,6 @@ def expand_polygon_candidates(
         hex_col=hex_col,
         candidates_table=candidates_table,
         batch_rows=int(resolved_batch_rows),
-        pa=pa,
     )
 
 
@@ -149,7 +142,6 @@ def _expand_one_shot(
     wkb_col: str,
     hex_col: str,
     candidates_table: str,
-    pa: Any,
 ) -> int:
     table = _fetch_arrow_table(con, polygon_sql)
     if table.num_rows == 0:
@@ -161,7 +153,7 @@ def _expand_one_shot(
         flatten=False,
     )
     batch_table = pa.Table.from_arrays(
-        [table.column(id_col), _to_pyarrow_array(cells, pa)],
+        [table.column(id_col), _to_pyarrow_array(cells)],
         names=["_poly_id", "_cells"],
     )
     register_name = "_crc_polyfill_all"
@@ -192,10 +184,9 @@ def _expand_batched(
     hex_col: str,
     candidates_table: str,
     batch_rows: int,
-    pa: Any,
 ) -> int:
     result = con.execute(polygon_sql)
-    reader = _arrow_reader(result, pa)
+    reader = _arrow_reader(result)
     batch_index = 0
     for batch in reader:
         if batch.num_rows == 0:
@@ -209,7 +200,7 @@ def _expand_batched(
                 flatten=False,
             )
             batch_table = pa.Table.from_arrays(
-                [chunk.column(id_col), _to_pyarrow_array(cells, pa)],
+                [chunk.column(id_col), _to_pyarrow_array(cells)],
                 names=["_poly_id", "_cells"],
             )
             register_name = f"_crc_polyfill_batch_{batch_index}"
@@ -241,7 +232,7 @@ def _fetch_arrow_table(con: DuckDBPyConnection, polygon_sql: str) -> Any:
     return arrow_obj.read_all() if hasattr(arrow_obj, "read_all") else arrow_obj
 
 
-def _arrow_reader(result: Any, pa: Any) -> Any:
+def _arrow_reader(result: Any) -> Any:
     if hasattr(result, "to_arrow_reader"):
         try:
             reader = result.to_arrow_reader()
@@ -271,13 +262,6 @@ def _arrow_reader(result: Any, pa: Any) -> Any:
 
 
 def _as_binary_array(wkb_values: Any) -> Any:
-    try:
-        import pyarrow as pa
-    except ImportError as error:
-        raise ImportError(
-            "Batch polyfill requires `pip install crc-sdk[geometry-vector]`"
-        ) from error
-
     if hasattr(wkb_values, "num_chunks"):
         return (
             wkb_values.combine_chunks()
@@ -289,7 +273,7 @@ def _as_binary_array(wkb_values: Any) -> Any:
     return pa.array(list(wkb_values), type=pa.binary())
 
 
-def _to_pyarrow_array(values: Any, pa: Any) -> Any:
+def _to_pyarrow_array(values: Any) -> Any:
     if isinstance(values, pa.Array):
         return values
     # Prefer Arrow C data / capsule bridges (e.g. arro3) over to_pylist().

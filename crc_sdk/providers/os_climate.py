@@ -9,6 +9,8 @@ from types import MappingProxyType
 from typing import Any, Optional, Union
 from urllib.request import urlopen
 
+import s3fs  # type: ignore[import-untyped]
+
 from crc_sdk.connectors.duckdb import DuckDBConnection, default_work_dir
 from crc_sdk.connectors.duckdb.zarr import RasterMetadata, ZarrRaster
 
@@ -219,11 +221,10 @@ class OSClimateProvider:
     def open(self, selection: OSClimateSelection) -> ZarrRaster:
         """Open metadata only; chunks remain remote until a scan executes."""
         try:
-            import s3fs  # type: ignore[import-untyped]
             import zarr  # type: ignore[import-untyped]
         except ImportError as error:
             raise ImportError(
-                "OS-Climate access requires `pip install crc-sdk[connectors]`"
+                "OS-Climate access requires `pip install crc-sdk[zarr]`"
             ) from error
 
         if self._filesystem is None:

@@ -398,7 +398,7 @@ def sample_grid_to_h3(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Reduce WGS84 point samples to one value per H3 cell.
 
-    Vectorized via h3ronpy; requires `pip install crc-sdk[geometry-vector]`.
+    Vectorized via h3ronpy; requires `pip install crc-sdk[geometry]`.
     """
     if not 0 <= resolution <= 15:
         raise ValueError("H3 resolution must be between 0 and 15")
@@ -406,7 +406,7 @@ def sample_grid_to_h3(
         from h3ronpy.vector import coordinates_to_cells  # type: ignore[import-untyped]
     except ImportError as error:
         raise ImportError(
-            "Grid-to-H3 sampling requires `pip install crc-sdk[geometry-vector]`"
+            "Grid-to-H3 sampling requires `pip install crc-sdk[geometry]`"
         ) from error
     cells = coordinates_to_cells(
         np.asarray(latitudes, dtype=np.float64),
