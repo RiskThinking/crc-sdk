@@ -17,6 +17,7 @@ from crc_sdk.types import (
 from crc_sdk.workflows import (
     curve_parameters_from_row,
     distribution_from_hazard_row,
+    sample_hazard_at_cell,
     sample_hazard_at_point,
     sample_hazard_row,
 )
@@ -125,6 +126,54 @@ def test_sample_hazard_row_rejects_non_positive_size(size: int) -> None:
 def test_sample_hazard_row_rejects_non_integer_size() -> None:
     with pytest.raises(TypeError, match="integer"):
         sample_hazard_row(_row(), size=1.5)  # type: ignore[arg-type]
+
+
+def test_sample_hazard_at_cell_filters_and_returns_context() -> None:
+    provider = _Provider(_table(_row(curve_kind="hurdle")))
+    cell_index = point_to_cell(LONGITUDE, LATITUDE, H3_RESOLUTION)
+
+    result = sample_hazard_at_cell(
+        provider,
+        "flood",
+        cell_index,
+        horizon=2050,
+        pathway="ssp585",
+        size=16,
+        seed=11,
+    )
+
+    assert result.samples.shape == (16,)
+    assert result.cell_index == cell_index
+    assert result.source_id == "source-a"
+    assert result.value_unit == "metres"
+    assert isinstance(result.distribution, HurdleDistribution)
+    assert provider.last_query == HazardQuery(
+        hazard_name="flood",
+        horizon=2050,
+        pathway="ssp585",
+        cell_index=cell_index,
+    )
+
+
+def test_sample_hazard_at_cell_rejects_no_match() -> None:
+    provider = _Provider(_table(_row()))
+    other_cell = point_to_cell(0.0, 0.0, H3_RESOLUTION)
+
+    with pytest.raises(LookupError, match=f"cell {other_cell}"):
+        sample_hazard_at_cell(provider, "flood", other_cell)
+
+
+def test_sample_hazard_at_cell_rejects_ambiguous_matches() -> None:
+    provider = _Provider(
+        _table(
+            _row(source_id="source-a"),
+            _row(source_id="source-b"),
+        )
+    )
+    cell_index = point_to_cell(LONGITUDE, LATITUDE, H3_RESOLUTION)
+
+    with pytest.raises(LookupError, match="matches multiple 'flood' curves"):
+        sample_hazard_at_cell(provider, "flood", cell_index)
 
 
 def test_sample_hazard_at_point_refines_geometry_and_returns_context() -> None:
