@@ -533,7 +533,7 @@ def test_curve_quantiles_at_uses_shared_row_adapter(
         return curve_parameters_from_row(row)
 
     monkeypatch.setattr(
-        "crc_sdk.workflows.tiling.curve_parameters_from_row",
+        "crc_sdk.workflows.distributions.curve_parameters_from_row",
         _recording_adapter,
     )
     table = pa.Table.from_pylist(
@@ -580,9 +580,13 @@ def test_curve_quantiles_at_uses_detected_cpu_count_not_os_cpu_count(
     size here too, not just DuckDB's own thread count — os.cpu_count()
     ignores cgroup quotas entirely and can over-spawn workers."""
     _fake_pool_calls.clear()
-    monkeypatch.setattr("crc_sdk.workflows.tiling.detected_cpu_count", lambda: 1)
     monkeypatch.setattr(
-        "crc_sdk.workflows.tiling.ProcessPoolExecutor", _FakePoolExecutor
+        "crc_sdk.workflows.distributions.detected_cpu_count",
+        lambda: 1,
+    )
+    monkeypatch.setattr(
+        "crc_sdk.workflows.distributions.ProcessPoolExecutor",
+        _FakePoolExecutor,
     )
     table = pa.Table.from_pylist(
         [_row(index, "a") for index in range(3)], schema=hazard_arrow_schema()
@@ -598,9 +602,13 @@ def test_curve_quantiles_at_pool_forces_spawn_context(
 ) -> None:
     """DuckDB connections are not fork-safe; every pool must force spawn."""
     _fake_pool_calls.clear()
-    monkeypatch.setattr("crc_sdk.workflows.tiling.detected_cpu_count", lambda: 4)
     monkeypatch.setattr(
-        "crc_sdk.workflows.tiling.ProcessPoolExecutor", _FakePoolExecutor
+        "crc_sdk.workflows.distributions.detected_cpu_count",
+        lambda: 4,
+    )
+    monkeypatch.setattr(
+        "crc_sdk.workflows.distributions.ProcessPoolExecutor",
+        _FakePoolExecutor,
     )
     table = pa.Table.from_pylist(
         [_row(index, "a") for index in range(3)], schema=hazard_arrow_schema()
@@ -731,9 +739,13 @@ def test_stream_curve_quantiles_to_parquet_pool_uses_detected_cpu_count_and_spaw
     built — the pool must force spawn (never inherit it via fork), and its
     size must come from the cgroup-aware detector, not os.cpu_count()."""
     _fake_pool_calls.clear()
-    monkeypatch.setattr("crc_sdk.workflows.tiling.detected_cpu_count", lambda: 4)
     monkeypatch.setattr(
-        "crc_sdk.workflows.tiling.ProcessPoolExecutor", _FakePoolExecutor
+        "crc_sdk.workflows.distributions.detected_cpu_count",
+        lambda: 4,
+    )
+    monkeypatch.setattr(
+        "crc_sdk.workflows.distributions.ProcessPoolExecutor",
+        _FakePoolExecutor,
     )
     rows = [_curve_row(index, "P", float(index)) for index in range(5)]
     con = duckdb.connect()

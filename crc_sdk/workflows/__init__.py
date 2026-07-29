@@ -2,14 +2,23 @@
 
 from .distributions import (
     CURVE_COLUMNS,
-    CurveSample,
-    HazardCellSample,
-    HazardPointSample,
     curve_parameters_from_row,
+    curve_quantiles,
     distribution_from_hazard_row,
-    sample_hazard_at_cell,
-    sample_hazard_at_point,
-    sample_hazard_row,
+    return_period_value_columns,
+    return_periods_to_probabilities,
+    stream_curve_quantiles_wide_to_parquet,
+)
+from .portfolio import (
+    PORTFOLIO_METADATA_KEY,
+    AssetPortfolio,
+    CellColumn,
+    ExecutionOptions,
+    HazardDataset,
+    HazardSelection,
+    PointColumns,
+    PortfolioEvaluation,
+    PortfolioEvaluationResult,
 )
 from .tiling import (
     OSClimateSelectionSpec,
@@ -20,18 +29,25 @@ from .tiling import (
 )
 
 __all__ = [
+    "AssetPortfolio",
+    "CellColumn",
     "CURVE_COLUMNS",
-    "CurveSample",
-    "HazardCellSample",
-    "HazardPointSample",
+    "ExecutionOptions",
+    "HazardDataset",
+    "HazardSelection",
     "OSClimateSelectionSpec",
+    "PORTFOLIO_METADATA_KEY",
+    "PointColumns",
+    "PortfolioEvaluation",
+    "PortfolioEvaluationResult",
     "curve_parameters_from_row",
+    "curve_quantiles",
     "curve_quantiles_at",
     "distribution_from_hazard_row",
+    "return_period_value_columns",
+    "return_periods_to_probabilities",
     "run_tiled_canonicalization",
-    "sample_hazard_at_cell",
-    "sample_hazard_at_point",
-    "sample_hazard_row",
     "stream_curve_quantiles_to_parquet",
+    "stream_curve_quantiles_wide_to_parquet",
     "tile_bounds",
 ]

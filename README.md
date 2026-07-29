@@ -117,52 +117,74 @@ knots. Plain curves use `fit_quantiles`, while hurdle curves use
 `fit_hurdle_quantiles`. `LocalProvider` queries persisted hazard rows through
 `HazardQuery`.
 
-### Sampling canonical datasets
+### Evaluating asset portfolios at return periods
 
-Persisted curve parameters can be reconstructed and sampled without returning
-to the external source format or refitting the data:
+Canonical curve parameters can be evaluated for a portfolio without returning
+to the external source format or refitting the data. The workflow joins every
+asset to its canonical curve and writes one row per asset, hazard, horizon, and
+pathway, with one value column per requested return period:
 
 ```python
-from crc_sdk.providers import LocalProvider
-from crc_sdk.workflows import sample_hazard_at_point
+import pyarrow as pa
 
-provider = LocalProvider("flood.parquet")
-result = sample_hazard_at_point(
-    provider,
-    "flood",
-    longitude=6.9603,
-    latitude=50.9375,
-    horizon=2050,
-    pathway="ssp585",
-    size=10_000,
-    seed=42,
+from crc_sdk.workflows import HazardDataset
+
+assets = pa.table(
+    {
+        "asset_id": ["warehouse-a", "warehouse-b"],
+        "longitude": [6.9603, 7.5010],
+        "latitude": [50.9375, 51.0030],
+        "sector": ["logistics", "manufacturing"],
+    }
 )
 
-samples = result.samples
-distribution = result.distribution
+result = (
+    HazardDataset.local("flood.parquet")
+    .for_assets(assets)
+    .select(horizons=[2050], pathways=["ssp585"])
+    .return_periods([25, 50, 100, 250, 500, 1000])
+    .write_parquet("portfolio-flood.parquet")
+)
 ```
 
-The point workflow reads the dataset H3 resolution from canonical metadata,
-converts the WGS84 point to a `cell_index`, and applies that filter together
-with the requested hazard and scenario dimensions. Because canonical H3 rows
-are conservative overlap candidates, `source_geometry` is used for exact
-point-in-source refinement when present. `result.spatial_match` is
-`"exact_geometry"` in that case; when the selected row has no source WKB it is
-`"h3_cell"` and carries only cell-level spatial precision. No match and
-multiple matches both raise instead of silently selecting or aggregating a
-curve.
+The resulting value columns are `value_rp25`, `value_rp50`, `value_rp100`,
+`value_rp250`, `value_rp500`, and `value_rp1000`. For upper-tail hazards, each
+return period `RP` is evaluated at non-exceedance probability `1 - 1/RP`.
+Value unit, value semantics, and the complete return-period/probability/column
+mapping are stored under `crc.hazard.evaluation` in Parquet metadata.
 
-Point lookup requires the `geometry` extra. For an already selected canonical
-Arrow row or table, `distribution_from_hazard_row` and `sample_hazard_row` in
-`crc_sdk.workflows` reconstruct or sample directly without spatial lookup.
-Sampling defaults to 10,000 values and an unseeded generator; pass `seed` for
-reproducible draws.
+Point assets are converted to the H3 resolution recorded by the canonical
+dataset. The H3 join is refined with `ST_Covers(source_geometry, asset_point)`
+when source WKB is present; rows without WKB retain cell-level precision.
+`source_id` and `spatial_match` (`exact_geometry` or `h3_cell`) remain in the
+output. Multiple source curves for one asset/hazard/horizon/pathway raise
+instead of being silently selected or aggregated, and missing asset/scenario
+matches raise rather than being dropped from the output.
 
-Call `sample_hazard_at_cell` when the H3 index is already known. It accepts the
-same provider, hazard/scenario filters, sample size, and seed as the point
-workflow, but queries the canonical `cell_index` directly and therefore does
-not perform source-geometry refinement. Both location workflows require one
-matching canonical curve and raise on missing or ambiguous rows.
+When assets already contain canonical H3 indexes, use
+`cell_index_column="cell_index"` instead of longitude/latitude columns. This
+avoids point conversion and exact source-geometry refinement:
+
+```python
+(
+    HazardDataset.local("flood.parquet")
+    .for_assets(assets_with_cells)
+    .return_periods([25, 50, 100, 250, 500, 1000])
+    .write_parquet("portfolio-flood.parquet")
+)
+```
+
+Arrow tables can be registered directly as shown above. A `Path` reads an
+asset Parquet file, while a string is treated as caller-supplied DuckDB SQL.
+Output evaluation is streamed in bounded Arrow batches to compressed Parquet.
+For already selected canonical rows, `distribution_from_hazard_row` remains
+available as the low-level curve reconstruction utility.
+
+The common column names `asset_id`, `longitude`/`latitude`, and `cell_index`
+are inferred. Use `AssetPortfolio`, `PointColumns`, or `CellColumn` only for a
+nonstandard asset schema. Worker, batch, and connection controls are grouped
+under `ExecutionOptions` on `write_parquet`, keeping execution tuning out of
+the normal workflow.
 
 ## License
 
