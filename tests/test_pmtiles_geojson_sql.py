@@ -88,6 +88,35 @@ def test_build_layer_query_handles_zero_row_geoparquet(tmp_path: Path) -> None:
     assert con.execute(query).fetchall() == []
 
 
+def test_build_layer_query_reads_a_glob_with_schema_drift_via_union_by_name(
+    tmp_path: Path,
+) -> None:
+    """Regression test: a Hive dataset accumulated per-partition (e.g. one
+    file per country) can have genuine column drift -- one partition simply
+    lacking a scenario/pathway column another has. Without `union_by_name`,
+    DuckDB silently keeps only the first file's columns and drops the rest
+    from every other file (confirmed empirically, not just documented) --
+    not an error, just quietly missing data in the tiled output.
+    """
+    con = _connection()
+    con.execute(
+        f"""COPY (SELECT 1 AS id, 10 AS perc_50, ST_Point(0, 0) AS geometry)
+        TO '{tmp_path / "a.parquet"}' (FORMAT PARQUET)"""
+    )
+    con.execute(
+        f"""COPY (SELECT 2 AS id, 20 AS perc_50, 30 AS perc_90,
+        ST_Point(1, 1) AS geometry) TO '{tmp_path / "b.parquet"}' (FORMAT PARQUET)"""
+    )
+    glob = str(tmp_path / "*.parquet")
+    query = build_layer_query(
+        con, LayerSource(source=glob, layer="p", minzoom=0, maxzoom=1)
+    )
+    features = [json.loads(row[0]) for row in con.execute(query).fetchall()]
+    by_id = {f["properties"]["id"]: f["properties"] for f in features}
+    assert by_id[1].get("perc_90") is None
+    assert by_id[2]["perc_90"] == 30
+
+
 def test_build_layer_query_raises_when_no_geometry_column_found(tmp_path: Path) -> None:
     con = _connection()
     path = tmp_path / "no_geom.parquet"
