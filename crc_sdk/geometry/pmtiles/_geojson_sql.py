@@ -117,7 +117,14 @@ def build_layer_query(con: Any, layer_source: LayerSource) -> str:
     GeoParquet geometry decoding plus
     ``ST_AsGeoJSON``/``ST_ReducePrecision``/``ST_Transform``).
     """
-    source_ref = f"read_parquet({sql_quote(layer_source.source)})"
+    # `union_by_name=true` matters even for a single, well-formed file (it's
+    # a no-op there): a Hive dataset accumulated across many independent
+    # writers (e.g. one file per country) can have genuine per-partition
+    # column drift (a country simply lacking some scenario/pathway
+    # combination). Without this, DuckDB silently keeps only the first
+    # file's columns and drops the rest from every other file -- not an
+    # error, just quietly missing data in the tiled output.
+    source_ref = f"read_parquet({sql_quote(layer_source.source)}, union_by_name=true)"
     column_types = _relation_column_types(con, source_ref)
     columns = list(column_types)
     geo_meta = geo_metadata(con, layer_source.source)
