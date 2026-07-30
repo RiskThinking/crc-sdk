@@ -31,7 +31,6 @@ logger = logging.getLogger(__name__)
 # `stream_curve_quantiles_wide_to_parquet`'s own default, a reasonable
 # bound on how much of the upstream scan is ever materialized at once.
 BATCH_ROWS = 50_000
-_RECORD_SEPARATOR = "\x1e"
 
 
 def _is_remote(destination: str) -> bool:
@@ -143,8 +142,11 @@ def build_pmtiles_archive(build: PMTilesBuild, output: str) -> PMTilesResult:
             for batch in reader:
                 if batch.num_rows == 0:
                     continue
-                lines = batch.column("feature").to_pylist()
-                payload = "".join(f"{_RECORD_SEPARATOR}{line}\n" for line in lines)
+                # The record separator and trailing newline are already part
+                # of each `feature` string (baked in by `_geojson_sql`, in
+                # SQL) -- no per-row Python formatting here, just a batched
+                # concatenation.
+                payload = "".join(batch.column("feature").to_pylist())
                 process.write(payload.encode("utf-8"))
 
         _publish(local_output, output)

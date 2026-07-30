@@ -172,15 +172,26 @@ def build_layer_query(con: Any, layer_source: LayerSource) -> str:
         + ","
     )
 
+    # The RFC 8142 record separator (0x1E) and trailing newline are baked in
+    # here, in SQL, rather than added by a per-row Python format string in
+    # the caller's write loop -- with ~100k+ rows, an f-string executed once
+    # per row in pure Python is real, measurable overhead (confirmed via a
+    # head-to-head benchmark against the gpio-subprocess pipeline this
+    # replaces) that starves the downstream tippecanoe process of input
+    # rather than keeping it continuously fed. DuckDB computes this
+    # (including the separators) in parallel across its own worker threads
+    # regardless; the caller's job becomes a plain `"".join(batch.to_pylist())`
+    # with no per-row Python formatting at all.
     return (
         "SELECT "
+        "chr(30) || "
         "'{\"type\":\"Feature\",' || "
         f"{sql_quote(tag_literal)} || "
         "'\"geometry\":' || "
         f"COALESCE({geom_json_expr}, 'null') || "
         "',\"properties\":' || "
         f"{properties_expr} || "
-        "'}' AS feature "
+        "'}' || chr(10) AS feature "
         f"FROM {source_ref} "
         f"WHERE {quoted_geom} IS NOT NULL"
     )
