@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from typing import Any
 
 import duckdb
 import pytest
@@ -29,6 +30,17 @@ def _write_points(con: "duckdb.DuckDBPyConnection", path: Path, count: int = 5) 
     )
 
 
+def _parse_feature(raw: str) -> dict[str, Any]:
+    """Each `feature` row carries the RFC 8142 record separator/newline
+    baked in (so the caller's write loop needs no per-row Python
+    formatting) -- strip them before parsing as JSON.
+    """
+    assert raw[0] == "\x1e"
+    assert raw[-1] == "\n"
+    parsed: dict[str, Any] = json.loads(raw[1:-1])
+    return parsed
+
+
 def test_build_layer_query_produces_valid_feature_rows(tmp_path: Path) -> None:
     con = _connection()
     path = tmp_path / "points.parquet"
@@ -40,7 +52,7 @@ def test_build_layer_query_produces_valid_feature_rows(tmp_path: Path) -> None:
     rows = con.execute(query).fetchall()
     assert len(rows) == 3
     for (feature_json,) in rows:
-        feature = json.loads(feature_json)
+        feature = _parse_feature(feature_json)
         assert feature["type"] == "Feature"
         assert feature["geometry"]["type"] == "Point"
         assert feature["tippecanoe"] == {"layer": "places", "minzoom": 0, "maxzoom": 10}
@@ -65,7 +77,7 @@ def test_build_layer_query_honors_precision(tmp_path: Path) -> None:
     row = con.execute(query).fetchone()
     assert row is not None
     (feature_json,) = row
-    coordinates = json.loads(feature_json)["geometry"]["coordinates"]
+    coordinates = _parse_feature(feature_json)["geometry"]["coordinates"]
     assert coordinates == [1.12, 2.99]
 
 
@@ -111,7 +123,7 @@ def test_build_layer_query_reads_a_glob_with_schema_drift_via_union_by_name(
     query = build_layer_query(
         con, LayerSource(source=glob, layer="p", minzoom=0, maxzoom=1)
     )
-    features = [json.loads(row[0]) for row in con.execute(query).fetchall()]
+    features = [_parse_feature(row[0]) for row in con.execute(query).fetchall()]
     by_id = {f["properties"]["id"]: f["properties"] for f in features}
     assert by_id[1].get("perc_90") is None
     assert by_id[2]["perc_90"] == 30
@@ -151,7 +163,7 @@ def test_build_combined_query_unions_multiple_layers(tmp_path: Path) -> None:
     )
     rows = con.execute(query).fetchall()
     assert len(rows) == 4
-    layers = {json.loads(row[0])["tippecanoe"]["layer"] for row in rows}
+    layers = {_parse_feature(row[0])["tippecanoe"]["layer"] for row in rows}
     assert layers == {"points", "buildings"}
 
 
