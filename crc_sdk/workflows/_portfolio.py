@@ -24,6 +24,7 @@ from .distributions import (
 )
 from .portfolio import (
     PORTFOLIO_METADATA_KEY,
+    ImpactSpec,
     PortfolioEvaluationResult,
     _reserved_portfolio_columns,
 )
@@ -85,11 +86,14 @@ def _portfolio_metadata(
     return_periods: tuple[float, ...],
     probabilities: tuple[float, ...],
     value_columns: tuple[str, ...],
+    impact: ImpactSpec | None,
 ) -> Mapping[bytes, bytes]:
     payload = {
         "probability_convention": metadata.probability_convention,
-        "value_unit": metadata.value_unit,
-        "value_semantics": metadata.value_semantics,
+        "value_unit": impact.value_unit if impact is not None else metadata.value_unit,
+        "value_semantics": (
+            impact.value_semantics if impact is not None else metadata.value_semantics
+        ),
         "return_periods": [
             {
                 "return_period": period,
@@ -103,6 +107,19 @@ def _portfolio_metadata(
             )
         ],
     }
+    if impact is not None:
+        payload.update(
+            {
+                "interpretation": "event_aligned",
+                "source_value_unit": metadata.value_unit,
+                "source_value_semantics": metadata.value_semantics,
+                "impact": {
+                    "name": impact.name,
+                    "type": impact.function_type,
+                    "context_columns": dict(impact.context_columns.items()),
+                },
+            }
+        )
     return {
         PORTFOLIO_METADATA_KEY.encode("utf-8"): json.dumps(
             payload,
@@ -126,6 +143,7 @@ def evaluate_hazard_portfolio(
     horizons: Sequence[int] | None = None,
     pathways: Sequence[str] | None = None,
     passthrough_columns: Sequence[str] = (),
+    impact: ImpactSpec | None = None,
     connection: Any | None = None,
     batch_rows: int = 50_000,
     max_workers: int | None = None,
@@ -154,10 +172,13 @@ def evaluate_hazard_portfolio(
 
     owned = connection is None
     extensions = ("spatial", "h3") if point_input else ()
-    con = connection or DuckDBConnection.for_analytics(
-        output_path.parent,
-        extensions=extensions,
-    ).connect()
+    con = (
+        connection
+        or DuckDBConnection.for_analytics(
+            output_path.parent,
+            extensions=extensions,
+        ).connect()
+    )
     if connection is not None and extensions:
         ensure_extensions(con, *extensions)
 
@@ -166,6 +187,14 @@ def evaluate_hazard_portfolio(
     try:
         assets_sql, registered = _assets_source(con, assets, relation_name)
         identity_columns = [asset_id_column, *passthrough_columns]
+        context_source_columns = (
+            tuple(column for _, column in impact.context_columns.items())
+            if impact is not None
+            else ()
+        )
+        for name in context_source_columns:
+            if name not in identity_columns:
+                identity_columns.append(name)
         if point_input:
             assert longitude_column is not None
             assert latitude_column is not None
@@ -194,14 +223,10 @@ def evaluate_hazard_portfolio(
 
         asset_id = _sql_identifier(asset_id_column)
         longitude = (
-            _sql_identifier(longitude_column)
-            if longitude_column is not None
-            else None
+            _sql_identifier(longitude_column) if longitude_column is not None else None
         )
         latitude = (
-            _sql_identifier(latitude_column)
-            if latitude_column is not None
-            else None
+            _sql_identifier(latitude_column) if latitude_column is not None else None
         )
         output_asset_columns = [asset_id_column, *passthrough_columns]
         if point_input:
@@ -215,6 +240,23 @@ def evaluate_hazard_portfolio(
             for name in output_asset_columns
             if name != asset_id_column
         ]
+        context_record_columns = (
+            {
+                field_name: f"_crc_impact_context_{field_name}"
+                for field_name, _ in impact.context_columns.items()
+            }
+            if impact is not None
+            else {}
+        )
+        internal_context = (
+            [
+                f"a.{_sql_identifier(source_name)} AS "
+                f"{_sql_identifier(context_record_columns[field_name])}"
+                for field_name, source_name in impact.context_columns.items()
+            ]
+            if impact is not None
+            else []
+        )
         if point_input:
             assert longitude is not None
             assert latitude is not None
@@ -233,9 +275,7 @@ def evaluate_hazard_portfolio(
             )
         else:
             assert cell_index_column is not None
-            cell_expression = (
-                f"CAST(a.{_sql_identifier(cell_index_column)} AS UBIGINT)"
-            )
+            cell_expression = f"CAST(a.{_sql_identifier(cell_index_column)} AS UBIGINT)"
             spatial_predicate = ""
             spatial_match = "'h3_cell'"
 
@@ -247,6 +287,7 @@ def evaluate_hazard_portfolio(
         selected = [
             f"a.{asset_id} AS {asset_id}",
             *passthrough,
+            *internal_context,
             f"CAST({cell_expression} AS UBIGINT) AS cell_index",
             "h.hazard_name",
             "h.horizon",
@@ -293,8 +334,7 @@ def evaluate_hazard_portfolio(
         ).fetchall()
         if ambiguous:
             raise LookupError(
-                "portfolio assets match multiple source curves: "
-                f"{ambiguous!r}"
+                f"portfolio assets match multiple source curves: {ambiguous!r}"
             )
         missing = con.execute(
             f"""
@@ -321,8 +361,7 @@ def evaluate_hazard_portfolio(
         ).fetchall()
         if missing:
             raise LookupError(
-                "portfolio assets are missing hazard curves: "
-                f"{missing!r}"
+                f"portfolio assets are missing hazard curves: {missing!r}"
             )
 
         output_columns = [
@@ -346,7 +385,10 @@ def evaluate_hazard_portfolio(
                 return_periods=periods,
                 probabilities=probabilities,
                 value_columns=value_columns,
+                impact=impact,
             ),
+            impact=impact,
+            context_columns=context_record_columns,
             batch_rows=batch_rows,
             max_workers=max_workers,
             chunk_rows=chunk_rows,

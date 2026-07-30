@@ -176,6 +176,81 @@ return period `RP` is evaluated at non-exceedance probability `1 - 1/RP`.
 Value unit, value semantics, and the complete return-period/probability/column
 mapping are stored under `crc.hazard.evaluation` in Parquet metadata.
 
+An impact function can replace the sampled hazard values with event-aligned
+impact values before writing:
+
+```python
+import numpy as np
+
+impact_result = (
+    HazardDataset.local("flood.parquet")
+    .for_assets(assets)
+    .return_periods([25, 100, 250])
+    .impact(
+        lambda depth: np.clip(depth / 2.0, 0.0, 1.0),
+        name="depth_damage_ratio",
+        value_unit="fraction",
+        value_semantics="damage ratio",
+    )
+    .write_parquet(
+        "portfolio-impact.parquet",
+        execution=ExecutionOptions(max_workers=1),
+    )
+)
+```
+
+The SDK first samples each hazard return period and then calls
+`impact.evaluate(...)` on that row's value vector. Therefore
+`value_rp100 = impact(hazard_rp100)`: the return period continues to identify
+the source hazard event. This differs intentionally from transforming a full
+distribution and then taking an impact quantile, which can reorder decreasing
+or non-monotonic impacts. Use the distribution interface in `crc-framework`
+for that risk-analysis interpretation.
+
+Built-in and registry-backed framework impacts use the same fluent method:
+
+```python
+from crc_sdk.impacts import PiecewiseLinearImpact, impacts
+from crc_sdk.workflows import ImpactContextColumns
+
+damage_curve = PiecewiseLinearImpact(
+    exposure=[0.0, 0.2, 1.0, 2.0],
+    impact=[0.0, 0.0, 0.25, 1.0],
+)
+
+request = request.impact(
+    damage_curve,
+    name="flood_damage_ratio",
+    value_unit="fraction",
+    value_semantics="damage ratio",
+)
+
+registry_request = request.impact(
+    impacts.for_factor("inundation"),
+    context=ImpactContextColumns(
+        country="country",
+        continent="continent",
+        building_type="building_type",
+        historic_mean="historic_mean",
+    ),
+    name="inundation_impact",
+    value_unit="fraction",
+    value_semantics="damage ratio",
+)
+```
+
+The generated H3 `cell_index` is always supplied to the framework impact
+context. Configured context columns are read from each asset, including when
+they are not retained as output passthrough columns. Stored registry context
+provides fallback values for fields without an asset value. Impact metadata
+records the event-aligned interpretation, source hazard units and semantics,
+output units and semantics, function name/type, and context-column mapping.
+
+Framework impact objects and top-level Python callables can run in the existing
+process pool. Lambdas and closures are not picklable, so they run serially when
+the worker count is implicit; explicitly requesting more than one worker for
+one raises an error.
+
 Point assets are converted to the H3 resolution recorded by the canonical
 dataset. The H3 join is refined with `ST_Covers(source_geometry, asset_point)`
 when source WKB is present; rows without WKB retain cell-level precision.

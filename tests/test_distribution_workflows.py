@@ -4,10 +4,16 @@ import json
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
 import pytest
-from crc_framework import FittedDistribution, HurdleDistribution
+from crc_framework import (
+    FittedDistribution,
+    HurdleDistribution,
+    LinearImpact,
+    TransformContext,
+)
 from shapely.geometry import Polygon  # type: ignore[import-untyped]
 
 from crc_sdk.connectors import (
@@ -23,6 +29,7 @@ from crc_sdk.workflows import (
     CellColumn,
     ExecutionOptions,
     HazardDataset,
+    ImpactContextColumns,
     PointColumns,
     curve_parameters_from_row,
     curve_quantiles,
@@ -34,6 +41,34 @@ from crc_sdk.workflows import (
 LONGITUDE = 6.9603
 LATITUDE = 50.9375
 H3_RESOLUTION = 7
+
+
+class ContextAwareImpact:
+    def __init__(self) -> None:
+        self.context = TransformContext(
+            continent="Europe",
+            building_type="fallback",
+            historic_mean=1.0,
+        )
+
+    def evaluate(
+        self,
+        values: Any,
+        *,
+        context: TransformContext | None = None,
+    ) -> Any:
+        assert context is not None
+        assert context.cell is not None
+        assert context.historic_mean is not None
+        building_adjustment = 100.0 if context.building_type == "warehouse" else 0.0
+        continent_adjustment = 10.0 if context.continent == "Europe" else 0.0
+        return (
+            np.asarray(values)
+            + context.historic_mean
+            + building_adjustment
+            + continent_adjustment
+            + context.cell % 10
+        )
 
 
 def _metadata() -> HazardDatasetMetadata:
@@ -107,9 +142,7 @@ def test_return_periods_map_to_probabilities_and_wide_columns() -> None:
     probabilities = return_periods_to_probabilities(periods)
     columns = return_period_value_columns(periods)
 
-    assert probabilities == pytest.approx(
-        [0.96, 0.98, 0.99, 0.996, 0.998, 0.999, 0.6]
-    )
+    assert probabilities == pytest.approx([0.96, 0.98, 0.99, 0.996, 0.998, 0.999, 0.6])
     assert columns == (
         "value_rp25",
         "value_rp50",
@@ -258,9 +291,7 @@ def test_evaluate_cell_portfolio_writes_wide_scenario_rows(
     assert set(table["horizon"].to_pylist()) == {2050}
     assert set(table["spatial_match"].to_pylist()) == {"h3_cell"}
 
-    encoded = (pq.read_schema(output).metadata or {})[
-        PORTFOLIO_METADATA_KEY.encode()
-    ]
+    encoded = (pq.read_schema(output).metadata or {})[PORTFOLIO_METADATA_KEY.encode()]
     metadata = json.loads(encoded)
     assert metadata["value_unit"] == "metres"
     assert metadata["value_semantics"] == "flood depth"
@@ -269,6 +300,250 @@ def test_evaluate_cell_portfolio_writes_wide_scenario_rows(
         "probability": 0.99,
         "return_period": 100.0,
     }
+
+
+def test_evaluate_portfolio_applies_inline_event_impact_and_metadata(
+    tmp_path: Path,
+) -> None:
+    cell = point_to_cell(LONGITUDE, LATITUDE, H3_RESOLUTION)
+    provider = _provider(tmp_path, _row(cell_index=cell))
+    assets = pa.table(
+        {
+            "asset_id": ["asset-a"],
+            "cell_index": pa.array([cell], type=pa.uint64()),
+        }
+    )
+    output = tmp_path / "inline-impact.parquet"
+
+    (
+        HazardDataset(provider)
+        .for_assets(assets)
+        .return_periods([25, 100])
+        .impact(
+            lambda exposure: np.clip(exposure / 2.0, 0.0, 4.0),
+            name="depth_damage_ratio",
+            value_unit="fraction",
+            value_semantics="damage ratio",
+        )
+        .write_parquet(output)
+    )
+
+    probabilities = return_periods_to_probabilities([25, 100])
+    exposure = distribution_from_hazard_row(_row()).quantiles(probabilities)
+    row = pq.read_table(output).to_pylist()[0]
+    assert [row["value_rp25"], row["value_rp100"]] == pytest.approx(
+        np.clip(exposure / 2.0, 0.0, 4.0)
+    )
+    encoded = (pq.read_schema(output).metadata or {})[PORTFOLIO_METADATA_KEY.encode()]
+    metadata = json.loads(encoded)
+    assert metadata["value_unit"] == "fraction"
+    assert metadata["value_semantics"] == "damage ratio"
+    assert metadata["interpretation"] == "event_aligned"
+    assert metadata["source_value_unit"] == "metres"
+    assert metadata["source_value_semantics"] == "flood depth"
+    assert metadata["impact"] == {
+        "context_columns": {},
+        "name": "depth_damage_ratio",
+        "type": "CallableImpact",
+    }
+
+
+def test_evaluate_portfolio_preserves_decreasing_event_order(
+    tmp_path: Path,
+) -> None:
+    cell = point_to_cell(LONGITUDE, LATITUDE, H3_RESOLUTION)
+    provider = _provider(tmp_path, _row(cell_index=cell))
+    assets = pa.table(
+        {
+            "asset_id": ["asset-a"],
+            "cell_index": pa.array([cell], type=pa.uint64()),
+        }
+    )
+    output = tmp_path / "decreasing-impact.parquet"
+
+    (
+        HazardDataset(provider)
+        .for_assets(assets)
+        .return_periods([25, 100])
+        .impact(
+            LinearImpact(
+                slope=-1.0,
+                intercept=20.0,
+                minimum=None,
+                maximum=None,
+            ),
+            name="remaining_capacity",
+            value_unit="units",
+            value_semantics="remaining capacity",
+        )
+        .write_parquet(
+            output,
+            execution=ExecutionOptions(max_workers=1),
+        )
+    )
+
+    row = pq.read_table(output).to_pylist()[0]
+    assert row["value_rp25"] > row["value_rp100"]
+
+
+def test_evaluate_portfolio_builds_complete_context_from_hidden_asset_columns(
+    tmp_path: Path,
+) -> None:
+    cell_a = point_to_cell(LONGITUDE, LATITUDE, H3_RESOLUTION)
+    cell_b = point_to_cell(7.5, 51.0, H3_RESOLUTION)
+    provider = _provider(
+        tmp_path,
+        _row(cell_index=cell_a, source_id="a"),
+        _row(cell_index=cell_b, source_id="b"),
+    )
+    assets = pa.table(
+        {
+            "asset_id": ["asset-a", "asset-b"],
+            "cell_index": pa.array([cell_a, cell_b], type=pa.uint64()),
+            "asset_type": ["warehouse", "office"],
+            "baseline": [2.0, 3.0],
+        }
+    )
+    output = tmp_path / "context-impact.parquet"
+
+    (
+        HazardDataset(provider)
+        .for_assets(
+            AssetPortfolio(
+                assets,
+                location=CellColumn(),
+                passthrough_columns=(),
+            )
+        )
+        .return_periods([100])
+        .impact(
+            ContextAwareImpact(),
+            context=ImpactContextColumns(
+                building_type="asset_type",
+                historic_mean="baseline",
+            ),
+            name="context_impact",
+            value_unit="units",
+            value_semantics="context-adjusted impact",
+        )
+        .write_parquet(
+            output,
+            execution=ExecutionOptions(max_workers=1),
+        )
+    )
+
+    rows = {row["asset_id"]: row for row in pq.read_table(output).to_pylist()}
+    exposure = float(distribution_from_hazard_row(_row()).quantiles([0.99])[0])
+    assert rows["asset-a"]["value_rp100"] == pytest.approx(
+        exposure + 2.0 + 100.0 + 10.0 + cell_a % 10
+    )
+    assert rows["asset-b"]["value_rp100"] == pytest.approx(
+        exposure + 3.0 + 10.0 + cell_b % 10
+    )
+    assert "asset_type" not in rows["asset-a"]
+    metadata = json.loads(
+        (pq.read_schema(output).metadata or {})[PORTFOLIO_METADATA_KEY.encode()]
+    )
+    assert metadata["impact"]["context_columns"] == {
+        "building_type": "asset_type",
+        "historic_mean": "baseline",
+    }
+
+
+def test_evaluate_portfolio_rejects_parallel_inline_lambda(tmp_path: Path) -> None:
+    cell = point_to_cell(LONGITUDE, LATITUDE, H3_RESOLUTION)
+    provider = _provider(tmp_path, _row(cell_index=cell))
+    assets = pa.table(
+        {
+            "asset_id": ["asset-a"],
+            "cell_index": pa.array([cell], type=pa.uint64()),
+        }
+    )
+
+    with pytest.raises(ValueError, match="not picklable"):
+        (
+            HazardDataset(provider)
+            .for_assets(assets)
+            .return_periods([100])
+            .impact(
+                lambda exposure: exposure,
+                name="identity",
+                value_unit="metres",
+                value_semantics="flood depth",
+            )
+            .write_parquet(
+                tmp_path / "parallel-lambda.parquet",
+                execution=ExecutionOptions(max_workers=2),
+            )
+        )
+
+
+def test_evaluate_portfolio_runs_picklable_impact_in_process_pool(
+    tmp_path: Path,
+) -> None:
+    cell_a = point_to_cell(LONGITUDE, LATITUDE, H3_RESOLUTION)
+    cell_b = point_to_cell(7.5, 51.0, H3_RESOLUTION)
+    provider = _provider(
+        tmp_path,
+        _row(cell_index=cell_a, source_id="a"),
+        _row(cell_index=cell_b, source_id="b"),
+    )
+    assets = pa.table(
+        {
+            "asset_id": ["asset-a", "asset-b"],
+            "cell_index": pa.array([cell_a, cell_b], type=pa.uint64()),
+        }
+    )
+    output = tmp_path / "parallel-impact.parquet"
+
+    (
+        HazardDataset(provider)
+        .for_assets(assets)
+        .return_periods([100])
+        .impact(
+            LinearImpact(slope=0.5),
+            name="linear_impact",
+            value_unit="fraction",
+            value_semantics="linear impact",
+        )
+        .write_parquet(
+            output,
+            execution=ExecutionOptions(max_workers=2, chunk_rows=1),
+        )
+    )
+
+    assert pq.read_table(output).num_rows == 2
+
+
+def test_evaluate_portfolio_validates_impact_context_columns(
+    tmp_path: Path,
+) -> None:
+    cell = point_to_cell(LONGITUDE, LATITUDE, H3_RESOLUTION)
+    provider = _provider(tmp_path, _row(cell_index=cell))
+    assets = pa.table(
+        {
+            "asset_id": ["asset-a"],
+            "cell_index": pa.array([cell], type=pa.uint64()),
+        }
+    )
+
+    with pytest.raises(ValueError, match="missing columns"):
+        (
+            HazardDataset(provider)
+            .for_assets(assets)
+            .return_periods([100])
+            .impact(
+                LinearImpact(slope=1.0),
+                context=ImpactContextColumns(country="country"),
+                name="linear_impact",
+                value_unit="fraction",
+                value_semantics="linear impact",
+            )
+            .write_parquet(
+                tmp_path / "missing-context.parquet",
+                execution=ExecutionOptions(max_workers=1),
+            )
+        )
 
 
 def test_evaluate_point_portfolio_refines_geometry_and_preserves_coordinates(
@@ -434,3 +709,37 @@ def test_evaluate_portfolio_empty_assets_writes_typed_empty_file(
         "value_rp25",
         "value_rp100",
     ]
+
+
+def test_evaluate_impact_empty_assets_writes_output_metadata(tmp_path: Path) -> None:
+    provider = _provider(tmp_path, _row())
+    assets = pa.table(
+        {
+            "asset_id": pa.array([], type=pa.string()),
+            "cell_index": pa.array([], type=pa.uint64()),
+        }
+    )
+    output = tmp_path / "empty-impact.parquet"
+
+    result = (
+        HazardDataset(provider)
+        .for_assets(assets)
+        .return_periods([100])
+        .impact(
+            LinearImpact(slope=0.5),
+            name="linear_impact",
+            value_unit="fraction",
+            value_semantics="linear impact",
+        )
+        .write_parquet(
+            output,
+            execution=ExecutionOptions(max_workers=1),
+        )
+    )
+
+    assert result.row_count == 0
+    assert pq.read_table(output).column_names[-1] == "value_rp100"
+    metadata = json.loads(
+        (pq.read_schema(output).metadata or {})[PORTFOLIO_METADATA_KEY.encode()]
+    )
+    assert metadata["interpretation"] == "event_aligned"

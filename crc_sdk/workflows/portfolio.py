@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import pickle
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Union
 
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
+from crc_framework import CallableImpact, ImpactFunction
 
 from crc_sdk.providers.local import LocalProvider
 
@@ -136,8 +138,7 @@ class AssetPortfolio:
                 tuple(
                     name
                     for name in columns
-                    if name not in required
-                    and name not in _PORTFOLIO_RESERVED_COLUMNS
+                    if name not in required and name not in _PORTFOLIO_RESERVED_COLUMNS
                 )
                 if columns is not None
                 else ()
@@ -155,6 +156,56 @@ class HazardSelection:
     hazard_names: tuple[str, ...] | None = None
     horizons: tuple[int, ...] | None = None
     pathways: tuple[str, ...] | None = None
+
+
+@dataclass(frozen=True)
+class ImpactContextColumns:
+    """Asset columns used to build per-row framework impact context."""
+
+    country: str | None = None
+    continent: str | None = None
+    building_type: str | None = None
+    historic_mean: str | None = None
+
+    def __post_init__(self) -> None:
+        for field_name, column_name in self.items():
+            if not column_name:
+                raise ValueError(f"{field_name} context column must not be empty")
+
+    def items(self) -> tuple[tuple[str, str], ...]:
+        """Return configured framework-context field and asset-column pairs."""
+        return tuple(
+            (field_name, column_name)
+            for field_name, column_name in (
+                ("country", self.country),
+                ("continent", self.continent),
+                ("building_type", self.building_type),
+                ("historic_mean", self.historic_mean),
+            )
+            if column_name is not None
+        )
+
+
+@dataclass(frozen=True)
+class ImpactSpec:
+    """Internal event-aligned impact evaluation configuration."""
+
+    function: ImpactFunction
+    name: str
+    value_unit: str
+    value_semantics: str
+    context_columns: ImpactContextColumns = ImpactContextColumns()
+
+    @property
+    def function_type(self) -> str:
+        return type(self.function).__name__
+
+    def is_picklable(self) -> bool:
+        try:
+            pickle.dumps(self)
+        except (AttributeError, pickle.PickleError, TypeError):
+            return False
+        return True
 
 
 @dataclass(frozen=True)
@@ -205,6 +256,7 @@ class PortfolioEvaluation:
     portfolio: AssetPortfolio
     selection: HazardSelection = HazardSelection()
     periods: tuple[float, ...] | None = None
+    impact_spec: ImpactSpec | None = None
 
     def select(
         self,
@@ -241,6 +293,42 @@ class PortfolioEvaluation:
         return_periods_to_probabilities(periods)
         return replace(self, periods=periods)
 
+    def impact(
+        self,
+        function: ImpactFunction | Callable[[Any], Any],
+        *,
+        name: str,
+        value_unit: str,
+        value_semantics: str,
+        context: ImpactContextColumns | None = None,
+    ) -> PortfolioEvaluation:
+        """Return a request applying an event-aligned impact function."""
+        for field_name, value in (
+            ("impact name", name),
+            ("impact value_unit", value_unit),
+            ("impact value_semantics", value_semantics),
+        ):
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{field_name} must not be empty")
+        if isinstance(function, ImpactFunction):
+            impact_function = function
+        elif callable(function):
+            impact_function = CallableImpact(function)
+        else:
+            raise TypeError("impact function must define evaluate(...) or be callable")
+        if context is not None and not isinstance(context, ImpactContextColumns):
+            raise TypeError("impact context must be ImpactContextColumns")
+        return replace(
+            self,
+            impact_spec=ImpactSpec(
+                function=impact_function,
+                name=name,
+                value_unit=value_unit,
+                value_semantics=value_semantics,
+                context_columns=context or ImpactContextColumns(),
+            ),
+        )
+
     def write_parquet(
         self,
         output: str | Path,
@@ -253,6 +341,14 @@ class PortfolioEvaluation:
         if self.periods is None:
             raise ValueError("return_periods(...) must be configured before writing")
         options = execution or ExecutionOptions()
+        max_workers = options.max_workers
+        if self.impact_spec is not None and not self.impact_spec.is_picklable():
+            if max_workers is not None and max_workers > 1:
+                raise ValueError(
+                    "impact function is not picklable; use max_workers=1 "
+                    "or a top-level callable"
+                )
+            max_workers = 1
         location = self.portfolio.location
         if isinstance(location, PointColumns):
             longitude_column = location.longitude
@@ -282,8 +378,9 @@ class PortfolioEvaluation:
             horizons=self.selection.horizons,
             pathways=self.selection.pathways,
             passthrough_columns=passthrough_columns,
+            impact=self.impact_spec,
             connection=options.connection,
             batch_rows=options.batch_rows,
-            max_workers=options.max_workers,
+            max_workers=max_workers,
             chunk_rows=options.chunk_rows,
         )

@@ -1,5 +1,5 @@
-"""Helpers for constructing custom impact transforms."""
+"""Helpers for constructing custom impact functions."""
 
-from crc_framework import CallableTransform
+from crc_framework import CallableImpact, CallableTransform
 
-__all__ = ["CallableTransform"]
+__all__ = ["CallableImpact", "CallableTransform"]

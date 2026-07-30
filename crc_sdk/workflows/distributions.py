@@ -13,6 +13,7 @@ from typing import Any, Union, cast
 
 import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
+from crc_framework import TransformContext
 from crc_framework.distributions import FittedDistribution, HurdleDistribution
 
 from crc_sdk.connectors.duckdb import detected_cpu_count
@@ -116,16 +117,49 @@ def return_period_value_columns(
 def _curve_quantiles(
     records: Sequence[Mapping[str, Any]],
     probabilities: tuple[float, ...],
+    *,
+    impact: Any | None = None,
+    context_columns: Mapping[str, str] | None = None,
 ) -> list[tuple[float, ...]]:
-    return [
-        tuple(
-            float(value)
-            for value in curve_parameters_from_row(row)
-            .to_distribution()
-            .quantiles(probabilities)
+    results = []
+    for row in records:
+        values = (
+            curve_parameters_from_row(row).to_distribution().quantiles(probabilities)
         )
-        for row in records
-    ]
+        if impact is not None:
+            base_context = getattr(impact.function, "context", None)
+            if not isinstance(base_context, TransformContext):
+                base_context = TransformContext()
+            cell = base_context.cell
+            country = base_context.country
+            continent = base_context.continent
+            building_type = base_context.building_type
+            historic_mean = base_context.historic_mean
+            row_cell = _python_value(row.get("cell_index"))
+            if row_cell is not None:
+                cell = int(row_cell)
+            for field_name, column_name in (context_columns or {}).items():
+                value = _python_value(row[column_name])
+                if value is None:
+                    continue
+                if field_name == "country":
+                    country = str(value)
+                elif field_name == "continent":
+                    continent = str(value)
+                elif field_name == "building_type":
+                    building_type = str(value)
+                elif field_name == "historic_mean":
+                    historic_mean = float(value)
+            context = TransformContext(
+                cell=cell,
+                country=country,
+                continent=continent,
+                building_type=building_type,
+                historic_mean=historic_mean,
+            )
+            values = impact.function.evaluate(values, context=context)
+        results.append(tuple(float(value) for value in values))
+    return results
 
 
 def _evaluate_in_chunks(
@@ -133,15 +167,28 @@ def _evaluate_in_chunks(
     probabilities: tuple[float, ...],
     chunk_rows: int,
     executor: ProcessPoolExecutor | None,
+    *,
+    impact: Any | None = None,
+    context_columns: Mapping[str, str] | None = None,
 ) -> list[tuple[float, ...]]:
     if not records or executor is None or len(records) <= chunk_rows:
-        return _curve_quantiles(records, probabilities)
+        return _curve_quantiles(
+            records,
+            probabilities,
+            impact=impact,
+            context_columns=context_columns,
+        )
     chunks = [
         records[start : start + chunk_rows]
         for start in range(0, len(records), chunk_rows)
     ]
     results = executor.map(
-        partial(_curve_quantiles, probabilities=probabilities),
+        partial(
+            _curve_quantiles,
+            probabilities=probabilities,
+            impact=impact,
+            context_columns=context_columns,
+        ),
         chunks,
     )
     return [value for chunk in results for value in chunk]
@@ -190,6 +237,8 @@ def stream_curve_quantiles_wide_to_parquet(
     passthrough_columns: Sequence[str],
     value_columns: Sequence[str],
     parquet_metadata: Mapping[bytes, bytes] | None = None,
+    impact: Any | None = None,
+    context_columns: Mapping[str, str] | None = None,
     batch_rows: int = 50_000,
     max_workers: int | None = None,
     chunk_rows: int = 20_000,
@@ -226,15 +275,22 @@ def stream_curve_quantiles_wide_to_parquet(
             for batch in reader:
                 if batch.num_rows == 0:
                     continue
-                curve_table = pa.Table.from_arrays(
-                    [batch.column(name) for name in CURVE_COLUMNS],
-                    names=list(CURVE_COLUMNS),
+                evaluation_columns = list(CURVE_COLUMNS)
+                if impact is not None:
+                    for name in ("cell_index", *(context_columns or {}).values()):
+                        if name not in evaluation_columns:
+                            evaluation_columns.append(name)
+                evaluation_table = pa.Table.from_arrays(
+                    [batch.column(name) for name in evaluation_columns],
+                    names=evaluation_columns,
                 )
                 values = _evaluate_in_chunks(
-                    curve_table.to_pylist(),
+                    evaluation_table.to_pylist(),
                     normalized,
                     chunk_rows,
                     executor,
+                    impact=impact,
+                    context_columns=context_columns,
                 )
                 value_arrays = [
                     pa.array(
@@ -244,8 +300,7 @@ def stream_curve_quantiles_wide_to_parquet(
                     for index in range(len(value_columns))
                 ]
                 out_batch = pa.RecordBatch.from_arrays(
-                    [batch.column(name) for name in passthrough_columns]
-                    + value_arrays,
+                    [batch.column(name) for name in passthrough_columns] + value_arrays,
                     schema=output_schema,
                 )
                 writer.write_batch(out_batch)
