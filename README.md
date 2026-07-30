@@ -114,6 +114,22 @@ system temp directory (`default_work_dir()`, not a fresh one per call), and
 can be set per-call via each constructor's own `work_dir` parameter, or
 globally via `CRC_DUCKDB_WORK_DIR`.
 
+Private/authenticated remote sources (a non-public GCS/S3 bucket) are
+configured the same idiomatic-DuckDB way as everything else here: a
+`DuckDBSecret` (`name`, `type`, `params`, optional `provider`) declared via
+`apply_secret(con, secret)`, or passed as `secrets=(...)` to
+`DuckDBConnection`/`DuckDBConnection.for_analytics` to have it applied
+automatically on `.connect()`. `gcs_hmac_secret_from_env()` builds a GCS HMAC
+secret from `GCS_ACCESS_KEY`/`GCS_ACCESS_SECRET`, returning `None` (not a
+broken empty secret) when either is unset:
+
+```python
+from crc_sdk.connectors.duckdb import DuckDBConnection, gcs_hmac_secret_from_env
+
+secrets = [s for s in (gcs_hmac_secret_from_env(),) if s is not None]
+con = DuckDBConnection.for_analytics(work_dir, secrets=secrets).connect()
+```
+
 ## Canonical hazard datasets
 
 The SDK internalizes fitted hazards as one versioned Arrow/Parquet contract.
