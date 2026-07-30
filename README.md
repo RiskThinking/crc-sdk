@@ -50,6 +50,13 @@ raises a clear `ImportError` naming the extra to install if it's missing —
 importing `crc_sdk` (or any of its subpackages) itself never requires more
 than the baseline dependencies.
 
+**OS-level dependency (not a pip extra):** `tippecanoe` and `tile-join`
+(https://github.com/felt/tippecanoe) must be present on `PATH` for
+`crc_sdk.geometry.pmtiles` — they're assumed to already be installed on the
+runtime image, not `pip install`-able, so there's no extra for them. Verify
+availability with `require_tippecanoe()`/`require_tile_join()`, which raise a
+friendly, actionable error (with install instructions) if either is missing.
+
 ## Package boundaries
 
 - `crc_sdk.core`, `crc_sdk.fitting`, and `crc_sdk.impacts` expose the stable
@@ -65,8 +72,23 @@ than the baseline dependencies.
   (`H3Indexer`), Arrow batch polyfill (`polyfill_wkb`, `geometry`
   extra for h3ronpy), raster-to-H3 sampling primitives
   (`pixel_grid_resolution`, `sample_grid_to_h3`), exploded coverage writers
-  (`write_exploded_coverage`), and optional nested lookup derivation
-  (`LookupCatalog`, `write_lookup_contract`, `write_partitioned_lookup`).
+  (`write_exploded_coverage`), optional nested lookup derivation
+  (`LookupCatalog`, `write_lookup_contract`, `write_partitioned_lookup`), and
+  PMTiles generation (`crc_sdk.geometry.pmtiles` — also reachable flattened
+  as `crc_sdk.geometry.PMTilesBuild`, etc.): `PMTilesBuild` streams a
+  GeoParquet source (a single file, or a Hive-partitioned dataset glob) into
+  one `.pmtiles` archive in one tiling pass, building the GeoParquet ->
+  GeoJSON bridge itself in DuckDB `spatial`-extension SQL
+  (`ST_AsGeoJSON`/`ST_ReducePrecision`/`ST_Transform`) rather than shelling
+  out to an external converter, streamed via the same Arrow-batched-reader
+  pattern used elsewhere in this SDK. `tippecanoe_threads`/`duckdb_threads`
+  default to every detected core (no conservative per-thread cap, unlike
+  DuckDB's own GEOS-throttled default) since tippecanoe's tile-building has
+  no documented per-thread memory ceiling. A pre-flight budget check raises
+  a clear, actionable error if a source is estimated to exceed available
+  scratch disk, rather than silently degrading into a slower multi-batch
+  fallback — provisioning more disk or narrowing the run's scope is left to
+  the caller.
 - `crc_sdk.schema` defines columnar data contracts.
 - `crc_sdk.types` contains SDK-owned Pydantic configuration and metadata.
 - `crc_sdk.workflows` coordinates data access and computation.
