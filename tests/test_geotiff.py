@@ -5,7 +5,11 @@ import pytest
 import rasterio  # type: ignore[import-untyped]
 from rasterio.transform import from_origin  # type: ignore[import-untyped]
 
-from crc_sdk.connectors.duckdb.geotiff import GeoTiffRaster, trim_cache_dir
+from crc_sdk.connectors.duckdb.geotiff import (
+    GeoTiffRaster,
+    _default_gcs_credentials,
+    trim_cache_dir,
+)
 from crc_sdk.geometry.h3 import subsample_offsets as _real_subsample_offsets
 
 # ~0.01 degrees per pixel near the equator, well within the "small pixel"
@@ -223,6 +227,31 @@ def test_scan_h3_rejects_out_of_range_explicit_resolution(
             raster.scan_h3(h3_resolution=16)
     finally:
         raster.close()
+
+
+def test_default_gcs_credentials_respects_explicit_env_var(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "/already/configured.json")
+    assert _default_gcs_credentials() is None
+
+
+def test_default_gcs_credentials_finds_adc_under_cloudsdk_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    monkeypatch.setenv("CLOUDSDK_CONFIG", str(tmp_path))
+    adc_path = tmp_path / "application_default_credentials.json"
+    adc_path.write_text("{}")
+    assert _default_gcs_credentials() == str(adc_path)
+
+
+def test_default_gcs_credentials_returns_none_when_adc_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    monkeypatch.setenv("CLOUDSDK_CONFIG", str(tmp_path / "does-not-exist"))
+    assert _default_gcs_credentials() is None
 
 
 def test_trim_cache_dir_evicts_oldest_first(tmp_path: Path) -> None:

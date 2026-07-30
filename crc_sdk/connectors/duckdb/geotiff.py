@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import math
+import os
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
@@ -45,6 +46,31 @@ def _vsi_path(uri: str) -> str:
     if uri.startswith(("http://", "https://")):
         return "/vsicurl/" + uri
     return uri
+
+
+def _default_gcs_credentials() -> str | None:
+    """Path to gcloud's Application Default Credentials, if not already set.
+
+    GDAL's `/vsigs/` driver -- unlike Python's own `google-auth` -- does not
+    fall back to `gcloud auth application-default login`'s credentials on
+    its own; without `GOOGLE_APPLICATION_CREDENTIALS` set, every private
+    bucket read fails with an opaque `InvalidCredentials` GDAL error even
+    when the ambient gcloud session is perfectly valid. Respects an
+    explicitly configured `GOOGLE_APPLICATION_CREDENTIALS` (returns `None`
+    so the caller's own value always wins) and only looks at gcloud's own
+    well-known config location, matching the `gcloud` CLI's own convention.
+    """
+    if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+        return None
+    config_dir = os.environ.get("CLOUDSDK_CONFIG")
+    if not config_dir:
+        config_dir = (
+            os.path.join(os.environ["APPDATA"], "gcloud")
+            if os.name == "nt" and "APPDATA" in os.environ
+            else os.path.expanduser("~/.config/gcloud")
+        )
+    candidate = Path(config_dir) / "application_default_credentials.json"
+    return str(candidate) if candidate.is_file() else None
 
 
 def _materialize_local(uri: str, cache_dir: str | Path) -> Path:
@@ -199,7 +225,11 @@ class GeoTiffRaster:
             else _vsi_path(uri_str)
         )
 
-        env = rasterio.Env(GDAL_CACHEMAX=GDAL_CACHE_MB)
+        env_options: dict[str, Any] = {"GDAL_CACHEMAX": GDAL_CACHE_MB}
+        adc_path = _default_gcs_credentials()
+        if adc_path is not None:
+            env_options["GOOGLE_APPLICATION_CREDENTIALS"] = adc_path
+        env = rasterio.Env(**env_options)
         env.__enter__()
         try:
             dataset = rasterio.open(open_path)
