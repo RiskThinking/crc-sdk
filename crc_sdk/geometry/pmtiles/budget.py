@@ -67,7 +67,7 @@ class TilingBudget:
         *,
         tippecanoe_threads: int | None = None,
         duckdb_threads: int | None = None,
-        scratch_fraction: float = _DEFAULT_SCRATCH_FRACTION,
+        scratch_fraction: float | None = None,
     ) -> TilingBudget:
         """Detect available cores and scratch disk for one tiling pass.
 
@@ -78,18 +78,33 @@ class TilingBudget:
         ``min(6, ...)``-style default) is exactly what produced its observed
         one-third-utilization, day-long tiling runs. Override via
         ``CRC_TIPPECANOE_THREADS``/``CRC_DUCKDB_THREADS``, or the keyword
-        arguments here. ``scratch_fraction`` -- how much of free disk is
-        considered safe to gamble on one tiling pass, independent of
-        ``DEFAULT_TEMP_TO_INPUT_FACTOR``'s per-workload estimate -- is
-        likewise overridable via ``CRC_TIPPECANOE_SCRATCH_FRACTION``, for an
-        operator who knows their disk situation better than the 25% default
-        (e.g. a dedicated scratch volume with nothing else competing for it).
+        arguments here.
+
+        ``scratch_fraction`` -- how much of free disk is considered safe to
+        gamble on one tiling pass, independent of
+        ``DEFAULT_TEMP_TO_INPUT_FACTOR``'s per-workload estimate -- follows
+        the same precedence as the thread arguments: this keyword wins if
+        given, else ``CRC_TIPPECANOE_SCRATCH_FRACTION``, else the conservative
+        25% default. This default deliberately assumes nothing about the
+        caller: no guarantee that nothing else is using this disk, and no
+        guarantee that a previous or concurrent build's scratch has been
+        cleaned up. A caller that *can* guarantee those things (e.g. one
+        tiling pass at a time, each fully cleaned up before the next starts,
+        as gen_pmtiles_v2's finalize stage does) has a real case for passing
+        something looser here -- that's a property of the caller's own
+        orchestration, not something this primitive can assume on its own.
         """
         root = Path(work_dir) if work_dir is not None else default_work_dir()
         root.mkdir(parents=True, exist_ok=True)
         cpus = detected_cpu_count()
         free_disk_bytes = _disk_free_bytes(root)
-        fraction = _env_float("CRC_TIPPECANOE_SCRATCH_FRACTION", scratch_fraction)
+        fraction = (
+            scratch_fraction
+            if scratch_fraction is not None
+            else _env_float(
+                "CRC_TIPPECANOE_SCRATCH_FRACTION", _DEFAULT_SCRATCH_FRACTION
+            )
+        )
         safe_scratch = max(_MIN_SAFE_SCRATCH_BYTES, int(free_disk_bytes * fraction))
         threads = tippecanoe_threads or _env_int("CRC_TIPPECANOE_THREADS", cpus, cpus)
         db_threads = duckdb_threads or _env_int("CRC_DUCKDB_THREADS", cpus, cpus)
@@ -116,9 +131,12 @@ def measure_source(
     with remote credentials, or building a default one otherwise.
     """
     owns_connection = con is None
-    connection = con or DuckDBConnection.for_analytics(
-        work_dir or default_work_dir(), extensions=("httpfs",)
-    ).connect()
+    connection = (
+        con
+        or DuckDBConnection.for_analytics(
+            work_dir or default_work_dir(), extensions=("httpfs",)
+        ).connect()
+    )
     try:
         source_ref = f"read_parquet({sql_quote(str(source))})"
         row = connection.execute(f"SELECT count(*) FROM {source_ref}").fetchone()

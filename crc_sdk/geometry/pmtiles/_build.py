@@ -52,9 +52,12 @@ def build_pmtiles_archive(build: PMTilesBuild, output: str) -> PMTilesResult:
     # build (and resource-tune) one, and only touch its thread count, when
     # they didn't supply their own.
     owns_connection = build.con is None
-    connection: Any = build.con or DuckDBConnection.for_analytics(
-        work_root, extensions=("spatial", "httpfs", "h3")
-    ).connect()
+    connection: Any = (
+        build.con
+        or DuckDBConnection.for_analytics(
+            work_root, extensions=("spatial", "httpfs", "h3")
+        ).connect()
+    )
 
     scratch_dir = work_root / "pmtiles-scratch"
     scratch_dir.mkdir(parents=True, exist_ok=True)
@@ -64,6 +67,7 @@ def build_pmtiles_archive(build: PMTilesBuild, output: str) -> PMTilesResult:
             work_root,
             tippecanoe_threads=build.tippecanoe_threads,
             duckdb_threads=build.duckdb_threads,
+            scratch_fraction=build.scratch_fraction,
         )
         if owns_connection:
             connection.execute(f"SET threads={budget.duckdb_threads}")

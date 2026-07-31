@@ -141,8 +141,16 @@ def build_layer_query(con: Any, layer_source: LayerSource) -> str:
     geom_expr = quoted_geom if is_native_geometry else f"ST_GeomFromWKB({quoted_geom})"
     if _needs_reprojection(source_crs):
         assert source_crs is not None
+        # Transform the already-cast expression, not the raw column -- a
+        # non-native (BLOB/WKB) column fed straight to ST_Transform would
+        # transform a blob instead of a geometry. `always_xy := true` is
+        # required too: EPSG:4326's own authority-defined axis order is
+        # (latitude, longitude), so without it ST_Transform emits GeoJSON
+        # with swapped coordinates -- confirmed empirically -- silently
+        # wrong geometry, not just a style nit, for every reprojected layer.
         geom_expr = (
-            f"ST_Transform({quoted_geom}, {sql_quote(source_crs)}, {sql_quote(_WGS84)})"
+            f"ST_Transform({geom_expr}, {sql_quote(source_crs)}, {sql_quote(_WGS84)}, "
+            "always_xy := true)"
         )
     geom_with_precision = (
         f"ST_ReducePrecision({geom_expr}, power(10, -{int(layer_source.precision)}))"
@@ -185,7 +193,7 @@ def build_layer_query(con: Any, layer_source: LayerSource) -> str:
     return (
         "SELECT "
         "chr(30) || "
-        "'{\"type\":\"Feature\",' || "
+        '\'{"type":"Feature",\' || '
         f"{sql_quote(tag_literal)} || "
         "'\"geometry\":' || "
         f"COALESCE({geom_json_expr}, 'null') || "

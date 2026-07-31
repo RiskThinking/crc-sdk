@@ -165,6 +165,39 @@ def test_write_raises_before_spawning_tippecanoe_when_budget_is_exceeded(
     assert not output.exists()
 
 
+def test_with_resources_forwards_scratch_fraction_to_tiling_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``PMTilesBuild.with_resources(scratch_fraction=...)`` must reach
+    ``TilingBudget.detect`` -- the first-class way for a caller who can
+    guarantee its own orchestration (one build at a time, fully cleaned up
+    before the next) to loosen the default conservative disk-safety margin
+    at the call site, instead of a process-wide env var.
+    """
+    source = tmp_path / "points.parquet"
+    _write_points(source, count=3)
+    output = tmp_path / "out.pmtiles"
+
+    captured: dict[str, object] = {}
+    real_detect = TilingBudget.detect
+
+    def _capturing_detect(*args: object, **kwargs: object) -> TilingBudget:
+        captured["scratch_fraction"] = kwargs.get("scratch_fraction")
+        return real_detect(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        "crc_sdk.geometry.pmtiles._build.TilingBudget.detect",
+        staticmethod(_capturing_detect),
+    )
+    (
+        PMTilesBuild()
+        .layer(str(source), name="places", zooms=(0, 10), preset=POINTS)
+        .with_resources(scratch_fraction=0.9)
+        .write(str(output))
+    )
+    assert captured["scratch_fraction"] == 0.9
+
+
 def test_zooms_accepts_tuple_range_and_set(tmp_path: Path) -> None:
     source = tmp_path / "points.parquet"
     _write_points(source, count=3)
