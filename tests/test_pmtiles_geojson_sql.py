@@ -100,6 +100,60 @@ def test_build_layer_query_handles_zero_row_geoparquet(tmp_path: Path) -> None:
     assert con.execute(query).fetchall() == []
 
 
+def test_build_layer_query_reprojects_the_cast_expression_not_the_raw_column(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression test: a non-native (BLOB/WKB) geometry column that also
+    needs reprojection must have ST_Transform applied to the ST_GeomFromWKB
+    cast, not the raw column -- feeding a raw BLOB straight to ST_Transform
+    fails to bind (confirmed empirically) rather than silently mistiling.
+
+    DuckDB auto-promotes any column with complete GeoParquet 'geo' metadata
+    to native GEOMETRY on read regardless of row count, which makes "BLOB
+    column + known non-WGS84 CRS" hard to reach through a real file today
+    (the only naturally-occurring BLOB case, a 0-row file, carries no 'geo'
+    metadata at all, hence no CRS). Writing the geometry column as a plain
+    BLOB (via ST_AsWKB, no 'geo' metadata attached) reproduces a genuinely
+    non-native column; ``geo_metadata`` is mocked only to supply the CRS
+    that column's own file doesn't carry.
+    """
+    import crc_sdk.geometry.pmtiles._geojson_sql as geojson_sql
+
+    con = _connection()
+    path = tmp_path / "utm.parquet"
+    # A point at (500000, 4649776) in EPSG:32633 (UTM 33N) is approximately
+    # (15.0 E, 42.0 N) in EPSG:4326.
+    con.execute(
+        f"""
+        COPY (SELECT 1 AS id, ST_AsWKB(ST_Point(500000, 4649776)) AS geometry)
+        TO '{path}' (FORMAT PARQUET)
+        """
+    )
+    assert (
+        con.execute(f"DESCRIBE SELECT * FROM read_parquet('{path}')").fetchall()[1][1]
+        == "BLOB"
+    )
+    monkeypatch.setattr(
+        geojson_sql,
+        "geo_metadata",
+        lambda con, source: {
+            "primary_column": "geometry",
+            "columns": {
+                "geometry": {"crs": {"id": {"authority": "EPSG", "code": "32633"}}}
+            },
+        },
+    )
+
+    query = build_layer_query(
+        con, LayerSource(source=str(path), layer="p", minzoom=0, maxzoom=1, precision=2)
+    )
+    assert 'ST_Transform(ST_GeomFromWKB("geometry")' in query
+    row = con.execute(query).fetchone()
+    assert row is not None
+    coordinates = _parse_feature(row[0])["geometry"]["coordinates"]
+    assert coordinates == pytest.approx([15.0, 42.0], abs=0.05)
+
+
 def test_build_layer_query_reads_a_glob_with_schema_drift_via_union_by_name(
     tmp_path: Path,
 ) -> None:

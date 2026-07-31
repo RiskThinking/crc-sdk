@@ -71,6 +71,7 @@ class PMTilesBuild:
     work_dir: str | Path | None = None
     tippecanoe_threads: int | None = None
     duckdb_threads: int | None = None
+    scratch_fraction: float | None = None
     idle_timeout_seconds: float | None = None
 
     def layer(
@@ -99,9 +100,20 @@ class PMTilesBuild:
         work_dir: str | Path | None = None,
         tippecanoe_threads: int | None = None,
         duckdb_threads: int | None = None,
+        scratch_fraction: float | None = None,
         idle_timeout_seconds: float | None = None,
     ) -> PMTilesBuild:
-        """Return a new build with resource/connection overrides applied."""
+        """Return a new build with resource/connection overrides applied.
+
+        ``scratch_fraction`` -- how much of free disk one tiling pass is
+        allowed to assume as scratch headroom -- defaults conservatively
+        (see :meth:`crc_sdk.geometry.pmtiles.budget.TilingBudget.detect`),
+        since this primitive has no way to know whether anything else is
+        competing for the same disk. Pass this only when the caller's own
+        orchestration can actually guarantee otherwise (one build at a time,
+        fully cleaned up before the next starts) -- it is a property of the
+        call site, not something to raise here without that guarantee.
+        """
         return replace(
             self,
             con=con if con is not None else self.con,
@@ -113,6 +125,11 @@ class PMTilesBuild:
             ),
             duckdb_threads=(
                 duckdb_threads if duckdb_threads is not None else self.duckdb_threads
+            ),
+            scratch_fraction=(
+                scratch_fraction
+                if scratch_fraction is not None
+                else self.scratch_fraction
             ),
             idle_timeout_seconds=(
                 idle_timeout_seconds

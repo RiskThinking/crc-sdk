@@ -58,9 +58,7 @@ def test_check_tiling_budget_uses_the_provided_factor() -> None:
 
 
 def test_tiling_budget_detect_honors_thread_overrides(tmp_path: Path) -> None:
-    budget = TilingBudget.detect(
-        tmp_path, tippecanoe_threads=2, duckdb_threads=3
-    )
+    budget = TilingBudget.detect(tmp_path, tippecanoe_threads=2, duckdb_threads=3)
     assert budget.tippecanoe_threads == 2
     assert budget.duckdb_threads == 3
 
@@ -75,9 +73,22 @@ def test_tiling_budget_detect_honors_env_overrides(
     assert budget.duckdb_threads == 3
 
 
+def _fix_free_disk(monkeypatch: pytest.MonkeyPatch, free_bytes: int) -> None:
+    """Pin ``_disk_free_bytes`` so scratch-fraction math is deterministic --
+    a real ``tmp_path`` filesystem's free space varies by machine/CI, and at
+    the wrong (small) size both a 25% and a 90% fraction floor to the same
+    ``_MIN_SAFE_SCRATCH_BYTES``, masking any difference the fraction makes.
+    """
+    import crc_sdk.geometry.pmtiles.budget as budget_module
+
+    monkeypatch.setattr(budget_module, "_disk_free_bytes", lambda path: free_bytes)
+
+
 def test_tiling_budget_detect_honors_scratch_fraction_env_override(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.delenv("CRC_TIPPECANOE_SCRATCH_FRACTION", raising=False)
+    _fix_free_disk(monkeypatch, 100 * _GIB)
     default_budget = TilingBudget.detect(tmp_path)
     monkeypatch.setenv("CRC_TIPPECANOE_SCRATCH_FRACTION", "0.9")
     wider_budget = TilingBudget.detect(tmp_path)
@@ -87,6 +98,8 @@ def test_tiling_budget_detect_honors_scratch_fraction_env_override(
 def test_tiling_budget_detect_ignores_invalid_scratch_fraction_env_override(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.delenv("CRC_TIPPECANOE_SCRATCH_FRACTION", raising=False)
+    _fix_free_disk(monkeypatch, 100 * _GIB)
     default_budget = TilingBudget.detect(tmp_path)
     for invalid in ("0", "-0.5", "1.5", "not-a-number", ""):
         monkeypatch.setenv("CRC_TIPPECANOE_SCRATCH_FRACTION", invalid)

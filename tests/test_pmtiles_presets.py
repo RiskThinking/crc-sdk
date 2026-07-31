@@ -52,9 +52,7 @@ def test_preset_rejects_conflicting_tile_size_flags() -> None:
 
 def test_preset_rejects_conflicting_feature_limit_flags() -> None:
     with pytest.raises(ValueError):
-        TippecanoePreset(
-            name="bad", no_feature_limit=True, maximum_tile_features=1000
-        )
+        TippecanoePreset(name="bad", no_feature_limit=True, maximum_tile_features=1000)
 
 
 def test_tippecanoe_command_names_layer_and_zoom_flags() -> None:
