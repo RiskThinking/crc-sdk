@@ -25,12 +25,28 @@ from crc_sdk.connectors.duckdb import (
 
 _GIB = 1024**3
 
-# Conservative observation from large building-footprint tiling runs:
-# tippecanoe's own sorted geometry/index scratch can be around an order of
-# magnitude larger than the compressed GeoParquet input it's fed. This is an
-# execution guard, not a product knob -- first calibrated in
-# gen_pmtiles_v2/polygon_shards.py, reused here unchanged.
-DEFAULT_TEMP_TO_INPUT_FACTOR = 14
+# Directly measured, not assumed: tippecanoe's own scratch is almost entirely
+# anonymous temporary files (created, then immediately unlinked, kept open
+# via file descriptor -- confirmed by its maintainer and reproduced here), so
+# `du` on its `-t` temp directory reports it as empty regardless of real
+# usage; only the containing filesystem's free-space delta (`df`, polled
+# during the run) reveals the true figure. Measured this way three times
+# (145k lossless LUX/frost_days polygons, ~415 wide percentile-score
+# properties each, 4 and 8 threads): 527MiB, 554MiB, 483MiB peak scratch
+# against a ~22MiB compressed GeoParquet input -- a 22-26x ratio, higher
+# than the previous ``14`` this replaces (an unvalidated estimate carried
+# over unchanged from gen_pmtiles_v2/polygon_shards.py). Getting this
+# constant too low is the dangerous direction -- a mid-run disk-exhaustion
+# failure wastes all compute already spent and can leave a corrupt partial
+# output, versus a too-high value only costing an operator a pre-flight
+# rejection they can act on -- so this errs upward from the measured range
+# rather than sitting at its low end. Still calibrated at one small AOI on
+# one workload shape (lossless + very wide attributes); narrower/lossy
+# schemas (e.g. the ``POINTS`` preset) very likely need proportionally less,
+# but this stays one constant for every preset until there's comparable
+# measured evidence to split it. Validating against a larger, still
+# wide-attribute country is the concrete next step.
+DEFAULT_TEMP_TO_INPUT_FACTOR = 30
 _DEFAULT_SCRATCH_FRACTION = 0.25
 _MIN_SAFE_SCRATCH_BYTES = 2 * _GIB
 
@@ -62,15 +78,19 @@ class TilingBudget:
         ``min(6, ...)``-style default) is exactly what produced its observed
         one-third-utilization, day-long tiling runs. Override via
         ``CRC_TIPPECANOE_THREADS``/``CRC_DUCKDB_THREADS``, or the keyword
-        arguments here.
+        arguments here. ``scratch_fraction`` -- how much of free disk is
+        considered safe to gamble on one tiling pass, independent of
+        ``DEFAULT_TEMP_TO_INPUT_FACTOR``'s per-workload estimate -- is
+        likewise overridable via ``CRC_TIPPECANOE_SCRATCH_FRACTION``, for an
+        operator who knows their disk situation better than the 25% default
+        (e.g. a dedicated scratch volume with nothing else competing for it).
         """
         root = Path(work_dir) if work_dir is not None else default_work_dir()
         root.mkdir(parents=True, exist_ok=True)
         cpus = detected_cpu_count()
         free_disk_bytes = _disk_free_bytes(root)
-        safe_scratch = max(
-            _MIN_SAFE_SCRATCH_BYTES, int(free_disk_bytes * scratch_fraction)
-        )
+        fraction = _env_float("CRC_TIPPECANOE_SCRATCH_FRACTION", scratch_fraction)
+        safe_scratch = max(_MIN_SAFE_SCRATCH_BYTES, int(free_disk_bytes * fraction))
         threads = tippecanoe_threads or _env_int("CRC_TIPPECANOE_THREADS", cpus, cpus)
         db_threads = duckdb_threads or _env_int("CRC_DUCKDB_THREADS", cpus, cpus)
         return cls(
@@ -148,10 +168,17 @@ def _source_bytes(source: str) -> int:
     import fsspec  # type: ignore[import-untyped]
 
     filesystem, path = fsspec.core.url_to_fs(source)
-    matches = filesystem.glob(path) if any(ch in path for ch in "*?[") else [path]
-    if not matches:
-        raise FileNotFoundError(f"no files matched source: {source!r}")
-    return sum(int(filesystem.info(match)["size"]) for match in matches)
+    if any(ch in path for ch in "*?["):
+        # One bulk listing call (`detail=True` returns {path: info} directly)
+        # instead of `glob()` (list) + one `.info()` round trip per match --
+        # for a remote (s3://, gs://) Hive glob spanning ~200 per-country
+        # files at USA scale, that's ~200 avoidable network round trips on
+        # every pre-flight budget check, not just the first.
+        details = filesystem.glob(path, detail=True)
+        if not details:
+            raise FileNotFoundError(f"no files matched source: {source!r}")
+        return sum(int(info["size"]) for info in details.values())
+    return int(filesystem.info(path)["size"])
 
 
 def _env_int(name: str, default: int, maximum: int) -> int:
@@ -162,3 +189,14 @@ def _env_int(name: str, default: int, maximum: int) -> int:
         return max(1, min(int(raw), maximum))
     except ValueError:
         return default
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return value if 0 < value <= 1 else default
