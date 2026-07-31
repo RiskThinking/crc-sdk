@@ -149,87 +149,34 @@ class RuntimeResources:
 
 
 @dataclass(frozen=True)
-class DuckDBSecret:
-    """A DuckDB ``CREATE OR REPLACE SECRET`` declaration.
-
-    ``params`` values are rendered as SQL string literals (via
-    :func:`sql_quote`) regardless of the underlying option's real type --
-    DuckDB accepts quoted literals for every secret parameter (key IDs,
-    secrets, endpoints, scopes, ...), so this stays a single simple
-    ``Mapping[str, str]`` rather than needing per-key type dispatch.
-    """
-
-    name: str
-    type: str
-    params: Mapping[str, str] = field(default_factory=dict)
-    provider: str | None = None
-
-    def __post_init__(self) -> None:
-        if not self.name:
-            raise ValueError("secret name must not be empty")
-        if not self.type:
-            raise ValueError("secret type must not be empty")
-
-
-def secret_sql(secret: DuckDBSecret) -> str:
-    """Render ``secret`` as a ``CREATE OR REPLACE SECRET`` statement.
-
-    Pure string-building (no connection, no I/O) -- kept separate from
-    :func:`apply_secret` so the statement shape is unit-testable without a
-    real credential provider (e.g. ``PROVIDER credential_chain``) actually
-    validating against live cloud credentials at execution time.
-    """
-    # DuckDB's `PROVIDER` is a bare keyword (`config`, `credential_chain`,
-    # ...), not a quoted string literal -- unlike every other secret option.
-    options = [f"TYPE {secret.type}"]
-    if secret.provider:
-        options.append(f"PROVIDER {secret.provider}")
-    options.extend(
-        f"{key.upper()} {sql_quote(value)}" for key, value in secret.params.items()
-    )
-    identifier = sql_identifier(secret.name)
-    return f"CREATE OR REPLACE SECRET {identifier} ({', '.join(options)})"
-
-
-def apply_secret(con: DuckDBPyConnection, secret: DuckDBSecret) -> None:
-    """Declare ``secret`` on ``con`` via ``CREATE OR REPLACE SECRET``."""
-    con.execute(secret_sql(secret))
-
-
-def gcs_hmac_secret_from_env(
-    name: str = "gcs_hmac_keys",
-    *,
-    key_id_env: str = "GCS_ACCESS_KEY",
-    secret_env: str = "GCS_ACCESS_SECRET",
-) -> DuckDBSecret | None:
-    """A GCS HMAC-key secret sourced from environment variables, or ``None``.
-
-    Returns ``None`` (rather than a secret with empty credentials) when
-    either variable is unset or blank, so a caller can unconditionally do
-    ``secret = gcs_hmac_secret_from_env(); if secret: ...`` without a private
-    bucket's absence of credentials becoming a broken/empty DuckDB secret.
-    """
-    key_id = os.getenv(key_id_env, "").strip()
-    secret = os.getenv(secret_env, "").strip()
-    if not key_id or not secret:
-        return None
-    return DuckDBSecret(
-        name=name, type="GCS", params={"KEY_ID": key_id, "SECRET": secret}
-    )
-
-
-@dataclass(frozen=True)
 class DuckDBConnection:
-    """Configuration for a lazily created DuckDB connection."""
+    """Configuration for a lazily created DuckDB connection.
+
+    ``setup_sql`` runs after extensions load, before the connection is
+    handed back — the natural place for ``CREATE OR REPLACE SECRET`` (or any
+    other per-connection DDL/``SET``/``ATTACH``) a caller needs. This is
+    deliberately just a sequence of raw SQL strings, not a typed secret
+    builder: DuckDB's own secret DDL is already the idiomatic, fully
+    documented interface (https://duckdb.org/docs/configuration/secrets_manager),
+    varies per provider/type in ways a wrapper would have to keep chasing
+    (new provider keywords, new options), and a caller writing
+    ``f"CREATE OR REPLACE SECRET g (TYPE GCS, KEY_ID {sql_quote(key)}, "
+    f"SECRET {sql_quote(secret)})"`` already gets everything a builder would
+    add except one bug class -- DuckDB's ``PROVIDER`` option being a bare
+    keyword rather than a quoted literal, unlike every other secret option --
+    which is a one-line reminder, not a reason to maintain a whole builder.
+    :func:`sql_quote`/:func:`sql_identifier` stay exported for exactly this:
+    quoting values safely in caller-authored statements.
+    """
 
     database: str | None = None
     read_only: bool = False
     config: Mapping[str, Any] = field(default_factory=dict)
     extensions: Sequence[str] = field(default_factory=tuple)
-    secrets: Sequence[DuckDBSecret] = field(default_factory=tuple)
+    setup_sql: Sequence[str] = field(default_factory=tuple)
 
     def connect(self) -> DuckDBPyConnection:
-        """Create a connection, load requested extensions, and declare secrets."""
+        """Create a connection, load requested extensions, then run ``setup_sql``."""
         con = duckdb.connect(
             self.database or ":memory:",
             read_only=self.read_only,
@@ -237,8 +184,8 @@ class DuckDBConnection:
         )
         if self.extensions:
             ensure_extensions(con, *self.extensions)
-        for secret in self.secrets:
-            apply_secret(con, secret)
+        for statement in self.setup_sql:
+            con.execute(statement)
         return con
 
     @classmethod
@@ -247,7 +194,7 @@ class DuckDBConnection:
         work_dir: str | Path,
         *,
         extensions: Sequence[str] = ("spatial", "httpfs", "h3"),
-        secrets: Sequence[DuckDBSecret] = (),
+        setup_sql: Sequence[str] = (),
         config: Mapping[str, Any] | None = None,
         database: str | None = None,
         read_only: bool = False,
@@ -273,7 +220,7 @@ class DuckDBConnection:
             read_only=read_only,
             config=merged,
             extensions=tuple(extensions),
-            secrets=tuple(secrets),
+            setup_sql=tuple(setup_sql),
         )
 
 
