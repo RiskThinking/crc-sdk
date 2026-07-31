@@ -27,10 +27,6 @@ dependencies = [
     "gcsfs>=2024",
 ]
 
-# temp source until crc-framework is published to PyPI
-[tool.uv.sources]
-crc-framework = { git = "ssh://git@github.com/RiskThinking/crc-framework-rs.git", branch = "main" }
-
 [project.optional-dependencies]
 zarr = [
     "zarr>=2.18,<3",
