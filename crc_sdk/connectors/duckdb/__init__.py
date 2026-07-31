@@ -2,15 +2,11 @@
 
 from .connection import (
     DuckDBConnection,
-    DuckDBSecret,
     DuckDBStreamEngine,
     RuntimeResources,
-    apply_secret,
     default_work_dir,
     detected_cpu_count,
     ensure_extensions,
-    gcs_hmac_secret_from_env,
-    secret_sql,
     sql_identifier,
     sql_quote,
 )
@@ -20,7 +16,6 @@ from .zarr import Bounds, Point, RasterCurve, RasterMetadata, ZarrRaster, ZarrSc
 __all__ = [
     "Bounds",
     "DuckDBConnection",
-    "DuckDBSecret",
     "GeoTiffH3Scan",
     "GeoTiffRaster",
     "GeoTiffScan",
@@ -31,12 +26,9 @@ __all__ = [
     "RuntimeResources",
     "ZarrRaster",
     "ZarrScan",
-    "apply_secret",
     "default_work_dir",
     "detected_cpu_count",
     "ensure_extensions",
-    "gcs_hmac_secret_from_env",
-    "secret_sql",
     "sql_identifier",
     "sql_quote",
     "trim_cache_dir",

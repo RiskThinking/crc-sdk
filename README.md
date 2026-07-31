@@ -115,19 +115,31 @@ can be set per-call via each constructor's own `work_dir` parameter, or
 globally via `CRC_DUCKDB_WORK_DIR`.
 
 Private/authenticated remote sources (a non-public GCS/S3 bucket) are
-configured the same idiomatic-DuckDB way as everything else here: a
-`DuckDBSecret` (`name`, `type`, `params`, optional `provider`) declared via
-`apply_secret(con, secret)`, or passed as `secrets=(...)` to
-`DuckDBConnection`/`DuckDBConnection.for_analytics` to have it applied
-automatically on `.connect()`. `gcs_hmac_secret_from_env()` builds a GCS HMAC
-secret from `GCS_ACCESS_KEY`/`GCS_ACCESS_SECRET`, returning `None` (not a
-broken empty secret) when either is unset:
+configured the same idiomatic-DuckDB way as everything else here: raw
+`CREATE OR REPLACE SECRET` SQL, passed as `setup_sql=(...)` to
+`DuckDBConnection`/`DuckDBConnection.for_analytics` to have it run
+automatically on `.connect()`, right after extensions load. There is
+deliberately no secret-builder type in the SDK — DuckDB's own secret DDL
+(https://duckdb.org/docs/configuration/secrets_manager) is already the
+documented interface, and a caller's own connection-setup module is a more
+natural home for its specific credentials than a generic wrapper trying to
+track every provider/type DuckDB supports. `sql_quote`/`sql_identifier` are
+exported for safely building that SQL; the one DuckDB quirk worth knowing is
+that `PROVIDER` is a bare keyword (`config`, `credential_chain`, ...), not a
+quoted string literal, unlike every other secret option:
 
 ```python
-from crc_sdk.connectors.duckdb import DuckDBConnection, gcs_hmac_secret_from_env
+import os
+from crc_sdk.connectors.duckdb import DuckDBConnection, sql_quote
 
-secrets = [s for s in (gcs_hmac_secret_from_env(),) if s is not None]
-con = DuckDBConnection.for_analytics(work_dir, secrets=secrets).connect()
+setup_sql = []
+key_id, secret = os.getenv("GCS_ACCESS_KEY"), os.getenv("GCS_ACCESS_SECRET")
+if key_id and secret:
+    setup_sql.append(
+        f"CREATE OR REPLACE SECRET gcs (TYPE GCS, KEY_ID {sql_quote(key_id)}, "
+        f"SECRET {sql_quote(secret)})"
+    )
+con = DuckDBConnection.for_analytics(work_dir, setup_sql=setup_sql).connect()
 ```
 
 ## Canonical hazard datasets
