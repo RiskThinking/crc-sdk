@@ -11,6 +11,7 @@ primitive works around automatically.
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -174,6 +175,28 @@ def check_tiling_budget(
         "more disk, or narrow this run's scope (currently "
         f"{feature_count:,} features)."
     )
+
+
+def nearest_power_of_two(value: float) -> int:
+    """Round ``value`` to the nearest power of 2 -- at least 1.
+
+    tippecanoe's own ``init_cpus()`` unconditionally rounds whatever thread
+    count it's given *down* to the nearest power of 2 (confirmed in its
+    source), regardless of whether that count came from auto-detection or
+    ``TIPPECANOE_MAX_THREADS``. That's harmless for a raw, untransformed core
+    count -- tippecanoe was always going to floor it to the same bracket
+    either way -- but it compounds badly the moment a caller scales or
+    transforms the core count *before* choosing a thread target: half of a
+    31-core budget is 15, which tippecanoe's own floor then takes down to 8 --
+    a 4x cut from the real core count, not the intended 2x. Snapping to the
+    nearest power of 2 *before* handing tippecanoe a computed target (e.g.
+    ``nearest_power_of_two(cpu / 2)``) makes tippecanoe's own rounding a
+    no-op instead of a second, compounding one -- for any transform, not just
+    halving.
+    """
+    if value <= 1:
+        return 1
+    return 1 << round(math.log2(value))
 
 
 def _disk_free_bytes(path: Path) -> int:
