@@ -8,6 +8,7 @@ from crc_sdk.geometry.pmtiles.budget import (
     TilingBudget,
     check_tiling_budget,
     measure_source,
+    nearest_power_of_two,
 )
 
 _GIB = 1024**3
@@ -147,3 +148,26 @@ def test_measure_source_raises_on_no_match(tmp_path: Path) -> None:
     # probe (`fsspec`-based, in `_source_bytes`) is ever reached.
     with pytest.raises(duckdb.Error):
         measure_source(str(tmp_path / "does-not-exist-*.parquet"), con=con)
+
+
+def test_nearest_power_of_two_is_a_no_op_for_exact_powers() -> None:
+    for value in (1, 2, 4, 8, 16, 32):
+        assert nearest_power_of_two(value) == value
+
+
+def test_nearest_power_of_two_rounds_to_the_closer_bracket() -> None:
+    # Regression case: half of 31 cores is 15, which tippecanoe's own
+    # power-of-2 floor would otherwise take down to 8 -- a 4x cut from the
+    # real core count, not the intended 2x. 16 is the correct nearest power
+    # of 2 to 15.5 (and to 15, and to 12).
+    assert nearest_power_of_two(31 / 2) == 16
+    assert nearest_power_of_two(15) == 16
+    assert nearest_power_of_two(12) == 16
+    assert nearest_power_of_two(10) == 8
+    assert nearest_power_of_two(3 / 2) == 2
+
+
+def test_nearest_power_of_two_floors_at_one() -> None:
+    assert nearest_power_of_two(0) == 1
+    assert nearest_power_of_two(0.5) == 1
+    assert nearest_power_of_two(-5) == 1

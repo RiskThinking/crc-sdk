@@ -12,7 +12,12 @@ from __future__ import annotations
 
 from .archive import PMTilesBuild, PMTilesLayer, PMTilesResult, ZoomRange
 from .binaries import require_tile_join, require_tippecanoe
-from .budget import TilingBudget, check_tiling_budget, measure_source
+from .budget import (
+    TilingBudget,
+    check_tiling_budget,
+    measure_source,
+    nearest_power_of_two,
+)
 from .presets import (
     AREAS,
     POINTS,
@@ -37,6 +42,7 @@ __all__ = [
     "check_tiling_budget",
     "coerce_zoom_range",
     "measure_source",
+    "nearest_power_of_two",
     "require_tile_join",
     "require_tippecanoe",
     "tippecanoe_command",
