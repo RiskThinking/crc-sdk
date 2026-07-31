@@ -23,7 +23,7 @@ def _budget(free_disk_bytes: int, safe_scratch_bytes: int) -> TilingBudget:
 
 
 def test_check_tiling_budget_passes_when_estimate_fits() -> None:
-    budget = _budget(free_disk_bytes=100 * _GIB, safe_scratch_bytes=10 * _GIB)
+    budget = _budget(free_disk_bytes=100 * _GIB, safe_scratch_bytes=20 * _GIB)
     check_tiling_budget(input_bytes=1 * _GIB // 2, feature_count=1_000, budget=budget)
 
 
@@ -34,7 +34,7 @@ def test_check_tiling_budget_raises_with_actionable_message_when_exceeded() -> N
             input_bytes=10 * _GIB, feature_count=1_000_000, budget=budget
         )
     message = str(excinfo.value)
-    assert "140.0 GiB" in message  # 10 GiB * 14
+    assert "300.0 GiB" in message  # 10 GiB * 30
     assert "1.0 GiB is considered safe" in message
     assert "1,000,000 features" in message
 
@@ -73,6 +73,25 @@ def test_tiling_budget_detect_honors_env_overrides(
     budget = TilingBudget.detect(tmp_path)
     assert budget.tippecanoe_threads == 2
     assert budget.duckdb_threads == 3
+
+
+def test_tiling_budget_detect_honors_scratch_fraction_env_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    default_budget = TilingBudget.detect(tmp_path)
+    monkeypatch.setenv("CRC_TIPPECANOE_SCRATCH_FRACTION", "0.9")
+    wider_budget = TilingBudget.detect(tmp_path)
+    assert wider_budget.safe_scratch_bytes > default_budget.safe_scratch_bytes
+
+
+def test_tiling_budget_detect_ignores_invalid_scratch_fraction_env_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    default_budget = TilingBudget.detect(tmp_path)
+    for invalid in ("0", "-0.5", "1.5", "not-a-number", ""):
+        monkeypatch.setenv("CRC_TIPPECANOE_SCRATCH_FRACTION", invalid)
+        budget = TilingBudget.detect(tmp_path)
+        assert budget.safe_scratch_bytes == default_budget.safe_scratch_bytes
 
 
 def test_tiling_budget_detect_uses_full_cpu_count_by_default(
