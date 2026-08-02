@@ -365,9 +365,18 @@ def _container_cgroup_root() -> Path:
     real 31-core/235GiB cgroup-enforced limit, which is what actually gets
     SIGKILLed by the kernel OOM-killer). ``/proc/self/cgroup``'s unified
     (cgroup v2) entry -- ``0::<path>`` -- names the container's own path
-    relative to that mount; resolving through it fixes this regardless of
-    whether the mount happens to already be container-scoped (same file
-    either way in that case, so this is a no-op there).
+    relative to that mount; resolving through it fixes this on that runtime.
+
+    On other runtimes, though, ``/sys/fs/cgroup`` is *already* bind-mounted
+    to the container's own cgroup (mount root == container root), but
+    ``/proc/self/cgroup`` can still report a nested, host-relative path
+    regardless -- unconditionally joining that path here then points at a
+    directory that doesn't exist under the already-scoped mount, and the
+    caller's ``OSError`` handling silently falls back to host totals
+    instead, recreating the exact oversized-DuckDB-memory/threads risk this
+    function exists to avoid. Trust the joined candidate only when it
+    actually holds the v2 control files; otherwise the mount root itself
+    is the right answer.
     """
     try:
         content = Path("/proc/self/cgroup").read_text()
@@ -377,7 +386,12 @@ def _container_cgroup_root() -> Path:
         parts = line.split(":", 2)
         if len(parts) == 3 and parts[0] == "0" and parts[1] == "":
             relative = parts[2].lstrip("/")
-            return (_CGROUP_ROOT / relative) if relative else _CGROUP_ROOT
+            if not relative:
+                return _CGROUP_ROOT
+            candidate = _CGROUP_ROOT / relative
+            if (candidate / "memory.max").exists() or (candidate / "cpu.max").exists():
+                return candidate
+            return _CGROUP_ROOT
     return _CGROUP_ROOT
 
 
