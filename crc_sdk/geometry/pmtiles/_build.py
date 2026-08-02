@@ -19,7 +19,12 @@ from crc_sdk.connectors.duckdb import DuckDBConnection, default_work_dir
 from . import _geojson_sql
 from ._process import SubprocessPipeOptions, TippecanoeProcess
 from .binaries import require_tippecanoe
-from .budget import TilingBudget, check_tiling_budget, measure_source
+from .budget import (
+    TilingBudget,
+    check_tiling_budget,
+    measure_source,
+    resolve_temp_to_input_factor,
+)
 from .presets import ZoomRange, tippecanoe_command
 
 if TYPE_CHECKING:
@@ -91,7 +96,14 @@ def build_pmtiles_archive(build: PMTilesBuild, output: str) -> PMTilesResult:
                 f"no features to tile across {len(build.layers)} layer(s) -- "
                 f"nothing to write for {output!r}"
             )
-        check_tiling_budget(total_bytes, total_features, budget)
+        check_tiling_budget(
+            total_bytes,
+            total_features,
+            budget,
+            temp_to_input_factor=resolve_temp_to_input_factor(
+                build.temp_to_input_factor
+            ),
+        )
 
         effective_zooms = ZoomRange(
             min(layer.zooms.minimum for layer in build.layers),

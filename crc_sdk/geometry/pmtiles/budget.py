@@ -52,6 +52,26 @@ _DEFAULT_SCRATCH_FRACTION = 0.25
 _MIN_SAFE_SCRATCH_BYTES = 2 * _GIB
 
 
+def resolve_temp_to_input_factor(explicit: float | None = None) -> float:
+    """``explicit`` if given, else ``CRC_TIPPECANOE_TEMP_TO_INPUT_FACTOR``, else
+    :data:`DEFAULT_TEMP_TO_INPUT_FACTOR` -- same precedence as
+    :meth:`TilingBudget.detect`'s ``scratch_fraction`` resolution, kept as a
+    small standalone function (rather than a bare env read inline at the
+    call site) so other callers can resolve the same value consistently.
+    """
+    if explicit is not None:
+        return explicit
+    raw = os.getenv("CRC_TIPPECANOE_TEMP_TO_INPUT_FACTOR")
+    if raw:
+        try:
+            value = float(raw)
+            if value > 0:
+                return value
+        except ValueError:
+            pass
+    return DEFAULT_TEMP_TO_INPUT_FACTOR
+
+
 @dataclass(frozen=True)
 class TilingBudget:
     """Detected core count and safe scratch-disk budget for a tiling pass."""
@@ -153,7 +173,7 @@ def check_tiling_budget(
     feature_count: int,
     budget: TilingBudget,
     *,
-    temp_to_input_factor: int = DEFAULT_TEMP_TO_INPUT_FACTOR,
+    temp_to_input_factor: float = DEFAULT_TEMP_TO_INPUT_FACTOR,
 ) -> None:
     """Raise ``ValueError`` if tiling ``input_bytes`` likely exceeds the budget.
 

@@ -9,6 +9,7 @@ from crc_sdk.geometry.pmtiles.budget import (
     check_tiling_budget,
     measure_source,
     nearest_power_of_two,
+    resolve_temp_to_input_factor,
 )
 
 _GIB = 1024**3
@@ -56,6 +57,35 @@ def test_check_tiling_budget_uses_the_provided_factor() -> None:
             budget=budget,
             temp_to_input_factor=DEFAULT_TEMP_TO_INPUT_FACTOR,
         )
+
+
+def test_resolve_temp_to_input_factor_prefers_explicit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CRC_TIPPECANOE_TEMP_TO_INPUT_FACTOR", "12")
+    assert resolve_temp_to_input_factor(5) == 5
+
+
+def test_resolve_temp_to_input_factor_honors_env_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CRC_TIPPECANOE_TEMP_TO_INPUT_FACTOR", "12")
+    assert resolve_temp_to_input_factor(None) == 12
+
+
+def test_resolve_temp_to_input_factor_falls_back_to_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CRC_TIPPECANOE_TEMP_TO_INPUT_FACTOR", raising=False)
+    assert resolve_temp_to_input_factor(None) == DEFAULT_TEMP_TO_INPUT_FACTOR
+
+
+def test_resolve_temp_to_input_factor_ignores_invalid_env_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for invalid in ("0", "-5", "not-a-number", ""):
+        monkeypatch.setenv("CRC_TIPPECANOE_TEMP_TO_INPUT_FACTOR", invalid)
+        assert resolve_temp_to_input_factor(None) == DEFAULT_TEMP_TO_INPUT_FACTOR
 
 
 def test_tiling_budget_detect_honors_thread_overrides(tmp_path: Path) -> None:
