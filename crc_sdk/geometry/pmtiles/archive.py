@@ -26,6 +26,7 @@ class PMTilesLayer:
     name: str
     zooms: ZoomRange
     preset: TippecanoePreset = POLYGONS
+    property_columns: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         if not self.name:
@@ -81,13 +82,25 @@ class PMTilesBuild:
         name: str,
         zooms: ZoomRange | Iterable[int],
         preset: TippecanoePreset = POLYGONS,
+        property_columns: Iterable[str] | None = None,
     ) -> PMTilesBuild:
-        """Return a new build with one more layer appended."""
+        """Return a new build with one more layer appended.
+
+        ``property_columns``, when given, projects this layer's feature
+        properties down to just that allowlist instead of every non-geometry
+        column in ``source`` -- e.g. to keep one tiling pass's
+        ``--accumulate-attribute`` working set (and per-feature payload size)
+        bounded when the source carries many more dimensional columns than
+        any single pass needs at once.
+        """
         new_layer = PMTilesLayer(
             source=str(source),
             name=name,
             zooms=coerce_zoom_range(zooms),
             preset=preset,
+            property_columns=(
+                tuple(property_columns) if property_columns is not None else None
+            ),
         )
         return replace(self, layers=self.layers + (new_layer,))
 

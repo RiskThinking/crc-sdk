@@ -47,9 +47,12 @@ class H3Indexer:
     ) -> None:
         # An explicit connection means the caller is already in control; only
         # build (and resource-tune) one when they didn't supply their own.
-        self.con = con or DuckDBConnection.for_analytics(
-            work_dir or default_work_dir(), extensions=("spatial", "h3")
-        ).connect()
+        self.con = (
+            con
+            or DuckDBConnection.for_analytics(
+                work_dir or default_work_dir(), extensions=("spatial", "h3")
+            ).connect()
+        )
         ensure_extensions(self.con, "spatial", "h3")
 
     @staticmethod
@@ -328,9 +331,7 @@ def average_edge_length_m(resolution: int) -> float:
     # indexing (e.g. -1 silently returning the resolution-15 edge length)
     # instead of rejecting them as an out-of-range H3 resolution.
     if not 0 <= resolution <= 15:
-        raise ValueError(
-            f"unsupported H3 resolution {resolution} (supported: 0-15)"
-        )
+        raise ValueError(f"unsupported H3 resolution {resolution} (supported: 0-15)")
     return _H3_AVERAGE_EDGE_LENGTH_KM[resolution] * 1000.0
 
 

@@ -183,6 +183,80 @@ def test_build_layer_query_reads_a_glob_with_schema_drift_via_union_by_name(
     assert by_id[2]["perc_90"] == 30
 
 
+def test_build_layer_query_projects_only_the_given_property_columns(
+    tmp_path: Path,
+) -> None:
+    con = _connection()
+    path = tmp_path / "wide.parquet"
+    con.execute(
+        f"""
+        COPY (
+            SELECT 1 AS id, 10 AS col_a, 20 AS col_b, 30 AS col_c,
+                   ST_Point(0, 0) AS geometry
+        ) TO '{path}' (FORMAT PARQUET)
+        """
+    )
+    query = build_layer_query(
+        con,
+        LayerSource(
+            source=str(path),
+            layer="p",
+            minzoom=0,
+            maxzoom=1,
+            property_columns=("id", "col_b"),
+        ),
+    )
+    (feature_json,) = con.execute(query).fetchone()
+    properties = _parse_feature(feature_json)["properties"]
+    assert properties == {"id": 1, "col_b": 20}
+
+
+def test_build_layer_query_property_columns_silently_skips_missing_names(
+    tmp_path: Path,
+) -> None:
+    """A caller building an allowlist from a known dimensional-column pattern
+    (e.g. "every column for one pathway") over a Hive dataset shouldn't have
+    to first re-derive the exact intersection with what this file actually
+    has -- a requested name that doesn't exist here is just omitted.
+    """
+    con = _connection()
+    path = tmp_path / "narrow.parquet"
+    con.execute(
+        f"COPY (SELECT 1 AS id, 10 AS col_a, ST_Point(0, 0) AS geometry) "
+        f"TO '{path}' (FORMAT PARQUET)"
+    )
+    query = build_layer_query(
+        con,
+        LayerSource(
+            source=str(path),
+            layer="p",
+            minzoom=0,
+            maxzoom=1,
+            property_columns=("id", "col_a", "col_does_not_exist"),
+        ),
+    )
+    (feature_json,) = con.execute(query).fetchone()
+    properties = _parse_feature(feature_json)["properties"]
+    assert properties == {"id": 1, "col_a": 10}
+
+
+def test_build_layer_query_property_columns_none_keeps_default_behavior(
+    tmp_path: Path,
+) -> None:
+    con = _connection()
+    path = tmp_path / "wide2.parquet"
+    con.execute(
+        f"COPY (SELECT 1 AS id, 10 AS col_a, ST_Point(0, 0) AS geometry) "
+        f"TO '{path}' (FORMAT PARQUET)"
+    )
+    query = build_layer_query(
+        con, LayerSource(source=str(path), layer="p", minzoom=0, maxzoom=1)
+    )
+    (feature_json,) = con.execute(query).fetchone()
+    properties = _parse_feature(feature_json)["properties"]
+    assert properties == {"id": 1, "col_a": 10}
+
+
 def test_build_layer_query_raises_when_no_geometry_column_found(tmp_path: Path) -> None:
     con = _connection()
     path = tmp_path / "no_geom.parquet"
