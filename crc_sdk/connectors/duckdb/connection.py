@@ -70,6 +70,51 @@ def detected_cpu_count() -> int:
     return max(1, min(cpu_limits))
 
 
+# Empirically derived, not a documented DuckDB recommendation: a live
+# production ``COPY ... PARTITION_BY`` write (248 partitions, USA-scale
+# building data) showed three regimes as this setting varied relative to the
+# actual partition count -- a fixed value far below it (16) throttled the
+# whole write to ~1/30th of available cores via constant file-handle
+# open/close churn; setting it to exactly match the partition count (248)
+# was ~3x faster initially but the write *collapsed* to a near-standstill
+# crawl partway through a sustained multi-GB write (confirmed via /proc
+# thread inspection to still be doing real, if minimal, work -- not
+# deadlocked -- but at a rate that would have taken hours longer); a capped
+# middle ground (64) gave up some of that initial speed but sailed straight
+# through the point where the uncapped run collapsed and finished reliably.
+# This value has not been swept for an optimum between 64 and the full
+# partition count -- treat it as a reasoned, tested-safe default, not a
+# proven-best one.
+DEFAULT_PARTITIONED_WRITE_MAX_OPEN_FILES_CEILING = 64
+
+
+def partitioned_write_open_files_hint(
+    partition_count: int,
+    *,
+    ceiling: int = DEFAULT_PARTITIONED_WRITE_MAX_OPEN_FILES_CEILING,
+) -> int:
+    """Suggest a ``partitioned_write_max_open_files`` for one ``PARTITION_BY`` write.
+
+    Call this per-write (``con.execute(f"SET partitioned_write_max_open_files={hint}")``
+    right before the ``COPY``), not once at connection-creation time -- the
+    right value depends on how many distinct partition values *that write*
+    is about to touch, which :class:`RuntimeResources`'s connection-wide
+    default (a fixed, conservative ``8``) has no way to know in advance. See
+    the module-level comment above
+    :data:`DEFAULT_PARTITIONED_WRITE_MAX_OPEN_FILES_CEILING` for how that
+    ceiling was chosen. Override the ceiling via
+    ``CRC_DUCKDB_PARTITIONED_WRITE_MAX_OPEN_FILES`` for a quick global tweak
+    without touching call sites.
+    """
+    raw = os.getenv("CRC_DUCKDB_PARTITIONED_WRITE_MAX_OPEN_FILES")
+    if raw:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            pass
+    return max(1, min(int(partition_count), ceiling))
+
+
 @dataclass(frozen=True)
 class RuntimeResources:
     """Detected host/container limits and recommended DuckDB settings."""
@@ -306,14 +351,45 @@ class DuckDBStreamEngine:
         )
 
 
+_CGROUP_ROOT = Path("/sys/fs/cgroup")
+
+
+def _container_cgroup_root() -> Path:
+    """Resolve the container's own cgroup v2 path, not the mounted root.
+
+    On some container runtimes (confirmed live on a GKE/containerd node),
+    ``/sys/fs/cgroup`` is mounted as the *host's* root cgroup hierarchy, not
+    the container's own -- reading ``cpu.max``/``memory.max`` directly from
+    that root then silently returns the host's limits instead of the
+    container's enforced ones (measured: reported 32 cores/251.9GiB vs. the
+    real 31-core/235GiB cgroup-enforced limit, which is what actually gets
+    SIGKILLed by the kernel OOM-killer). ``/proc/self/cgroup``'s unified
+    (cgroup v2) entry -- ``0::<path>`` -- names the container's own path
+    relative to that mount; resolving through it fixes this regardless of
+    whether the mount happens to already be container-scoped (same file
+    either way in that case, so this is a no-op there).
+    """
+    try:
+        content = Path("/proc/self/cgroup").read_text()
+    except OSError:
+        return _CGROUP_ROOT
+    for line in content.splitlines():
+        parts = line.split(":", 2)
+        if len(parts) == 3 and parts[0] == "0" and parts[1] == "":
+            relative = parts[2].lstrip("/")
+            return (_CGROUP_ROOT / relative) if relative else _CGROUP_ROOT
+    return _CGROUP_ROOT
+
+
 def _memory_limit_bytes(host_total: int) -> int:
     limits = [host_total]
+    cgroup_root = _container_cgroup_root()
     for name in (
-        "/sys/fs/cgroup/memory.max",
-        "/sys/fs/cgroup/memory/memory.limit_in_bytes",
+        cgroup_root / "memory.max",
+        _CGROUP_ROOT / "memory/memory.limit_in_bytes",
     ):
         try:
-            raw = Path(name).read_text().strip()
+            raw = name.read_text().strip()
             if raw != "max" and 0 < int(raw) < 1 << 60:
                 limits.append(int(raw))
         except (OSError, ValueError):
@@ -322,15 +398,16 @@ def _memory_limit_bytes(host_total: int) -> int:
 
 
 def _cpu_quota() -> int | None:
+    cgroup_root = _container_cgroup_root()
     try:
-        raw_quota, raw_period = Path("/sys/fs/cgroup/cpu.max").read_text().split()[:2]
+        raw_quota, raw_period = (cgroup_root / "cpu.max").read_text().split()[:2]
         if raw_quota != "max":
             return max(1, math.ceil(int(raw_quota) / int(raw_period)))
     except (OSError, ValueError, ZeroDivisionError):
         pass
     try:
-        cfs_quota = int(Path("/sys/fs/cgroup/cpu/cpu.cfs_quota_us").read_text())
-        cfs_period = int(Path("/sys/fs/cgroup/cpu/cpu.cfs_period_us").read_text())
+        cfs_quota = int((_CGROUP_ROOT / "cpu/cpu.cfs_quota_us").read_text())
+        cfs_period = int((_CGROUP_ROOT / "cpu/cpu.cfs_period_us").read_text())
         if cfs_quota > 0:
             return max(1, math.ceil(cfs_quota / cfs_period))
     except (OSError, ValueError, ZeroDivisionError):

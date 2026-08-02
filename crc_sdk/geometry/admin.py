@@ -8,7 +8,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from crc_sdk.connectors.duckdb.connection import sql_quote
+from crc_sdk.connectors.duckdb.connection import (
+    partitioned_write_open_files_hint,
+    sql_quote,
+)
 
 if TYPE_CHECKING:
     from duckdb import DuckDBPyConnection
@@ -220,22 +223,20 @@ def write_lookup_contract(
         )
         source = sql_quote(source_path)
         row_count = int(
-            con.execute(
-                f"SELECT COUNT(*) FROM read_parquet({source})"
-            ).fetchone()[0]
+            con.execute(f"SELECT COUNT(*) FROM read_parquet({source})").fetchone()[0]
         )
         if buckets is None:
             # ~400k exploded rows/bucket keeps list/window aggs under 9GiB.
-            buckets = 1 if row_count <= 500_000 else max(8, (row_count + 399_999) // 400_000)
+            buckets = (
+                1 if row_count <= 500_000 else max(8, (row_count + 399_999) // 400_000)
+            )
         buckets = max(1, int(buckets))
 
         part_files: list[Path] = []
         for bucket in range(buckets):
             part_path = parts_dir / f"part_{bucket:04d}.parquet"
             bucket_filter = (
-                ""
-                if buckets == 1
-                else f"WHERE hash(hex_id) % {buckets} = {bucket}"
+                "" if buckets == 1 else f"WHERE hash(hex_id) % {buckets} = {bucket}"
             )
             con.execute(
                 f"""
@@ -364,6 +365,20 @@ def write_partitioned_lookup(
     )
     projection = (
         "*" if parent in columns else f"*, {parent_expression}::VARCHAR AS {parent}"
+    )
+    partition_count = con.execute(
+        f"SELECT count(DISTINCT {parent_expression}) FROM read_parquet({input_sql})"
+        if parent not in columns
+        else f"SELECT count(DISTINCT {parent}) FROM read_parquet({input_sql})"
+    ).fetchone()[0]
+    # See partitioned_write_open_files_hint: a fixed low cap serializes this
+    # write via file-handle churn once distinct partition values exceed it --
+    # real for this function, since even the default partition_resolution=0
+    # already yields H3's 122 base cells, well past a connection's
+    # conservative connection-wide default.
+    con.execute(
+        f"SET partitioned_write_max_open_files="
+        f"{partitioned_write_open_files_hint(partition_count)}"
     )
     con.execute(
         f"""
