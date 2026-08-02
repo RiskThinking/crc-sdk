@@ -4,6 +4,7 @@ from pathlib import Path
 import duckdb
 import pytest
 
+import crc_sdk.geometry.pmtiles._build as crc_sdk_build
 from crc_sdk.geometry.pmtiles import POINTS, POLYGONS, PMTilesBuild
 from crc_sdk.geometry.pmtiles.budget import TilingBudget
 
@@ -234,6 +235,36 @@ def test_with_resources_forwards_scratch_fraction_to_tiling_budget(
         .write(str(output))
     )
     assert captured["scratch_fraction"] == 0.9
+
+
+def test_with_resources_forwards_temp_to_input_factor_to_budget_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``PMTilesBuild.with_resources(temp_to_input_factor=...)`` must reach
+    ``check_tiling_budget`` -- the first-class way for a caller who has
+    *measured* real peak scratch usage for its own workload to supply a
+    smaller, evidence-backed multiplier instead of the conservative default
+    (calibrated on one small AOI, deliberately rounded upward for safety).
+    """
+    source = tmp_path / "points.parquet"
+    _write_points(source, count=3)
+    output = tmp_path / "out.pmtiles"
+
+    captured: dict[str, object] = {}
+    real_check = crc_sdk_build.check_tiling_budget
+
+    def _capturing_check(*args: object, **kwargs: object) -> None:
+        captured["temp_to_input_factor"] = kwargs.get("temp_to_input_factor")
+        return real_check(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(crc_sdk_build, "check_tiling_budget", _capturing_check)
+    (
+        PMTilesBuild()
+        .layer(str(source), name="places", zooms=(0, 10), preset=POINTS)
+        .with_resources(temp_to_input_factor=5)
+        .write(str(output))
+    )
+    assert captured["temp_to_input_factor"] == 5
 
 
 def test_zooms_accepts_tuple_range_and_set(tmp_path: Path) -> None:

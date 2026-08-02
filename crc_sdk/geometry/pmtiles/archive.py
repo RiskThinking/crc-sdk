@@ -73,6 +73,7 @@ class PMTilesBuild:
     tippecanoe_threads: int | None = None
     duckdb_threads: int | None = None
     scratch_fraction: float | None = None
+    temp_to_input_factor: float | None = None
     idle_timeout_seconds: float | None = None
 
     def layer(
@@ -114,6 +115,7 @@ class PMTilesBuild:
         tippecanoe_threads: int | None = None,
         duckdb_threads: int | None = None,
         scratch_fraction: float | None = None,
+        temp_to_input_factor: float | None = None,
         idle_timeout_seconds: float | None = None,
     ) -> PMTilesBuild:
         """Return a new build with resource/connection overrides applied.
@@ -126,6 +128,20 @@ class PMTilesBuild:
         orchestration can actually guarantee otherwise (one build at a time,
         fully cleaned up before the next starts) -- it is a property of the
         call site, not something to raise here without that guarantee.
+
+        ``temp_to_input_factor`` -- the pre-flight scratch-disk estimate's
+        multiplier on measured input bytes (see
+        :data:`crc_sdk.geometry.pmtiles.budget.DEFAULT_TEMP_TO_INPUT_FACTOR`)
+        -- defaults to that same conservative constant, calibrated on one
+        small AOI and deliberately rounded upward for safety margin, not a
+        validated figure for every workload shape/scale. A caller that has
+        *measured* real peak scratch usage for its own workload (see
+        :mod:`crc_sdk.geometry.pmtiles.budget`'s own measurement technique --
+        polling free disk space during a real tiling pass) has a real case
+        for passing a smaller, evidence-backed number here -- same spirit as
+        ``scratch_fraction``: a property of what the caller actually knows
+        about its own workload, not something to loosen without that
+        evidence.
         """
         return replace(
             self,
@@ -143,6 +159,11 @@ class PMTilesBuild:
                 scratch_fraction
                 if scratch_fraction is not None
                 else self.scratch_fraction
+            ),
+            temp_to_input_factor=(
+                temp_to_input_factor
+                if temp_to_input_factor is not None
+                else self.temp_to_input_factor
             ),
             idle_timeout_seconds=(
                 idle_timeout_seconds
