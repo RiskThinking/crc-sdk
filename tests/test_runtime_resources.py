@@ -109,13 +109,49 @@ def _patch_proc_self_cgroup(monkeypatch, content: str | None) -> None:
     monkeypatch.setattr(Path, "read_text", fake_read_text)
 
 
+def _patch_cgroup_control_files(monkeypatch, existing: set[str]) -> None:
+    """Simulate specific cgroup v2 control files existing, without touching
+    the real filesystem for anything else (this dev machine has no real
+    ``/sys/fs/cgroup`` tree at all, let alone a container-scoped one)."""
+    original_exists = Path.exists
+
+    def fake_exists(self, *args, **kwargs):
+        if str(self) in existing:
+            return True
+        return original_exists(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "exists", fake_exists)
+
+
 def test_container_cgroup_root_resolves_v2_unified_line(monkeypatch) -> None:
     _patch_proc_self_cgroup(
         monkeypatch, "0::/kubepods/besteffort/pod123/container456\n"
     )
+    _patch_cgroup_control_files(
+        monkeypatch,
+        {"/sys/fs/cgroup/kubepods/besteffort/pod123/container456/memory.max"},
+    )
     assert _container_cgroup_root() == Path(
         "/sys/fs/cgroup/kubepods/besteffort/pod123/container456"
     )
+
+
+def test_container_cgroup_root_falls_back_when_joined_path_lacks_control_files(
+    monkeypatch,
+) -> None:
+    """Regression test: some runtimes already bind-mount /sys/fs/cgroup to
+    the container's own cgroup slice, but /proc/self/cgroup can still report
+    a nested, host-relative path regardless -- joining that path onto the
+    mount root then points at a directory that doesn't exist, and reading
+    from it fails silently, reverting to host totals (the exact
+    oversized-DuckDB-memory/threads risk this function exists to avoid).
+    When the joined candidate has neither memory.max nor cpu.max, the mount
+    root itself -- which does -- should win instead."""
+    _patch_proc_self_cgroup(
+        monkeypatch, "0::/kubepods/besteffort/pod123/container456\n"
+    )
+    _patch_cgroup_control_files(monkeypatch, {"/sys/fs/cgroup/memory.max"})
+    assert _container_cgroup_root() == Path("/sys/fs/cgroup")
 
 
 def test_container_cgroup_root_falls_back_when_proc_missing(monkeypatch) -> None:
