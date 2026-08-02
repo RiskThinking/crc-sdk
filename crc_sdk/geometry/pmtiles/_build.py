@@ -116,6 +116,7 @@ def build_pmtiles_archive(build: PMTilesBuild, output: str) -> PMTilesResult:
                 layer=layer.name,
                 minzoom=layer.zooms.minimum,
                 maxzoom=layer.zooms.maximum,
+                property_columns=layer.property_columns,
             )
             for layer in build.layers
         ]

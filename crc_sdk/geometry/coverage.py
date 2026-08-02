@@ -216,8 +216,7 @@ def _materialize_needed_hex_geoms(
     """
     _drop_relation(con, _HEX_GEOMS_TABLE)
     con.execute(
-        f"CREATE TEMPORARY TABLE {_HEX_GEOMS_TABLE} "
-        f"({hex_col} VARCHAR, geom GEOMETRY)"
+        f"CREATE TEMPORARY TABLE {_HEX_GEOMS_TABLE} ({hex_col} VARCHAR, geom GEOMETRY)"
     )
     if not populate:
         return
@@ -827,8 +826,7 @@ def write_hierarchical_coverage(
         )
         partial_count = int(
             con.execute(
-                f"SELECT COUNT(*) FROM read_parquet({sql_quote(out)}) "
-                f"WHERE pct < 1.0"
+                f"SELECT COUNT(*) FROM read_parquet({sql_quote(out)}) WHERE pct < 1.0"
             ).fetchone()[0]
         )
     finally:

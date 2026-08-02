@@ -28,13 +28,24 @@ STANDARD_GEOMETRY_NAMES = ("geometry", "geom", "wkb_geometry", "the_geom")
 
 @dataclass(frozen=True)
 class LayerSource:
-    """One layer's resolved inputs for building its feature-selection query."""
+    """One layer's resolved inputs for building its feature-selection query.
+
+    ``property_columns``, when given, projects the properties JSON down to
+    just that allowlist (plus whatever's always kept -- the geometry/``bbox``
+    columns are excluded regardless) instead of every non-geometry column in
+    the source. Columns named that don't actually exist in the source are
+    silently skipped rather than raising, since a caller building this list
+    from a known dimensional-column pattern (e.g. "every column for one
+    pathway") over a Hive dataset with genuine per-partition column drift
+    shouldn't have to first re-derive the exact intersection itself.
+    """
 
     source: str
     layer: str
     minzoom: int
     maxzoom: int
     precision: int = DEFAULT_PRECISION
+    property_columns: tuple[str, ...] | None = None
 
 
 def geo_metadata(con: Any, source: str) -> dict[str, Any] | None:
@@ -159,6 +170,9 @@ def build_layer_query(con: Any, layer_source: LayerSource) -> str:
 
     excluded_names = {geometry_column.lower(), "bbox"}
     property_columns = [name for name in columns if name.lower() not in excluded_names]
+    if layer_source.property_columns is not None:
+        allowed = set(layer_source.property_columns)
+        property_columns = [name for name in property_columns if name in allowed]
     if property_columns:
         pairs = ", ".join(
             f"{_quote_ident(name)} := {_quote_ident(name)}" for name in property_columns

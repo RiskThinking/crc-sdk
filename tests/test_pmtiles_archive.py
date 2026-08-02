@@ -59,6 +59,44 @@ def test_single_layer_build_writes_a_valid_pmtiles_archive(tmp_path: Path) -> No
     assert result.output == str(output)
 
 
+def test_single_layer_build_honors_property_columns_projection(
+    tmp_path: Path,
+) -> None:
+    """Regression test for the wide-schema tiling-collapse fix: a layer can
+    restrict its properties to a subset of the source's columns instead of
+    carrying every one into this tiling pass (and, for the points preset,
+    into --accumulate-attribute)."""
+    con = duckdb.connect()
+    con.execute("INSTALL spatial")
+    con.execute("LOAD spatial")
+    source = tmp_path / "wide_points.parquet"
+    con.execute(
+        f"""
+        COPY (SELECT i AS id, i * 2 AS keep_me, i * 3 AS drop_me,
+                     ST_Point(i * 0.01, i * 0.01) AS geometry
+              FROM range(1, 21) t(i))
+        TO '{source}' (FORMAT PARQUET)
+        """
+    )
+    output = tmp_path / "out.pmtiles"
+
+    result = (
+        PMTilesBuild()
+        .layer(
+            str(source),
+            name="places",
+            zooms=(0, 10),
+            preset=POINTS,
+            property_columns=("id", "keep_me"),
+        )
+        .write(str(output))
+    )
+
+    assert output.is_file()
+    assert output.read_bytes()[:7] == _PMTILES_MAGIC
+    assert result.layers == ("places",)
+
+
 def test_layer_and_add_layer_are_interchangeable(tmp_path: Path) -> None:
     points = tmp_path / "points.parquet"
     polygons = tmp_path / "polygons.parquet"
