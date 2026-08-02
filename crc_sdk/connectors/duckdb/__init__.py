@@ -7,6 +7,7 @@ from .connection import (
     default_work_dir,
     detected_cpu_count,
     ensure_extensions,
+    partitioned_write_open_files_hint,
     sql_identifier,
     sql_quote,
 )
@@ -29,6 +30,7 @@ __all__ = [
     "default_work_dir",
     "detected_cpu_count",
     "ensure_extensions",
+    "partitioned_write_open_files_hint",
     "sql_identifier",
     "sql_quote",
     "trim_cache_dir",
