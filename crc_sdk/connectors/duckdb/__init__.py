@@ -11,7 +11,13 @@ from .connection import (
     sql_identifier,
     sql_quote,
 )
-from .geotiff import GeoTiffH3Scan, GeoTiffRaster, GeoTiffScan, trim_cache_dir
+from .geotiff import (
+    GeoTiffH3Scan,
+    GeoTiffRaster,
+    GeoTiffScan,
+    JRCReturnPeriodRaster,
+    trim_cache_dir,
+)
 from .zarr import Bounds, Point, RasterCurve, RasterMetadata, ZarrRaster, ZarrScan
 
 __all__ = [
@@ -20,6 +26,7 @@ __all__ = [
     "GeoTiffH3Scan",
     "GeoTiffRaster",
     "GeoTiffScan",
+    "JRCReturnPeriodRaster",
     "Point",
     "RasterCurve",
     "RasterMetadata",
