@@ -1,6 +1,7 @@
 """Storage provider interfaces and implementations."""
 
 from .jrc import EFAS, GLOFAS, JRCProvider, JRCRasterDataset
+from .jrc_edo import SMI, EDODataset, EDOProvider
 from .local import LocalProvider
 from .os_climate import (
     DEFAULT_INVENTORY_URL,
@@ -13,6 +14,8 @@ from .protocol import Provider
 
 __all__ = [
     "DEFAULT_INVENTORY_URL",
+    "EDODataset",
+    "EDOProvider",
     "EFAS",
     "GLOFAS",
     "JRCProvider",
@@ -23,4 +26,5 @@ __all__ = [
     "OSClimateResource",
     "OSClimateSelection",
     "Provider",
+    "SMI",
 ]

@@ -9,7 +9,7 @@ from concurrent.futures import ProcessPoolExecutor
 from decimal import Decimal
 from functools import partial
 from pathlib import Path
-from typing import Any, Union, cast
+from typing import Any, Literal, Union, cast
 
 import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
@@ -76,8 +76,26 @@ def distribution_from_hazard_row(
 
 def return_periods_to_probabilities(
     return_periods: Sequence[float],
+    *,
+    tail: Literal["upper", "lower"] = "upper",
 ) -> tuple[float, ...]:
-    """Map unique upper-tail return periods to non-exceedance probabilities."""
+    """Map unique return periods to the probability their curve was fitted at.
+
+    `tail="upper"` (default) returns non-exceedance probabilities
+    (`1 - 1/period`) -- the convention for hazards where rarer events are
+    worse at *higher* values (e.g. flood depth), matching
+    `CurveFitIngestPolicy(tail="upper")` at ingest. `tail="lower"` returns
+    `1/period`, the counterpart for hazards where rarer events are worse at
+    *lower* values (e.g. drought severity), matching
+    `CurveFitIngestPolicy(tail="lower")`. A curve's fitted distribution has
+    no memory of which tail it was fitted under -- its `curve_kind`/
+    `curve_type`/etc. reconstruct a plain quantile function -- so the caller
+    must pass the same `tail` used at ingest to evaluate it at the intended
+    return period; passing the wrong one silently reads the *other* tail's
+    convention instead of raising.
+    """
+    if tail not in ("upper", "lower"):
+        raise ValueError("tail must be 'upper' or 'lower'")
     periods = tuple(return_periods)
     if not periods:
         raise ValueError("at least one return period is required")
@@ -91,7 +109,9 @@ def return_periods_to_probabilities(
         normalized.append(value)
     if len(set(normalized)) != len(normalized):
         raise ValueError("return periods must be unique")
-    return tuple(1.0 - 1.0 / period for period in normalized)
+    if tail == "upper":
+        return tuple(1.0 - 1.0 / period for period in normalized)
+    return tuple(1.0 / period for period in normalized)
 
 
 def _period_label(period: float) -> str:

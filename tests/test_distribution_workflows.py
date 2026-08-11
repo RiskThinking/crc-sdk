@@ -169,6 +169,23 @@ def test_return_periods_reject_invalid_values(periods: list[float]) -> None:
         return_periods_to_probabilities(periods)
 
 
+def test_return_periods_lower_tail_is_the_upper_tails_complement() -> None:
+    periods = [10, 100]
+
+    lower = return_periods_to_probabilities(periods, tail="lower")
+    upper = return_periods_to_probabilities(periods, tail="upper")
+
+    assert lower == pytest.approx([0.1, 0.01])
+    assert upper == pytest.approx([0.9, 0.99])
+    # Same period, opposite tail: probabilities are complements of each other.
+    assert lower == pytest.approx([1.0 - value for value in upper])
+
+
+def test_return_periods_reject_unknown_tail() -> None:
+    with pytest.raises(ValueError, match="tail"):
+        return_periods_to_probabilities([10], tail="sideways")  # type: ignore[arg-type]
+
+
 def test_curve_quantiles_evaluates_all_probabilities_per_row() -> None:
     table = _table(
         _row(source_id="fitted"),

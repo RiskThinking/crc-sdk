@@ -11,6 +11,7 @@ from .adapters import (
     canonicalize_os_climate,
 )
 from .jrc import JRCIngestPolicy, canonicalize_jrc_flood
+from .jrc_edo import EDOIngestPolicy, canonicalize_edo_drought
 from .parquet import (
     hazard_arrow_schema,
     read_hazard_dataset,
@@ -28,10 +29,12 @@ __all__ = [
     "CanonicalHazardStream",
     "CurveFitIngestPolicy",
     "CurveSource",
+    "EDOIngestPolicy",
     "HurdleFitPolicy",
     "JRCIngestPolicy",
     "OSClimateIngestPolicy",
     "canonicalize_curve_source",
+    "canonicalize_edo_drought",
     "canonicalize_jrc_flood",
     "canonicalize_os_climate",
     "hazard_arrow_schema",
