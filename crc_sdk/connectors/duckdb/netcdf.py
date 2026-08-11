@@ -106,6 +106,30 @@ def _index_range(
     return int(indices.min()), int(indices.max()) + 1
 
 
+def _strip_row_count(
+    strip_bytes: int,
+    width: int,
+    itemsize: int,
+    block_height: int,
+    *,
+    leading_axis: int = 1,
+) -> int:
+    """Row count per strip, bounding `leading_axis * rows * width * itemsize`
+    by `strip_bytes` and aligned to `block_height`.
+
+    `leading_axis` is 1 for a single-time-slice read (`NetCDFRaster`); a
+    caller reading `leading_axis` steps per row at once (e.g.
+    `EDOAnnualMinimaCurveSource` reading a whole year's dekads before
+    reducing them) must pass that count, or the strip is undersized by
+    roughly that factor -- the actual resident array before any reduction
+    is `(leading_axis, rows, width)`, not `(rows, width)`.
+    """
+    rows_per_strip = max(
+        block_height, strip_bytes // max(1, width * itemsize * leading_axis)
+    )
+    return max(block_height, (rows_per_strip // block_height) * block_height)
+
+
 class NetCDFRaster:
     """A remote or local NetCDF variable time-slice with lazy DuckDB scan helpers.
 
@@ -323,8 +347,7 @@ class NetCDFRaster:
         itemsize = np.dtype(self._variable.dtype).itemsize
         chunk_shape = getattr(self._variable, "chunks", None)
         block_height = chunk_shape[1] if chunk_shape else 1
-        rows_per_strip = max(block_height, strip_bytes // max(1, width * itemsize))
-        strip_rows = max(block_height, (rows_per_strip // block_height) * block_height)
+        strip_rows = _strip_row_count(strip_bytes, width, itemsize, block_height)
 
         for row_off in range(row_start, row_stop, strip_rows):
             row_end = min(row_off + strip_rows, row_stop)
@@ -502,17 +525,27 @@ class NetCDFH3Scan:
 def _pixel_boundary(
     raster: NetCDFRaster, row: int, column: int
 ) -> tuple[Point, Point, Point, Point]:
-    """Pixel corner boundary, in the same 4-corner convention as
-    `ZarrRaster.pixel_boundary`/`geotiff._pixel_boundary`."""
-    half_lat = raster._lat_step / 2
-    half_lon = raster._lon_step / 2
+    """Pixel corner boundary, in the same counter-clockwise convention as
+    `ZarrRaster.pixel_boundary`/`geotiff._pixel_boundary`.
+
+    Uses `abs(step)` rather than the signed step: unlike a GeoTIFF/Zarr
+    raster (always stored north-up, i.e. row index increasing always means
+    latitude decreasing), a NetCDF coordinate array's direction is not
+    guaranteed by the format -- EDO's own `lat` happens to run north-to-
+    south (descending), but nothing else here assumes that. Corners are
+    built in a fixed NW/SW/SE/NE geographic order instead of one derived
+    from the coordinate array's own direction, so the ring winds the same
+    way regardless of whether `lat`/`lon` are ascending or descending.
+    """
+    half_lat = abs(raster._lat_step) / 2
+    half_lon = abs(raster._lon_step) / 2
     lat = float(raster._lat[row])
     lon = float(raster._lon[column])
     return (
-        (lon - half_lon, lat - half_lat),
         (lon - half_lon, lat + half_lat),
-        (lon + half_lon, lat + half_lat),
+        (lon - half_lon, lat - half_lat),
         (lon + half_lon, lat - half_lat),
+        (lon + half_lon, lat + half_lat),
     )
 
 
@@ -614,10 +647,19 @@ class EDOAnnualMinimaCurveSource:
         itemsize = np.dtype(np.float64).itemsize
         chunk_shape = getattr(reference._variable, "chunks", None)
         block_height = chunk_shape[1] if chunk_shape else 1
-        rows_per_strip = max(
-            block_height, self.strip_bytes // max(1, width * itemsize * n_years)
+        # Budget for whichever is larger: the persistent per-strip
+        # annual-minima array (n_years, strip_rows, width), or the bigger
+        # transient per-year block read before it's reduced away
+        # (n_dekads, strip_rows, width, one year at a time). Sizing off
+        # n_years alone (as if the per-year read were already reduced)
+        # undercounts by roughly n_dekads / n_years -- worst with short
+        # year ranges, since a single year's raw dekadal read is what's
+        # actually resident in memory at that point, not the reduced curve.
+        max_dekads = max(raster._variable.shape[0] for raster in self.rasters.values())
+        leading_axis = max(n_years, max_dekads)
+        strip_rows = _strip_row_count(
+            self.strip_bytes, width, itemsize, block_height, leading_axis=leading_axis
         )
-        strip_rows = max(block_height, (rows_per_strip // block_height) * block_height)
 
         for row_off in range(row_start, row_stop, strip_rows):
             row_end = min(row_off + strip_rows, row_stop)
@@ -630,9 +672,10 @@ class EDOAnnualMinimaCurveSource:
                     raster._variable[:, row_off:row_end, col_start:col_stop],
                     dtype=np.float64,
                 )
+                finite = np.isfinite(block)
                 if raster.nodata is not None:
-                    block = np.where(block == raster.nodata, np.nan, block)
-                block = np.where(np.isfinite(block), block, np.nan)
+                    finite &= block != raster.nodata
+                block = np.where(finite, block, np.nan)
                 with warnings.catch_warnings():
                     # A pixel with zero valid dekads this year (e.g. outside
                     # the dataset's own coverage) is an expected, not

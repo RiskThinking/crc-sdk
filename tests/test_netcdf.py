@@ -6,8 +6,13 @@ from typing import Any
 import h5netcdf  # type: ignore[import-untyped]
 import numpy as np
 import pytest
+from shapely.geometry import Polygon  # type: ignore[import-untyped]
 
-from crc_sdk.connectors.duckdb.netcdf import NetCDFRaster
+from crc_sdk.connectors.duckdb.netcdf import (
+    NetCDFRaster,
+    _pixel_boundary,
+    _strip_row_count,
+)
 
 # 4x4 grid, descending lat (like EDO's own north-to-south axis) and
 # ascending lon; row 0 (northernmost) holds the largest values so
@@ -18,11 +23,15 @@ _FILL = 1e20
 
 
 def _write_netcdf(
-    path: Path, array: np.ndarray, *, fill_value: float | None = _FILL
+    path: Path,
+    array: np.ndarray,
+    *,
+    fill_value: float | None = _FILL,
+    lat: np.ndarray = _LAT,
 ) -> Path:
     with h5netcdf.File(path, "w") as f:
-        f.dimensions = {"time": array.shape[0], "lat": len(_LAT), "lon": len(_LON)}
-        f.create_variable("lat", ("lat",), dtype=np.float64, data=_LAT)
+        f.dimensions = {"time": array.shape[0], "lat": len(lat), "lon": len(_LON)}
+        f.create_variable("lat", ("lat",), dtype=np.float64, data=lat)
         f.create_variable("lon", ("lon",), dtype=np.float64, data=_LON)
         variable = f.create_variable(
             "sminx", ("time", "lat", "lon"), dtype=np.float32, data=array
@@ -152,6 +161,33 @@ def test_scan_is_lazy_and_streams_into_duckdb(
         assert reads
     finally:
         raster.close()
+
+
+@pytest.mark.parametrize("lat", [[0.04, 0.03, 0.02, 0.01], [0.01, 0.02, 0.03, 0.04]])
+def test_pixel_boundary_is_always_counter_clockwise(
+    tmp_path: Path, sample_array: np.ndarray, lat: list[float]
+) -> None:
+    """Winding must not depend on whether `lat` is ascending or descending."""
+    path = _write_netcdf(
+        tmp_path / "sample.nc", sample_array, lat=np.array(lat, dtype=np.float64)
+    )
+    raster = NetCDFRaster.open(path, variable="sminx", work_dir=tmp_path / "work")
+    try:
+        boundary = _pixel_boundary(raster, row=1, column=1)
+        assert Polygon(boundary).exterior.is_ccw
+    finally:
+        raster.close()
+
+
+def test_strip_row_count_accounts_for_leading_axis() -> None:
+    # Many "dekads" (leading_axis) read at once per row must shrink the
+    # strip just as much as an equally large year count would -- sizing
+    # off year count alone (leading_axis=1 here, standing in for the old
+    # bug) would pick a strip roughly `many / few` times too tall.
+    few = _strip_row_count(4096, width=10, itemsize=8, block_height=1, leading_axis=1)
+    many = _strip_row_count(4096, width=10, itemsize=8, block_height=1, leading_axis=40)
+    assert many < few
+    assert many * 10 * 8 * 40 <= 4096 + 10 * 8 * 40  # within one row's worth of budget
 
 
 def test_open_requires_netcdf_extra(
