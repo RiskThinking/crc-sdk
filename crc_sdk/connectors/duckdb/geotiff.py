@@ -7,7 +7,7 @@ import logging
 import math
 import os
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -25,7 +25,7 @@ from crc_sdk.geometry.h3 import (
 )
 
 from .connection import DuckDBConnection, default_work_dir
-from .zarr import Bounds
+from .zarr import Bounds, Point, RasterCurve, RasterMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -615,3 +615,182 @@ class GeoTiffH3Scan:
             resolution=self.h3_resolution,
             reduce=self.reduce,
         )
+
+
+def _pixel_boundary(
+    raster: GeoTiffRaster, row: int, column: int
+) -> tuple[Point, Point, Point, Point]:
+    """Pixel corner boundary in counter-clockwise WGS84 order.
+
+    Mirrors `ZarrRaster.pixel_boundary`'s corner convention exactly, so a
+    `RasterCurve.boundary` means the same thing regardless of which
+    `CurveSource` produced it.
+    """
+    columns = np.array([column, column, column + 1, column + 1], dtype=np.float64)
+    rows = np.array([row, row + 1, row + 1, row], dtype=np.float64)
+    xs, ys = _pixel_to_crs(raster._dataset.transform, columns, rows)
+    lats, lons = _to_wgs84(raster.crs, xs, ys)
+    points = list(zip(lons.tolist(), lats.tolist()))
+    return (points[0], points[1], points[2], points[3])
+
+
+class JRCReturnPeriodRaster:
+    """Presents a same-tile stack of per-return-period GeoTIFFs as one curve source.
+
+    JRC ships one GeoTIFF per return period per tile, all sharing the same
+    grid -- structurally different from `ZarrRaster`'s single array with a
+    leading return-period axis, but the same *shape of information*: one
+    curve of (return period, value) per pixel. This class re-presents the
+    GeoTIFF stack that way, satisfying `crc_sdk.connectors.adapters.CurveSource`
+    so `canonicalize_curve_source` can fit it exactly like an OS-Climate
+    raster, via `crc_sdk.connectors.jrc.canonicalize_jrc_flood`. It reuses
+    `GeoTiffRaster.open()` unchanged for the actual I/O -- no new low-level
+    reader, just a different pixel-stack iteration order.
+    """
+
+    def __init__(
+        self,
+        rasters: Mapping[int, GeoTiffRaster],
+        metadata: RasterMetadata,
+        *,
+        strip_bytes: int = STRIP_BYTES,
+    ) -> None:
+        if not rasters:
+            raise ValueError("at least one return-period raster is required")
+        if strip_bytes < 1:
+            raise ValueError("strip_bytes must be positive")
+        self._rasters = dict(rasters)
+        self.metadata = metadata
+        self.strip_bytes = strip_bytes
+        self._periods = tuple(sorted(self._rasters))
+        self._axis_values = np.asarray(self._periods, dtype=np.float64)
+        self._reference = self._rasters[self._periods[0]]
+        reference_dataset = self._reference._dataset
+        for period, raster in self._rasters.items():
+            dataset = raster._dataset
+            if (
+                dataset.transform != reference_dataset.transform
+                or dataset.width != reference_dataset.width
+                or dataset.height != reference_dataset.height
+            ):
+                raise ValueError(
+                    f"return period {period} raster grid does not match "
+                    "the others in this stack"
+                )
+
+    @classmethod
+    def open(
+        cls,
+        urls: Mapping[int, str | Path],
+        metadata: RasterMetadata,
+        *,
+        band: int = 1,
+        assumed_crs: str | None = None,
+        cache_dir: str | Path | None = None,
+        connection: DuckDBConnection | None = None,
+        work_dir: str | Path | None = None,
+        strip_bytes: int = STRIP_BYTES,
+    ) -> JRCReturnPeriodRaster:
+        """Open one `GeoTiffRaster` per return period, keyed by return period."""
+        rasters: dict[int, GeoTiffRaster] = {}
+        try:
+            for period, url in urls.items():
+                rasters[period] = GeoTiffRaster.open(
+                    url,
+                    band=band,
+                    assumed_crs=assumed_crs,
+                    cache_dir=cache_dir,
+                    connection=connection,
+                    work_dir=work_dir,
+                )
+        except Exception:
+            # Reverse of open order: each GeoTiffRaster.open() pushes its own
+            # rasterio.Env onto a global, LIFO-nested stack -- closing out of
+            # order raises rasterio.errors.EnvError instead of cleanly
+            # unwinding it.
+            for raster in reversed(list(rasters.values())):
+                raster.close()
+            raise
+        return cls(rasters, metadata, strip_bytes=strip_bytes)
+
+    def close(self) -> None:
+        """Close every underlying `GeoTiffRaster`, most-recently-opened first.
+
+        Reverse of open order, for the same LIFO `rasterio.Env`-stack reason
+        as the cleanup path in `open()`.
+        """
+        for raster in reversed(list(self._rasters.values())):
+            raster.close()
+
+    def __enter__(self) -> JRCReturnPeriodRaster:
+        return self
+
+    def __exit__(self, *exc_info: Any) -> None:
+        self.close()
+
+    @property
+    def axis_name(self) -> str:
+        return "return period"
+
+    @property
+    def bounds(self) -> Bounds:
+        return self._reference.bounds
+
+    def iter_curves(self, bounds: Bounds | None = None) -> Iterator[RasterCurve]:
+        """Stream source pixels with complete leading-axis (return-period) curves.
+
+        Reads the same pixel window from every return-period file in
+        lock-step, in wide row bands bounded by `strip_bytes` regardless of
+        how large the tile is -- the same bounded-memory strategy
+        `GeoTiffRaster._strips` already uses for a single file, generalized
+        to `n_periods` files read together.
+        """
+        _require_raster_extra()
+        from rasterio.windows import Window
+
+        reference = self._reference
+        col_start, row_start, col_stop, row_stop = reference._pixel_window(
+            bounds or self.bounds
+        )
+        width = col_stop - col_start
+        ordered = [self._rasters[period] for period in self._periods]
+        n_periods = len(ordered)
+        itemsize = max(
+            np.dtype(raster._dataset.dtypes[raster.band - 1]).itemsize
+            for raster in ordered
+        )
+        block_height = reference._dataset.block_shapes[reference.band - 1][0]
+        rows_per_strip = max(
+            block_height, self.strip_bytes // max(1, width * itemsize * n_periods)
+        )
+        strip_rows = max(block_height, (rows_per_strip // block_height) * block_height)
+
+        for row_off in range(row_start, row_stop, strip_rows):
+            win_h = min(strip_rows, row_stop - row_off)
+            window = Window(col_start, row_off, width, win_h)
+            stack = np.empty((n_periods, win_h, width), dtype=np.float64)
+            for index, raster in enumerate(ordered):
+                band = raster._dataset.read(raster.band, window=window).astype(
+                    np.float64, copy=False
+                )
+                finite = np.isfinite(band)
+                if raster.nodata is not None:
+                    finite &= band != raster.nodata
+                stack[index] = np.where(finite, band, np.nan)
+
+            valid_any = np.isfinite(stack).any(axis=0)
+            if not valid_any.any():
+                continue
+            local_rows, local_columns = np.where(valid_any)
+            for local_row, local_column in zip(
+                local_rows.tolist(), local_columns.tolist()
+            ):
+                source_row = row_off + local_row
+                source_column = col_start + local_column
+                yield RasterCurve(
+                    row=source_row,
+                    column=source_column,
+                    boundary=_pixel_boundary(reference, source_row, source_column),
+                    axis_values=self._axis_values.copy(),
+                    values=stack[:, local_row, local_column].copy(),
+                )

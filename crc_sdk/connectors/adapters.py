@@ -1,11 +1,27 @@
-"""Adapters from external connector results to canonical hazard rows."""
+"""Adapters from external connector results to canonical hazard rows.
+
+Every source below is fitted into the same `curve_kind in {"fitted",
+"hurdle"}` canonical rows -- including JRC, whose raw rasters already carry
+exact per-return-period depths. This is deliberate, not a loss of fidelity
+by accident: crc-sdk's own contract treats "source knots and fit
+diagnostics" as transient ingest inputs, never a second persisted data
+contract (see README.md, "Canonical hazard datasets"), and JRC's per-pixel
+depth-by-return-period sequence -- typically zero at low return periods,
+positive and increasing from some higher return period onward -- is exactly
+the zero-inflated shape `HurdleFitPolicy`/`fit_hurdle_quantiles` already
+exists to fit. Reading a fitted/hurdle curve back at a given return period
+therefore evaluates the curve rather than reproducing the source pixel's
+value bit-for-bit; `maximum_normalized_rmse`/`maximum_absolute_residual`
+bound how far that evaluation may drift, and `on_fit_failure="skip"` drops
+pixels that can't be usefully fitted rather than aborting a whole ingest.
+"""
 
 from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass
 from hashlib import sha256
-from typing import Any, Literal, get_args
+from typing import Any, Literal, Protocol, get_args, runtime_checkable
 
 import numpy as np
 import pyarrow as pa  # type: ignore[import-untyped]
@@ -19,13 +35,37 @@ from crc_framework import (
 )
 from crc_framework.distributions import DistributionFamily
 
-from crc_sdk.connectors.duckdb.zarr import Bounds, RasterCurve, ZarrRaster
+from crc_sdk.connectors.duckdb.zarr import (
+    Bounds,
+    RasterCurve,
+    RasterMetadata,
+    ZarrRaster,
+)
 from crc_sdk.connectors.parquet import (
     hazard_arrow_schema,
     validate_hazard_table,
 )
 from crc_sdk.geometry import intersecting_cells
 from crc_sdk.types import HazardDatasetMetadata, SourceProvenance
+
+
+@runtime_checkable
+class CurveSource(Protocol):
+    """Anything presenting a per-pixel leading-axis curve, ready to fit.
+
+    `ZarrRaster` (OS-Climate) and `JRCReturnPeriodRaster`
+    (`crc_sdk.connectors.duckdb.geotiff`, JRC) both satisfy this structurally
+    -- `canonicalize_curve_source` fits curves against whichever one is
+    passed, with no source-specific code of its own.
+    """
+
+    @property
+    def axis_name(self) -> str: ...
+
+    @property
+    def metadata(self) -> RasterMetadata: ...
+
+    def iter_curves(self, bounds: Bounds | None = None) -> Iterator[RasterCurve]: ...
 
 
 @dataclass(frozen=True)
@@ -43,8 +83,15 @@ class HurdleFitPolicy:
 
 
 @dataclass(frozen=True)
-class OSClimateIngestPolicy:
-    """Explicit policy controlling raster-to-canonical conversion."""
+class CurveFitIngestPolicy:
+    """Explicit policy controlling curve-source-to-canonical conversion.
+
+    Source-agnostic by design: nothing here is specific to OS-Climate or
+    JRC (or any other return-period raster source) -- it only controls how
+    a per-pixel curve gets fitted. `OSClimateIngestPolicy` is kept as a
+    backward-compatible alias for this exact class; `JRCIngestPolicy`
+    (`crc_sdk.connectors.jrc`) is another.
+    """
 
     h3_resolution: int
     family: DistributionFamily
@@ -81,6 +128,11 @@ class OSClimateIngestPolicy:
                 raise ValueError(f"{name} must be finite and non-negative")
 
 
+# Backward-compatible alias: every field above was already source-agnostic,
+# so this is the same class under its original name, not a copy.
+OSClimateIngestPolicy = CurveFitIngestPolicy
+
+
 @dataclass(frozen=True)
 class CanonicalHazardBatch:
     """One batch of canonical H3-expanded hazard rows."""
@@ -109,17 +161,15 @@ class CanonicalHazardStream:
         )
 
 
-def _source_id(raster: ZarrRaster, curve: RasterCurve) -> str:
-    identity = (
-        f"os-climate\0{raster.metadata.path}\0{curve.row}\0{curve.column}"
-    ).encode()
+def _source_id(provider: str, path: str, curve: RasterCurve) -> str:
+    identity = f"{provider}\0{path}\0{curve.row}\0{curve.column}".encode()
     return sha256(identity).hexdigest()
 
 
 def _metadata(
-    raster: ZarrRaster, policy: OSClimateIngestPolicy
+    source: CurveSource, policy: CurveFitIngestPolicy, provider: str
 ) -> HazardDatasetMetadata:
-    values = raster.metadata
+    values = source.metadata
     return HazardDatasetMetadata(
         h3_resolution=policy.h3_resolution,
         value_unit=values.units,
@@ -127,7 +177,7 @@ def _metadata(
         producer=policy.producer,
         creation_version=policy.creation_version,
         source=SourceProvenance(
-            provider="os-climate",
+            provider=provider,
             dataset=f"{values.hazard_type}:{values.indicator_id}",
             uri=values.path,
             version=policy.source_version,
@@ -137,7 +187,7 @@ def _metadata(
 
 def _fit_curve(
     tabulated: TabulatedDistribution,
-    policy: OSClimateIngestPolicy,
+    policy: CurveFitIngestPolicy,
 ) -> tuple[Any, Any]:
     distribution: FittedDistribution | HurdleDistribution
     diagnostics: QuantileFitDiagnostics
@@ -166,8 +216,7 @@ def _fit_curve(
         )
     if (
         policy.maximum_absolute_residual is not None
-        and diagnostics.maximum_absolute_residual
-        > policy.maximum_absolute_residual
+        and diagnostics.maximum_absolute_residual > policy.maximum_absolute_residual
     ):
         raise ValueError(
             "maximum absolute residual "
@@ -183,39 +232,43 @@ def _fit_curve(
 
 
 def _canonical_batches(
-    raster: ZarrRaster,
-    policy: OSClimateIngestPolicy,
+    source: CurveSource,
+    policy: CurveFitIngestPolicy,
     metadata: HazardDatasetMetadata,
+    provider: str,
     bounds: Bounds | None,
 ) -> Iterator[CanonicalHazardBatch]:
     try:
         from shapely.geometry import Polygon  # type: ignore[import-untyped]
     except ImportError as error:
         raise ImportError(
-            "OS-Climate ingest requires `pip install crc-sdk[geometry]`"
+            "Curve-fit ingest requires `pip install crc-sdk[geometry]`"
         ) from error
 
     hazard_schema = hazard_arrow_schema(metadata)
     hazard_rows: list[dict[str, Any]] = []
-    if "return period" not in raster.axis_name.lower():
+    if "return period" not in source.axis_name.lower():
         raise ValueError(
-            f"{raster.metadata.path} has axis {raster.axis_name!r}, "
-            "not return periods"
+            f"{source.metadata.path} has axis {source.axis_name!r}, not return periods"
         )
-    for curve in raster.iter_curves(bounds):
+    for curve in source.iter_curves(bounds):
         valid = np.isfinite(curve.axis_values) & np.isfinite(curve.values)
         periods = curve.axis_values[valid]
         values = curve.values[valid]
         if len(values) < 4:
             continue
-        tabulated = TabulatedDistribution.from_return_periods(
-            periods,
-            values,
-            tail=policy.tail,
-        )
         try:
+            tabulated = TabulatedDistribution.from_return_periods(
+                periods,
+                values,
+                tail=policy.tail,
+            )
             distribution, base = _fit_curve(tabulated, policy)
         except ValueError as error:
+            # Non-monotonic quantiles (e.g. small per-return-period modeling
+            # noise near a DEM sink or tile edge) fail the same way an
+            # unconverged/out-of-tolerance fit does -- both mean "this pixel
+            # can't be usefully fitted," so on_fit_failure governs both.
             if policy.on_fit_failure == "skip":
                 continue
             raise ValueError(
@@ -223,7 +276,7 @@ def _canonical_batches(
                 f"column={curve.column}: {error}"
             ) from error
         geometry = Polygon(curve.boundary)
-        source_id = _source_id(raster, curve)
+        source_id = _source_id(provider, source.metadata.path, curve)
         cells = intersecting_cells(geometry, policy.h3_resolution)
         if not cells:
             continue
@@ -236,9 +289,9 @@ def _canonical_batches(
                     "cell_index": cell_index,
                     "source_id": source_id,
                     "source_geometry": geometry.wkb,
-                    "hazard_name": raster.metadata.hazard_type,
-                    "horizon": raster.metadata.year,
-                    "pathway": raster.metadata.scenario,
+                    "hazard_name": source.metadata.hazard_type,
+                    "horizon": source.metadata.year,
+                    "pathway": source.metadata.scenario,
                     "curve_kind": curve_kind,
                     "curve_type": base.family,
                     "curve_shape": base.shape,
@@ -271,15 +324,34 @@ def _canonical_batches(
         yield CanonicalHazardBatch(hazard_rows=hazards)
 
 
+def canonicalize_curve_source(
+    source: CurveSource,
+    policy: CurveFitIngestPolicy,
+    *,
+    provider: str,
+    bounds: Bounds | None = None,
+) -> CanonicalHazardStream:
+    """Return a lazy canonical stream for one return-period curve source.
+
+    Source-agnostic core: `canonicalize_os_climate` and
+    `crc_sdk.connectors.jrc.canonicalize_jrc_flood` are both thin wrappers
+    around this, differing only in `provider` and the `CurveSource`
+    implementation they pass in.
+    """
+    metadata = _metadata(source, policy, provider)
+    return CanonicalHazardStream(
+        metadata=metadata,
+        batches=_canonical_batches(source, policy, metadata, provider, bounds),
+    )
+
+
 def canonicalize_os_climate(
     raster: ZarrRaster,
     policy: OSClimateIngestPolicy,
     *,
     bounds: Bounds | None = None,
 ) -> CanonicalHazardStream:
-    """Return a lazy canonical stream for one selected raster."""
-    metadata = _metadata(raster, policy)
-    return CanonicalHazardStream(
-        metadata=metadata,
-        batches=_canonical_batches(raster, policy, metadata, bounds),
+    """Return a lazy canonical stream for one selected OS-Climate raster."""
+    return canonicalize_curve_source(
+        raster, policy, provider="os-climate", bounds=bounds
     )
