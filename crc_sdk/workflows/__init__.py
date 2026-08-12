@@ -9,6 +9,15 @@ from .distributions import (
     return_periods_to_probabilities,
     stream_curve_quantiles_wide_to_parquet,
 )
+from .jrc import (
+    JRCAreaPlan,
+    JRCCanonicalizationPlan,
+    JRCFloodPolicy,
+    JRCPortfolioEvaluation,
+    JRCSourcePlan,
+    MaterializationResult,
+    PrefetchResult,
+)
 from .portfolio import (
     PORTFOLIO_METADATA_KEY,
     AssetPortfolio,
@@ -37,9 +46,16 @@ __all__ = [
     "HazardDataset",
     "HazardSelection",
     "ImpactContextColumns",
+    "JRCAreaPlan",
+    "JRCCanonicalizationPlan",
+    "JRCFloodPolicy",
+    "JRCPortfolioEvaluation",
+    "JRCSourcePlan",
+    "MaterializationResult",
     "OSClimateSelectionSpec",
     "PORTFOLIO_METADATA_KEY",
     "PointColumns",
+    "PrefetchResult",
     "PortfolioEvaluation",
     "PortfolioEvaluationResult",
     "curve_parameters_from_row",

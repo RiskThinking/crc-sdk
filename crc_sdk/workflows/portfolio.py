@@ -6,18 +6,22 @@ import pickle
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Union
+from typing import TYPE_CHECKING, Any, Union
 
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
 from crc_framework import CallableImpact, ImpactFunction
 
 from crc_sdk.providers.local import LocalProvider
+from crc_sdk.types import HazardDatasetMetadata, SourceProvenance
 
 from .distributions import (
     CURVE_COLUMNS,
     return_period_value_columns,
     return_periods_to_probabilities,
 )
+
+if TYPE_CHECKING:
+    from .jrc import JRCSourcePlan, MaterializationResult
 
 PORTFOLIO_METADATA_KEY = "crc.hazard.evaluation"
 _PORTFOLIO_RESERVED_COLUMNS = frozenset(
@@ -231,11 +235,54 @@ class HazardDataset:
     """Composable facade over one canonical local hazard dataset."""
 
     provider: LocalProvider
+    materialization: MaterializationResult | None = field(
+        default=None, repr=False, compare=False
+    )
 
     @classmethod
-    def local(cls, source: str | Path) -> HazardDataset:
+    def local(
+        cls,
+        source: str | Path,
+        *,
+        materialization: MaterializationResult | None = None,
+    ) -> HazardDataset:
         """Open a canonical local Parquet hazard dataset."""
-        return cls(LocalProvider(source))
+        return cls(LocalProvider(source), materialization=materialization)
+
+    @classmethod
+    def jrc(
+        cls,
+        dataset: str,
+        *,
+        version: str = "latest",
+    ) -> JRCSourcePlan:
+        """Plan lazy ingestion of a named JRC flood dataset."""
+        from crc_sdk.providers.jrc import jrc_dataset
+
+        from .jrc import JRCSourcePlan
+
+        jrc_dataset(dataset)
+        return JRCSourcePlan(dataset=dataset.lower(), requested_version=version)
+
+    @classmethod
+    def efas(cls, *, version: str = "latest") -> JRCSourcePlan:
+        """Plan lazy ingestion of CEMS-EFAS flood maps."""
+        return cls.jrc("efas", version=version)
+
+    @classmethod
+    def glofas(cls, *, version: str = "latest") -> JRCSourcePlan:
+        """Plan lazy ingestion of CEMS-GLOFAS flood maps."""
+        return cls.jrc("glofas", version=version)
+
+    def metadata(self) -> HazardDatasetMetadata:
+        """Return this canonical dataset's embedded metadata."""
+        from crc_sdk.connectors.parquet import read_hazard_metadata
+
+        return read_hazard_metadata(self.provider.source)
+
+    def provenance(self) -> SourceProvenance:
+        """Return the embedded source provenance."""
+        return self.metadata().source
 
     def for_assets(
         self,

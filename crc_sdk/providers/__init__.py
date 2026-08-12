@@ -1,6 +1,14 @@
 """Storage provider interfaces and implementations."""
 
-from .jrc import EFAS, GLOFAS, JRCProvider, JRCRasterDataset
+from .jrc import (
+    EFAS,
+    GLOFAS,
+    JRC_DATASETS,
+    JRCProvider,
+    JRCRasterDataset,
+    JRCRasterResource,
+    jrc_dataset,
+)
 from .jrc_edo import SMI, EDODataset, EDOProvider
 from .local import LocalProvider
 from .os_climate import (
@@ -19,7 +27,10 @@ __all__ = [
     "EFAS",
     "GLOFAS",
     "JRCProvider",
+    "JRC_DATASETS",
     "JRCRasterDataset",
+    "JRCRasterResource",
+    "jrc_dataset",
     "LocalProvider",
     "OSClimateInventory",
     "OSClimateProvider",

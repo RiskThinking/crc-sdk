@@ -166,7 +166,9 @@ spatial joins. The caller chooses its full destination path and filename.
 Writes use DuckDB, and an optional configured DuckDB connection allows the same
 API to use its local or cloud filesystems, extensions, secrets, and settings.
 Source knots and fit diagnostics are transient ingest inputs, not a second
-persisted data contract.
+persisted data contract. Values at source return periods are therefore fitted
+curve evaluations rather than guaranteed bit-for-bit reproductions of source
+pixels.
 
 External connectors remain source-format readers. Ingest adapters perform the
 explicit conversion:
@@ -189,6 +191,54 @@ the distribution family and, for zero-heavy hazards, provide an explicit
 knots. Plain curves use `fit_quantiles`, while hurdle curves use
 `fit_hurdle_quantiles`. `LocalProvider` queries persisted hazard rows through
 `HazardQuery`.
+
+### Ingesting JRC flood maps
+
+JRC flood acquisition is available as an immutable, lazy workflow. GLOFAS
+2.1.2 uses JRC's tiled global layout; EFAS 3.1.1 uses nine continental
+return-period rasters. The dataset descriptions encode that difference so an
+AOI workflow does not expose tiles or filenames:
+
+```python
+from crc_sdk.workflows import HazardDataset, JRCFloodPolicy
+
+plan = (
+    HazardDataset.efas(version="latest")
+    .for_area((7.75, 49.75, 8.45, 50.25))
+    .cache("cache/efas", mode="reuse")
+    .source_periods("all")
+    .canonicalize(
+        policy=JRCFloodPolicy.curated(h3_resolution=10),
+    )
+)
+
+print(plan.explain())
+hazard = plan.materialize("hazards/efas-rhine.parquet")
+```
+
+Builder methods and `explain()` do not resolve releases or fetch rasters.
+`materialize()` resolves `latest` once, records the pinned version in the
+cache manifest and canonical provenance, caches AOI crops, fits the canonical
+curves, and returns an ordinary `HazardDataset`. Use `prefetch()` to populate
+the source cache separately, then switch the same plan to `mode="offline"`.
+`refresh` explicitly re-resolves the release and replaces cached crops;
+`stream` reads remotely without a persistent source cache.
+
+Source periods choose the rasters used for fitting and default to every period
+in the resolved release. They are distinct from evaluation periods:
+
+```python
+result = (
+    plan.for_assets(assets)
+    .select(hazard_names=["RiverineInundation"], pathways=["historical"])
+    .return_periods([50, 100, 250, 500])
+    .write_parquet("outputs/flood-depth.parquet")
+)
+```
+
+The compact chain lazily materializes a deterministic canonical file inside
+the configured cache, then delegates to the same local portfolio evaluator
+used by `HazardDataset.local(...)`.
 
 ### Evaluating asset portfolios at return periods
 
