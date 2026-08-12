@@ -44,18 +44,20 @@ def test_jrc_raster_dataset_rejects_unavailable_return_period() -> None:
         GLOFAS.tile_url("ID54_N50_W80", 10_000)
 
 
-def test_glofas_and_efas_are_two_instances_of_one_dataset_shape() -> None:
+def test_glofas_and_efas_encode_their_current_release_layouts() -> None:
     assert isinstance(GLOFAS, JRCRasterDataset)
     assert isinstance(EFAS, JRCRasterDataset)
     assert GLOFAS.name != EFAS.name
     assert GLOFAS.base_url != EFAS.base_url
-    # Same template/return-period convention, different base URL -- proving
-    # one dataset shape covers both real collections, not one provider each.
-    assert GLOFAS.filename_template == EFAS.filename_template
-    assert GLOFAS.available_return_periods == EFAS.available_return_periods
-    assert GLOFAS.tile_url("ID54_N50_W80", 100) != EFAS.tile_url("ID54_N50_W80", 100)
+    assert GLOFAS.layout == "tiled"
+    assert GLOFAS.version == "2.1.2"
+    assert EFAS.layout == "continental"
+    assert EFAS.version == "3.1.1"
+    assert EFAS.available_return_periods == (10, 20, 30, 40, 50, 75, 100, 200, 500)
     assert "CEMS-GLOFAS" in GLOFAS.tile_url("ID54_N50_W80", 100)
-    assert "CEMS-EFAS" in EFAS.tile_url("ID54_N50_W80", 100)
+    assert EFAS.raster_url(100).endswith("Europe_RP100_filled_depth.tif")
+    with pytest.raises(ValueError, match="continental raster layout"):
+        EFAS.tile_url("unused", 100)
 
 
 def test_dataset_rejects_empty_fields() -> None:
@@ -101,6 +103,31 @@ def test_tile_index_is_fetched_once_and_cached(tmp_path: Path) -> None:
         provider.tiles_for((0.0, 0.0, 5.0, 5.0))
 
     assert mock_urlopen.call_count == 1
+
+
+def test_continental_aoi_is_one_resource_without_tile_index(tmp_path: Path) -> None:
+    provider = JRCProvider(EFAS, work_dir=tmp_path)
+
+    resources = provider.resources_for((7.0, 49.0, 8.0, 50.0), return_periods=[30, 100])
+
+    assert len(resources) == 1
+    assert resources[0].source_id == "continental"
+    assert resources[0].urls == {
+        30: f"{EFAS.base_url}/Europe_RP30_filled_depth.tif",
+        100: f"{EFAS.base_url}/Europe_RP100_filled_depth.tif",
+    }
+
+
+def test_latest_version_is_read_from_release_readme(tmp_path: Path) -> None:
+    provider = JRCProvider(EFAS, work_dir=tmp_path)
+    response = patch("crc_sdk.providers.jrc.urlopen")
+    with response as mock_urlopen:
+        mock_urlopen.return_value.__enter__.return_value.read.return_value = (
+            b"G01. Dataset version 3.1.1\n"
+        )
+        assert provider.resolve_version("latest") == "3.1.1"
+
+    mock_urlopen.assert_called_once_with(EFAS.readme_url)
 
 
 def test_provider_default_connection_is_resource_tuned(tmp_path: Path) -> None:
