@@ -9,7 +9,7 @@ from .jrc import (
     JRCRasterResource,
     jrc_dataset,
 )
-from .jrc_edo import SMI, EDODataset, EDOProvider
+from .jrc_edo import EDO_DATASETS, SMI, EDODataset, EDOProvider, edo_dataset
 from .local import LocalProvider
 from .os_climate import (
     DEFAULT_INVENTORY_URL,
@@ -24,6 +24,7 @@ __all__ = [
     "DEFAULT_INVENTORY_URL",
     "EDODataset",
     "EDOProvider",
+    "EDO_DATASETS",
     "EFAS",
     "GLOFAS",
     "JRCProvider",
@@ -38,4 +39,5 @@ __all__ = [
     "OSClimateSelection",
     "Provider",
     "SMI",
+    "edo_dataset",
 ]

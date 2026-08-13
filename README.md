@@ -240,6 +240,38 @@ The compact chain lazily materializes a deterministic canonical file inside
 the configured cache, then delegates to the same local portfolio evaluator
 used by `HazardDataset.local(...)`.
 
+Canonical metadata records the source return-period support. Portfolio
+evaluation warns when a requested period falls outside it: with EFAS source
+rasters from RP10 through RP500, RP250 is interpolation while RP1000 is
+extrapolation.
+
+### Ingesting JRC/EDO drought data
+
+EDO Soil Moisture Index data uses the same lazy workflow, with complete years
+reduced to compact annual-minimum AOI cache objects before fitting:
+
+```python
+from crc_sdk.workflows import EDODroughtPolicy, HazardDataset
+
+plan = (
+    HazardDataset.smi(version="latest")
+    .for_area((9.5, 50.5, 10.5, 51.5))
+    .years("all_complete")
+    .cache("cache/edo-smi", mode="reuse")
+    .canonicalize(policy=EDODroughtPolicy.curated(h3_resolution=6))
+)
+
+hazard = plan.materialize("hazards/edo-smi.parquet")
+```
+
+The curated policy uses the lower return-period tail and requires at least 20
+complete years. Metadata stores both that tail and the Gringorten support of
+the selected annual record. Evaluation therefore selects the correct lower
+tail automatically and warns when a requested period is extrapolated. Cache
+manifests pin the resolved EDO version, years, bounds, source URLs, local
+objects, and checksums; `prefetch()` followed by `mode="offline"` avoids later
+network access.
+
 ### Evaluating asset portfolios at return periods
 
 Canonical curve parameters can be evaluated for a portfolio without returning

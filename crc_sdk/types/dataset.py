@@ -32,6 +32,8 @@ class HazardDatasetMetadata(BaseModel):
     schema_version: Literal["1.0"] = "1.0"
     h3_resolution: int = Field(ge=0, le=15)
     probability_convention: Literal["non_exceedance"] = "non_exceedance"
+    return_period_tail: Literal["upper", "lower"] = "upper"
+    return_period_support: Optional[tuple[float, float]] = None
     value_unit: str = Field(min_length=1)
     value_semantics: str = Field(min_length=1)
     geometry_encoding: Literal["WKB"] = "WKB"
@@ -48,6 +50,12 @@ class HazardDatasetMetadata(BaseModel):
             raise ValueError(f"row_key must be {HAZARD_ROW_KEY!r}")
         if self.sort_order != HAZARD_SORT_ORDER:
             raise ValueError(f"sort_order must be {HAZARD_SORT_ORDER!r}")
+        if self.return_period_support is not None:
+            lower, upper = self.return_period_support
+            if lower <= 1.0 or upper <= lower:
+                raise ValueError(
+                    "return_period_support must be increasing and greater than one"
+                )
         return self
 
     def to_json_bytes(self) -> bytes:
