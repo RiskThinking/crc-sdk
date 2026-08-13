@@ -37,6 +37,10 @@ GDAL_CACHE_MB = 128
 CHUNK_POINTS = 262_144
 
 
+class RasterBoundsError(ValueError):
+    """Requested bounds do not contain a raster pixel."""
+
+
 def _vsi_path(uri: str) -> str:
     """Translate a `gs://`/`s3://`/`http(s)://` URI to a GDAL VSI path."""
     if uri.startswith("gs://"):
@@ -271,6 +275,47 @@ class GeoTiffRaster:
             raster_bounds.right,
             raster_bounds.top,
         )
+
+    def bounds_from_wgs84(self, bounds: Bounds) -> Bounds:
+        """Transform WGS84 bounds into this raster's native CRS."""
+        _require_raster_extra()
+        from rasterio.warp import transform_bounds
+
+        native = transform_bounds(_wgs84(), self.crs, *bounds)
+        return native[0], native[1], native[2], native[3]
+
+    def write_crop(self, bounds: Bounds, destination: str | Path) -> Path:
+        """Write a native-CRS window to a local GeoTIFF."""
+        _require_raster_extra()
+        import rasterio
+        from rasterio.errors import WindowError
+        from rasterio.windows import Window, from_bounds
+
+        window = from_bounds(*bounds, transform=self._dataset.transform)
+        try:
+            window = (
+                window.round_offsets()
+                .round_lengths()
+                .intersection(Window(0, 0, self._dataset.width, self._dataset.height))
+            )
+        except WindowError as error:
+            raise RasterBoundsError("bounds do not intersect the raster") from error
+        if window.width < 1 or window.height < 1:
+            raise RasterBoundsError("bounds do not intersect the raster")
+        profile = self._dataset.profile.copy()
+        profile.update(
+            width=int(window.width),
+            height=int(window.height),
+            transform=self._dataset.window_transform(window),
+            compress="deflate",
+            tiled=False,
+        )
+        profile.pop("blockxsize", None)
+        profile.pop("blockysize", None)
+        target = Path(destination)
+        with rasterio.open(target, "w", **profile) as output:
+            output.write(self._dataset.read(window=window))
+        return target
 
     @property
     def nodata(self) -> float | None:
@@ -733,8 +778,15 @@ class JRCReturnPeriodRaster:
         return "return period"
 
     @property
+    def return_period_support(self) -> tuple[float, float]:
+        return float(self._periods[0]), float(self._periods[-1])
+
+    @property
     def bounds(self) -> Bounds:
         return self._reference.bounds
+
+    def bounds_from_wgs84(self, bounds: Bounds) -> Bounds:
+        return self._reference.bounds_from_wgs84(bounds)
 
     def iter_curves(self, bounds: Bounds | None = None) -> Iterator[RasterCurve]:
         """Stream source pixels with complete leading-axis (return-period) curves.

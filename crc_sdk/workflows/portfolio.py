@@ -21,7 +21,9 @@ from .distributions import (
 )
 
 if TYPE_CHECKING:
-    from .jrc import JRCSourcePlan, MaterializationResult
+    from ._remote import MaterializationResult
+    from .edo import EDOSourcePlan
+    from .jrc import JRCSourcePlan
 
 PORTFOLIO_METADATA_KEY = "crc.hazard.evaluation"
 _PORTFOLIO_RESERVED_COLUMNS = frozenset(
@@ -274,6 +276,26 @@ class HazardDataset:
         """Plan lazy ingestion of CEMS-GLOFAS flood maps."""
         return cls.jrc("glofas", version=version)
 
+    @classmethod
+    def edo(
+        cls,
+        dataset: str,
+        *,
+        version: str = "latest",
+    ) -> EDOSourcePlan:
+        """Plan lazy ingestion of a named JRC/EDO drought dataset."""
+        from crc_sdk.providers.jrc_edo import edo_dataset
+
+        from .edo import EDOSourcePlan
+
+        edo_dataset(dataset)
+        return EDOSourcePlan(dataset=dataset.lower(), requested_version=version)
+
+    @classmethod
+    def smi(cls, *, version: str = "latest") -> EDOSourcePlan:
+        """Plan lazy ingestion of EDO Soil Moisture Index drought curves."""
+        return cls.edo("smi", version=version)
+
     def metadata(self) -> HazardDatasetMetadata:
         """Return this canonical dataset's embedded metadata."""
         from crc_sdk.connectors.parquet import read_hazard_metadata
@@ -335,7 +357,7 @@ class PortfolioEvaluation:
         self,
         values: Sequence[float],
     ) -> PortfolioEvaluation:
-        """Return a request evaluating the supplied upper-tail periods."""
+        """Return a request evaluated with the dataset's persisted tail."""
         periods = tuple(float(value) for value in values)
         return_periods_to_probabilities(periods)
         return replace(self, periods=periods)

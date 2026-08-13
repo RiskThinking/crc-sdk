@@ -10,9 +10,14 @@ current year.
 
 from __future__ import annotations
 
+import re
+import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.request import urlopen
+
+import numpy as np
 
 from crc_sdk.connectors.adapters import (
     CanonicalHazardBatch,
@@ -24,6 +29,16 @@ from crc_sdk.connectors.duckdb.netcdf import EDOAnnualMinimaCurveSource
 from crc_sdk.connectors.duckdb.zarr import Bounds, RasterMetadata
 
 
+def _at_least_two(start: int, stop: int, size: int) -> tuple[int, int]:
+    if stop - start >= 2:
+        return start, stop
+    if stop < size:
+        return start, stop + 1
+    if start > 0:
+        return start - 1, stop
+    return start, stop
+
+
 @dataclass(frozen=True)
 class EDODataset:
     """One EDO drought indicator's URL/filename conventions."""
@@ -32,6 +47,7 @@ class EDODataset:
     base_url: str
     filename_template: str  # e.g. "sminx_m_eul_{year}0101_{year}1221_t.nc"
     variable: str
+    version: str = "unknown"
     hazard_name: str = "Drought"
     indicator_id: str = "soil_moisture_index"
     units: str = "index"
@@ -59,7 +75,19 @@ SMI = EDODataset(
     ),
     filename_template="sminx_m_eul_{year}0101_{year}1221_t.nc",
     variable="sminx",
+    version="3.0.1",
 )
+
+EDO_DATASETS = {"smi": SMI}
+
+
+def edo_dataset(name: str) -> EDODataset:
+    try:
+        return EDO_DATASETS[name.lower()]
+    except KeyError as error:
+        raise ValueError(
+            f"unknown EDO dataset {name!r}; choose from {tuple(EDO_DATASETS)}"
+        ) from error
 
 
 class EDOProvider:
@@ -84,6 +112,47 @@ class EDOProvider:
     def year_url(self, year: int) -> str:
         return self.dataset.year_url(year)
 
+    def resolve_version(self, requested: str) -> str:
+        if requested != "latest":
+            if requested != self.dataset.version:
+                raise ValueError(
+                    f"{self.dataset.name} release {requested!r} is not available; "
+                    f"configured release: {self.dataset.version}"
+                )
+            return requested
+        collection_url = self.dataset.base_url.rsplit("/", 1)[0] + "/"
+        with urlopen(collection_url) as response:
+            listing = response.read().decode("utf-8", errors="replace")
+        versions: set[str] = {
+            match.replace("-", ".")
+            for match in re.findall(r'href="ver([0-9]+-[0-9]+-[0-9]+)/?"', listing)
+        }
+        if not versions:
+            raise RuntimeError(f"no EDO releases found at {collection_url}")
+        resolved = max(versions, key=lambda value: tuple(map(int, value.split("."))))
+        if resolved != self.dataset.version:
+            raise RuntimeError(
+                f"{self.dataset.name} latest release is {resolved}, but crc-sdk "
+                f"is configured for {self.dataset.version}"
+            )
+        return resolved
+
+    def complete_years(self) -> tuple[int, ...]:
+        """Discover complete calendar-year resources in the configured release."""
+        with urlopen(self.dataset.base_url + "/") as response:
+            listing = response.read().decode("utf-8", errors="replace")
+        years = {
+            int(year)
+            for year in re.findall(
+                r"sminx_m_eul_([0-9]{4})0101_\1(?:1221|1231)_t\.nc", listing
+            )
+        }
+        if not years:
+            raise RuntimeError(
+                f"no complete EDO years found at {self.dataset.base_url}"
+            )
+        return tuple(sorted(years))
+
     def open_years(
         self,
         years: Sequence[int],
@@ -95,13 +164,25 @@ class EDOProvider:
         Returns a context manager (`EDOAnnualMinimaCurveSource`); callers
         own its lifecycle, same as `GeoTiffRaster.open()`/`JRCProvider.open_tile()`.
         """
-        if not years:
+        return self.open_resources(
+            {year: self.dataset.year_url(year) for year in years},
+            cache_dir=cache_dir,
+        )
+
+    def open_resources(
+        self,
+        resources: dict[int, str | Path],
+        *,
+        cache_dir: str | Path | None = None,
+    ) -> EDOAnnualMinimaCurveSource:
+        """Open explicit yearly resources as an annual-minima curve source."""
+        if not resources:
             raise ValueError("at least one year is required")
         rasters: dict[int, NetCDFRaster] = {}
         try:
-            for year in years:
+            for year, source in resources.items():
                 rasters[year] = NetCDFRaster.open(
-                    self.dataset.year_url(year),
+                    source,
                     variable=self.dataset.variable,
                     cache_dir=cache_dir,
                     connection=self.connection,
@@ -112,6 +193,7 @@ class EDOProvider:
                 raster.close()
             raise
 
+        years = tuple(resources)
         metadata = RasterMetadata(
             hazard_type=self.dataset.hazard_name,
             indicator_id=self.dataset.indicator_id,
@@ -121,6 +203,62 @@ class EDOProvider:
             path=f"{self.dataset.name}/{min(years)}-{max(years)}",
         )
         return EDOAnnualMinimaCurveSource(rasters=rasters, metadata=metadata)
+
+    def cache_annual_minimum(
+        self,
+        year: int,
+        bounds: Bounds,
+        destination: str | Path,
+    ) -> Path:
+        """Persist one year's AOI annual minimum as a compact NetCDF source."""
+        try:
+            import h5netcdf  # type: ignore[import-untyped]
+        except ImportError as error:
+            raise ImportError(
+                "EDO caching requires `pip install crc-sdk[netcdf]`"
+            ) from error
+
+        target = Path(destination)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_suffix(".tmp.nc")
+        with NetCDFRaster.open(
+            self.dataset.year_url(year),
+            variable=self.dataset.variable,
+            connection=self.connection,
+            work_dir=self.work_dir,
+        ) as raster:
+            row_start, row_stop, col_start, col_stop = raster._row_col_window(bounds)
+            row_start, row_stop = _at_least_two(row_start, row_stop, len(raster._lat))
+            col_start, col_stop = _at_least_two(col_start, col_stop, len(raster._lon))
+            block = np.asarray(
+                raster._variable[:, row_start:row_stop, col_start:col_stop],
+                dtype=np.float64,
+            )
+            finite = np.isfinite(block)
+            if raster.nodata is not None:
+                finite &= block != raster.nodata
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=RuntimeWarning)
+                minimum = np.nanmin(np.where(finite, block, np.nan), axis=0)
+            latitudes = raster._lat[row_start:row_stop]
+            longitudes = raster._lon[col_start:col_stop]
+
+        with h5netcdf.File(temporary, "w") as output:
+            output.dimensions = {
+                "time": 1,
+                "lat": len(latitudes),
+                "lon": len(longitudes),
+            }
+            output.create_variable("lat", ("lat",), dtype=np.float64, data=latitudes)
+            output.create_variable("lon", ("lon",), dtype=np.float64, data=longitudes)
+            output.create_variable(
+                self.dataset.variable,
+                ("time", "lat", "lon"),
+                dtype=np.float32,
+                data=minimum[np.newaxis].astype(np.float32),
+            )
+        temporary.replace(target)
+        return target
 
     def canonicalize_years(
         self,

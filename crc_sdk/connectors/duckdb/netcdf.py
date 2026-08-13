@@ -632,6 +632,13 @@ class EDOAnnualMinimaCurveSource:
         return "return period (empirical, Gringorten plotting position)"
 
     @property
+    def return_period_support(self) -> tuple[float, float]:
+        count = len(self._years)
+        probabilities = (np.array([count, 1], dtype=np.float64) - 0.44) / (count + 0.12)
+        periods = 1.0 / probabilities
+        return float(periods[0]), float(periods[1])
+
+    @property
     def bounds(self) -> Bounds:
         return self._reference.bounds
 

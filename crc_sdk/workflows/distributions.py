@@ -33,6 +33,37 @@ CurveDistribution = Union[FittedDistribution, HurdleDistribution]
 _MP_CONTEXT = multiprocessing.get_context("spawn")
 
 
+class ReturnPeriodExtrapolationWarning(UserWarning):
+    """Evaluation requested outside the return periods supporting a fit."""
+
+
+def warn_if_extrapolated(
+    return_periods: Sequence[float],
+    support: tuple[float, float] | None,
+    *,
+    stacklevel: int = 2,
+) -> tuple[float, ...]:
+    """Warn and return periods outside a fitted source-support interval."""
+    periods = tuple(float(period) for period in return_periods)
+    return_periods_to_probabilities(periods)
+    if support is None:
+        return ()
+    support_min, support_max = support
+    extrapolated = tuple(
+        period for period in periods if period < support_min or period > support_max
+    )
+    if extrapolated:
+        import warnings
+
+        warnings.warn(
+            f"return periods {extrapolated} are outside fitted source support "
+            f"{support}; values are extrapolated",
+            ReturnPeriodExtrapolationWarning,
+            stacklevel=stacklevel,
+        )
+    return extrapolated
+
+
 def _python_value(value: Any) -> Any:
     return value.as_py() if hasattr(value, "as_py") else value
 

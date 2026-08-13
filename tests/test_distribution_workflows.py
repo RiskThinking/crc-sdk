@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import pyarrow as pa  # type: ignore[import-untyped]
@@ -31,6 +31,7 @@ from crc_sdk.workflows import (
     HazardDataset,
     ImpactContextColumns,
     PointColumns,
+    ReturnPeriodExtrapolationWarning,
     curve_parameters_from_row,
     curve_quantiles,
     distribution_from_hazard_row,
@@ -71,9 +72,15 @@ class ContextAwareImpact:
         )
 
 
-def _metadata() -> HazardDatasetMetadata:
+def _metadata(
+    *,
+    return_period_tail: Literal["upper", "lower"] = "upper",
+    return_period_support: tuple[float, float] | None = None,
+) -> HazardDatasetMetadata:
     return HazardDatasetMetadata(
         h3_resolution=H3_RESOLUTION,
+        return_period_tail=return_period_tail,
+        return_period_support=return_period_support,
         value_unit="metres",
         value_semantics="flood depth",
         producer="tests",
@@ -317,6 +324,38 @@ def test_evaluate_cell_portfolio_writes_wide_scenario_rows(
         "probability": 0.99,
         "return_period": 100.0,
     }
+
+
+def test_portfolio_warns_when_flood_period_exceeds_source_support(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "supported-hazard.parquet"
+    write_hazard_dataset(
+        _table(_row()),
+        source,
+        _metadata(return_period_support=(10.0, 500.0)),
+        max_workers=1,
+    )
+    assets = pa.table(
+        {
+            "asset_id": ["asset-a"],
+            "cell_index": pa.array(
+                [_row()["cell_index"]],
+                type=pa.uint64(),
+            ),
+        }
+    )
+
+    with pytest.warns(ReturnPeriodExtrapolationWarning, match="1000.0"):
+        (
+            HazardDataset.local(source)
+            .for_assets(assets)
+            .return_periods([250, 1000])
+            .write_parquet(
+                tmp_path / "extrapolated.parquet",
+                execution=ExecutionOptions(max_workers=1),
+            )
+        )
 
 
 def test_evaluate_portfolio_applies_inline_event_impact_and_metadata(
@@ -670,6 +709,42 @@ def test_evaluate_portfolio_rejects_ambiguous_sources(tmp_path: Path) -> None:
             .return_periods([100])
             .write_parquet(
                 tmp_path / "ambiguous.parquet",
+                execution=ExecutionOptions(max_workers=1),
+            )
+        )
+
+
+def test_evaluate_point_portfolio_rejects_overlapping_interiors(
+    tmp_path: Path,
+) -> None:
+    geometry = Polygon(
+        [
+            (LONGITUDE - 0.01, LATITUDE - 0.01),
+            (LONGITUDE + 0.01, LATITUDE - 0.01),
+            (LONGITUDE + 0.01, LATITUDE + 0.01),
+            (LONGITUDE - 0.01, LATITUDE + 0.01),
+        ]
+    ).wkb
+    provider = _provider(
+        tmp_path,
+        _row(source_id="a", source_geometry=geometry),
+        _row(source_id="b", source_geometry=geometry),
+    )
+    assets = pa.table(
+        {
+            "asset_id": ["asset-a"],
+            "longitude": [LONGITUDE],
+            "latitude": [LATITUDE],
+        }
+    )
+
+    with pytest.raises(LookupError, match="multiple source curves"):
+        (
+            HazardDataset(provider)
+            .for_assets(assets)
+            .return_periods([100])
+            .write_parquet(
+                tmp_path / "ambiguous-point.parquet",
                 execution=ExecutionOptions(max_workers=1),
             )
         )

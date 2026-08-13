@@ -170,8 +170,11 @@ def _metadata(
     source: CurveSource, policy: CurveFitIngestPolicy, provider: str
 ) -> HazardDatasetMetadata:
     values = source.metadata
+    support = getattr(source, "return_period_support", None)
     return HazardDatasetMetadata(
         h3_resolution=policy.h3_resolution,
+        return_period_tail=policy.tail,
+        return_period_support=support,
         value_unit=values.units,
         value_semantics=policy.value_semantics or values.indicator_id,
         producer=policy.producer,

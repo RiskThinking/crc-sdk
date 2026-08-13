@@ -4,33 +4,38 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Literal
+from urllib.parse import urlencode
 
 import pyarrow as pa  # type: ignore[import-untyped]
 from crc_framework.distributions import DistributionFamily
 
 from crc_sdk.connectors import CurveFitIngestPolicy
+from crc_sdk.connectors.duckdb.geotiff import GeoTiffRaster, RasterBoundsError
 from crc_sdk.connectors.jrc import canonicalize_jrc_flood
 from crc_sdk.connectors.parquet import hazard_arrow_schema, write_hazard_dataset
 from crc_sdk.providers.jrc import JRCProvider, JRCRasterResource, jrc_dataset
 
-from .distributions import return_periods_to_probabilities
+from ._remote import (
+    Bounds,
+    CacheMode,
+    MaterializationResult,
+    PrefetchResult,
+    ProgressCallback,
+    RemotePortfolioEvaluation,
+    file_checksum,
+    read_manifest,
+    validate_bounds,
+    write_manifest,
+)
 from .portfolio import (
     AssetPortfolio,
-    ExecutionOptions,
     HazardDataset,
-    HazardSelection,
-    ImpactContextColumns,
-    PortfolioEvaluationResult,
 )
-
-Bounds = tuple[float, float, float, float]
-CacheMode = Literal["reuse", "offline", "refresh", "stream"]
-ProgressCallback = Callable[[str, Mapping[str, Any]], None]
 
 
 @dataclass(frozen=True)
@@ -73,23 +78,6 @@ class JRCFloodPolicy:
 
 
 @dataclass(frozen=True)
-class MaterializationResult:
-    output: Path
-    source_version: str
-    source_cache_hits: int
-    source_cache_misses: int
-    canonical_rows: int
-
-
-@dataclass(frozen=True)
-class PrefetchResult:
-    source_version: str
-    cache_hits: int
-    cache_misses: int
-    resources: int
-
-
-@dataclass(frozen=True)
 class _PreparedSources:
     version: str
     resources: tuple[JRCRasterResource, ...]
@@ -97,24 +85,12 @@ class _PreparedSources:
     cache_misses: int
 
 
-def _validate_bounds(bounds: Sequence[float]) -> Bounds:
-    if len(bounds) != 4:
-        raise ValueError("area bounds must contain min_lon, min_lat, max_lon, max_lat")
-    normalized = tuple(float(value) for value in bounds)
-    min_lon, min_lat, max_lon, max_lat = normalized
-    if not (-180 <= min_lon < max_lon <= 180 and -90 <= min_lat < max_lat <= 90):
-        raise ValueError("area bounds must be ordered WGS84 longitude/latitude values")
-    return normalized  # type: ignore[return-value]
-
-
 def _periods(
     values: Sequence[int] | Literal["all"], available: tuple[int, ...]
 ) -> tuple[int, ...]:
-    if values == "all":
-        return available
-    normalized = tuple(values)
-    if not normalized:
-        raise ValueError("at least one source return period is required")
+    normalized = available if values == "all" else tuple(values)
+    if len(normalized) < 4:
+        raise ValueError("at least four source return periods are required for fitting")
     invalid = sorted(set(normalized) - set(available))
     if invalid:
         raise ValueError(
@@ -124,28 +100,6 @@ def _periods(
     if len(set(normalized)) != len(normalized):
         raise ValueError("source return periods must be unique")
     return normalized
-
-
-def _manifest_path(cache_dir: Path) -> Path:
-    return cache_dir / "manifest.json"
-
-
-def _read_manifest(cache_dir: Path) -> dict[str, Any] | None:
-    path = _manifest_path(cache_dir)
-    if not path.is_file():
-        return None
-    try:
-        return cast(dict[str, Any], json.loads(path.read_text()))
-    except (OSError, json.JSONDecodeError, TypeError) as error:
-        raise RuntimeError(f"invalid JRC cache manifest {path}: {error}") from error
-
-
-def _write_manifest(cache_dir: Path, manifest: Mapping[str, Any]) -> None:
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    path = _manifest_path(cache_dir)
-    temporary = path.with_suffix(".json.tmp")
-    temporary.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
-    temporary.replace(path)
 
 
 def _manifest_matches(
@@ -174,51 +128,33 @@ def _cached_resources(manifest: Mapping[str, Any]) -> tuple[JRCRasterResource, .
     )
 
 
-def _file_checksum(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+def _provenance_uri(
+    dataset: str,
+    bounds: Bounds,
+    source_ids: Sequence[str],
+    periods: Sequence[int],
+) -> str:
+    query = urlencode(
+        {
+            "bounds": ",".join(format(value, ".12g") for value in bounds),
+            "sources": ",".join(source_ids),
+            "source_periods": ",".join(str(period) for period in periods),
+        }
+    )
+    return f"{dataset}/aoi?{query}"
 
 
-def _crop_raster(url: str, bounds: Bounds, destination: Path) -> None:
-    try:
-        import rasterio  # type: ignore[import-untyped]
-        from rasterio.crs import CRS  # type: ignore[import-untyped]
-        from rasterio.warp import transform_bounds  # type: ignore[import-untyped]
-        from rasterio.windows import Window, from_bounds  # type: ignore[import-untyped]
-    except ImportError as error:
-        raise ImportError(
-            "JRC caching requires `pip install crc-sdk[raster]`"
-        ) from error
-
+def _crop_raster(url: str, bounds: Bounds, destination: Path) -> bool:
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_suffix(".tmp.tif")
-    with rasterio.open(url) as source:
-        source_bounds = transform_bounds(CRS.from_epsg(4326), source.crs, *bounds)
-        window = from_bounds(*source_bounds, transform=source.transform)
-        window = (
-            window.round_offsets()
-            .round_lengths()
-            .intersection(Window(0, 0, source.width, source.height))
-        )
-        if window.width < 1 or window.height < 1:
-            raise ValueError(f"JRC raster does not intersect area bounds: {url}")
-        data = source.read(window=window)
-        profile = source.profile.copy()
-        profile.update(
-            width=int(window.width),
-            height=int(window.height),
-            transform=source.window_transform(window),
-            compress="deflate",
-            tiled=False,
-        )
-        profile.pop("blockxsize", None)
-        profile.pop("blockysize", None)
-        with rasterio.open(temporary, "w", **profile) as target:
-            target.write(data)
+    try:
+        with GeoTiffRaster.open(url) as source:
+            source.write_crop(source.bounds_from_wgs84(bounds), temporary)
+    except RasterBoundsError:
+        temporary.unlink(missing_ok=True)
+        return False
     temporary.replace(destination)
+    return True
 
 
 @dataclass(frozen=True)
@@ -234,7 +170,7 @@ class JRCSourcePlan:
     def for_area(self, bounds: Sequence[float]) -> JRCAreaPlan:
         return JRCAreaPlan(
             source=self,
-            bounds=_validate_bounds(bounds),
+            bounds=validate_bounds(bounds),
         )
 
 
@@ -309,7 +245,7 @@ class JRCCanonicalizationPlan:
         dataset = jrc_dataset(self.area.source.dataset)
         periods = self.area.selected_periods or dataset.available_return_periods
         manifest = (
-            _read_manifest(self.area.cache_dir)
+            read_manifest(self.area.cache_dir)
             if self.area.cache_dir is not None
             else None
         )
@@ -363,7 +299,7 @@ class JRCCanonicalizationPlan:
             self.area.selected_periods or provider.dataset.available_return_periods
         )
         cache_dir = self.area.cache_dir
-        manifest = _read_manifest(cache_dir) if cache_dir is not None else None
+        manifest = read_manifest(cache_dir) if cache_dir is not None else None
         matches = manifest is not None and _manifest_matches(
             manifest,
             dataset=provider.dataset.name,
@@ -388,7 +324,7 @@ class JRCCanonicalizationPlan:
                     if (
                         not path.is_file()
                         or expected is None
-                        or _file_checksum(path) != expected
+                        or file_checksum(path) != expected
                     ):
                         invalid.append(f"{entry['source_id']}:RP{period}")
             if invalid:
@@ -446,6 +382,7 @@ class JRCCanonicalizationPlan:
             local: dict[str, str] = {}
             checksums: dict[str, str] = {}
             remote = entry["remote"]
+            intersects = True
             for period_text, url in remote.items():
                 identity = json.dumps(
                     [
@@ -465,7 +402,7 @@ class JRCCanonicalizationPlan:
                 valid = (
                     destination.is_file()
                     and expected is not None
-                    and _file_checksum(destination) == expected
+                    and file_checksum(destination) == expected
                 )
                 if valid and not refresh:
                     hits += 1
@@ -479,12 +416,15 @@ class JRCCanonicalizationPlan:
                                 "return_period": int(period_text),
                             },
                         )
-                    _crop_raster(url, self.area.bounds, destination)
+                    intersects = _crop_raster(url, self.area.bounds, destination)
+                    if not intersects:
+                        break
                 local[period_text] = str(destination)
-                checksums[period_text] = _file_checksum(destination)
-            materialized_entries.append(
-                {**entry, "local": local, "checksums": checksums}
-            )
+                checksums[period_text] = file_checksum(destination)
+            if intersects:
+                materialized_entries.append(
+                    {**entry, "local": local, "checksums": checksums}
+                )
 
         manifest = {
             "provider": "jrc",
@@ -496,7 +436,7 @@ class JRCCanonicalizationPlan:
             "source_periods": periods,
             "resources": materialized_entries,
         }
-        _write_manifest(cache_dir, manifest)
+        write_manifest(cache_dir, manifest)
         return _PreparedSources(
             version,
             _cached_resources(manifest),
@@ -528,6 +468,9 @@ class JRCCanonicalizationPlan:
             self.area.source.dataset,
             work_dir=self.area.cache_dir or destination.parent,
         )
+        periods = (
+            self.area.selected_periods or provider.dataset.available_return_periods
+        )
         policy = (
             self.policy.ingest_policy(prepared.version)
             if isinstance(self.policy, JRCFloodPolicy)
@@ -535,6 +478,7 @@ class JRCCanonicalizationPlan:
         )
         tables = []
         metadata = None
+        contributing_sources = []
         for resource in prepared.resources:
             if progress:
                 progress("fit", {"source": resource.source_id})
@@ -542,14 +486,32 @@ class JRCCanonicalizationPlan:
                 stream = canonicalize_jrc_flood(
                     raster,
                     policy,
-                    bounds=self.area.bounds,
+                    bounds=raster.bounds_from_wgs84(self.area.bounds),
                 )
                 metadata = stream.metadata
                 table = stream.read_all()
                 if table.num_rows:
                     tables.append(table)
+                    contributing_sources.append(resource.source_id)
         if metadata is None:
             raise LookupError(f"no JRC resources intersect area {self.area.bounds}")
+        source_ids = contributing_sources or [
+            resource.source_id for resource in prepared.resources
+        ]
+        metadata = metadata.model_copy(
+            update={
+                "source": metadata.source.model_copy(
+                    update={
+                        "uri": _provenance_uri(
+                            provider.dataset.name,
+                            self.area.bounds,
+                            source_ids,
+                            periods,
+                        )
+                    }
+                )
+            }
+        )
         table = (
             pa.concat_tables(tables, promote_options="none")
             if tables
@@ -594,87 +556,11 @@ class JRCCanonicalizationPlan:
             return HazardDataset.local(output)
         return self.materialize(output, progress=progress)
 
-    def for_assets(self, assets: Any | AssetPortfolio) -> JRCPortfolioEvaluation:
+    def for_assets(self, assets: Any | AssetPortfolio) -> RemotePortfolioEvaluation:
         portfolio = (
             assets if isinstance(assets, AssetPortfolio) else AssetPortfolio(assets)
         )
-        return JRCPortfolioEvaluation(plan=self, portfolio=portfolio)
+        return RemotePortfolioEvaluation(plan=self, portfolio=portfolio)
 
 
-@dataclass(frozen=True)
-class JRCPortfolioEvaluation:
-    plan: JRCCanonicalizationPlan
-    portfolio: AssetPortfolio
-    selection: HazardSelection = HazardSelection()
-    periods: tuple[float, ...] | None = None
-    impact_args: tuple[Any, ...] | None = None
-    impact_kwargs: Mapping[str, Any] | None = None
-
-    def select(
-        self,
-        *,
-        hazard_names: Sequence[str] | None = None,
-        horizons: Sequence[int] | None = None,
-        pathways: Sequence[str] | None = None,
-    ) -> JRCPortfolioEvaluation:
-        current = self.selection
-        return replace(
-            self,
-            selection=HazardSelection(
-                hazard_names=tuple(hazard_names)
-                if hazard_names is not None
-                else current.hazard_names,
-                horizons=tuple(horizons) if horizons is not None else current.horizons,
-                pathways=tuple(pathways) if pathways is not None else current.pathways,
-            ),
-        )
-
-    def return_periods(self, values: Sequence[float]) -> JRCPortfolioEvaluation:
-        periods = tuple(float(value) for value in values)
-        return_periods_to_probabilities(periods)
-        return replace(self, periods=periods)
-
-    def impact(
-        self,
-        function: Any,
-        *,
-        name: str,
-        value_unit: str,
-        value_semantics: str,
-        context: ImpactContextColumns | None = None,
-    ) -> JRCPortfolioEvaluation:
-        return replace(
-            self,
-            impact_args=(function,),
-            impact_kwargs={
-                "name": name,
-                "value_unit": value_unit,
-                "value_semantics": value_semantics,
-                "context": context,
-            },
-        )
-
-    def write_parquet(
-        self,
-        output: str | Path,
-        *,
-        execution: ExecutionOptions | None = None,
-        progress: ProgressCallback | None = None,
-    ) -> PortfolioEvaluationResult:
-        if self.periods is None:
-            raise ValueError("return_periods(...) must be configured before writing")
-        request = (
-            self.plan.ensure_materialized(progress=progress)
-            .for_assets(self.portfolio)
-            .select(
-                hazard_names=self.selection.hazard_names,
-                horizons=self.selection.horizons,
-                pathways=self.selection.pathways,
-            )
-            .return_periods(self.periods)
-        )
-        if self.impact_args is not None:
-            request = request.impact(
-                *self.impact_args, **dict(self.impact_kwargs or {})
-            )
-        return request.write_parquet(output, execution=execution)
+JRCPortfolioEvaluation = RemotePortfolioEvaluation

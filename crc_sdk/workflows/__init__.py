@@ -1,13 +1,23 @@
 """Cross-module analytical workflows."""
 
+from ._remote import MaterializationResult, PrefetchResult
 from .distributions import (
     CURVE_COLUMNS,
+    ReturnPeriodExtrapolationWarning,
     curve_parameters_from_row,
     curve_quantiles,
     distribution_from_hazard_row,
     return_period_value_columns,
     return_periods_to_probabilities,
     stream_curve_quantiles_wide_to_parquet,
+    warn_if_extrapolated,
+)
+from .edo import (
+    EDOAreaPlan,
+    EDOCanonicalizationPlan,
+    EDODroughtPolicy,
+    EDOSourcePlan,
+    EDOYearPlan,
 )
 from .jrc import (
     JRCAreaPlan,
@@ -15,8 +25,6 @@ from .jrc import (
     JRCFloodPolicy,
     JRCPortfolioEvaluation,
     JRCSourcePlan,
-    MaterializationResult,
-    PrefetchResult,
 )
 from .portfolio import (
     PORTFOLIO_METADATA_KEY,
@@ -43,6 +51,11 @@ __all__ = [
     "CellColumn",
     "CURVE_COLUMNS",
     "ExecutionOptions",
+    "EDOAreaPlan",
+    "EDOCanonicalizationPlan",
+    "EDODroughtPolicy",
+    "EDOSourcePlan",
+    "EDOYearPlan",
     "HazardDataset",
     "HazardSelection",
     "ImpactContextColumns",
@@ -58,6 +71,7 @@ __all__ = [
     "PrefetchResult",
     "PortfolioEvaluation",
     "PortfolioEvaluationResult",
+    "ReturnPeriodExtrapolationWarning",
     "curve_parameters_from_row",
     "curve_quantiles",
     "curve_quantiles_at",
@@ -68,4 +82,5 @@ __all__ = [
     "stream_curve_quantiles_to_parquet",
     "stream_curve_quantiles_wide_to_parquet",
     "tile_bounds",
+    "warn_if_extrapolated",
 ]

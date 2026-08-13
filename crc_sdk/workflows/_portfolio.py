@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+import pyarrow.parquet as pq  # type: ignore[import-untyped]
+
 from crc_sdk.connectors.duckdb import (
     DuckDBConnection,
     ensure_extensions,
@@ -21,6 +23,7 @@ from .distributions import (
     return_period_value_columns,
     return_periods_to_probabilities,
     stream_curve_quantiles_wide_to_parquet,
+    warn_if_extrapolated,
 )
 from .portfolio import (
     PORTFOLIO_METADATA_KEY,
@@ -80,6 +83,48 @@ def _validate_asset_columns(
         raise ValueError(f"asset source is missing columns {missing!r}")
 
 
+def _aggregate_jrc_cells(
+    con: Any,
+    source: Path,
+    output: Path,
+    output_columns: Sequence[str],
+    value_columns: Sequence[str],
+    parquet_metadata: Mapping[bytes, bytes],
+    aggregate: str,
+) -> int:
+    grouped = [
+        column
+        for column in output_columns
+        if column not in ("source_id", "spatial_match")
+    ]
+    selected = [
+        (
+            "'jrc-cell-aggregate' AS source_id"
+            if column == "source_id"
+            else "'h3_cell_aggregate' AS spatial_match"
+            if column == "spatial_match"
+            else _sql_identifier(column)
+        )
+        for column in output_columns
+    ]
+    selected.extend(
+        f"{aggregate}({_sql_identifier(column)}) AS {_sql_identifier(column)}"
+        for column in value_columns
+    )
+    query = (
+        f"SELECT {', '.join(selected)} FROM read_parquet({sql_quote(source)}) "
+        f"GROUP BY {', '.join(_sql_identifier(column) for column in grouped)}"
+    )
+    reader = con.execute(query).to_arrow_reader(50_000)
+    schema = reader.schema.with_metadata(dict(parquet_metadata))
+    rows = 0
+    with pq.ParquetWriter(output, schema, compression="zstd") as writer:
+        for batch in reader:
+            writer.write_batch(batch)
+            rows += batch.num_rows
+    return rows
+
+
 def _portfolio_metadata(
     *,
     metadata: Any,
@@ -90,6 +135,8 @@ def _portfolio_metadata(
 ) -> Mapping[bytes, bytes]:
     payload = {
         "probability_convention": metadata.probability_convention,
+        "return_period_tail": metadata.return_period_tail,
+        "return_period_support": metadata.return_period_support,
         "value_unit": impact.value_unit if impact is not None else metadata.value_unit,
         "value_semantics": (
             impact.value_semantics if impact is not None else metadata.value_semantics
@@ -161,10 +208,14 @@ def evaluate_hazard_portfolio(
     elif cell_index_column is None:
         raise ValueError("provide longitude/latitude or a cell_index column")
 
-    probabilities = return_periods_to_probabilities(return_periods)
     periods = tuple(float(period) for period in return_periods)
     value_columns = return_period_value_columns(periods)
     metadata = read_hazard_metadata(provider.source)
+    warn_if_extrapolated(periods, metadata.return_period_support, stacklevel=3)
+    probabilities = return_periods_to_probabilities(
+        return_periods,
+        tail=metadata.return_period_tail,
+    )
     output_path = Path(output)
     if output_path.resolve() == Path(provider.source).resolve():
         raise ValueError("portfolio output must not overwrite the hazard source")
@@ -296,13 +347,40 @@ def evaluate_hazard_portfolio(
             f"{spatial_match} AS spatial_match",
             *(f"h.{name}" for name in CURVE_COLUMNS),
         ]
-        matched_sql = f"""
-            SELECT {", ".join(selected)}
+        candidate_extras = []
+        if point_input:
+            assert longitude is not None
+            assert latitude is not None
+            point = f"ST_Point(a.{longitude}, a.{latitude})"
+            geometry = "ST_GeomFromWKB(h.source_geometry)"
+            candidate_extras = [
+                "CASE WHEN h.source_geometry IS NULL THEN NULL "
+                f"ELSE ST_Contains({geometry}, {point}) END AS _crc_contains",
+                "CASE WHEN h.source_geometry IS NULL THEN NULL "
+                f"ELSE ST_Distance({point}, ST_Centroid({geometry})) "
+                "END AS _crc_centroid_distance",
+            ]
+        candidates_sql = f"""
+            SELECT {", ".join([*selected, *candidate_extras])}
             FROM {assets_sql} AS a
             JOIN read_parquet({sql_quote(provider.source)}) AS h
               ON h.cell_index = CAST({cell_expression} AS UBIGINT)
             WHERE TRUE{filters}{spatial_predicate}
         """
+        matched_sql = (
+            f"""
+            SELECT * EXCLUDE (_crc_contains, _crc_centroid_distance)
+            FROM ({candidates_sql})
+            QUALIFY ROW_NUMBER() OVER (
+                PARTITION BY {asset_id}, hazard_name, horizon, pathway
+                ORDER BY _crc_contains DESC NULLS LAST,
+                         _crc_centroid_distance ASC NULLS LAST,
+                         source_id
+            ) = 1
+            """
+            if point_input
+            else candidates_sql
+        )
 
         duplicate_assets = con.execute(
             f"""
@@ -322,16 +400,29 @@ def evaluate_hazard_portfolio(
         ).fetchone()
         if null_asset_id is not None:
             raise ValueError("asset_id values must not be null")
-        ambiguous = con.execute(
-            f"""
-            SELECT {asset_id}, hazard_name, horizon, pathway,
-                   COUNT(*) AS source_count
-            FROM ({matched_sql})
-            GROUP BY {asset_id}, hazard_name, horizon, pathway
-            HAVING COUNT(*) > 1
-            LIMIT 10
-            """
-        ).fetchall()
+        aggregate_jrc_cells = not point_input and metadata.source.provider == "jrc"
+        ambiguity_source = candidates_sql if point_input else matched_sql
+        ambiguity_condition = (
+            "HAVING COUNT(*) > 1 AND ("
+            "COUNT_IF(_crc_contains) > 1 OR "
+            "COUNT_IF(_crc_contains IS NULL) > 0)"
+            if point_input
+            else "HAVING COUNT(*) > 1"
+        )
+        ambiguous = (
+            []
+            if aggregate_jrc_cells
+            else con.execute(
+                f"""
+                SELECT {asset_id}, hazard_name, horizon, pathway,
+                       COUNT(*) AS source_count
+                FROM ({ambiguity_source})
+                GROUP BY {asset_id}, hazard_name, horizon, pathway
+                {ambiguity_condition}
+                LIMIT 10
+                """
+            ).fetchall()
+        )
         if ambiguous:
             raise LookupError(
                 f"portfolio assets match multiple source curves: {ambiguous!r}"
@@ -373,26 +464,45 @@ def evaluate_hazard_portfolio(
             "source_id",
             "spatial_match",
         ]
+        evaluation_metadata = _portfolio_metadata(
+            metadata=metadata,
+            return_periods=periods,
+            probabilities=probabilities,
+            value_columns=value_columns,
+            impact=impact,
+        )
+        evaluation_output = (
+            output_path.with_name(f".{output_path.name}.{uuid4().hex}.tmp.parquet")
+            if aggregate_jrc_cells
+            else output_path
+        )
         row_count = stream_curve_quantiles_wide_to_parquet(
             con,
             matched_sql,
             probabilities,
-            output_path,
+            evaluation_output,
             passthrough_columns=output_columns,
             value_columns=value_columns,
-            parquet_metadata=_portfolio_metadata(
-                metadata=metadata,
-                return_periods=periods,
-                probabilities=probabilities,
-                value_columns=value_columns,
-                impact=impact,
-            ),
+            parquet_metadata=evaluation_metadata,
             impact=impact,
             context_columns=context_record_columns,
             batch_rows=batch_rows,
             max_workers=max_workers,
             chunk_rows=chunk_rows,
         )
+        if aggregate_jrc_cells:
+            try:
+                row_count = _aggregate_jrc_cells(
+                    con,
+                    evaluation_output,
+                    output_path,
+                    output_columns,
+                    value_columns,
+                    evaluation_metadata,
+                    "MAX" if metadata.return_period_tail == "upper" else "MIN",
+                )
+            finally:
+                evaluation_output.unlink(missing_ok=True)
     finally:
         if registered:
             con.unregister(relation_name)

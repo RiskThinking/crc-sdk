@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 import h5netcdf  # type: ignore[import-untyped]
 import numpy as np
@@ -9,6 +10,7 @@ import pytest
 from crc_sdk.connectors import EDOIngestPolicy, canonicalize_edo_drought
 from crc_sdk.connectors.duckdb.netcdf import EDOAnnualMinimaCurveSource, NetCDFRaster
 from crc_sdk.connectors.duckdb.zarr import RasterMetadata
+from crc_sdk.providers.jrc_edo import SMI, EDOProvider
 
 _LAT = np.array([1.0, 0.0], dtype=np.float64)
 _LON = np.array([10.0, 11.0], dtype=np.float64)
@@ -169,3 +171,24 @@ def test_edo_ingest_policy_is_curve_fit_ingest_policy() -> None:
     from crc_sdk.connectors import CurveFitIngestPolicy
 
     assert EDOIngestPolicy is CurveFitIngestPolicy
+
+
+def test_provider_resolves_latest_configured_version(tmp_path: Path) -> None:
+    provider = EDOProvider(SMI, work_dir=tmp_path)
+    with patch("crc_sdk.providers.jrc_edo.urlopen") as mock_urlopen:
+        mock_urlopen.return_value.__enter__.return_value.read.return_value = (
+            b'<a href="ver2-0-0/">old</a><a href="ver3-0-1/">current</a>'
+        )
+        assert provider.resolve_version("latest") == "3.0.1"
+
+
+def test_provider_discovers_only_complete_year_files(tmp_path: Path) -> None:
+    provider = EDOProvider(SMI, work_dir=tmp_path)
+    listing = b"""
+        <a href="sminx_m_eul_20240101_20241221_t.nc">2024</a>
+        <a href="sminx_m_eul_20250101_20251221_t.nc">2025</a>
+        <a href="sminx_m_eul_20260101_20260801_t.nc">partial</a>
+    """
+    with patch("crc_sdk.providers.jrc_edo.urlopen") as mock_urlopen:
+        mock_urlopen.return_value.__enter__.return_value.read.return_value = listing
+        assert provider.complete_years() == (2024, 2025)
