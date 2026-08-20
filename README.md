@@ -146,10 +146,16 @@ con = DuckDBConnection.for_analytics(work_dir, setup_sql=setup_sql).connect()
 
 The SDK internalizes fitted hazards as one versioned Arrow/Parquet contract.
 Rows contain a canonical unsigned H3 `cell_index`, stable `source_id`, optional
-source WKB, scenario dimensions, and the parameters needed to reconstruct
-either a `crc_framework.FittedDistribution` or `HurdleDistribution`.
+source WKB, scenario dimensions, and the parameters needed to reconstruct a
+`crc_framework.FittedDistribution`, `HurdleDistribution`, or
+`PointMassDistribution`.
 `curve_shape` is nullable because Gumbel families do not use a shape parameter;
-atom probability and location are present only when `curve_kind` is `hurdle`.
+atom probability and location are populated for hurdle and point-mass rows.
+Schema 1.1 also supports `curve_kind="point_mass"` for a distribution that is
+constant at every probability. It uses the same physical columns, with
+`curve_type="point_mass"`, zero scale, and probability one at
+`curve_location`; downstream quantile calls remain identical to fitted and
+hurdle curves.
 
 The logical row key is
 `(hazard_name, horizon, pathway, cell_index, source_id)`. `cell_index` is the
@@ -158,8 +164,9 @@ by that row key for predicate pruning and merge joins.
 
 Dataset-wide facts are stored once as a complete JSON payload under the
 `crc.hazard.metadata` Parquet key: schema version, one uncompacted H3
-resolution, non-exceedance probability convention, value unit and semantics,
-WKB CRS, producer, source provenance, and creation version.
+resolution, non-exceedance probability convention, source probability
+support, value unit and semantics, WKB CRS, producer, source provenance,
+curve-fit policy, and creation version.
 
 Each dataset is one self-describing Parquet file, expanded by H3 cell for
 spatial joins. The caller chooses its full destination path and filename.

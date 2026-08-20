@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 
-CANONICAL_HAZARD_SCHEMA_VERSION = "1.0"
+CANONICAL_HAZARD_SCHEMA_VERSION = "1.1"
 
 
 @dataclass(frozen=True)

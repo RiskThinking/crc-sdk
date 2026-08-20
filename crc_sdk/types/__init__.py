@@ -2,6 +2,7 @@
 
 from .dataset import (
     PARQUET_METADATA_KEY,
+    CurveFitProvenance,
     HazardDatasetMetadata,
     SourceProvenance,
 )
@@ -11,6 +12,7 @@ from .storage import StorageLocation
 
 __all__ = [
     "CurveParameters",
+    "CurveFitProvenance",
     "GeometryMetadata",
     "HazardDatasetMetadata",
     "HazardQuery",

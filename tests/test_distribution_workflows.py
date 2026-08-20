@@ -143,6 +143,22 @@ def test_row_utilities_reconstruct_fitted_and_hurdle_curves() -> None:
     assert curve_parameters_from_row(_row()).curve_type == "gumbel_r"
 
 
+def test_row_utilities_reconstruct_point_mass_curve() -> None:
+    row = _row(curve_kind="point_mass")
+    row.update(
+        curve_type="point_mass",
+        curve_shape=None,
+        curve_location=0.0,
+        curve_scale=0.0,
+        curve_atom_probability=1.0,
+        curve_atom_location=0.0,
+    )
+
+    distribution = distribution_from_hazard_row(row)
+
+    assert distribution.quantiles([0.01, 0.5, 0.99]).tolist() == [0.0, 0.0, 0.0]
+
+
 def test_return_periods_map_to_probabilities_and_wide_columns() -> None:
     periods = [25, 50, 100, 250, 500, 1000, 2.5]
 

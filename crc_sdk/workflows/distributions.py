@@ -14,7 +14,11 @@ from typing import Any, Literal, Union, cast
 import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
 from crc_framework import TransformContext
-from crc_framework.distributions import FittedDistribution, HurdleDistribution
+from crc_framework.distributions import (
+    FittedDistribution,
+    HurdleDistribution,
+    PointMassDistribution,
+)
 
 from crc_sdk.connectors.duckdb import detected_cpu_count
 from crc_sdk.types import CurveParameters
@@ -29,7 +33,11 @@ CURVE_COLUMNS = (
     "curve_atom_location",
 )
 
-CurveDistribution = Union[FittedDistribution, HurdleDistribution]
+CurveDistribution = Union[
+    FittedDistribution,
+    HurdleDistribution,
+    PointMassDistribution,
+]
 _MP_CONTEXT = multiprocessing.get_context("spawn")
 
 

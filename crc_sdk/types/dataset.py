@@ -24,22 +24,41 @@ class SourceProvenance(BaseModel):
     version: Optional[str] = None
 
 
+class CurveFitProvenance(BaseModel):
+    """Dataset-wide scientific and failure policy used for curve fitting."""
+
+    model_config = ConfigDict(frozen=True)
+
+    method: Literal["quantile_least_squares"] = "quantile_least_squares"
+    families: tuple[str, ...]
+    selection_metric: Literal["fixed_family"] = "fixed_family"
+    weighting: Literal["uniform"] = "uniform"
+    endpoint_policy: Literal["exclude_zero_and_one"] = "exclude_zero_and_one"
+    atom_policy: Literal["none", "infer_min_plateau"]
+    constant_policy: Literal["point_mass"] = "point_mass"
+    maximum_normalized_rmse: Optional[float] = None
+    maximum_absolute_residual: Optional[float] = None
+    on_fit_failure: Literal["raise", "skip"]
+
+
 class HazardDatasetMetadata(BaseModel):
     """Metadata shared by every row in one canonical hazard dataset."""
 
     model_config = ConfigDict(frozen=True)
 
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["1.0", "1.1"] = "1.1"
     h3_resolution: int = Field(ge=0, le=15)
     probability_convention: Literal["non_exceedance"] = "non_exceedance"
     return_period_tail: Literal["upper", "lower"] = "upper"
     return_period_support: Optional[tuple[float, float]] = None
+    source_probability_support: Optional[tuple[float, float]] = None
     value_unit: str = Field(min_length=1)
     value_semantics: str = Field(min_length=1)
     geometry_encoding: Literal["WKB"] = "WKB"
     geometry_crs: str = "EPSG:4326"
     producer: str = Field(min_length=1)
     source: SourceProvenance
+    fitting: Optional[CurveFitProvenance] = None
     creation_version: str = Field(min_length=1)
     row_key: tuple[str, ...] = HAZARD_ROW_KEY
     sort_order: tuple[str, ...] = HAZARD_SORT_ORDER
@@ -50,11 +69,23 @@ class HazardDatasetMetadata(BaseModel):
             raise ValueError(f"row_key must be {HAZARD_ROW_KEY!r}")
         if self.sort_order != HAZARD_SORT_ORDER:
             raise ValueError(f"sort_order must be {HAZARD_SORT_ORDER!r}")
+        if self.schema_version == "1.0" and (
+            self.source_probability_support is not None or self.fitting is not None
+        ):
+            raise ValueError(
+                "source probability support and fitting provenance require schema 1.1"
+            )
         if self.return_period_support is not None:
             lower, upper = self.return_period_support
             if lower <= 1.0 or upper <= lower:
                 raise ValueError(
                     "return_period_support must be increasing and greater than one"
+                )
+        if self.source_probability_support is not None:
+            lower, upper = self.source_probability_support
+            if not 0.0 <= lower < upper <= 1.0:
+                raise ValueError(
+                    "source_probability_support must be increasing within [0, 1]"
                 )
         return self
 

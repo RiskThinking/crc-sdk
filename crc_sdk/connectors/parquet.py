@@ -14,7 +14,11 @@ import pyarrow.compute as pc  # type: ignore[import-untyped]
 import pyarrow.dataset as ds  # type: ignore[import-untyped]
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
 
-from crc_sdk.connectors.duckdb import DuckDBConnection, detected_cpu_count
+from crc_sdk.connectors.duckdb import (
+    DuckDBConnection,
+    default_work_dir,
+    detected_cpu_count,
+)
 from crc_sdk.schema import HAZARD_FIELDS, HAZARD_ROW_KEY, HAZARD_SORT_ORDER
 from crc_sdk.types import (
     PARQUET_METADATA_KEY,
@@ -105,9 +109,7 @@ def validate_hazard_table(
     expected = hazard_arrow_schema(metadata)
     expected_names = [field.name for field in HAZARD_FIELDS]
     if table.column_names != expected_names:
-        raise ValueError(
-            f"canonical hazard columns must be exactly {expected_names!r}"
-        )
+        raise ValueError(f"canonical hazard columns must be exactly {expected_names!r}")
     try:
         table = table.cast(expected, safe=True)
     except (TypeError, ValueError) as error:
@@ -129,6 +131,10 @@ def validate_hazard_table(
     for name in string_columns:
         if pc.any(pc.equal(pc.utf8_length(table[name]), 0)).as_py():
             raise ValueError(f"{name} must contain non-empty strings")
+
+    if metadata is not None and metadata.schema_version == "1.0":
+        if pc.any(pc.equal(table["curve_kind"], "point_mass")).as_py():
+            raise ValueError("point-mass curves require canonical schema 1.1")
 
     curve_table = table.select(_CURVE_COLUMNS)
     records = curve_table.to_pylist()
@@ -259,33 +265,98 @@ def write_hazard_stream(
     compression: str = "zstd",
     max_workers: int | None = None,
     chunk_rows: int = 20_000,
+    work_dir: str | Path | None = None,
+    overwrite: bool = False,
 ) -> str | Path:
-    """Consume a canonical stream and write the hazard dataset.
+    """Stream canonical batches through DuckDB into one sorted Parquet file.
 
-    ``max_workers``/``chunk_rows`` pass through to
-    :func:`write_hazard_dataset` — see its docstring re: nested process pools.
+    Unlike :func:`write_hazard_dataset`, this path never concatenates all
+    batches into one Python-resident Arrow table. DuckDB pulls from a one-shot
+    ``RecordBatchReader`` and may spill the global sort to ``work_dir``.
     """
-    return write_hazard_dataset(
-        stream.read_all(),
-        destination,
-        stream.metadata,
-        connection=connection,
-        compression=compression,
-        max_workers=max_workers,
-        chunk_rows=chunk_rows,
+    normalized_compression = compression.lower()
+    supported_compression = {
+        "uncompressed",
+        "snappy",
+        "gzip",
+        "zstd",
+        "lz4_raw",
+    }
+    if normalized_compression not in supported_compression:
+        raise ValueError(
+            f"compression must be one of {sorted(supported_compression)!r}"
+        )
+    metadata = stream.metadata
+    schema = hazard_arrow_schema(metadata)
+
+    def record_batches() -> Iterable[Any]:
+        for item in stream.batches:
+            table = validate_hazard_table(
+                item.hazard_rows,
+                metadata=metadata,
+                require_unique_keys=False,
+                max_workers=max_workers,
+                chunk_rows=chunk_rows,
+            )
+            yield from table.to_batches()
+
+    reader = pa.RecordBatchReader.from_batches(schema, record_batches())
+    target = str(destination)
+    relation_name = f"_crc_hazard_stream_{uuid4().hex}"
+    staged_name = f"{relation_name}_staged"
+    resolved_work_dir = (
+        Path(work_dir)
+        if work_dir is not None
+        else (Path(destination).parent if "://" not in target else default_work_dir())
     )
+    duckdb_connection, owned = _duckdb_connection(
+        connection, work_dir=resolved_work_dir
+    )
+    metadata_json = metadata.to_json_bytes().decode("utf-8")
+    order = ", ".join(_sql_identifier(name) for name in HAZARD_SORT_ORDER)
+    row_key = ", ".join(_sql_identifier(name) for name in HAZARD_ROW_KEY)
+    copy_sql = (
+        f"COPY (SELECT * FROM {_sql_identifier(staged_name)} ORDER BY {order}) "
+        f"TO {_sql_string(target)} "
+        f"(FORMAT PARQUET, COMPRESSION {normalized_compression.upper()}, "
+        f"OVERWRITE_OR_IGNORE {str(overwrite).lower()}, KV_METADATA "
+        f"{{{_sql_string(PARQUET_METADATA_KEY)}: "
+        f"{_sql_string(metadata_json)}}})"
+    )
+    try:
+        duckdb_connection.register(relation_name, reader)
+        duckdb_connection.execute(
+            f"CREATE TEMP TABLE {_sql_identifier(staged_name)} AS "
+            f"SELECT * FROM {_sql_identifier(relation_name)}"
+        )
+        duplicate = duckdb_connection.execute(
+            f"SELECT 1 FROM {_sql_identifier(staged_name)} "
+            f"GROUP BY {row_key} HAVING count(*) > 1 LIMIT 1"
+        ).fetchone()
+        if duplicate is not None:
+            raise ValueError(f"duplicate canonical row key {HAZARD_ROW_KEY!r}")
+        duckdb_connection.execute(copy_sql)
+    finally:
+        try:
+            duckdb_connection.unregister(relation_name)
+        finally:
+            try:
+                duckdb_connection.execute(
+                    f"DROP TABLE IF EXISTS {_sql_identifier(staged_name)}"
+                )
+            finally:
+                if owned:
+                    duckdb_connection.close()
+    return destination
 
 
 def read_hazard_metadata(source: str | Path) -> HazardDatasetMetadata:
     """Read the complete canonical payload from Parquet key-value metadata."""
     parquet_schema = pq.read_schema(source)
-    embedded = HazardDatasetMetadata.from_parquet_metadata(
-        parquet_schema.metadata
-    )
+    embedded = HazardDatasetMetadata.from_parquet_metadata(parquet_schema.metadata)
     expected = hazard_arrow_schema()
     if parquet_schema.names != expected.names or any(
-        actual.type != wanted.type
-        for actual, wanted in zip(parquet_schema, expected)
+        actual.type != wanted.type for actual, wanted in zip(parquet_schema, expected)
     ):
         raise ValueError("Parquet file does not use the canonical hazard schema")
     return embedded
@@ -307,9 +378,7 @@ def read_hazard_dataset(
         if query.pathway is not None:
             expression = expression & (ds.field("pathway") == query.pathway)
         if query.cell_index is not None:
-            expression = expression & (
-                ds.field("cell_index") == query.cell_index
-            )
+            expression = expression & (ds.field("cell_index") == query.cell_index)
     table = ds.dataset(source, format="parquet").to_table(
         columns=columns,
         filter=expression,

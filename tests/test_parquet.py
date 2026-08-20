@@ -9,12 +9,14 @@ import pyarrow.parquet as pq  # type: ignore[import-untyped]
 import pytest
 from crc_framework import HurdleDistribution
 
+from crc_sdk.connectors.adapters import CanonicalHazardBatch, CanonicalHazardStream
 from crc_sdk.connectors.parquet import (
     hazard_arrow_schema,
     read_hazard_dataset,
     read_hazard_metadata,
     validate_hazard_table,
     write_hazard_dataset,
+    write_hazard_stream,
 )
 from crc_sdk.providers import LocalProvider
 from crc_sdk.types import (
@@ -129,6 +131,40 @@ def test_validation_rejects_duplicate_row_keys() -> None:
 
     with pytest.raises(ValueError, match="duplicate canonical row key"):
         validate_hazard_table(duplicate)
+
+
+def test_schema_1_0_rejects_point_mass_rows() -> None:
+    rows = _table().slice(0, 1).to_pylist()
+    rows[0].update(
+        curve_kind="point_mass",
+        curve_type="point_mass",
+        curve_shape=None,
+        curve_location=0.0,
+        curve_scale=0.0,
+        curve_atom_probability=1.0,
+        curve_atom_location=0.0,
+    )
+    table = pa.Table.from_pylist(rows, schema=hazard_arrow_schema())
+    metadata = _metadata().model_copy(update={"schema_version": "1.0"})
+
+    with pytest.raises(ValueError, match="require canonical schema 1.1"):
+        validate_hazard_table(table, metadata=metadata)
+
+
+def test_stream_writer_rejects_duplicate_keys_across_batches(tmp_path: Path) -> None:
+    table = _table().slice(0, 1)
+    stream = CanonicalHazardStream(
+        metadata=_metadata(),
+        batches=iter(
+            [
+                CanonicalHazardBatch(hazard_rows=table),
+                CanonicalHazardBatch(hazard_rows=table),
+            ]
+        ),
+    )
+
+    with pytest.raises(ValueError, match="duplicate canonical row key"):
+        write_hazard_stream(stream, tmp_path / "duplicate.parquet")
 
 
 def test_validation_rejects_empty_required_strings() -> None:

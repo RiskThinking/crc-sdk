@@ -15,7 +15,19 @@ from crc_framework import (
     quality_metrics,
 )
 
+from .workflows import (
+    CDFColumnSchema,
+    CDFCurveFitPolicy,
+    CDFFitResult,
+    CDFFitSummary,
+    fit_cdf_quantile_batches,
+)
+
 __all__ = [
+    "CDFColumnSchema",
+    "CDFCurveFitPolicy",
+    "CDFFitResult",
+    "CDFFitSummary",
     "FitConstraints",
     "FitDiagnostics",
     "FitResult",
@@ -27,5 +39,6 @@ __all__ = [
     "fit_distribution",
     "fit_hurdle_quantiles",
     "fit_quantiles",
+    "fit_cdf_quantile_batches",
     "quality_metrics",
 ]
