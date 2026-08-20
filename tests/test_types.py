@@ -11,6 +11,21 @@ from crc_sdk.types import (
 )
 
 
+def test_point_mass_curve_parameters_reconstruct_exact_distribution() -> None:
+    parameters = CurveParameters(
+        curve_kind="point_mass",
+        curve_type="point_mass",
+        curve_shape=None,
+        curve_location=0.0,
+        curve_scale=0.0,
+        curve_atom_probability=1.0,
+        curve_atom_location=0.0,
+    )
+
+    distribution = parameters.to_distribution()
+    assert distribution.quantiles([0.0, 0.5, 1.0]).tolist() == [0.0, 0.0, 0.0]
+
+
 def test_curve_shape_is_optional() -> None:
     parameters = CurveParameters(
         curve_type="gumbel_r",

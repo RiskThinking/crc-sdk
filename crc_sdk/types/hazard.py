@@ -7,6 +7,7 @@ from crc_framework.distributions import (
     DistributionFamily,
     FittedDistribution,
     HurdleDistribution,
+    PointMassDistribution,
 )
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -16,8 +17,8 @@ class CurveParameters(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    curve_kind: Literal["fitted", "hurdle"] = "fitted"
-    curve_type: DistributionFamily
+    curve_kind: Literal["fitted", "hurdle", "point_mass"] = "fitted"
+    curve_type: Union[DistributionFamily, Literal["point_mass"]]
     curve_shape: Optional[float] = None
     curve_location: float
     curve_scale: float
@@ -38,23 +39,42 @@ class CurveParameters(BaseModel):
     @model_validator(mode="after")
     def validate_distribution(self) -> "CurveParameters":
         """Delegate parameter validation to the framework's public API."""
+        if self.curve_kind == "point_mass":
+            if self.curve_type != "point_mass":
+                raise ValueError("point-mass curves require curve_type='point_mass'")
+            if self.curve_shape is not None or self.curve_scale != 0.0:
+                raise ValueError("point-mass curves require no shape and zero scale")
+            if (
+                self.curve_atom_probability != 1.0
+                or self.curve_atom_location != self.curve_location
+            ):
+                raise ValueError(
+                    "point-mass curves require probability one at curve_location"
+                )
+            self.to_distribution()
+            return self
+        if self.curve_type == "point_mass":
+            raise ValueError("curve_type='point_mass' requires curve_kind='point_mass'")
         if self.curve_kind == "fitted" and (
             self.curve_atom_probability is not None
             or self.curve_atom_location is not None
         ):
             raise ValueError("fitted curves must not define hurdle atom fields")
         if self.curve_kind == "hurdle" and (
-            self.curve_atom_probability is None
-            or self.curve_atom_location is None
+            self.curve_atom_probability is None or self.curve_atom_location is None
         ):
-            raise ValueError(
-                "hurdle curves require atom probability and atom location"
-            )
+            raise ValueError("hurdle curves require atom probability and atom location")
         self.to_distribution()
         return self
 
-    def to_distribution(self) -> Union[FittedDistribution, HurdleDistribution]:
+    def to_distribution(
+        self,
+    ) -> Union[FittedDistribution, HurdleDistribution, PointMassDistribution]:
         """Reconstruct the framework distribution represented by these fields."""
+        if self.curve_kind == "point_mass":
+            return PointMassDistribution(self.curve_location)
+        if self.curve_type == "point_mass":
+            raise AssertionError("curve kind and type were validated")
         base = FittedDistribution.from_parameters(
             self.curve_type,
             location=self.curve_location,
