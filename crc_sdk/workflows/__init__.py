@@ -1,6 +1,7 @@
 """Cross-module analytical workflows."""
 
 from ._remote import MaterializationResult, PrefetchResult
+from .agriculture import AgriculturalLayer
 from .distributions import (
     CURVE_COLUMNS,
     ReturnPeriodExtrapolationWarning,
@@ -47,6 +48,7 @@ from .tiling import (
 )
 
 __all__ = [
+    "AgriculturalLayer",
     "AssetPortfolio",
     "CellColumn",
     "CURVE_COLUMNS",

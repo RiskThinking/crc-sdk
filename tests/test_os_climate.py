@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -34,16 +36,14 @@ class FakeZarrArray:
         self.reads.append(key)
         return self.data[key]
 
-    def get_coordinate_selection(self, coordinates: Any) -> Any:
-        self.reads.append(coordinates)
-        return self.data[coordinates]
+    @property
+    def vindex(self) -> FakeZarrArray:
+        return self
 
 
 class FakeReturnPeriodArray:
     def __init__(self) -> None:
-        self.data = np.asarray(
-            [0.0, 0.2, 0.5, 1.0, 2.0], dtype=np.float64
-        ).reshape(
+        self.data = np.asarray([0.0, 0.2, 0.5, 1.0, 2.0], dtype=np.float64).reshape(
             5, 1, 1
         )
         self.shape = self.data.shape
@@ -136,12 +136,14 @@ def test_scan_is_lazy_and_streams_into_duckdb() -> None:
     )
 
     scan = raster.scan(batch_rows=4)
-    relation = scan.relation()
+    relation = (
+        scan.pipeline()
+        .aggregate("count(*) AS row_count, sum(value) AS total")
+        .relation()
+    )
     assert array.reads == []
 
-    count, total = relation.aggregate(
-        "count(*) AS row_count, sum(value) AS total"
-    ).fetchone()
+    count, total = relation.fetchone()
     assert count == 12
     assert total == pytest.approx(66.0)
     assert array.reads
@@ -165,6 +167,90 @@ def test_point_read_fetches_only_requested_curve() -> None:
     assert periods.tolist() == [10.0, 100.0]
     assert values.tolist() == [0.0, 6.0]
     assert len(array.reads) == 1
+
+
+def test_point_read_supports_installed_zarr_vectorized_indexing() -> None:
+    zarr = pytest.importorskip("zarr")
+    array = zarr.open_array(
+        store={},
+        mode="w",
+        shape=(2, 2, 3),
+        chunks=(2, 2, 2),
+        dtype="f4",
+    )
+    array[:] = np.arange(12, dtype=np.float32).reshape(2, 2, 3)
+    array.attrs.update(
+        {
+            "index_name": "return period (years)",
+            "index_values": [10, 100],
+            "transform_mat3x3": [1, 0, 0, 0, -1, 2, 0, 0, 1],
+        }
+    )
+    raster = ZarrRaster(
+        array,
+        RasterMetadata(
+            hazard_type="Wind",
+            indicator_id="max_speed",
+            scenario="historical",
+            year=2010,
+            units="m/s",
+            path="test/wind",
+        ),
+    )
+
+    periods, values = raster.point_values(0.2, 1.8)
+
+    assert periods.tolist() == [10.0, 100.0]
+    assert values.tolist() == [0.0, 6.0]
+
+
+def test_os_climate_uses_zarr_3_fsspec_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: dict[str, Any] = {}
+
+    class _FsspecStore:
+        @classmethod
+        def from_url(cls, url: str, **options: Any) -> object:
+            calls.update(url=url, **options)
+            return object()
+
+    fake_zarr = SimpleNamespace(
+        storage=SimpleNamespace(FsspecStore=_FsspecStore),
+        open_array=lambda **options: (
+            calls.update(open_array=options) or FakeZarrArray()
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "zarr", fake_zarr)
+    monkeypatch.setattr(
+        "crc_sdk.providers.os_climate.s3fs.S3FileSystem",
+        lambda **_: pytest.fail("Zarr 3 must not construct a Zarr 2 S3Map"),
+    )
+    inventory = OSClimateInventory.from_dict(
+        {
+            "resources": [
+                {
+                    "hazard_type": "Wind",
+                    "indicator_id": "max_speed",
+                    "path": "wind/{scenario}/{year}",
+                    "params": {},
+                    "scenarios": [{"id": "historical", "years": [2010]}],
+                    "units": "m/s",
+                }
+            ]
+        }
+    )
+    selection = inventory.resources[0].resolve(scenario="historical", year=2010)
+
+    OSClimateProvider(inventory=inventory).open(selection)
+
+    assert calls["url"] == (
+        "s3://os-climate-physical-risk/hazard-indicators/hazard.zarr/"
+        "wind/historical/2010"
+    )
+    assert calls["storage_options"] == {"anon": True}
+    assert calls["read_only"] is True
+    assert calls["open_array"]["store"] is not None
 
 
 def test_inventory_requires_unambiguous_resource_selection() -> None:

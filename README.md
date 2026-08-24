@@ -41,9 +41,17 @@ dependency, opted into only by the callers that need it:
 | Extra | Adds | Used by |
 |---|---|---|
 | `zarr` | `zarr` | `OSClimateProvider`/`ZarrRaster` (OS-Climate Zarr raster ingest) |
+| `agriculture` | `icechunk`, Zarr v3, `pyproj` (Python 3.12+) | USDA CDL Icechunk AOI/year/class scans; FTW GeoParquet itself uses baseline DuckDB |
 | `raster` | `rasterio` | `GeoTiffRaster` (GeoTIFF/COG ingest, streamed via GDAL VSI) |
+| `netcdf` | `h5netcdf`, `h5py` | `NetCDFRaster` (NetCDF/CF ingest) |
 | `geometry` | `h3`, `h3ronpy`, `shapely` | `H3Indexer`, `intersecting_cells`, `cell_polygon`, other abstract H3/geometry math, vectorized batch H3 ops on Arrow data (`polyfill_wkb`, `expand_polygon_candidates`, raster-to-H3 sampling) |
 | `test` | `mypy`, `pytest`, `ruff` | Development only |
+
+DuckDB's community `duckdb_zarr` extension can scan ordinary remote Zarr v2/v3
+stores, but it does not open Icechunk's versioned repository/session model.
+USDA CDL therefore uses the official Icechunk client for version resolution and
+chunk reads, then exposes bounded Arrow batches to DuckDB; it never materializes
+the full raster or a full AOI in memory.
 
 Every function that needs an extra-gated dependency imports it lazily and
 raises a clear `ImportError` naming the extra to install if it's missing —
@@ -67,6 +75,13 @@ friendly, actionable error (with install instructions) if either is missing.
   ingest (`GeoTiffRaster`, `raster` extra) — the latter streams directly
   from local paths or `gs://`/`s3://`/`http(s)://` URIs via GDAL's own
   range-request support, with no local download by default.
+  `DuckDBRelationSource`, `ArrowBatchSource`, and `DuckDBPipeline` form the
+  common lazy process seam: native SQL/Parquet adapters return relations,
+  while chunk stores yield bounded Arrow batches into the same immutable
+  filter/project/aggregate/write pipeline. `AgriculturalLayer.usda_cdl()` uses
+  that Arrow seam for the versioned Icechunk v2 CDL store;
+  `AgriculturalLayer.ftw_fields()` stays native in DuckDB over remote
+  GeoParquet, applying `bbox` pruning before exact spatial filtering.
 - `crc_sdk.providers` describes storage and dataset discovery.
 - `crc_sdk.geometry` contains geometry conversion, DuckDB-native H3 polyfill
   (`H3Indexer`), Arrow batch polyfill (`polyfill_wkb`, `geometry`
@@ -141,6 +156,49 @@ if key_id and secret:
     )
 con = DuckDBConnection.for_analytics(work_dir, setup_sql=setup_sql).connect()
 ```
+
+## Agricultural layers
+
+Agricultural requests are immutable and bounded before they can scan. Builder
+calls perform no network I/O; `relation()`, `to_arrow_reader()`, and
+`write_parquet()` are execution points:
+
+```python
+from crc_sdk.workflows import AgriculturalLayer
+
+crop_mix = (
+    AgriculturalLayer.usda_cdl()
+    .resolution("30m")
+    .for_area((-93.46, 42.14, -93.45, 42.15))
+    .years(2025)
+    .classes([1, 5])  # corn and soybeans
+    .scan()
+    .pipeline()
+    .aggregate("count(*) AS sampled_pixels", groups="year, crop_code, crop_name")
+)
+for batch in crop_mix.to_arrow_reader():
+    process(batch)
+```
+
+For global predicted field units, replace the source while keeping the same
+process surface:
+
+```python
+fields = (
+    AgriculturalLayer.ftw_fields()
+    .in_country("FR")
+    .for_area((2.0, 47.5, 3.0, 48.5))
+    .years(2024)
+    .confidence_at_least(80)
+    .scan()
+    .pipeline()
+)
+fields.write_parquet("outputs/france-fields.parquet")
+```
+
+FTW fields are remote-sensing units, not cadastral parcels or evidence of
+ownership. CDL crop pixels are land-cover observations, not acreage, yield, or
+financial exposure.
 
 ## Canonical hazard datasets
 

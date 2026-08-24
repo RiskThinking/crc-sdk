@@ -25,6 +25,7 @@ from crc_sdk.geometry.h3 import (
 )
 
 from .connection import DuckDBConnection, default_work_dir
+from .stream import ArrowBatchSource, DuckDBPipeline
 from .zarr import Bounds, Point, RasterCurve, RasterMetadata
 
 logger = logging.getLogger(__name__)
@@ -505,9 +506,13 @@ class GeoTiffScan:
                 ("value", pa.float32()),
             ]
         )
-        reader = pa.RecordBatchReader.from_batches(schema, self._batches())
-        active = (connection or self.raster.connection).connect()
-        return active.from_arrow(reader)
+        return ArrowBatchSource(schema, self._batches).relation(
+            connection=connection or self.raster.connection
+        )
+
+    def pipeline(self, *, connection: DuckDBConnection | None = None) -> DuckDBPipeline:
+        """Compose this bounded scan with lazy DuckDB relational operations."""
+        return DuckDBPipeline(self, connection=connection)
 
     def _batches(self) -> Iterator[Any]:
         raster = self.raster
@@ -579,6 +584,10 @@ class GeoTiffH3Scan:
         )
         active = (connection or self.raster.connection).connect()
         return active.from_arrow(table)
+
+    def pipeline(self, *, connection: DuckDBConnection | None = None) -> DuckDBPipeline:
+        """Compose this reduced H3 scan with lazy DuckDB relational operations."""
+        return DuckDBPipeline(self, connection=connection)
 
     def _batches(self) -> Iterator[Any]:
         raster = self.raster

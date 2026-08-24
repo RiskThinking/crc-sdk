@@ -10,6 +10,7 @@ import numpy as np
 import pyarrow as pa  # type: ignore[import-untyped]
 
 from .connection import DuckDBConnection, default_work_dir
+from .stream import ArrowBatchSource, DuckDBPipeline
 
 Bounds = tuple[float, float, float, float]
 Point = tuple[float, float]
@@ -316,11 +317,11 @@ class ZarrRaster:
         repeated_rows = np.repeat(rows, axis_count)
         repeated_columns = np.repeat(columns, axis_count)
         if len(self.array.shape) == 2:
-            values = self.array.get_coordinate_selection((rows, columns))
+            values = self.array.vindex[rows, columns]
         else:
-            values = self.array.get_coordinate_selection(
-                (axis_indices, repeated_rows, repeated_columns)
-            )
+            values = self.array.vindex[
+                axis_indices, repeated_rows, repeated_columns
+            ]
         centers = [
             self._pixel_to_world(column + 0.5, row + 0.5)
             for column, row in zip(columns, rows)
@@ -375,9 +376,16 @@ class ZarrScan:
                 ("value", pa.float64()),
             ]
         )
-        reader = pa.RecordBatchReader.from_batches(schema, self._batches(pa))
-        active = (connection or self.raster.connection).connect()
-        return self.raster._project_metadata(active.from_arrow(reader))
+        relation = ArrowBatchSource(schema, lambda: self._batches(pa)).relation(
+            connection=connection or self.raster.connection
+        )
+        return self.raster._project_metadata(relation)
+
+    def pipeline(
+        self, *, connection: Optional[DuckDBConnection] = None
+    ) -> DuckDBPipeline:
+        """Compose this bounded scan with lazy DuckDB relational operations."""
+        return DuckDBPipeline(self, connection=connection)
 
     def _batches(self, pa: Any) -> Iterator[Any]:
         raster = self.raster

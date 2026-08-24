@@ -10,6 +10,7 @@ from .adapters import (
     canonicalize_curve_source,
     canonicalize_os_climate,
 )
+from .agriculture import FTWFields, FTWFieldScan, USDACropland, USDACroplandScan
 from .jrc import JRCIngestPolicy, canonicalize_jrc_flood
 from .jrc_edo import EDOIngestPolicy, canonicalize_edo_drought
 from .parquet import (
@@ -24,6 +25,8 @@ from .parquet import (
 from .protocols import HazardReader
 
 __all__ = [
+    "FTWFieldScan",
+    "FTWFields",
     "HazardReader",
     "CanonicalHazardBatch",
     "CanonicalHazardStream",
@@ -33,6 +36,8 @@ __all__ = [
     "HurdleFitPolicy",
     "JRCIngestPolicy",
     "OSClimateIngestPolicy",
+    "USDACropland",
+    "USDACroplandScan",
     "canonicalize_curve_source",
     "canonicalize_edo_drought",
     "canonicalize_jrc_flood",

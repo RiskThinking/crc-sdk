@@ -350,6 +350,19 @@ class DuckDBStreamEngine:
             """
         )
 
+    @staticmethod
+    def from_source(
+        source: Any,
+        *,
+        connection: DuckDBConnection | None = None,
+    ) -> Any:
+        """Start an immutable lazy pipeline from any relation-source adapter."""
+        from .stream import DuckDBPipeline, DuckDBRelationSource
+
+        if not isinstance(source, DuckDBRelationSource):
+            raise TypeError("source must implement relation(connection=...)")
+        return DuckDBPipeline(source, connection=connection)
+
 
 _CGROUP_ROOT = Path("/sys/fs/cgroup")
 
