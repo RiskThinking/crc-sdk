@@ -90,7 +90,7 @@ def test_scan_returns_raw_pixel_rows(tmp_path: Path, sample_array: np.ndarray) -
     path = _write_geotiff(tmp_path / "sample.tif", sample_array, nodata=-9999.0)
     raster = GeoTiffRaster.open(path, work_dir=tmp_path / "work")
     try:
-        relation = raster.scan().relation()
+        relation = raster.scan().pipeline().select("*").relation()
         rows = relation.fetchall()
         # nodata pixel (-9999.0) is always excluded, every other pixel kept.
         assert len(rows) == sample_array.size - 1
@@ -109,7 +109,7 @@ def test_scan_h3_reduces_to_max_per_cell(
     try:
         # Coarse enough that the whole 4x4 grid falls into very few cells.
         scan = raster.scan_h3(h3_resolution=2, reduce="max")
-        rows = scan.relation().fetchall()
+        rows = scan.pipeline().select("*").relation().fetchall()
         assert rows
         assert max(value for _, value in rows) == pytest.approx(40.0, abs=0.01)
         assert all(value > -9999.0 for _, value in rows)
@@ -187,9 +187,7 @@ def test_scan_h3_explicit_resolution_respects_max_subsample_cap(
         seen_counts.append(count)
         return _real_subsample_offsets(count)
 
-    monkeypatch.setattr(
-        "crc_sdk.connectors.duckdb.geotiff.subsample_offsets", spy
-    )
+    monkeypatch.setattr("crc_sdk.connectors.duckdb.geotiff.subsample_offsets", spy)
     try:
         # H3 resolution 15 on this fixture's ~1113m pixels would need
         # thousands of subsample points per axis to guarantee coverage;

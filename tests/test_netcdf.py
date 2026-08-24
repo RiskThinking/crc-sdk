@@ -91,7 +91,7 @@ def test_scan_returns_raw_pixel_rows(tmp_path: Path, sample_array: np.ndarray) -
     path = _write_netcdf(tmp_path / "sample.nc", sample_array)
     raster = NetCDFRaster.open(path, variable="sminx", work_dir=tmp_path / "work")
     try:
-        rows = raster.scan().relation().fetchall()
+        rows = raster.scan().pipeline().select("*").relation().fetchall()
         # The fill-value pixel is always excluded, every other pixel kept.
         assert len(rows) == sample_array.size - 1
         values = {round(value, 3) for _, _, value in rows}
@@ -107,7 +107,9 @@ def test_scan_h3_reduces_to_max_per_cell(
     path = _write_netcdf(tmp_path / "sample.nc", sample_array)
     raster = NetCDFRaster.open(path, variable="sminx", work_dir=tmp_path / "work")
     try:
-        rows = raster.scan_h3(h3_resolution=4).relation().fetchall()
+        rows = (
+            raster.scan_h3(h3_resolution=4).pipeline().select("*").relation().fetchall()
+        )
         assert rows
         assert max(value for _, value in rows) == pytest.approx(40.0)
     finally:

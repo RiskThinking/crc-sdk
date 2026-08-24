@@ -227,17 +227,27 @@ class OSClimateProvider:
                 "OS-Climate access requires `pip install crc-sdk[zarr]`"
             ) from error
 
-        if self._filesystem is None:
-            options = {"anon": True, **self.storage_options}
-            self._filesystem = s3fs.S3FileSystem(**options)
         path = selection.path
         if selection.resource.store_netcdf_coords:
             path = f"{path}/indicator"
-        store = s3fs.S3Map(
-            root=f"{self.bucket}/{self.root}/{path}",
-            s3=self._filesystem,
-            check=False,
-        )
+        root = f"{self.bucket}/{self.root}/{path}"
+        options = {"anon": True, **self.storage_options}
+        if hasattr(zarr.storage, "FsspecStore"):
+            # Zarr 3 accepts its asynchronous FsspecStore rather than the
+            # MutableMapping-based S3Map used by Zarr 2.
+            store = zarr.storage.FsspecStore.from_url(
+                f"s3://{root}",
+                storage_options=options,
+                read_only=True,
+            )
+        else:
+            if self._filesystem is None:
+                self._filesystem = s3fs.S3FileSystem(**options)
+            store = s3fs.S3Map(
+                root=root,
+                s3=self._filesystem,
+                check=False,
+            )
         array = zarr.open_array(store=store, mode="r")
         resource = selection.resource
         return ZarrRaster(
