@@ -27,6 +27,11 @@ dependencies = [
     "gcsfs>=2024",
 ]
 
+[project.urls]
+Homepage = "https://github.com/RiskThinking/crc-sdk"
+Repository = "https://github.com/RiskThinking/crc-sdk"
+Issues = "https://github.com/RiskThinking/crc-sdk/issues"
+
 [project.optional-dependencies]
 zarr = [
     "zarr>=2.18,<4",
