@@ -1,7 +1,7 @@
 from typing import Optional
 
 import pytest
-from crc_framework import FittedDistribution, HurdleDistribution
+from crc_framework import FittedDistribution, HurdleDistribution, TabulatedDistribution
 from pydantic import ValidationError
 
 from crc_sdk.types import (
@@ -118,6 +118,19 @@ def test_hurdle_curve_round_trip_uses_public_framework_api() -> None:
     assert distribution.atom_probability == 0.6
     assert distribution.base.family == "gumbel_r"
     assert distribution.ppf(0.5) == 0.0
+
+
+def test_tabulated_curve_parameters_reconstruct_distribution() -> None:
+    parameters = CurveParameters(
+        curve_kind="tabulated",
+        curve_type="linear_probability",
+        curve_probabilities=(0.1, 0.5, 0.9),
+        curve_values=(0.0, 1.0, 3.0),
+    )
+
+    distribution = parameters.to_distribution()
+    assert isinstance(distribution, TabulatedDistribution)
+    assert distribution.ppf(0.7) == pytest.approx(2.0)
 
 
 def test_curve_kind_controls_atom_fields() -> None:

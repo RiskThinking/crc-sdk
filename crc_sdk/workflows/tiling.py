@@ -245,9 +245,7 @@ def run_tiled_canonicalization(
         provider_kwargs=kwargs,
         validate_max_workers=1,
     )
-    with ProcessPoolExecutor(
-        max_workers=workers, mp_context=_MP_CONTEXT
-    ) as executor:
+    with ProcessPoolExecutor(max_workers=workers, mp_context=_MP_CONTEXT) as executor:
         parallel = executor.map(parallel_tile, tiles, shard_paths)
         return tuple(path for path in parallel if path is not None)
 
@@ -258,7 +256,7 @@ def curve_quantiles_at(
     *,
     max_workers: int | None = None,
     chunk_rows: int = 20_000,
-) -> list[float]:
+) -> list[float | None]:
     """Reconstruct each canonical row's curve and evaluate one quantile.
 
     Curve reconstruction is Pydantic validation plus a per-row Rust call, the

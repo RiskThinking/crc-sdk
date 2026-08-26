@@ -6,6 +6,7 @@ from .hazard_field import (
     HAZARD_ROW_KEY,
     HAZARD_SORT_ORDER,
     HazardField,
+    hazard_fields_for_version,
 )
 
 __all__ = [
@@ -14,4 +15,5 @@ __all__ = [
     "HAZARD_ROW_KEY",
     "HAZARD_SORT_ORDER",
     "HazardField",
+    "hazard_fields_for_version",
 ]

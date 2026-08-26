@@ -18,10 +18,11 @@ from crc_framework.distributions import (
     FittedDistribution,
     HurdleDistribution,
     PointMassDistribution,
+    TabulatedDistribution,
 )
 
 from crc_sdk.connectors.duckdb import detected_cpu_count
-from crc_sdk.types import CurveParameters
+from crc_sdk.types import CurveParameters, NoDataCurveError
 
 CURVE_COLUMNS = (
     "curve_kind",
@@ -31,12 +32,15 @@ CURVE_COLUMNS = (
     "curve_scale",
     "curve_atom_probability",
     "curve_atom_location",
+    "curve_probabilities",
+    "curve_values",
 )
 
 CurveDistribution = Union[
     FittedDistribution,
     HurdleDistribution,
     PointMassDistribution,
+    TabulatedDistribution,
 ]
 _MP_CONTEXT = multiprocessing.get_context("spawn")
 
@@ -79,7 +83,12 @@ def _python_value(value: Any) -> Any:
 def curve_parameters_from_row(row: Mapping[str, Any]) -> CurveParameters:
     """Reconstruct validated curve parameters from one canonical row mapping."""
     try:
-        values = {name: _python_value(row[name]) for name in CURVE_COLUMNS}
+        values = {
+            name: _python_value(row.get(name))
+            if name in {"curve_probabilities", "curve_values"}
+            else _python_value(row[name])
+            for name in CURVE_COLUMNS
+        }
     except KeyError as error:
         raise ValueError(
             f"canonical row is missing curve column {error.args[0]!r}"
@@ -179,12 +188,18 @@ def _curve_quantiles(
     *,
     impact: Any | None = None,
     context_columns: Mapping[str, str] | None = None,
-) -> list[tuple[float, ...]]:
-    results = []
+) -> list[tuple[float | None, ...]]:
+    results: list[tuple[float | None, ...]] = []
     for row in records:
-        values = (
-            curve_parameters_from_row(row).to_distribution().quantiles(probabilities)
-        )
+        try:
+            values = (
+                curve_parameters_from_row(row)
+                .to_distribution()
+                .quantiles(probabilities)
+            )
+        except NoDataCurveError:
+            results.append(tuple(None for _ in probabilities))
+            continue
         if impact is not None:
             base_context = getattr(impact.function, "context", None)
             if not isinstance(base_context, TransformContext):
@@ -229,7 +244,7 @@ def _evaluate_in_chunks(
     *,
     impact: Any | None = None,
     context_columns: Mapping[str, str] | None = None,
-) -> list[tuple[float, ...]]:
+) -> list[tuple[float | None, ...]]:
     if not records or executor is None or len(records) <= chunk_rows:
         return _curve_quantiles(
             records,
@@ -259,7 +274,7 @@ def curve_quantiles(
     *,
     max_workers: int | None = None,
     chunk_rows: int = 20_000,
-) -> list[tuple[float, ...]]:
+) -> list[tuple[float | None, ...]]:
     """Evaluate multiple non-exceedance probabilities for every curve row."""
     normalized = tuple(float(probability) for probability in probabilities)
     if not normalized:
@@ -334,7 +349,9 @@ def stream_curve_quantiles_wide_to_parquet(
             for batch in reader:
                 if batch.num_rows == 0:
                     continue
-                evaluation_columns = list(CURVE_COLUMNS)
+                evaluation_columns = [
+                    name for name in CURVE_COLUMNS if name in batch.schema.names
+                ]
                 if impact is not None:
                     for name in ("cell_index", *(context_columns or {}).values()):
                         if name not in evaluation_columns:

@@ -16,6 +16,8 @@ def test_hazard_schema_matches_initial_contract() -> None:
         "curve_scale",
         "curve_atom_probability",
         "curve_atom_location",
+        "curve_probabilities",
+        "curve_values",
     ]
     assert HAZARD_FIELDS[0].data_type == "uint64"
     assert HAZARD_FIELDS[2].nullable
