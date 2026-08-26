@@ -31,11 +31,16 @@ class CurveFitProvenance(BaseModel):
 
     method: Literal["quantile_least_squares"] = "quantile_least_squares"
     families: tuple[str, ...]
-    selection_metric: Literal["fixed_family"] = "fixed_family"
+    selection_metric: Literal["fixed_family", "first_acceptable"] = "fixed_family"
     weighting: Literal["uniform"] = "uniform"
     endpoint_policy: Literal["exclude_zero_and_one"] = "exclude_zero_and_one"
     atom_policy: Literal["none", "infer_min_plateau"]
-    constant_policy: Literal["point_mass"] = "point_mass"
+    constant_policy: Literal["point_mass", "eligibility_screen"] = "point_mass"
+    minimum_informative_value: Optional[float] = None
+    minimum_informative_knots: int = Field(default=0, ge=0)
+    minimum_distinct_informative_values: int = Field(default=0, ge=0)
+    degenerate_action: Literal["point_mass", "no_data"] = "point_mass"
+    parametric_failure_action: Literal["raise", "skip", "tabulated"] = "raise"
     maximum_normalized_rmse: Optional[float] = None
     maximum_absolute_residual: Optional[float] = None
     on_fit_failure: Literal["raise", "skip"]
@@ -46,7 +51,7 @@ class HazardDatasetMetadata(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    schema_version: Literal["1.0", "1.1"] = "1.1"
+    schema_version: Literal["1.0", "1.1", "1.2"] = "1.2"
     h3_resolution: int = Field(ge=0, le=15)
     probability_convention: Literal["non_exceedance"] = "non_exceedance"
     return_period_tail: Literal["upper", "lower"] = "upper"

@@ -19,7 +19,12 @@ from crc_sdk.connectors.duckdb import (
     default_work_dir,
     detected_cpu_count,
 )
-from crc_sdk.schema import HAZARD_FIELDS, HAZARD_ROW_KEY, HAZARD_SORT_ORDER
+from crc_sdk.schema import (
+    HAZARD_FIELDS,
+    HAZARD_ROW_KEY,
+    HAZARD_SORT_ORDER,
+    hazard_fields_for_version,
+)
 from crc_sdk.types import (
     PARQUET_METADATA_KEY,
     CurveParameters,
@@ -38,11 +43,17 @@ def hazard_arrow_schema(
         "string": pa.string(),
         "int32": pa.int32(),
         "float64": pa.float64(),
+        "list_float64": pa.list_(pa.float64()),
     }
+    fields = (
+        HAZARD_FIELDS
+        if metadata is None
+        else hazard_fields_for_version(metadata.schema_version)
+    )
     schema = pa.schema(
         [
             pa.field(field.name, types[field.data_type], nullable=field.nullable)
-            for field in HAZARD_FIELDS
+            for field in fields
         ]
     )
     if metadata is not None:
@@ -70,6 +81,8 @@ _CURVE_COLUMNS = (
     "curve_scale",
     "curve_atom_probability",
     "curve_atom_location",
+    "curve_probabilities",
+    "curve_values",
 )
 
 
@@ -83,6 +96,8 @@ def _validate_curves(records: Sequence[Mapping[str, Any]]) -> None:
             curve_scale=row["curve_scale"],
             curve_atom_probability=row["curve_atom_probability"],
             curve_atom_location=row["curve_atom_location"],
+            curve_probabilities=row.get("curve_probabilities"),
+            curve_values=row.get("curve_values"),
         )
 
 
@@ -107,7 +122,12 @@ def validate_hazard_table(
     """
     table = _as_table(value)
     expected = hazard_arrow_schema(metadata)
-    expected_names = [field.name for field in HAZARD_FIELDS]
+    fields = (
+        HAZARD_FIELDS
+        if metadata is None
+        else hazard_fields_for_version(metadata.schema_version)
+    )
+    expected_names = [field.name for field in fields]
     if table.column_names != expected_names:
         raise ValueError(f"canonical hazard columns must be exactly {expected_names!r}")
     try:
@@ -117,7 +137,7 @@ def validate_hazard_table(
             f"canonical hazard column types are invalid: {error}"
         ) from error
 
-    for field in HAZARD_FIELDS:
+    for field in fields:
         if not field.nullable and table[field.name].null_count:
             raise ValueError(f"{field.name} must not contain null values")
 
@@ -135,8 +155,18 @@ def validate_hazard_table(
     if metadata is not None and metadata.schema_version == "1.0":
         if pc.any(pc.equal(table["curve_kind"], "point_mass")).as_py():
             raise ValueError("point-mass curves require canonical schema 1.1")
+    if metadata is not None and metadata.schema_version in {"1.0", "1.1"}:
+        modern = pc.is_in(
+            table["curve_kind"], value_set=pa.array(["tabulated", "no_data"])
+        )
+        if pc.any(modern).as_py():
+            raise ValueError(
+                "tabulated and no-data curves require canonical schema 1.2"
+            )
 
-    curve_table = table.select(_CURVE_COLUMNS)
+    curve_table = table.select(
+        [name for name in _CURVE_COLUMNS if name in table.column_names]
+    )
     records = curve_table.to_pylist()
     workers = max_workers or detected_cpu_count()
     if records:
@@ -354,7 +384,7 @@ def read_hazard_metadata(source: str | Path) -> HazardDatasetMetadata:
     """Read the complete canonical payload from Parquet key-value metadata."""
     parquet_schema = pq.read_schema(source)
     embedded = HazardDatasetMetadata.from_parquet_metadata(parquet_schema.metadata)
-    expected = hazard_arrow_schema()
+    expected = hazard_arrow_schema(embedded)
     if parquet_schema.names != expected.names or any(
         actual.type != wanted.type for actual, wanted in zip(parquet_schema, expected)
     ):

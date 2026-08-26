@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 
-CANONICAL_HAZARD_SCHEMA_VERSION = "1.1"
+CANONICAL_HAZARD_SCHEMA_VERSION = "1.2"
 
 
 @dataclass(frozen=True)
@@ -24,11 +24,34 @@ HAZARD_FIELDS: tuple[HazardField, ...] = (
     HazardField("curve_kind", "string"),
     HazardField("curve_type", "string"),
     HazardField("curve_shape", "float64", nullable=True),
-    HazardField("curve_location", "float64"),
-    HazardField("curve_scale", "float64"),
+    HazardField("curve_location", "float64", nullable=True),
+    HazardField("curve_scale", "float64", nullable=True),
     HazardField("curve_atom_probability", "float64", nullable=True),
     HazardField("curve_atom_location", "float64", nullable=True),
+    HazardField("curve_probabilities", "list_float64", nullable=True),
+    HazardField("curve_values", "list_float64", nullable=True),
 )
+
+
+def hazard_fields_for_version(schema_version: str) -> tuple[HazardField, ...]:
+    """Return the physical fields used by a canonical schema version."""
+    if schema_version not in {"1.0", "1.1", "1.2"}:
+        raise ValueError(f"unsupported canonical schema version: {schema_version}")
+    if schema_version == "1.2":
+        return HAZARD_FIELDS
+    return tuple(
+        HazardField(
+            field.name,
+            field.data_type,
+            nullable=(
+                False
+                if field.name in {"curve_location", "curve_scale"}
+                else field.nullable
+            ),
+        )
+        for field in HAZARD_FIELDS
+        if field.name not in {"curve_probabilities", "curve_values"}
+    )
 
 HAZARD_ROW_KEY = (
     "hazard_name",

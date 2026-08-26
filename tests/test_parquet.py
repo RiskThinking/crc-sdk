@@ -134,7 +134,10 @@ def test_validation_rejects_duplicate_row_keys() -> None:
 
 
 def test_schema_1_0_rejects_point_mass_rows() -> None:
+    metadata = _metadata().model_copy(update={"schema_version": "1.0"})
     rows = _table().slice(0, 1).to_pylist()
+    rows[0].pop("curve_probabilities")
+    rows[0].pop("curve_values")
     rows[0].update(
         curve_kind="point_mass",
         curve_type="point_mass",
@@ -144,11 +147,25 @@ def test_schema_1_0_rejects_point_mass_rows() -> None:
         curve_atom_probability=1.0,
         curve_atom_location=0.0,
     )
-    table = pa.Table.from_pylist(rows, schema=hazard_arrow_schema())
-    metadata = _metadata().model_copy(update={"schema_version": "1.0"})
+    table = pa.Table.from_pylist(rows, schema=hazard_arrow_schema(metadata))
 
     with pytest.raises(ValueError, match="require canonical schema 1.1"):
         validate_hazard_table(table, metadata=metadata)
+
+
+def test_schema_1_1_round_trip_remains_readable(tmp_path: Path) -> None:
+    metadata = _metadata().model_copy(update={"schema_version": "1.1"})
+    rows = _table().to_pylist()
+    for row in rows:
+        row.pop("curve_probabilities")
+        row.pop("curve_values")
+    table = pa.Table.from_pylist(rows, schema=hazard_arrow_schema(metadata))
+    destination = tmp_path / "schema-1.1.parquet"
+
+    write_hazard_dataset(table, destination, metadata)
+
+    assert read_hazard_metadata(destination) == metadata
+    assert read_hazard_dataset(destination).column_names == table.column_names
 
 
 def test_stream_writer_rejects_duplicate_keys_across_batches(tmp_path: Path) -> None:

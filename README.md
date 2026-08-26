@@ -205,15 +205,24 @@ financial exposure.
 The SDK internalizes fitted hazards as one versioned Arrow/Parquet contract.
 Rows contain a canonical unsigned H3 `cell_index`, stable `source_id`, optional
 source WKB, scenario dimensions, and the parameters needed to reconstruct a
-`crc_framework.FittedDistribution`, `HurdleDistribution`, or
-`PointMassDistribution`.
+`crc_framework.FittedDistribution`, `HurdleDistribution`,
+`PointMassDistribution`, or compact `TabulatedDistribution`.
 `curve_shape` is nullable because Gumbel families do not use a shape parameter;
 atom probability and location are populated for hurdle and point-mass rows.
-Schema 1.1 also supports `curve_kind="point_mass"` for a distribution that is
+Schema 1.1 added `curve_kind="point_mass"` for a distribution that is
 constant at every probability. It uses the same physical columns, with
 `curve_type="point_mass"`, zero scale, and probability one at
 `curve_location`; downstream quantile calls remain identical to fitted and
 hurdle curves.
+
+Schema 1.2 adds two nullable list columns, `curve_probabilities` and
+`curve_values`. They are populated only for `curve_kind="tabulated"`, with
+`curve_type="linear_probability"`; scalar curve parameters are null. It also
+supports `curve_kind="no_data"`, whose `curve_type` is an explicit scientific
+reason code and whose parameter fields are all null. Batch quantile evaluation
+returns nulls for those rows. This tagged-union layout avoids redundant status,
+fit-stage, interpolation, and reason columns: dataset metadata and run
+manifests carry ordered-family and aggregate treatment provenance once.
 
 The logical row key is
 `(hazard_name, horizon, pathway, cell_index, source_id)`. `cell_index` is the

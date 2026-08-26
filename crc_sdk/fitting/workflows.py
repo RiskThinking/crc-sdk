@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter, defaultdict
 from collections.abc import Iterable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -43,7 +44,13 @@ class CDFCurveFitPolicy:
     creation_version: str
     source: SourceProvenance
     source_id: str
+    fallback_families: tuple[DistributionFamily, ...] = ()
     atom_policy: Literal["none", "infer_min_plateau"] = "infer_min_plateau"
+    minimum_informative_value: float | None = None
+    minimum_informative_knots: int = 0
+    minimum_distinct_informative_values: int = 0
+    degenerate_action: Literal["point_mass", "no_data"] = "point_mass"
+    parametric_failure_action: Literal["raise", "skip", "tabulated"] = "raise"
     maximum_normalized_rmse: float | None = None
     maximum_absolute_residual: float | None = None
     on_fit_failure: Literal["raise", "skip"] = "raise"
@@ -56,16 +63,40 @@ class CDFCurveFitPolicy:
             raise ValueError("unknown atom policy")
         if self.on_fit_failure not in ("raise", "skip"):
             raise ValueError("on_fit_failure must be 'raise' or 'skip'")
+        if self.parametric_failure_action not in ("raise", "skip", "tabulated"):
+            raise ValueError("unknown parametric failure action")
+        if self.degenerate_action not in ("point_mass", "no_data"):
+            raise ValueError("unknown degenerate action")
+        if self.family in self.fallback_families:
+            raise ValueError("fallback families must not repeat the primary family")
+        if len(set(self.fallback_families)) != len(self.fallback_families):
+            raise ValueError("fallback families must be unique")
         if not self.source_id:
             raise ValueError("source_id must be non-empty")
         if self.max_workers is not None and self.max_workers < 1:
             raise ValueError("max_workers must be positive")
         for name, value in (
+            ("minimum_informative_value", self.minimum_informative_value),
             ("maximum_normalized_rmse", self.maximum_normalized_rmse),
             ("maximum_absolute_residual", self.maximum_absolute_residual),
         ):
-            if value is not None and (not np.isfinite(value) or value < 0.0):
+            if value is not None and not np.isfinite(value):
+                raise ValueError(f"{name} must be finite")
+            if (
+                name != "minimum_informative_value"
+                and value is not None
+                and value < 0.0
+            ):
                 raise ValueError(f"{name} must be finite and non-negative")
+        if self.minimum_informative_knots < 0:
+            raise ValueError("minimum_informative_knots must be non-negative")
+        if self.minimum_distinct_informative_values < 0:
+            raise ValueError("minimum_distinct_informative_values must be non-negative")
+
+    @property
+    def families(self) -> tuple[DistributionFamily, ...]:
+        """Ordered parametric families attempted for each eligible row."""
+        return (self.family, *self.fallback_families)
 
 
 @dataclass
@@ -73,11 +104,23 @@ class CDFFitSummary:
     """Counters populated as a one-shot fitted stream is consumed."""
 
     source_rows: int = 0
-    fitted_rows: int = 0
+    canonical_rows: int = 0
+    parametric_rows: int = 0
     hurdle_rows: int = 0
     point_mass_rows: int = 0
+    tabulated_rows: int = 0
+    no_data_rows: int = 0
     skipped_rows: int = 0
-    failure_examples: list[dict[str, Any]] = field(default_factory=list)
+    family_attempts: Counter[str] = field(default_factory=Counter)
+    family_successes: Counter[str] = field(default_factory=Counter)
+    family_failure_reasons: dict[str, Counter[str]] = field(
+        default_factory=lambda: defaultdict(Counter)
+    )
+    no_data_reasons: Counter[str] = field(default_factory=Counter)
+    treatment_counts: Counter[str] = field(default_factory=Counter)
+    examples: dict[str, list[dict[str, Any]]] = field(
+        default_factory=lambda: defaultdict(list)
+    )
 
 
 @dataclass(frozen=True)
@@ -135,6 +178,98 @@ def _quality_error(diagnostics: Any, policy: CDFCurveFitPolicy) -> str | None:
     return None
 
 
+def _empty_curve(curve_kind: str, curve_type: str) -> dict[str, Any]:
+    return {
+        "curve_kind": curve_kind,
+        "curve_type": curve_type,
+        "curve_shape": None,
+        "curve_location": None,
+        "curve_scale": None,
+        "curve_atom_probability": None,
+        "curve_atom_location": None,
+        "curve_probabilities": None,
+        "curve_values": None,
+    }
+
+
+def _no_data(reason: str) -> dict[str, Any]:
+    curve = _empty_curve("no_data", reason)
+    curve["_treatment"] = f"no_data:{reason}"
+    return curve
+
+
+def _compact_tabulated(
+    probabilities: np.ndarray[Any, Any], values: np.ndarray[Any, Any]
+) -> dict[str, Any]:
+    """Remove only redundant plateau interiors from a quantile function."""
+    starts = np.concatenate(([True], values[1:] != values[:-1]))
+    ends = np.concatenate((values[:-1] != values[1:], [True]))
+    keep = starts | ends
+    curve = _empty_curve("tabulated", "linear_probability")
+    curve["curve_probabilities"] = probabilities[keep].tolist()
+    curve["curve_values"] = values[keep].tolist()
+    curve["_treatment"] = "tabulated_fallback"
+    return curve
+
+
+def _fit_family(
+    probabilities: np.ndarray[Any, Any],
+    values: np.ndarray[Any, Any],
+    plateau_count: int,
+    family: DistributionFamily,
+    policy: CDFCurveFitPolicy,
+) -> dict[str, Any]:
+    distribution: Any
+    diagnostics: Any
+    if policy.atom_policy == "infer_min_plateau" and plateau_count >= 2:
+        hurdle_result = fit_hurdle_quantiles(
+            probabilities.tolist(),
+            values.tolist(),
+            family=family,
+            atom_probability=float(probabilities[plateau_count - 1]),
+            atom_location=float(values[0]),
+        )
+        distribution = hurdle_result.distribution
+        diagnostics = hurdle_result.diagnostics.tail
+    else:
+        quantile_result = fit_quantiles(
+            probabilities.tolist(),
+            values.tolist(),
+            family=family,
+        )
+        distribution = quantile_result.distribution
+        diagnostics = quantile_result.diagnostics
+    quality_error = _quality_error(diagnostics, policy)
+    if quality_error is not None:
+        raise ValueError(quality_error)
+    base = (
+        distribution.base
+        if isinstance(distribution, HurdleDistribution)
+        else distribution
+    )
+    curve = _empty_curve(
+        "hurdle" if isinstance(distribution, HurdleDistribution) else "fitted",
+        base.family,
+    )
+    curve.update(
+        curve_shape=base.shape,
+        curve_location=base.location,
+        curve_scale=base.scale,
+        curve_atom_probability=(
+            distribution.atom_probability
+            if isinstance(distribution, HurdleDistribution)
+            else None
+        ),
+        curve_atom_location=(
+            distribution.atom_location
+            if isinstance(distribution, HurdleDistribution)
+            else None
+        ),
+        _treatment=f"parametric:{family}",
+    )
+    return curve
+
+
 def _fit_parameters(
     probabilities: np.ndarray[Any, Any],
     raw_values: np.ndarray[Any, Any],
@@ -156,67 +291,54 @@ def _fit_parameters(
     if len(knot_values) < 4:
         raise ValueError("at least four interior probability knots are required")
 
+    if policy.minimum_informative_value is not None:
+        informative = knot_values[knot_values >= policy.minimum_informative_value]
+        if len(informative) == 0:
+            return _no_data("below_effective_resolution")
+    else:
+        informative = knot_values
+    if len(informative) < policy.minimum_informative_knots:
+        return _no_data("insufficient_informative_support")
+    if len(np.unique(informative)) < policy.minimum_distinct_informative_values:
+        return _no_data("degenerate_effective_range")
+
     if np.all(knot_values == knot_values[0]):
         location = float(knot_values[0])
-        return {
-            "curve_kind": "point_mass",
-            "curve_type": "point_mass",
-            "curve_shape": None,
-            "curve_location": location,
-            "curve_scale": 0.0,
-            "curve_atom_probability": 1.0,
-            "curve_atom_location": location,
-        }
+        if policy.degenerate_action == "no_data":
+            return _no_data("degenerate_effective_range")
+        curve = _empty_curve("point_mass", "point_mass")
+        curve.update(
+            curve_location=location,
+            curve_scale=0.0,
+            curve_atom_probability=1.0,
+            curve_atom_location=location,
+            _treatment="point_mass",
+        )
+        return curve
 
     plateau_count = int(np.searchsorted(knot_values, knot_values[0], side="right"))
-    distribution: Any
-    diagnostics: Any
-    if policy.atom_policy == "infer_min_plateau" and plateau_count >= 2:
-        hurdle_result = fit_hurdle_quantiles(
-            knot_probabilities.tolist(),
-            knot_values.tolist(),
-            family=policy.family,
-            atom_probability=float(knot_probabilities[plateau_count - 1]),
-            atom_location=float(knot_values[0]),
-        )
-        distribution = hurdle_result.distribution
-        diagnostics = hurdle_result.diagnostics.tail
-    else:
-        quantile_result = fit_quantiles(
-            knot_probabilities.tolist(),
-            knot_values.tolist(),
-            family=policy.family,
-        )
-        distribution = quantile_result.distribution
-        diagnostics = quantile_result.diagnostics
-
-    quality_error = _quality_error(diagnostics, policy)
-    if quality_error is not None:
-        raise ValueError(quality_error)
-    base = (
-        distribution.base
-        if isinstance(distribution, HurdleDistribution)
-        else distribution
-    )
-    return {
-        "curve_kind": (
-            "hurdle" if isinstance(distribution, HurdleDistribution) else "fitted"
-        ),
-        "curve_type": base.family,
-        "curve_shape": base.shape,
-        "curve_location": base.location,
-        "curve_scale": base.scale,
-        "curve_atom_probability": (
-            distribution.atom_probability
-            if isinstance(distribution, HurdleDistribution)
-            else None
-        ),
-        "curve_atom_location": (
-            distribution.atom_location
-            if isinstance(distribution, HurdleDistribution)
-            else None
-        ),
-    }
+    errors: list[tuple[str, str]] = []
+    for family in policy.families:
+        try:
+            curve = _fit_family(
+                knot_probabilities,
+                knot_values,
+                plateau_count,
+                family,
+                policy,
+            )
+            curve["_attempts"] = [name for name, _ in errors] + [family]
+            curve["_family_errors"] = errors
+            return curve
+        except ValueError as error:
+            errors.append((family, str(error)))
+    if policy.parametric_failure_action == "tabulated":
+        curve = _compact_tabulated(knot_probabilities, knot_values)
+        curve["_attempts"] = [name for name, _ in errors]
+        curve["_family_errors"] = errors
+        return curve
+    joined = "; ".join(f"{family}: {error}" for family, error in errors)
+    raise ValueError(f"all parametric families failed ({joined})")
 
 
 def _fit_or_error(
@@ -231,6 +353,20 @@ def _fit_or_error(
         return error
 
 
+def _family_failure_reason(message: str) -> str:
+    if "did not converge" in message:
+        return "optimizer_nonconvergence"
+    if "normalized RMSE" in message:
+        return "normalized_rmse_gate"
+    if "maximum absolute residual" in message:
+        return "absolute_residual_gate"
+    if "at least four" in message:
+        return "insufficient_fit_points"
+    if "non-zero range" in message:
+        return "zero_fit_range"
+    return "fit_error"
+
+
 def fit_cdf_quantile_batches(
     batches: Iterable[pa.RecordBatch] | pa.RecordBatchReader | pa.Table,
     probabilities: Sequence[float],
@@ -238,7 +374,7 @@ def fit_cdf_quantile_batches(
     *,
     columns: CDFColumnSchema = CDFColumnSchema(),
 ) -> CDFFitResult:
-    """Lazily fit Arrow CDF rows into canonical schema-1.1 batches."""
+    """Lazily canonicalize Arrow CDF rows into schema-1.2 batches."""
     probability_array = np.asarray(probabilities, dtype=np.float64)
     if probability_array.ndim != 1 or len(probability_array) < 4:
         raise ValueError("probabilities must be a one-dimensional sequence")
@@ -253,7 +389,7 @@ def fit_cdf_quantile_batches(
         raise ValueError("at least four interior probabilities are required")
 
     metadata = HazardDatasetMetadata(
-        schema_version="1.1",
+        schema_version="1.2",
         h3_resolution=policy.h3_resolution,
         source_probability_support=(float(interior[0]), float(interior[-1])),
         value_unit=policy.value_unit,
@@ -261,8 +397,23 @@ def fit_cdf_quantile_batches(
         producer=policy.producer,
         source=policy.source,
         fitting=CurveFitProvenance(
-            families=(policy.family,),
+            families=policy.families,
+            selection_metric=(
+                "fixed_family" if len(policy.families) == 1 else "first_acceptable"
+            ),
             atom_policy=policy.atom_policy,
+            constant_policy=(
+                "eligibility_screen"
+                if policy.degenerate_action == "no_data"
+                else "point_mass"
+            ),
+            minimum_informative_value=policy.minimum_informative_value,
+            minimum_informative_knots=policy.minimum_informative_knots,
+            minimum_distinct_informative_values=(
+                policy.minimum_distinct_informative_values
+            ),
+            degenerate_action=policy.degenerate_action,
+            parametric_failure_action=policy.parametric_failure_action,
             maximum_normalized_rmse=policy.maximum_normalized_rmse,
             maximum_absolute_residual=policy.maximum_absolute_residual,
             on_fit_failure=policy.on_fit_failure,
@@ -324,8 +475,9 @@ def fit_cdf_quantile_batches(
                 for index, fitted_value in enumerate(fitted):
                     summary.source_rows += 1
                     if isinstance(fitted_value, ValueError):
-                        if len(summary.failure_examples) < 100:
-                            summary.failure_examples.append(
+                        treatment = "invalid_or_unhandled"
+                        if len(summary.examples[treatment]) < 3:
+                            summary.examples[treatment].append(
                                 {
                                     "cell_index": identities[columns.cell][index],
                                     "hazard_name": identities[columns.hazard][index],
@@ -336,16 +488,51 @@ def fit_cdf_quantile_batches(
                             )
                         if policy.on_fit_failure == "skip":
                             summary.skipped_rows += 1
+                            summary.treatment_counts["skipped"] += 1
                             continue
                         raise ValueError(
                             f"failed to fit CDF row {summary.source_rows - 1}: "
                             f"{fitted_value}"
                         ) from fitted_value
-                    curve = fitted_value
+                    curve = dict(fitted_value)
+                    treatment = str(curve.pop("_treatment"))
+                    attempts = list(curve.pop("_attempts", []))
+                    family_errors = list(curve.pop("_family_errors", []))
                     kind = curve["curve_kind"]
-                    summary.fitted_rows += 1
+                    summary.canonical_rows += 1
+                    summary.treatment_counts[treatment] += 1
+                    for family in attempts:
+                        summary.family_attempts[family] += 1
+                    for family, message in family_errors:
+                        summary.family_failure_reasons[family][
+                            _family_failure_reason(message)
+                        ] += 1
+                    if kind in {"fitted", "hurdle"}:
+                        summary.parametric_rows += 1
+                        summary.family_successes[str(curve["curve_type"])] += 1
                     summary.hurdle_rows += int(kind == "hurdle")
                     summary.point_mass_rows += int(kind == "point_mass")
+                    summary.tabulated_rows += int(kind == "tabulated")
+                    summary.no_data_rows += int(kind == "no_data")
+                    if kind == "no_data":
+                        summary.no_data_reasons[str(curve["curve_type"])] += 1
+                    if (
+                        kind in {"no_data", "tabulated"}
+                        and len(summary.examples[treatment]) < 3
+                    ):
+                        example = {
+                            "cell_index": identities[columns.cell][index],
+                            "hazard_name": identities[columns.hazard][index],
+                            "horizon": identities[columns.horizon][index],
+                            "pathway": identities[columns.pathway][index],
+                            "curve_kind": kind,
+                            "curve_type": curve["curve_type"],
+                        }
+                        if family_errors:
+                            example["failed_families"] = [
+                                family for family, _ in family_errors
+                            ]
+                        summary.examples[treatment].append(example)
                     output_rows.append(
                         {
                             "cell_index": identities[columns.cell][index],
