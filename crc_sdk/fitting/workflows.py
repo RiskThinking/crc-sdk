@@ -49,7 +49,6 @@ class CDFCurveFitPolicy:
     minimum_informative_value: float | None = None
     minimum_informative_knots: int = 0
     minimum_distinct_informative_values: int = 0
-    degenerate_action: Literal["point_mass", "no_data"] = "point_mass"
     parametric_failure_action: Literal["raise", "skip", "tabulated"] = "raise"
     maximum_normalized_rmse: float | None = None
     maximum_absolute_residual: float | None = None
@@ -65,8 +64,6 @@ class CDFCurveFitPolicy:
             raise ValueError("on_fit_failure must be 'raise' or 'skip'")
         if self.parametric_failure_action not in ("raise", "skip", "tabulated"):
             raise ValueError("unknown parametric failure action")
-        if self.degenerate_action not in ("point_mass", "no_data"):
-            raise ValueError("unknown degenerate action")
         if self.family in self.fallback_families:
             raise ValueError("fallback families must not repeat the primary family")
         if len(set(self.fallback_families)) != len(self.fallback_families):
@@ -127,6 +124,15 @@ class CDFFitSummary:
 class CDFFitResult:
     stream: CanonicalHazardStream
     summary: CDFFitSummary
+
+
+class _ParametricFitSkipped(ValueError):
+    """Internal signal carrying failed-family diagnostics for a skipped row."""
+
+    def __init__(self, errors: Sequence[tuple[str, str]]) -> None:
+        self.family_errors = tuple(errors)
+        joined = "; ".join(f"{family}: {error}" for family, error in errors)
+        super().__init__(f"all parametric families failed ({joined})")
 
 
 def _record_batches(values: Any) -> Iterator[pa.RecordBatch]:
@@ -285,6 +291,21 @@ def _fit_parameters(
     if np.any(np.diff(values) < 0.0):
         raise ValueError("CDF quantiles must be non-decreasing")
 
+    # Point-mass identity is mathematical, not a fit-quality decision. Check
+    # the complete source support (including probabilities zero and one)
+    # before applying scientific eligibility screens to the interior knots.
+    if np.all(values == values[0]):
+        location = float(values[0])
+        curve = _empty_curve("point_mass", "point_mass")
+        curve.update(
+            curve_location=location,
+            curve_scale=0.0,
+            curve_atom_probability=1.0,
+            curve_atom_location=location,
+            _treatment="point_mass",
+        )
+        return curve
+
     active = (probabilities > 0.0) & (probabilities < 1.0)
     knot_probabilities = probabilities[active]
     knot_values = values[active]
@@ -301,20 +322,6 @@ def _fit_parameters(
         return _no_data("insufficient_informative_support")
     if len(np.unique(informative)) < policy.minimum_distinct_informative_values:
         return _no_data("degenerate_effective_range")
-
-    if np.all(knot_values == knot_values[0]):
-        location = float(knot_values[0])
-        if policy.degenerate_action == "no_data":
-            return _no_data("degenerate_effective_range")
-        curve = _empty_curve("point_mass", "point_mass")
-        curve.update(
-            curve_location=location,
-            curve_scale=0.0,
-            curve_atom_probability=1.0,
-            curve_atom_location=location,
-            _treatment="point_mass",
-        )
-        return curve
 
     plateau_count = int(np.searchsorted(knot_values, knot_values[0], side="right"))
     errors: list[tuple[str, str]] = []
@@ -337,6 +344,8 @@ def _fit_parameters(
         curve["_attempts"] = [name for name, _ in errors]
         curve["_family_errors"] = errors
         return curve
+    if policy.parametric_failure_action == "skip":
+        raise _ParametricFitSkipped(errors)
     joined = "; ".join(f"{family}: {error}" for family, error in errors)
     raise ValueError(f"all parametric families failed ({joined})")
 
@@ -402,17 +411,12 @@ def fit_cdf_quantile_batches(
                 "fixed_family" if len(policy.families) == 1 else "first_acceptable"
             ),
             atom_policy=policy.atom_policy,
-            constant_policy=(
-                "eligibility_screen"
-                if policy.degenerate_action == "no_data"
-                else "point_mass"
-            ),
+            constant_policy="point_mass",
             minimum_informative_value=policy.minimum_informative_value,
             minimum_informative_knots=policy.minimum_informative_knots,
             minimum_distinct_informative_values=(
                 policy.minimum_distinct_informative_values
             ),
-            degenerate_action=policy.degenerate_action,
             parametric_failure_action=policy.parametric_failure_action,
             maximum_normalized_rmse=policy.maximum_normalized_rmse,
             maximum_absolute_residual=policy.maximum_absolute_residual,
@@ -474,6 +478,30 @@ def fit_cdf_quantile_batches(
                 output_rows: list[dict[str, Any]] = []
                 for index, fitted_value in enumerate(fitted):
                     summary.source_rows += 1
+                    if isinstance(fitted_value, _ParametricFitSkipped):
+                        treatment = "skipped:parametric_failure"
+                        summary.skipped_rows += 1
+                        summary.treatment_counts[treatment] += 1
+                        for family, message in fitted_value.family_errors:
+                            summary.family_attempts[family] += 1
+                            summary.family_failure_reasons[family][
+                                _family_failure_reason(message)
+                            ] += 1
+                        if len(summary.examples[treatment]) < 3:
+                            summary.examples[treatment].append(
+                                {
+                                    "cell_index": identities[columns.cell][index],
+                                    "hazard_name": identities[columns.hazard][index],
+                                    "horizon": identities[columns.horizon][index],
+                                    "pathway": identities[columns.pathway][index],
+                                    "failed_families": [
+                                        family
+                                        for family, _ in fitted_value.family_errors
+                                    ],
+                                    "error": str(fitted_value),
+                                }
+                            )
+                        continue
                     if isinstance(fitted_value, ValueError):
                         treatment = "invalid_or_unhandled"
                         if len(summary.examples[treatment]) < 3:

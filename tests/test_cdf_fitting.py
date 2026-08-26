@@ -160,7 +160,10 @@ def test_unconverged_fit_is_rejected(
         result.stream.read_all()
 
 
-def test_scientific_eligibility_precedes_point_mass() -> None:
+@pytest.mark.parametrize("constant", [0.0, 2.0])
+def test_full_support_point_mass_precedes_scientific_eligibility(
+    constant: float,
+) -> None:
     probabilities = np.linspace(0.0, 1.0, 11)
     source = pa.table(
         {
@@ -169,7 +172,7 @@ def test_scientific_eligibility_precedes_point_mass() -> None:
             "year": pa.array([2025], type=pa.int32()),
             "pathway": ["ssp245"],
             "cdf_quantiles": pa.array(
-                [np.zeros(11).tolist()], type=pa.large_list(pa.float64())
+                [np.full(11, constant).tolist()], type=pa.large_list(pa.float64())
             ),
         }
     )
@@ -179,7 +182,38 @@ def test_scientific_eligibility_precedes_point_mass() -> None:
             "minimum_informative_value": 1.0,
             "minimum_informative_knots": 4,
             "minimum_distinct_informative_values": 2,
-            "degenerate_action": "no_data",
+        }
+    )
+
+    result = fit_cdf_quantile_batches(source, probabilities, policy)
+    table = result.stream.read_all()
+
+    assert table["curve_kind"].to_pylist() == ["point_mass"]
+    assert curve_quantiles(table, [0.5, 0.99], max_workers=1) == [(constant, constant)]
+    assert result.summary.point_mass_rows == 1
+
+
+def test_interior_constant_with_different_endpoint_is_not_point_mass() -> None:
+    probabilities = np.linspace(0.0, 1.0, 11)
+    values = np.zeros(11)
+    values[-1] = 1.0
+    source = pa.table(
+        {
+            "hex_id": pa.array([599024279241097215], type=pa.uint64()),
+            "index_name": ["heat_wave_frequency"],
+            "year": pa.array([2025], type=pa.int32()),
+            "pathway": ["ssp245"],
+            "cdf_quantiles": pa.array(
+                [values.tolist()], type=pa.large_list(pa.float64())
+            ),
+        }
+    )
+    policy = CDFCurveFitPolicy(
+        **{
+            **_policy().__dict__,
+            "minimum_informative_value": 1.0,
+            "minimum_informative_knots": 4,
+            "minimum_distinct_informative_values": 2,
         }
     )
 
@@ -188,8 +222,6 @@ def test_scientific_eligibility_precedes_point_mass() -> None:
 
     assert table["curve_kind"].to_pylist() == ["no_data"]
     assert table["curve_type"].to_pylist() == ["below_effective_resolution"]
-    assert curve_quantiles(table, [0.5, 0.99], max_workers=1) == [(None, None)]
-    assert result.summary.no_data_reasons == {"below_effective_resolution": 1}
 
 
 def test_secondary_family_is_used_after_primary_failure(
@@ -274,3 +306,43 @@ def test_all_family_failure_uses_compact_tabulated_fallback(
     assert isinstance(distribution, TabulatedDistribution)
     assert distribution.quantiles(probabilities[1:-1]).tolist() == values[1:-1]
     assert result.summary.tabulated_rows == 1
+
+
+def test_all_family_failure_skip_is_independent_of_on_fit_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    probabilities = np.linspace(0.0, 1.0, 11)
+    values = [0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0]
+    source = pa.table(
+        {
+            "hex_id": pa.array([599024279241097215], type=pa.uint64()),
+            "index_name": ["hazard"],
+            "year": pa.array([2025], type=pa.int32()),
+            "pathway": ["ssp245"],
+            "cdf_quantiles": pa.array([values], type=pa.large_list(pa.float64())),
+        }
+    )
+    monkeypatch.setattr(
+        "crc_sdk.fitting.workflows.fit_hurdle_quantiles",
+        lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("did not converge")),
+    )
+    policy = CDFCurveFitPolicy(
+        **{
+            **_policy().__dict__,
+            "fallback_families": ("genextreme",),
+            "parametric_failure_action": "skip",
+            "on_fit_failure": "raise",
+        }
+    )
+
+    result = fit_cdf_quantile_batches(source, probabilities, policy)
+
+    assert result.stream.read_all().num_rows == 0
+    assert result.summary.source_rows == 1
+    assert result.summary.skipped_rows == 1
+    assert result.summary.treatment_counts == {"skipped:parametric_failure": 1}
+    assert result.summary.family_attempts == {"gumbel_r": 1, "genextreme": 1}
+    assert result.summary.family_failure_reasons == {
+        "gumbel_r": {"optimizer_nonconvergence": 1},
+        "genextreme": {"optimizer_nonconvergence": 1},
+    }

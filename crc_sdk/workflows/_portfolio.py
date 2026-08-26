@@ -17,6 +17,7 @@ from crc_sdk.connectors.duckdb import (
 )
 from crc_sdk.connectors.parquet import read_hazard_metadata
 from crc_sdk.providers.local import LocalProvider
+from crc_sdk.schema import hazard_fields_for_version
 
 from .distributions import (
     CURVE_COLUMNS,
@@ -211,6 +212,10 @@ def evaluate_hazard_portfolio(
     periods = tuple(float(period) for period in return_periods)
     value_columns = return_period_value_columns(periods)
     metadata = read_hazard_metadata(provider.source)
+    version_columns = {
+        field.name for field in hazard_fields_for_version(metadata.schema_version)
+    }
+    curve_columns = tuple(name for name in CURVE_COLUMNS if name in version_columns)
     warn_if_extrapolated(periods, metadata.return_period_support, stacklevel=3)
     probabilities = return_periods_to_probabilities(
         return_periods,
@@ -345,7 +350,7 @@ def evaluate_hazard_portfolio(
             "h.pathway",
             "h.source_id",
             f"{spatial_match} AS spatial_match",
-            *(f"h.{name}" for name in CURVE_COLUMNS),
+            *(f"h.{name}" for name in curve_columns),
         ]
         candidate_extras = []
         if point_input:

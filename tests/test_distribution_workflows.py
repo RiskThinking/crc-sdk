@@ -342,6 +342,35 @@ def test_evaluate_cell_portfolio_writes_wide_scenario_rows(
     }
 
 
+@pytest.mark.parametrize("schema_version", ["1.0", "1.1"])
+def test_evaluate_portfolio_supports_legacy_canonical_schema(
+    tmp_path: Path,
+    schema_version: Literal["1.0", "1.1"],
+) -> None:
+    metadata = _metadata().model_copy(update={"schema_version": schema_version})
+    source = tmp_path / f"hazard-{schema_version}.parquet"
+    table = pa.Table.from_pylist([_row()], schema=hazard_arrow_schema(metadata))
+    write_hazard_dataset(table, source, metadata, max_workers=1)
+    assets = pa.table(
+        {
+            "asset_id": ["asset-a"],
+            "cell_index": pa.array([_row()["cell_index"]], type=pa.uint64()),
+        }
+    )
+    output = tmp_path / f"portfolio-{schema_version}.parquet"
+
+    result = (
+        HazardDataset.local(source)
+        .for_assets(assets)
+        .return_periods([100])
+        .write_parquet(output, execution=ExecutionOptions(max_workers=1))
+    )
+
+    expected = distribution_from_hazard_row(_row()).quantiles([0.99])[0]
+    assert result.row_count == 1
+    assert pq.read_table(output)["value_rp100"].to_pylist() == pytest.approx([expected])
+
+
 def test_portfolio_warns_when_flood_period_exceeds_source_support(
     tmp_path: Path,
 ) -> None:
