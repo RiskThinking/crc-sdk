@@ -210,7 +210,8 @@ source WKB, scenario dimensions, and the parameters needed to reconstruct a
 `curve_shape` is nullable because Gumbel families do not use a shape parameter;
 atom probability and location are populated for hurdle and point-mass rows.
 Schema 1.1 added `curve_kind="point_mass"` for a distribution that is
-constant at every probability. It uses the same physical columns, with
+constant across the complete source probability support. It uses the same
+physical columns, with
 `curve_type="point_mass"`, zero scale, and probability one at
 `curve_location`; downstream quantile calls remain identical to fitted and
 hurdle curves.
