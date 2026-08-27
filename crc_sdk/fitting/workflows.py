@@ -7,6 +7,7 @@ from collections.abc import Iterable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from functools import partial
+from time import perf_counter
 from typing import Any, Literal
 
 import numpy as np
@@ -16,7 +17,7 @@ from crc_framework.distributions import DistributionFamily, HurdleDistribution
 
 from crc_sdk.connectors.adapters import CanonicalHazardBatch, CanonicalHazardStream
 from crc_sdk.connectors.duckdb import detected_cpu_count
-from crc_sdk.connectors.parquet import hazard_arrow_schema, validate_hazard_table
+from crc_sdk.connectors.parquet import hazard_arrow_schema
 from crc_sdk.types import CurveFitProvenance, HazardDatasetMetadata, SourceProvenance
 
 
@@ -54,6 +55,7 @@ class CDFCurveFitPolicy:
     maximum_absolute_residual: float | None = None
     on_fit_failure: Literal["raise", "skip"] = "raise"
     max_workers: int | None = None
+    prefetch: bool = True
 
     def __post_init__(self) -> None:
         if not 0 <= self.h3_resolution <= 15:
@@ -108,6 +110,10 @@ class CDFFitSummary:
     tabulated_rows: int = 0
     no_data_rows: int = 0
     skipped_rows: int = 0
+    source_batches: int = 0
+    input_wait_seconds: float = 0.0
+    fit_and_canonicalize_seconds: float = 0.0
+    arrow_build_seconds: float = 0.0
     family_attempts: Counter[str] = field(default_factory=Counter)
     family_successes: Counter[str] = field(default_factory=Counter)
     family_failure_reasons: dict[str, Counter[str]] = field(
@@ -144,6 +150,24 @@ def _record_batches(values: Any) -> Iterator[pa.RecordBatch]:
         yield values
     else:
         yield from values
+
+
+def _prefetch_one(values: Iterable[Any]) -> Iterator[Any]:
+    """Pull one item ahead on a single thread with a strict one-item bound."""
+    iterator = iter(values)
+    sentinel = object()
+
+    def next_or_sentinel() -> Any:
+        return next(iterator, sentinel)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(next_or_sentinel)
+        while True:
+            item = future.result()
+            if item is sentinel:
+                break
+            future = executor.submit(next_or_sentinel)
+            yield item
 
 
 def _list_views(array: Any) -> Iterator[np.ndarray[Any, Any]]:
@@ -426,12 +450,23 @@ def fit_cdf_quantile_batches(
     )
     summary = CDFFitSummary()
 
-    def fitted_batches() -> Iterator[CanonicalHazardBatch]:
+    def serial_fitted_batches() -> Iterator[CanonicalHazardBatch]:
         canonical_schema = hazard_arrow_schema(metadata)
         workers = policy.max_workers or detected_cpu_count()
         executor = ThreadPoolExecutor(max_workers=workers) if workers > 1 else None
         try:
-            for batch in _record_batches(batches):
+            source_batches = _record_batches(batches)
+            batch_iterator = iter(
+                _prefetch_one(source_batches) if policy.prefetch else source_batches
+            )
+            while True:
+                waited = perf_counter()
+                try:
+                    batch = next(batch_iterator)
+                except StopIteration:
+                    break
+                summary.input_wait_seconds += perf_counter() - waited
+                summary.source_batches += 1
                 identity_columns = {
                     columns.cell,
                     columns.hazard,
@@ -475,6 +510,7 @@ def fit_cdf_quantile_batches(
                     if executor is not None
                     else map(fit_one, quantile_rows)
                 )
+                fit_started = perf_counter()
                 output_rows: list[dict[str, Any]] = []
                 for index, fitted_value in enumerate(fitted):
                     summary.source_rows += 1
@@ -572,19 +608,26 @@ def fit_cdf_quantile_batches(
                             **curve,
                         }
                     )
+                summary.fit_and_canonicalize_seconds += perf_counter() - fit_started
                 if output_rows:
+                    arrow_started = perf_counter()
                     table = pa.Table.from_pylist(output_rows, schema=canonical_schema)
-                    yield CanonicalHazardBatch(
-                        hazard_rows=validate_hazard_table(
-                            table,
-                            metadata=metadata,
-                            require_unique_keys=False,
-                            max_workers=1,
-                        )
-                    )
+                    summary.arrow_build_seconds += perf_counter() - arrow_started
+                    # The fitter constructs the exact canonical Arrow schema and
+                    # validates all curve invariants while producing each row.
+                    # The persistence boundary validates the table once before
+                    # writing; repeating the row-wise reconstruction here made
+                    # every fitted batch pay the same validation cost twice.
+                    yield CanonicalHazardBatch(hazard_rows=table)
         finally:
             if executor is not None:
                 executor.shutdown()
+
+    def prefetched_batches() -> Iterator[CanonicalHazardBatch]:
+        """Overlap one fitted batch with consumption using bounded memory."""
+        yield from _prefetch_one(serial_fitted_batches())
+
+    fitted_batches = prefetched_batches if policy.prefetch else serial_fitted_batches
 
     return CDFFitResult(
         stream=CanonicalHazardStream(metadata=metadata, batches=fitted_batches()),
