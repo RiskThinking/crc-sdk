@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import multiprocessing
+import os
+import tempfile
 from collections.abc import Iterable, Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+import fsspec
 import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.compute as pc  # type: ignore[import-untyped]
 import pyarrow.dataset as ds  # type: ignore[import-untyped]
@@ -72,6 +75,11 @@ def _as_table(value: Any) -> Any:
         return pa.Table.from_batches(list(value))
     raise TypeError("hazard data must be an Arrow table, batch, reader, or batches")
 
+
+# DuckDB's COPY (used by the ordered writer) and pyarrow's ParquetWriter
+# (used by the unordered writer) mostly share compression codec names, but
+# not "uncompressed" -- pyarrow spells that "none".
+_PYARROW_COMPRESSION_ALIASES = {"uncompressed": "none"}
 
 _CURVE_COLUMNS = (
     "curve_kind",
@@ -297,12 +305,18 @@ def write_hazard_stream(
     chunk_rows: int = 20_000,
     work_dir: str | Path | None = None,
     overwrite: bool = False,
+    ordered: bool = True,
 ) -> str | Path:
-    """Stream canonical batches through DuckDB into one sorted Parquet file.
+    """Stream canonical batches into one validated Parquet file.
 
     Unlike :func:`write_hazard_dataset`, this path never concatenates all
-    batches into one Python-resident Arrow table. DuckDB pulls from a one-shot
-    ``RecordBatchReader`` and may spill the global sort to ``work_dir``.
+    batches into one Python-resident Arrow table. With ``ordered=True`` (the
+    default), DuckDB pulls from a one-shot ``RecordBatchReader`` and may spill
+    the global sort to ``work_dir``. With ``ordered=False``, validated batches
+    append directly to a local Parquet staging file; a projected key-only scan
+    rejects duplicates before the object is atomically published. This keeps
+    canonical payload memory batch-bounded at the cost of physical global row
+    ordering. Logical schema, row keys, and percentile evaluation are unchanged.
     """
     normalized_compression = compression.lower()
     supported_compression = {
@@ -318,6 +332,28 @@ def write_hazard_stream(
         )
     metadata = stream.metadata
     schema = hazard_arrow_schema(metadata)
+    target = str(destination)
+    # Same-filesystem staging so a local publish (os.replace/rename) never
+    # crosses a mount boundary; default_work_dir()'s system-temp volume is
+    # commonly a different filesystem than the destination in containers.
+    resolved_work_dir = (
+        Path(work_dir)
+        if work_dir is not None
+        else (Path(destination).parent if "://" not in target else default_work_dir())
+    )
+
+    if not ordered:
+        return _write_hazard_stream_unordered(
+            stream,
+            destination,
+            schema=schema,
+            connection=connection,
+            compression=normalized_compression,
+            max_workers=max_workers,
+            chunk_rows=chunk_rows,
+            work_dir=resolved_work_dir,
+            overwrite=overwrite,
+        )
 
     def record_batches() -> Iterable[Any]:
         for item in stream.batches:
@@ -331,14 +367,8 @@ def write_hazard_stream(
             yield from table.to_batches()
 
     reader = pa.RecordBatchReader.from_batches(schema, record_batches())
-    target = str(destination)
     relation_name = f"_crc_hazard_stream_{uuid4().hex}"
     staged_name = f"{relation_name}_staged"
-    resolved_work_dir = (
-        Path(work_dir)
-        if work_dir is not None
-        else (Path(destination).parent if "://" not in target else default_work_dir())
-    )
     duckdb_connection, owned = _duckdb_connection(
         connection, work_dir=resolved_work_dir
     )
@@ -377,6 +407,69 @@ def write_hazard_stream(
             finally:
                 if owned:
                     duckdb_connection.close()
+    return destination
+
+
+def _write_hazard_stream_unordered(
+    stream: Any,
+    destination: str | Path,
+    *,
+    schema: Any,
+    connection: Any | None,
+    compression: str,
+    max_workers: int | None,
+    chunk_rows: int,
+    work_dir: str | Path | None,
+    overwrite: bool,
+) -> str | Path:
+    """Append validated batches and publish only after key validation."""
+    target = str(destination)
+    filesystem, target_path = fsspec.core.url_to_fs(target)
+    if filesystem.exists(target_path) and not overwrite:
+        raise FileExistsError(f"output already exists: {target}")
+    resolved_work_dir = Path(work_dir) if work_dir is not None else default_work_dir()
+    resolved_work_dir.mkdir(parents=True, exist_ok=True)
+    duckdb_connection, owned = _duckdb_connection(
+        connection, work_dir=resolved_work_dir
+    )
+    row_key = ", ".join(_sql_identifier(name) for name in HAZARD_ROW_KEY)
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix="crc-hazard-stream-", dir=resolved_work_dir
+        ) as temporary:
+            staged = Path(temporary) / "canonical.parquet"
+            pyarrow_compression = _PYARROW_COMPRESSION_ALIASES.get(
+                compression, compression
+            )
+            with pq.ParquetWriter(
+                staged, schema, compression=pyarrow_compression
+            ) as writer:
+                for item in stream.batches:
+                    table = validate_hazard_table(
+                        item.hazard_rows,
+                        metadata=stream.metadata,
+                        require_unique_keys=False,
+                        max_workers=max_workers,
+                        chunk_rows=chunk_rows,
+                    )
+                    writer.write_table(table)
+            duplicate = duckdb_connection.execute(
+                f"SELECT 1 FROM read_parquet({_sql_string(str(staged))}) "
+                f"GROUP BY {row_key} HAVING count(*) > 1 LIMIT 1"
+            ).fetchone()
+            if duplicate is not None:
+                raise ValueError(f"duplicate canonical row key {HAZARD_ROW_KEY!r}")
+            parent = str(Path(target_path).parent)
+            filesystem.makedirs(parent, exist_ok=True)
+            if filesystem.protocol in ("file", "local") or (
+                isinstance(filesystem.protocol, tuple) and "file" in filesystem.protocol
+            ):
+                os.replace(staged, target_path)
+            else:
+                filesystem.put(str(staged), target_path)
+    finally:
+        if owned:
+            duckdb_connection.close()
     return destination
 
 
