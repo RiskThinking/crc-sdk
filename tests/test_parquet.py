@@ -184,6 +184,92 @@ def test_stream_writer_rejects_duplicate_keys_across_batches(tmp_path: Path) -> 
         write_hazard_stream(stream, tmp_path / "duplicate.parquet")
 
 
+def test_unordered_stream_writer_is_batch_bounded_and_preserves_input_order(
+    tmp_path: Path,
+) -> None:
+    table = _table()
+    stream = CanonicalHazardStream(
+        metadata=_metadata(),
+        batches=iter(
+            [
+                CanonicalHazardBatch(hazard_rows=table.slice(0, 1)),
+                CanonicalHazardBatch(hazard_rows=table.slice(1, 1)),
+            ]
+        ),
+    )
+    destination = tmp_path / "streamed.parquet"
+
+    write_hazard_stream(stream, destination, ordered=False)
+
+    assert pq.read_table(destination)["horizon"].to_pylist() == [2050, 2030]
+    assert read_hazard_metadata(destination) == _metadata()
+
+
+def test_unordered_stream_writer_accepts_uncompressed(tmp_path: Path) -> None:
+    """"uncompressed" is a valid compression choice on the ordered (DuckDB)
+    path; pyarrow's ParquetWriter spells the same codec "none" and rejects
+    "uncompressed" outright, so the unordered path must translate it."""
+    table = _table().slice(0, 1)
+    stream = CanonicalHazardStream(
+        metadata=_metadata(), batches=iter([CanonicalHazardBatch(hazard_rows=table)])
+    )
+    destination = tmp_path / "streamed-uncompressed.parquet"
+
+    write_hazard_stream(stream, destination, ordered=False, compression="uncompressed")
+
+    assert read_hazard_metadata(destination) == _metadata()
+
+
+def test_unordered_stream_writer_rejects_cross_batch_duplicates_before_publish(
+    tmp_path: Path,
+) -> None:
+    table = _table().slice(0, 1)
+    stream = CanonicalHazardStream(
+        metadata=_metadata(),
+        batches=iter(
+            [
+                CanonicalHazardBatch(hazard_rows=table),
+                CanonicalHazardBatch(hazard_rows=table),
+            ]
+        ),
+    )
+    destination = tmp_path / "duplicate-unordered.parquet"
+
+    with pytest.raises(ValueError, match="duplicate canonical row key"):
+        write_hazard_stream(stream, destination, ordered=False)
+
+    assert not destination.exists()
+
+
+def test_unordered_stream_writer_stages_beside_local_destination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The final publish is a local rename (os.replace); staging must share
+    the destination's filesystem or that rename can fail cross-device with
+    the source stream already consumed and unrecoverable. default_work_dir()
+    (the system temp volume) is commonly a different mount in containers, so
+    it must not be used when the destination is local."""
+
+    def _unexpected_default_work_dir() -> Path:
+        raise AssertionError(
+            "default_work_dir() must not be used for a local destination; "
+            "staging should share the destination's filesystem"
+        )
+
+    monkeypatch.setattr(
+        "crc_sdk.connectors.parquet.default_work_dir", _unexpected_default_work_dir
+    )
+    table = _table().slice(0, 1)
+    stream = CanonicalHazardStream(
+        metadata=_metadata(), batches=iter([CanonicalHazardBatch(hazard_rows=table)])
+    )
+    destination = tmp_path / "streamed-local.parquet"
+
+    write_hazard_stream(stream, destination, ordered=False)
+
+    assert read_hazard_metadata(destination) == _metadata()
+
+
 def test_validation_rejects_empty_required_strings() -> None:
     rows = _table().to_pylist()
     rows[0]["hazard_name"] = ""

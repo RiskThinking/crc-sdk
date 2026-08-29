@@ -228,7 +228,30 @@ manifests carry ordered-family and aggregate treatment provenance once.
 The logical row key is
 `(hazard_name, horizon, pathway, cell_index, source_id)`. `cell_index` is the
 spatial join key, not a globally unique identifier. Canonical files are sorted
-by that row key for predicate pruning and merge joins.
+by that row key for predicate pruning and merge joins by default.
+
+`write_hazard_stream(..., ordered=True)` retains that default contract. DuckDB
+materializes the canonical stream, rejects duplicate keys, globally sorts, and
+may spill to the configured work directory after reaching its memory limit.
+This keeps engine memory predictable rather than batch-constant: reserve
+additional process headroom for Arrow/Python buffers and the final Parquet
+write. Ordered output generally compresses better and can improve scans that
+benefit from physical key clustering.
+
+`ordered=False` is an explicit low-memory alternative for unusually large
+partitions or tighter containers. It appends validated Arrow batches directly
+to a local Parquet staging file, scans only projected row-key columns for
+duplicates, and atomically publishes after validation. Canonical schema,
+metadata, uniqueness, and downstream curve/percentile APIs are identical, but
+physical rows retain input order rather than the global canonical sort.
+
+On one 2,148,497-row schema-1.2 sample, direct streaming used 656 MB peak RSS
+and produced a 45 MB file in 16.03 seconds; ordered writing used 1.69 GB and
+produced a 35 MB file in 16.38 seconds. A 300,000-row sample used 282 versus
+525 MB, produced 6.3 versus 4.9 MB, and took 3.01 versus 2.78 seconds. These
+measure the persistence pass only on one machine: storage reduction was
+consistent, while the small timing difference changed direction. Treat them as
+tradeoff evidence, not universal throughput guarantees.
 
 Dataset-wide facts are stored once as a complete JSON payload under the
 `crc.hazard.metadata` Parquet key: schema version, one uncompacted H3
