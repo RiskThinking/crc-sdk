@@ -386,6 +386,151 @@ def _fit_or_error(
         return error
 
 
+def _point_mass_curve(location: float) -> dict[str, Any]:
+    curve = _empty_curve("point_mass", "point_mass")
+    curve.update(
+        curve_location=location,
+        curve_scale=0.0,
+        curve_atom_probability=1.0,
+        curve_atom_location=location,
+        _treatment="point_mass",
+    )
+    return curve
+
+
+def _classify_batch(
+    values_matrix: np.ndarray[Any, Any],
+    probabilities: np.ndarray[Any, Any],
+    policy: CDFCurveFitPolicy,
+) -> tuple[list[dict[str, Any] | ValueError | None], np.ndarray[Any, Any]]:
+    """Resolve every row that `_fit_parameters` would settle without fitting.
+
+    Mirrors `_fit_parameters`'s checks in the same order, but evaluated once
+    across the whole `(n_rows, n_quantiles)` matrix instead of once per row
+    -- every check up to the point a row actually needs `_fit_family` (the
+    only place that calls into Rust and releases the GIL) is pure Python
+    numpy work that gains nothing from `ThreadPoolExecutor` fan-out, since
+    the GIL serializes it regardless of thread count. Point-mass and
+    `no_data` rows are the majority of most hazards (see the campaign's own
+    curve_kind distributions) and are fully resolved here without ever
+    entering the per-row dispatch path.
+
+    Returns `(resolved, needs_fit_mask)`: `resolved[i]` is the finished
+    curve dict or `ValueError` for a row settled here, or `None` for a row
+    where `needs_fit_mask[i]` is True and the caller must still dispatch it
+    through `_fit_or_error` (unchanged, including the plateau/family/hurdle
+    logic this function never re-implements).
+    """
+    n_rows = values_matrix.shape[0]
+    resolved: list[dict[str, Any] | ValueError | None] = [None] * n_rows
+    needs_fit = np.ones(n_rows, dtype=bool)
+
+    finite = np.isfinite(values_matrix).all(axis=1)
+    for row in np.flatnonzero(~finite):
+        resolved[row] = ValueError("CDF quantiles must be finite")
+        needs_fit[row] = False
+
+    nondecreasing = np.ones(n_rows, dtype=bool)
+    if finite.any():
+        nondecreasing[finite] = (np.diff(values_matrix[finite], axis=1) >= 0.0).all(
+            axis=1
+        )
+    invalid_order = finite & ~nondecreasing
+    for row in np.flatnonzero(invalid_order):
+        resolved[row] = ValueError("CDF quantiles must be non-decreasing")
+        needs_fit[row] = False
+
+    valid = finite & nondecreasing
+    if not valid.any():
+        return resolved, needs_fit
+
+    # Point-mass identity is mathematical, not a fit-quality decision: the
+    # complete source support (including probabilities zero and one) must
+    # be checked before any scientific eligibility screen on interior knots
+    # -- see test_full_support_point_mass_precedes_scientific_eligibility.
+    point_mass = np.zeros(n_rows, dtype=bool)
+    point_mass[valid] = (values_matrix[valid] == values_matrix[valid][:, [0]]).all(
+        axis=1
+    )
+    for row in np.flatnonzero(point_mass):
+        resolved[row] = _point_mass_curve(float(values_matrix[row, 0]))
+        needs_fit[row] = False
+
+    screenable = valid & ~point_mass
+    if not screenable.any():
+        return resolved, needs_fit
+
+    # `active` depends only on `probabilities` (identical for every row in
+    # a batch), so it -- and the interior-knot-count gate below -- are
+    # batch-wide invariants, not per-row ones. `fit_cdf_quantile_batches`
+    # already requires >= 4 interior probabilities up front, so that gate
+    # can never actually trip here; kept only so a caller invoking this
+    # function directly still gets identical behavior to `_fit_parameters`.
+    active = (probabilities > 0.0) & (probabilities < 1.0)
+    if int(active.sum()) < 4:
+        message = "at least four interior probability knots are required"
+        for row in np.flatnonzero(screenable):
+            resolved[row] = ValueError(message)
+            needs_fit[row] = False
+        return resolved, needs_fit
+
+    knots = values_matrix[screenable][:, active]
+    remaining_rows = np.flatnonzero(screenable)
+
+    if policy.minimum_informative_value is not None:
+        informative_mask = knots >= policy.minimum_informative_value
+        informative_count = informative_mask.sum(axis=1)
+        below_resolution = informative_count == 0
+        for row in remaining_rows[below_resolution]:
+            resolved[row] = _no_data("below_effective_resolution")
+            needs_fit[row] = False
+        keep = ~below_resolution
+        knots = knots[keep]
+        informative_mask = informative_mask[keep]
+        informative_count = informative_count[keep]
+        remaining_rows = remaining_rows[keep]
+        if remaining_rows.size == 0:
+            return resolved, needs_fit
+    else:
+        informative_mask = np.ones_like(knots, dtype=bool)
+        informative_count = np.full(knots.shape[0], knots.shape[1])
+
+    insufficient = informative_count < policy.minimum_informative_knots
+    for row in remaining_rows[insufficient]:
+        resolved[row] = _no_data("insufficient_informative_support")
+        needs_fit[row] = False
+    keep = ~insufficient
+    knots = knots[keep]
+    informative_mask = informative_mask[keep]
+    informative_count = informative_count[keep]
+    remaining_rows = remaining_rows[keep]
+    if remaining_rows.size == 0:
+        return resolved, needs_fit
+
+    # Count distinct informative values per row without `np.unique`'s
+    # per-row Python overhead: mask non-informative entries to -inf (never
+    # a real value -- finiteness was already checked), sort each row, and
+    # count value changes. -inf always sorts first and compares equal only
+    # to itself, so a masked row contributes exactly one extra "distinct"
+    # group that isn't part of the informative set -- subtract it off.
+    masked = np.where(informative_mask, knots, -np.inf)
+    sorted_masked = np.sort(masked, axis=1)
+    # Inequality, not `np.diff`: adjacent -inf entries would otherwise
+    # subtract to NaN (`-inf - -inf`), which happens to still compare
+    # `False` to `> 0` and produce the right count, but only by IEEE754
+    # coincidence -- direct comparison has no such edge case at all.
+    changed = sorted_masked[:, 1:] != sorted_masked[:, :-1]
+    distinct_total = 1 + np.sum(changed, axis=1)
+    has_masked = informative_count < knots.shape[1]
+    distinct_informative = distinct_total - has_masked.astype(np.int64)
+    degenerate = distinct_informative < policy.minimum_distinct_informative_values
+    for row in remaining_rows[degenerate]:
+        resolved[row] = _no_data("degenerate_effective_range")
+        needs_fit[row] = False
+
+    return resolved, needs_fit
+
+
 def _family_failure_reason(message: str) -> str:
     if "did not converge" in message:
         return "optimizer_nonconvergence"
@@ -500,17 +645,46 @@ def fit_cdf_quantile_batches(
                     raise AssertionError(
                         "Arrow list row count changed during conversion"
                     )
+                fit_started = perf_counter()
+                fitted: list[Any] = [None] * len(quantile_rows)
+                quantile_count = len(probability_array)
+                regular_rows = [
+                    row
+                    for row, values in enumerate(quantile_rows)
+                    if len(values) == quantile_count
+                ]
+                dispatch_rows = list(range(len(quantile_rows)))
+                if regular_rows:
+                    values_matrix = np.asarray(
+                        [quantile_rows[row] for row in regular_rows],
+                        dtype=np.float64,
+                    )
+                    resolved, needs_fit = _classify_batch(
+                        values_matrix, probability_array, policy
+                    )
+                    settled_regular = set()
+                    for offset, row in enumerate(regular_rows):
+                        if not needs_fit[offset]:
+                            fitted[row] = resolved[offset]
+                            settled_regular.add(row)
+                    dispatch_rows = [
+                        row
+                        for row in range(len(quantile_rows))
+                        if row not in settled_regular
+                    ]
                 fit_one = partial(
                     _fit_or_error,
                     probabilities=probability_array,
                     policy=policy,
                 )
-                fitted = (
-                    executor.map(fit_one, quantile_rows)
+                to_dispatch = [quantile_rows[row] for row in dispatch_rows]
+                dispatched = (
+                    executor.map(fit_one, to_dispatch)
                     if executor is not None
-                    else map(fit_one, quantile_rows)
+                    else map(fit_one, to_dispatch)
                 )
-                fit_started = perf_counter()
+                for row, fitted_value in zip(dispatch_rows, dispatched):
+                    fitted[row] = fitted_value
                 output_rows: list[dict[str, Any]] = []
                 for index, fitted_value in enumerate(fitted):
                     summary.source_rows += 1
