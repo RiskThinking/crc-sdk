@@ -347,6 +347,24 @@ def _fit_parameters(
     if len(np.unique(informative)) < policy.minimum_distinct_informative_values:
         return _no_data("degenerate_effective_range")
 
+    return _attempt_fit(knot_probabilities, knot_values, policy)
+
+
+def _attempt_fit(
+    knot_probabilities: np.ndarray[Any, Any],
+    knot_values: np.ndarray[Any, Any],
+    policy: CDFCurveFitPolicy,
+) -> dict[str, Any]:
+    """Try each family in turn on already-screened interior knots.
+
+    Split out of `_fit_parameters` so a caller that has already resolved a
+    row's knots some other way (see `_classify_batch`, which computes them
+    once across a whole batch) can skip straight to fitting instead of
+    redoing the finite/monotonic/point-mass/eligibility screens through
+    `_fit_parameters` per row -- those checks are cheap individually, but
+    paying them again for a row already known to need fitting is pure
+    per-row Python overhead with nothing to show for it.
+    """
     plateau_count = int(np.searchsorted(knot_values, knot_values[0], side="right"))
     errors: list[tuple[str, str]] = []
     for family in policy.families:
@@ -382,6 +400,18 @@ def _fit_or_error(
 ) -> dict[str, Any] | ValueError:
     try:
         return _fit_parameters(probabilities, values, policy)
+    except ValueError as error:
+        return error
+
+
+def _attempt_fit_or_error(
+    knot_values: np.ndarray[Any, Any],
+    *,
+    knot_probabilities: np.ndarray[Any, Any],
+    policy: CDFCurveFitPolicy,
+) -> dict[str, Any] | ValueError:
+    try:
+        return _attempt_fit(knot_probabilities, knot_values, policy)
     except ValueError as error:
         return error
 
@@ -531,6 +561,22 @@ def _classify_batch(
     return resolved, needs_fit
 
 
+def _screened_knots(
+    values_matrix: np.ndarray[Any, Any],
+    probabilities: np.ndarray[Any, Any],
+    needs_fit: np.ndarray[Any, Any],
+) -> tuple[np.ndarray[Any, Any], np.ndarray[Any, Any]]:
+    """Interior knots for rows `_classify_batch` already marked as needing
+    a real fit -- `active` only depends on `probabilities`, so this is the
+    same slice `_fit_parameters` would compute per row, just done once for
+    every survivor at once. Lets the dispatch loop skip straight to
+    `_attempt_fit_or_error` for these rows instead of re-deriving the same
+    knots by re-running every screen `_classify_batch` already ran.
+    """
+    active = (probabilities > 0.0) & (probabilities < 1.0)
+    return probabilities[active], values_matrix[needs_fit][:, active]
+
+
 def _family_failure_reason(message: str) -> str:
     if "did not converge" in message:
         return "optimizer_nonconvergence"
@@ -653,7 +699,10 @@ def fit_cdf_quantile_batches(
                     for row, values in enumerate(quantile_rows)
                     if len(values) == quantile_count
                 ]
-                dispatch_rows = list(range(len(quantile_rows)))
+                regular_set = set(regular_rows)
+                irregular_rows = [
+                    row for row in range(len(quantile_rows)) if row not in regular_set
+                ]
                 if regular_rows:
                     values_matrix = np.asarray(
                         [quantile_rows[row] for row in regular_rows],
@@ -662,29 +711,51 @@ def fit_cdf_quantile_batches(
                     resolved, needs_fit = _classify_batch(
                         values_matrix, probability_array, policy
                     )
-                    settled_regular = set()
+                    needs_fit_rows = [
+                        row
+                        for offset, row in enumerate(regular_rows)
+                        if needs_fit[offset]
+                    ]
                     for offset, row in enumerate(regular_rows):
                         if not needs_fit[offset]:
                             fitted[row] = resolved[offset]
-                            settled_regular.add(row)
-                    dispatch_rows = [
-                        row
-                        for row in range(len(quantile_rows))
-                        if row not in settled_regular
-                    ]
-                fit_one = partial(
-                    _fit_or_error,
-                    probabilities=probability_array,
-                    policy=policy,
-                )
-                to_dispatch = [quantile_rows[row] for row in dispatch_rows]
-                dispatched = (
-                    executor.map(fit_one, to_dispatch)
-                    if executor is not None
-                    else map(fit_one, to_dispatch)
-                )
-                for row, fitted_value in zip(dispatch_rows, dispatched):
-                    fitted[row] = fitted_value
+                    if needs_fit_rows:
+                        # These rows already ran every screen in
+                        # _classify_batch -- dispatch their precomputed
+                        # knots straight to the fitter instead of paying
+                        # the same per-row Python screening cost again
+                        # through _fit_or_error's full _fit_parameters path.
+                        knot_probabilities, knot_values_matrix = _screened_knots(
+                            values_matrix, probability_array, needs_fit
+                        )
+                        attempt_one = partial(
+                            _attempt_fit_or_error,
+                            knot_probabilities=knot_probabilities,
+                            policy=policy,
+                        )
+                        attempted = (
+                            executor.map(attempt_one, knot_values_matrix)
+                            if executor is not None
+                            else map(attempt_one, knot_values_matrix)
+                        )
+                        for row, fitted_value in zip(needs_fit_rows, attempted):
+                            fitted[row] = fitted_value
+                if irregular_rows:
+                    # Never classified (ragged length) -- the only rows
+                    # that still need the full raw-value screening path.
+                    fit_one = partial(
+                        _fit_or_error,
+                        probabilities=probability_array,
+                        policy=policy,
+                    )
+                    to_dispatch = [quantile_rows[row] for row in irregular_rows]
+                    dispatched = (
+                        executor.map(fit_one, to_dispatch)
+                        if executor is not None
+                        else map(fit_one, to_dispatch)
+                    )
+                    for row, fitted_value in zip(irregular_rows, dispatched):
+                        fitted[row] = fitted_value
                 output_rows: list[dict[str, Any]] = []
                 for index, fitted_value in enumerate(fitted):
                     summary.source_rows += 1
