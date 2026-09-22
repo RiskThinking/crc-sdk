@@ -232,6 +232,22 @@ def test_curve_quantiles_evaluates_all_probabilities_per_row() -> None:
     assert values == pytest.approx(expected)
 
 
+def test_curve_quantiles_evaluate_a_hurdle_atom_deep_in_the_base_tail() -> None:
+    # Published hot_days curve (852b83b3fffffff, ">4 degrees", 2050): only
+    # ~1.02e-12 of the base Gumbel's mass lies above the atom. crc-framework
+    # <0.2.6 capped the base probability at 1 - 1e-12 and returned ~0.41 days
+    # for every return period.
+    row = _row(curve_kind="hurdle", curve_location=-489.1204597214833)
+    row.update(curve_scale=17.716588490591306, curve_atom_probability=0.032)
+    probabilities = return_periods_to_probabilities([10, 25, 100])
+
+    values = curve_quantiles(_table(row), probabilities, max_workers=1)
+
+    assert values[0] == pytest.approx(
+        (40.2177525533055, 56.4512983876633, 81.0117051104518), abs=1e-9
+    )
+
+
 def test_asset_portfolio_infers_point_location_and_passthrough_columns() -> None:
     assets = pa.table(
         {
