@@ -20,6 +20,8 @@ from .workflows import (
     CDFCurveFitPolicy,
     CDFFitResult,
     CDFFitSummary,
+    NoDataRateError,
+    NoDataRateWarning,
     fit_cdf_quantile_batches,
 )
 
@@ -34,6 +36,8 @@ __all__ = [
     "HurdleQuantileFitDiagnostics",
     "HurdleQuantileFitResult",
     "QuantileFitDiagnostics",
+    "NoDataRateError",
+    "NoDataRateWarning",
     "QuantileFitResult",
     "fit_all",
     "fit_distribution",

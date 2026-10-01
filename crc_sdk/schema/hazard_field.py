@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 
-CANONICAL_HAZARD_SCHEMA_VERSION = "1.2"
+CANONICAL_HAZARD_SCHEMA_VERSION = "1.3"
 
 
 @dataclass(frozen=True)
@@ -35,9 +35,10 @@ HAZARD_FIELDS: tuple[HazardField, ...] = (
 
 def hazard_fields_for_version(schema_version: str) -> tuple[HazardField, ...]:
     """Return the physical fields used by a canonical schema version."""
-    if schema_version not in {"1.0", "1.1", "1.2"}:
+    if schema_version not in {"1.0", "1.1", "1.2", "1.3"}:
         raise ValueError(f"unsupported canonical schema version: {schema_version}")
-    if schema_version == "1.2":
+    # 1.3 only adds dataset metadata; its physical columns are those of 1.2.
+    if schema_version in {"1.2", "1.3"}:
         return HAZARD_FIELDS
     return tuple(
         HazardField(
@@ -52,6 +53,7 @@ def hazard_fields_for_version(schema_version: str) -> tuple[HazardField, ...]:
         for field in HAZARD_FIELDS
         if field.name not in {"curve_probabilities", "curve_values"}
     )
+
 
 HAZARD_ROW_KEY = (
     "hazard_name",

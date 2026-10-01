@@ -5,13 +5,14 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
 from crc_framework.distributions import DistributionFamily
 
+from crc_sdk._version import sdk_version
 from crc_sdk.connectors import CurveFitIngestPolicy
 from crc_sdk.connectors.jrc_edo import canonicalize_edo_drought
 from crc_sdk.connectors.parquet import write_hazard_stream
@@ -41,7 +42,7 @@ class EDODroughtPolicy:
     h3_resolution: int = 6
     family: DistributionFamily = "gumbel_r"
     producer: str = "crc-sdk"
-    creation_version: str = "0.2.0"
+    creation_version: str = field(default_factory=sdk_version)
     minimum_years: int = 20
     on_fit_failure: Literal["raise", "skip"] = "skip"
     maximum_normalized_rmse: float | None = None
