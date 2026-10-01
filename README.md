@@ -225,6 +225,47 @@ returns nulls for those rows. This tagged-union layout avoids redundant status,
 fit-stage, interpolation, and reason columns: dataset metadata and run
 manifests carry ordered-family and aggregate treatment provenance once.
 
+Schema 1.3 is metadata-only: the physical columns, row key and sort order are
+those of 1.2, and every 1.0–1.2 file reads unchanged. It adds optional dataset
+metadata (decisions in [`docs/adr/`](docs/adr/README.md)):
+
+- `probability_semantics` (`annual_exceedance`, `annual_value_distribution`,
+  `within_period_percentile`, `projection_uncertainty`, `estimate_confidence`)
+  and `source_return_period_convention` (`one_minus_inverse` or `poisson`);
+- `temporal_window` (inclusive start/end years, `horizon` as the centre year,
+  baseline, calendar, minimum complete years, or a `time_invariant`
+  reference year) and `ensemble` (`single_member`/`pooled`/`unknown`, models,
+  members, scenario, downscaling, bias adjustment);
+- source `licence`, `attribution`, `retrieved_at` and `checksum`;
+- fit provenance `input_kind`, `sample_resampling`, `lower_bound`, `platform`
+  and `crc_framework_version`, and the `sample_mle` method value.
+
+Fields outside 1.3 reject these additions, so a 1.2 file can never claim them.
+Readers older than this release reject `schema_version: "1.3"`.
+
+### Fitting distributions that already exist
+
+`fit_cdf_quantile_batches` canonicalizes Arrow rows of quantiles without
+knowing anything about the hazard. A row's probability axis may be the shared
+one passed in, a per-row list (`CDFColumnSchema(probabilities=...)`), or
+labelled return periods (`CDFColumnSchema(return_periods=...)`, converted with
+the policy's explicit `return_period_convention`). Raw samples
+(`CDFColumnSchema(samples=...)`) are sorted and resampled to
+`sample_quantile_count` probabilities. Probability-labelled inputs are always
+fitted by quantile least squares. Notable `CDFCurveFitPolicy` options:
+
+- `lower_bound` censors values below a physical bound before fitting and turns
+  fitted mass below it into a hurdle atom (for example depth `>= 0`);
+- `short_axis_action` (`tabulated` by default) handles rows with fewer than
+  four interior knots inside the fitter; unlabelled or length-mismatched rows
+  are rejected with a reason rather than dropped;
+- `registry` / `minimum_informative_overrides` resolve eligibility per hazard
+  (override > registry > policy default), and `no_data_rate_threshold` warns
+  (raises under `strict=True`) when a hazard is mostly `no_data`;
+- `diagnostics="path.parquet"` writes a row-level sidecar of outcomes, chosen
+  family, residuals, fallbacks and rejection reasons;
+- `creation_version` defaults to the installed crc-sdk version.
+
 The logical row key is
 `(hazard_name, horizon, pathway, cell_index, source_id)`. `cell_index` is the
 spatial join key, not a globally unique identifier. Canonical files are sorted
@@ -244,6 +285,13 @@ to a local Parquet staging file, scans only projected row-key columns for
 duplicates, and atomically publishes after validation. Canonical schema,
 metadata, uniqueness, and downstream curve/percentile APIs are identical, but
 physical rows retain input order rather than the global canonical sort.
+
+Ordered-writer memory is governed mainly by the DuckDB connection's
+`memory_limit`. On a synthetic 2,000,000-row stream, the ordered writer's peak
+RSS was 1,192 MiB with DuckDB's default limit and 598 MiB with a 300 MB limit,
+versus 360 MiB (416 MiB with the same limit) for `ordered=False`; wall time was
+equal. Containers that set a large default limit should lower it for the write
+connection before giving up the canonical sort.
 
 On one 2,148,497-row schema-1.2 sample, direct streaming used 656 MB peak RSS
 and produced a 45 MB file in 16.03 seconds; ordered writing used 1.69 GB and
