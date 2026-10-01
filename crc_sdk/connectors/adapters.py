@@ -19,7 +19,7 @@ pixels that can't be usefully fitted rather than aborting a whole ingest.
 from __future__ import annotations
 
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from hashlib import sha256
 from typing import Any, Literal, Protocol, get_args, runtime_checkable
 
@@ -35,6 +35,7 @@ from crc_framework import (
 )
 from crc_framework.distributions import DistributionFamily
 
+from crc_sdk._version import sdk_version
 from crc_sdk.connectors.duckdb.zarr import (
     Bounds,
     RasterCurve,
@@ -96,7 +97,7 @@ class CurveFitIngestPolicy:
     h3_resolution: int
     family: DistributionFamily
     producer: str
-    creation_version: str
+    creation_version: str = field(default_factory=sdk_version)
     tail: Literal["upper", "lower"] = "upper"
     batch_rows: int = 65_536
     value_semantics: str | None = None

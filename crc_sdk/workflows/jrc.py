@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -14,6 +14,7 @@ from urllib.parse import urlencode
 import pyarrow as pa  # type: ignore[import-untyped]
 from crc_framework.distributions import DistributionFamily
 
+from crc_sdk._version import sdk_version
 from crc_sdk.connectors import CurveFitIngestPolicy
 from crc_sdk.connectors.duckdb.geotiff import GeoTiffRaster, RasterBoundsError
 from crc_sdk.connectors.jrc import canonicalize_jrc_flood
@@ -45,7 +46,7 @@ class JRCFloodPolicy:
     h3_resolution: int | Literal["native"] = "native"
     family: DistributionFamily = "gumbel_r"
     producer: str = "crc-sdk"
-    creation_version: str = "0.2.0"
+    creation_version: str = field(default_factory=sdk_version)
     on_fit_failure: Literal["raise", "skip"] = "skip"
     maximum_normalized_rmse: float | None = None
     maximum_absolute_residual: float | None = None

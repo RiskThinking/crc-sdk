@@ -126,8 +126,15 @@ def return_periods_to_probabilities(
     return_periods: Sequence[float],
     *,
     tail: Literal["upper", "lower"] = "upper",
+    convention: Literal["one_minus_inverse", "poisson"] = "one_minus_inverse",
 ) -> tuple[float, ...]:
     """Map unique return periods to the probability their curve was fitted at.
+
+    `convention` is the source's T-to-probability relation (ADR-0003):
+    `one_minus_inverse` is `1 - 1/T` (the default) and `poisson` is
+    `exp(-1/T)`, i.e. an annual exceedance probability of `1 - exp(-1/T)`.
+    Both give non-exceedance probabilities for the upper tail; the lower tail
+    is their complement.
 
     `tail="upper"` (default) returns non-exceedance probabilities
     (`1 - 1/period`) -- the convention for hazards where rarer events are
@@ -157,6 +164,11 @@ def return_periods_to_probabilities(
         normalized.append(value)
     if len(set(normalized)) != len(normalized):
         raise ValueError("return periods must be unique")
+    if convention not in ("one_minus_inverse", "poisson"):
+        raise ValueError("convention must be 'one_minus_inverse' or 'poisson'")
+    if convention == "poisson":
+        upper = tuple(math.exp(-1.0 / period) for period in normalized)
+        return upper if tail == "upper" else tuple(1.0 - p for p in upper)
     if tail == "upper":
         return tuple(1.0 - 1.0 / period for period in normalized)
     return tuple(1.0 / period for period in normalized)

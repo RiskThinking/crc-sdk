@@ -64,7 +64,7 @@ def test_cdf_batch_fitting_preserves_point_mass_and_fits_continuous_row(
     assert point_mass.quantiles([0.0, 0.37, 1.0]).tolist() == [0.0, 0.0, 0.0]
     assert canonical.schema.metadata is not None
     metadata = read_hazard_metadata(destination)
-    assert metadata.schema_version == "1.2"
+    assert metadata.schema_version == "1.3"
     assert metadata.source_probability_support == (0.1, 0.9)
     assert metadata.fitting is not None
     assert metadata.fitting.constant_policy == "point_mass"
