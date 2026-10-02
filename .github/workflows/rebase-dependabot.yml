@@ -1,0 +1,92 @@
+name: Refresh Dependabot PRs
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - pyproject.toml
+      - uv.lock
+
+concurrency:
+  group: refresh-dependabot-prs
+  # Never interrupt the workflow between closing and reopening a PR.
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  refresh:
+    name: Wake dormant Dependabot PRs
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Close and reopen Dependabot pull requests
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mapfile -t pull_requests < <(
+            gh api --paginate "repos/${GH_REPO}/pulls?state=open&base=main&per_page=100" \
+              --jq '.[] | select(.user.login == "dependabot[bot]") | .number'
+          )
+
+          if (( ${#pull_requests[@]} == 0 )); then
+            echo "No open Dependabot pull requests target main."
+            echo "### Dependabot refresh" >> "$GITHUB_STEP_SUMMARY"
+            echo "No open Dependabot pull requests target main." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # Reopening a Dependabot PR is a documented refresh trigger. Track a
+          # PR while it is closed so an unexpected exit makes a final attempt
+          # to restore its open state.
+          closed_pull_request=""
+          reopen_on_exit() {
+            if [ -n "${closed_pull_request}" ]; then
+              echo "Restoring PR #${closed_pull_request} after an interrupted refresh." >&2
+              gh pr reopen "${closed_pull_request}" --repo "${GH_REPO}" || true
+            fi
+          }
+          trap reopen_on_exit EXIT
+
+          for pull_request in "${pull_requests[@]}"; do
+            state=$(gh pr view "${pull_request}" --repo "${GH_REPO}" --json state --jq '.state')
+            if [ "${state}" != "OPEN" ]; then
+              echo "PR #${pull_request} is no longer open; skipping."
+              continue
+            fi
+
+            echo "Waking Dependabot PR #${pull_request}"
+            if ! gh pr close "${pull_request}" --repo "${GH_REPO}"; then
+              echo "Could not close PR #${pull_request}." >&2
+              exit 1
+            fi
+            closed_pull_request="${pull_request}"
+
+            reopened=false
+            for attempt in 1 2 3; do
+              if gh pr reopen "${pull_request}" --repo "${GH_REPO}"; then
+                reopened=true
+                closed_pull_request=""
+                break
+              fi
+              echo "Reopen attempt ${attempt} failed for PR #${pull_request}; retrying." >&2
+              sleep 2
+            done
+
+            if [ "${reopened}" != "true" ]; then
+              echo "Could not reopen PR #${pull_request}." >&2
+              exit 1
+            fi
+
+            sleep 2
+          done
+
+          echo "### Dependabot refresh" >> "$GITHUB_STEP_SUMMARY"
+          echo "Woke ${#pull_requests[@]} Dependabot PR(s) by closing and reopening them." >> "$GITHUB_STEP_SUMMARY"
