@@ -4,23 +4,40 @@ The SDK core is hazard-agnostic. A registry lets a caller attach hazard
 knowledge -- units, tail direction, eligibility defaults -- without the fitter
 hard-coding any of it. Nothing consults a registry unless one is passed in.
 
-``public_registry()`` returns a seed of the openly defined ETCCDI indices. A
-private catalogue registers its own specs into a
-registry of its own and passes that to the fitting policy.
+``public_registry()`` returns a seed of the openly defined ETCCDI indices
+(and, on request, the OS-Climate hazard indicators). A private catalogue
+registers its own specs into a registry of its own and passes that to the
+fitting policy. ``HazardRegistry.export_catalog`` publishes only an allowlist
+of per-hazard fields, so any new spec field is private by default.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
-from dataclasses import dataclass, field
-from typing import Literal
+from dataclasses import asdict, dataclass, field
+from dataclasses import fields as dataclass_fields
+from typing import Any, Literal
 
 __all__ = [
+    "CATALOG_PUBLIC_FIELDS",
     "EligibilityDefaults",
     "HazardRegistry",
     "HazardSpec",
+    "os_climate_registry",
     "public_registry",
 ]
+
+# What a user needs to interpret and trust a curve. Eligibility floors and
+# preferred families describe how a curve was tuned and stay private; a field
+# is exported only if it is listed here (or named explicitly by the caller).
+CATALOG_PUBLIC_FIELDS: tuple[str, ...] = (
+    "name",
+    "unit",
+    "value_semantics",
+    "tail",
+    "block",
+    "aliases",
+)
 
 
 @dataclass(frozen=True)
@@ -125,6 +142,33 @@ class HazardRegistry:
         spec = self.get(name)
         return None if spec is None else spec.eligibility
 
+    def export_catalog(
+        self, fields: Iterable[str] = CATALOG_PUBLIC_FIELDS
+    ) -> list[dict[str, Any]]:
+        """Export the registry as plain dicts holding only allowlisted fields.
+
+        One dict per hazard, sorted by name. Tuples become lists so the result
+        is JSON-ready. ``fields`` must be :class:`HazardSpec` field names;
+        anything else raises ``ValueError``. The default
+        (:data:`CATALOG_PUBLIC_FIELDS`) omits ``eligibility`` and
+        ``preferred_families``, and so does any field added to a spec later.
+        """
+        allowed = tuple(fields)
+        known = {f.name for f in dataclass_fields(HazardSpec)}
+        unknown = [name for name in allowed if name not in known]
+        if unknown:
+            raise ValueError(f"unknown catalogue fields: {unknown}")
+        catalog: list[dict[str, Any]] = []
+        for spec in sorted(self._specs.values(), key=lambda item: item.name):
+            entry: dict[str, Any] = {}
+            for name in allowed:
+                value = getattr(spec, name)
+                if name == "eligibility" and value is not None:
+                    value = asdict(value)
+                entry[name] = list(value) if isinstance(value, tuple) else value
+            catalog.append(entry)
+        return catalog
+
     def merged(self, other: HazardRegistry) -> HazardRegistry:
         """Return a new registry holding both; clashing names raise."""
         result = HazardRegistry()
@@ -147,9 +191,14 @@ class HazardRegistry:
 _SIGNED = EligibilityDefaults(minimum_informative_value=None)
 
 
-def public_registry() -> HazardRegistry:
-    """A fresh registry seeded with openly defined ETCCDI indices."""
+def public_registry(*, os_climate: bool = False) -> HazardRegistry:
+    """A fresh registry seeded with openly defined ETCCDI indices.
+
+    ``os_climate=True`` also registers :func:`os_climate_registry`.
+    """
     registry = HazardRegistry()
+    if os_climate:
+        registry.register_all(os_climate_registry())
     registry.register_all(
         (
             HazardSpec(
@@ -220,6 +269,95 @@ def public_registry() -> HazardRegistry:
                 "annual maximum consecutive wet days",
                 block="annual",
                 aliases=("CWD",),
+            ),
+            HazardSpec(
+                "fd",
+                "days",
+                "annual count of days with daily minimum temperature below 0 degC",
+                block="annual",
+                aliases=("FD",),
+            ),
+            HazardSpec(
+                "su",
+                "days",
+                "annual count of days with daily maximum temperature above 25 degC",
+                block="annual",
+                aliases=("SU",),
+            ),
+            HazardSpec(
+                "tr",
+                "days",
+                "annual count of days with daily minimum temperature above 20 degC",
+                block="annual",
+                aliases=("TR",),
+            ),
+            HazardSpec(
+                "dtr",
+                "degC",
+                "annual mean of daily temperature range (maximum minus minimum)",
+                block="annual",
+                aliases=("DTR",),
+            ),
+            HazardSpec(
+                "prcptot",
+                "mm",
+                "annual total precipitation on wet days (at least 1 mm)",
+                block="annual",
+                aliases=("PRCPTOT",),
+            ),
+            HazardSpec(
+                "r10mm",
+                "days",
+                "annual count of days with precipitation of at least 10 mm",
+                block="annual",
+                aliases=("R10mm",),
+            ),
+            HazardSpec(
+                "r20mm",
+                "days",
+                "annual count of days with precipitation of at least 20 mm",
+                block="annual",
+                aliases=("R20mm",),
+            ),
+            HazardSpec(
+                "r95p",
+                "mm",
+                "annual total precipitation on days above the 95th percentile "
+                "of wet days in the 1961-1990 base period",
+                block="annual",
+                aliases=("R95p",),
+            ),
+        )
+    )
+    return registry
+
+
+def os_climate_registry() -> HazardRegistry:
+    """Seed specs for OS-Climate ``hazard_type`` / ``indicator_id`` pairs.
+
+    Names are ``"<hazard_type>/<indicator_id>"`` as they appear in the
+    OS-Climate inventory (``crc_sdk.providers.os_climate``); units are those the
+    SDK's OS-Climate fixtures and ingest use. Only indicators whose meaning is
+    unambiguous from the inventory are listed. The ChronicHeat name keeps the
+    inventory's ``{temp_c}`` template for the threshold in degC.
+    """
+    registry = HazardRegistry()
+    registry.register_all(
+        (
+            HazardSpec(
+                "Wind/max_speed",
+                "m/s",
+                "maximum wind speed",
+            ),
+            HazardSpec(
+                "RiverineInundation/flood_depth",
+                "metres",
+                "riverine flood inundation depth",
+            ),
+            HazardSpec(
+                "ChronicHeat/days_tas/above/{temp_c}c",
+                "days/year",
+                "days per year with mean daily air temperature above {temp_c} degC",
             ),
         )
     )
