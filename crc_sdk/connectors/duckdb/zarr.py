@@ -1,5 +1,6 @@
 """Lazy Arrow bridge from chunked Zarr rasters into DuckDB."""
 
+import sys
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from math import ceil, floor
@@ -60,6 +61,7 @@ class ZarrRaster:
             )
         self.array = array
         self.metadata = metadata
+        self._session: Any = None  # keeps an Icechunk session alive
         # An explicit connection means the caller is already in control; only
         # build (and resource-tune) one when they didn't supply their own.
         self.connection = connection or DuckDBConnection.for_analytics(
@@ -67,6 +69,51 @@ class ZarrRaster:
         )
         self._axis_name, self._axis_values = self._read_axis()
         self._transform = self._read_transform()
+
+    @classmethod
+    def open_icechunk(
+        cls,
+        repository_or_session: Any,
+        *,
+        array_path: str,
+        metadata: RasterMetadata,
+        branch: str = "main",
+        snapshot_id: Optional[str] = None,
+        connection: Optional[DuckDBConnection] = None,
+        work_dir: Optional[Union[str, Path]] = None,
+    ) -> "ZarrRaster":
+        """Open a raster stored in an Icechunk (Zarr v3) repository.
+
+        `repository_or_session` is an `icechunk.Repository` (a read-only
+        session is opened on `branch`, or on `snapshot_id` when given, which
+        pins an immutable version) or an existing session exposing `.store`.
+        `array_path` is the array's path inside the repository. Needs the
+        `icechunk` (or `agriculture`) extra -- `icechunk`, `zarr>=3`, Python
+        3.12+ -- imported lazily. The session is kept alive for the raster's lifetime.
+        """
+        if sys.version_info < (3, 12):
+            raise ImportError("Icechunk access requires Python 3.12 or newer")
+        try:
+            import zarr
+        except ImportError as error:
+            raise ImportError(
+                "Icechunk access requires `pip install crc-sdk[icechunk]`"
+            ) from error
+        session = repository_or_session
+        if not hasattr(session, "store"):
+            if not hasattr(session, "readonly_session"):
+                raise TypeError(
+                    "expected an icechunk Repository or a session with a store"
+                )
+            if snapshot_id is not None:
+                session = session.readonly_session(snapshot_id=snapshot_id)
+            else:
+                session = session.readonly_session(branch)
+        root = zarr.open_group(store=session.store, mode="r")
+        array = root[array_path.strip("/")]
+        raster = cls(array, metadata, connection=connection, work_dir=work_dir)
+        raster._session = session
+        return raster
 
     @property
     def axis_name(self) -> str:
@@ -319,9 +366,7 @@ class ZarrRaster:
         if len(self.array.shape) == 2:
             values = self.array.vindex[rows, columns]
         else:
-            values = self.array.vindex[
-                axis_indices, repeated_rows, repeated_columns
-            ]
+            values = self.array.vindex[axis_indices, repeated_rows, repeated_columns]
         centers = [
             self._pixel_to_world(column + 0.5, row + 0.5)
             for column, row in zip(columns, rows)

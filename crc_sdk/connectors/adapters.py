@@ -21,6 +21,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from hashlib import sha256
+from pathlib import Path
 from typing import Any, Literal, Protocol, get_args, runtime_checkable
 
 import numpy as np
@@ -30,12 +31,13 @@ from crc_framework import (
     HurdleDistribution,
     QuantileFitDiagnostics,
     TabulatedDistribution,
+    fit_distribution,
     fit_hurdle_quantiles,
     fit_quantiles,
 )
 from crc_framework.distributions import DistributionFamily
 
-from crc_sdk._version import sdk_version
+from crc_sdk._version import framework_version, platform_tag, sdk_version
 from crc_sdk.connectors.duckdb.zarr import (
     Bounds,
     RasterCurve,
@@ -47,7 +49,14 @@ from crc_sdk.connectors.parquet import (
     validate_hazard_table,
 )
 from crc_sdk.geometry import intersecting_cells
-from crc_sdk.types import HazardDatasetMetadata, SourceProvenance
+from crc_sdk.types import (
+    CurveFitProvenance,
+    EnsembleDescriptor,
+    HazardDatasetMetadata,
+    ProbabilitySemantics,
+    SourceProvenance,
+    TemporalWindow,
+)
 
 
 @runtime_checkable
@@ -67,6 +76,26 @@ class CurveSource(Protocol):
     def metadata(self) -> RasterMetadata: ...
 
     def iter_curves(self, bounds: Bounds | None = None) -> Iterator[RasterCurve]: ...
+
+
+@dataclass(frozen=True)
+class CurveSourceInfo:
+    """Optional schema-1.3 metadata a curve source can offer its canonicalizer.
+
+    A source that carries one (`BlockExtremaCurveSource.info`, set by the ERA5
+    plan) gets licence/attribution, its temporal window, ensemble and
+    probability semantics -- plus dataset-wide fit provenance -- recorded in
+    the canonical file. Sources without one keep their existing metadata.
+    """
+
+    uri: str | None = None
+    licence: str | None = None
+    attribution: str | None = None
+    retrieved_at: str | None = None
+    checksum: str | None = None
+    temporal_window: TemporalWindow | None = None
+    ensemble: EnsembleDescriptor | None = None
+    probability_semantics: ProbabilitySemantics | None = None
 
 
 @dataclass(frozen=True)
@@ -109,8 +138,28 @@ class CurveFitIngestPolicy:
     # exceed the hazard threshold and carry a constant, unfittable curve;
     # "skip" drops those rather than aborting the whole area ingest.
     on_fit_failure: Literal["raise", "skip"] = "raise"
+    # "sample_mle" fits the per-block samples themselves with crc-framework's
+    # maximum-likelihood `fit_distribution` instead of least-squares on the
+    # plotting-position knots; only for sources whose curve values are genuine
+    # samples (`values_are_samples`), never for probability-labelled inputs.
+    fit_method: Literal["quantile_least_squares", "sample_mle"] = (
+        "quantile_least_squares"
+    )
+    # Persist one row per source pixel (fitted, or skipped with its reason) to
+    # this Parquet path (ADR-0007).
+    diagnostics: str | Path | None = None
 
     def __post_init__(self) -> None:
+        if self.fit_method not in ("quantile_least_squares", "sample_mle"):
+            raise ValueError("fit_method must be quantile_least_squares or sample_mle")
+        if self.fit_method == "sample_mle" and (
+            self.hurdle is not None
+            or self.maximum_normalized_rmse is not None
+            or self.maximum_absolute_residual is not None
+        ):
+            raise ValueError(
+                "sample_mle does not support hurdle fits or quantile quality gates"
+            )
         if not 0 <= self.h3_resolution <= 15:
             raise ValueError("H3 resolution must be between 0 and 15")
         if self.family not in get_args(DistributionFamily):
@@ -162,8 +211,8 @@ class CanonicalHazardStream:
         )
 
 
-def _source_id(provider: str, path: str, curve: RasterCurve) -> str:
-    identity = f"{provider}\0{path}\0{curve.row}\0{curve.column}".encode()
+def _source_id(provider: str, path: str, row: int, column: int) -> str:
+    identity = f"{provider}\0{path}\0{row}\0{column}".encode()
     return sha256(identity).hexdigest()
 
 
@@ -172,6 +221,23 @@ def _metadata(
 ) -> HazardDatasetMetadata:
     values = source.metadata
     support = getattr(source, "return_period_support", None)
+    info: CurveSourceInfo | None = getattr(source, "info", None)
+    if info is None:
+        return HazardDatasetMetadata(
+            h3_resolution=policy.h3_resolution,
+            return_period_tail=policy.tail,
+            return_period_support=support,
+            value_unit=values.units,
+            value_semantics=policy.value_semantics or values.indicator_id,
+            producer=policy.producer,
+            creation_version=policy.creation_version,
+            source=SourceProvenance(
+                provider=provider,
+                dataset=f"{values.hazard_type}:{values.indicator_id}",
+                uri=values.path,
+                version=policy.source_version,
+            ),
+        )
     return HazardDatasetMetadata(
         h3_resolution=policy.h3_resolution,
         return_period_tail=policy.tail,
@@ -183,18 +249,44 @@ def _metadata(
         source=SourceProvenance(
             provider=provider,
             dataset=f"{values.hazard_type}:{values.indicator_id}",
-            uri=values.path,
+            uri=info.uri or values.path,
             version=policy.source_version,
+            licence=info.licence,
+            attribution=info.attribution,
+            retrieved_at=info.retrieved_at,
+            checksum=info.checksum,
         ),
+        fitting=_fit_provenance(policy),
+        probability_semantics=info.probability_semantics,
+        temporal_window=info.temporal_window,
+        ensemble=info.ensemble,
+    )
+
+
+def _fit_provenance(policy: CurveFitIngestPolicy) -> CurveFitProvenance:
+    sample_fit = policy.fit_method == "sample_mle"
+    return CurveFitProvenance(
+        method=policy.fit_method,
+        initialization="lmoments" if sample_fit else None,
+        input_kind="samples",
+        platform=platform_tag(),
+        crc_framework_version=framework_version(),
+        families=(policy.family,),
+        atom_policy="none",
+        maximum_normalized_rmse=policy.maximum_normalized_rmse,
+        maximum_absolute_residual=policy.maximum_absolute_residual,
+        on_fit_failure=policy.on_fit_failure,
     )
 
 
 def _fit_curve(
     tabulated: TabulatedDistribution,
     policy: CurveFitIngestPolicy,
-) -> tuple[Any, Any]:
+) -> tuple[Any, Any, Any]:
     distribution: FittedDistribution | HurdleDistribution
     diagnostics: QuantileFitDiagnostics
+    if policy.fit_method == "sample_mle":
+        raise AssertionError("sample fits go through _fit_samples")
     if policy.hurdle is None:
         quantile_result = fit_quantiles(tabulated, family=policy.family)
         distribution = quantile_result.distribution
@@ -232,7 +324,13 @@ def _fit_curve(
         if isinstance(distribution, HurdleDistribution)
         else distribution
     )
-    return distribution, base
+    return distribution, base, diagnostics
+
+
+def _fit_samples(values: Any, policy: CurveFitIngestPolicy) -> tuple[Any, Any]:
+    """Maximum-likelihood fit of one pixel's genuine block samples."""
+    result = fit_distribution(values, family=policy.family)
+    return result.distribution, result.distribution
 
 
 def _canonical_batches(
@@ -255,77 +353,169 @@ def _canonical_batches(
         raise ValueError(
             f"{source.metadata.path} has axis {source.axis_name!r}, not return periods"
         )
-    for curve in source.iter_curves(bounds):
-        valid = np.isfinite(curve.axis_values) & np.isfinite(curve.values)
-        periods = curve.axis_values[valid]
-        values = curve.values[valid]
-        if len(values) < 4:
-            continue
-        try:
-            tabulated = TabulatedDistribution.from_return_periods(
-                periods,
-                values,
-                tail=policy.tail,
-            )
-            distribution, base = _fit_curve(tabulated, policy)
-        except ValueError as error:
-            # Non-monotonic quantiles (e.g. small per-return-period modeling
-            # noise near a DEM sink or tile edge) fail the same way an
-            # unconverged/out-of-tolerance fit does -- both mean "this pixel
-            # can't be usefully fitted," so on_fit_failure governs both.
-            if policy.on_fit_failure == "skip":
-                continue
-            raise ValueError(
-                f"failed to fit source pixel row={curve.row}, "
-                f"column={curve.column}: {error}"
-            ) from error
-        geometry = Polygon(curve.boundary)
-        source_id = _source_id(provider, source.metadata.path, curve)
-        cells = intersecting_cells(geometry, policy.h3_resolution)
-        if not cells:
-            continue
-        curve_kind = (
-            "hurdle" if isinstance(distribution, HurdleDistribution) else "fitted"
+    if policy.fit_method == "sample_mle" and not getattr(
+        source, "values_are_samples", False
+    ):
+        raise ValueError(
+            "fit_method='sample_mle' needs a source whose curve values are "
+            "genuine samples; probability-labelled inputs use quantile fits"
         )
-        for cell_index in cells:
-            hazard_rows.append(
-                {
-                    "cell_index": cell_index,
-                    "source_id": source_id,
-                    "source_geometry": geometry.wkb,
-                    "hazard_name": source.metadata.hazard_type,
-                    "horizon": source.metadata.year,
-                    "pathway": source.metadata.scenario,
-                    "curve_kind": curve_kind,
-                    "curve_type": base.family,
-                    "curve_shape": base.shape,
-                    "curve_location": base.location,
-                    "curve_scale": base.scale,
-                    "curve_atom_probability": (
-                        distribution.atom_probability
-                        if isinstance(distribution, HurdleDistribution)
-                        else None
-                    ),
-                    "curve_atom_location": (
-                        distribution.atom_location
-                        if isinstance(distribution, HurdleDistribution)
-                        else None
-                    ),
-                }
+    writer = None
+    records: list[dict[str, Any]] = []
+    if policy.diagnostics is not None:
+        # Imported here: `crc_sdk.fitting` imports this module.
+        from crc_sdk.fitting.diagnostics import DiagnosticsWriter
+
+        writer = DiagnosticsWriter(policy.diagnostics)
+
+    def record_cell(
+        row: int,
+        column: int,
+        blocks: int,
+        outcome: str,
+        *,
+        cell: int | None = None,
+        source_id: str | None = None,
+        reason: str | None = None,
+        message: str | None = None,
+        base: Any = None,
+        quality: Any = None,
+    ) -> None:
+        if writer is None:
+            return
+        records.append(
+            {
+                "cell_index": cell,
+                "source_id": source_id
+                or _source_id(provider, source.metadata.path, row, column),
+                "hazard_name": source.metadata.hazard_type,
+                "horizon": source.metadata.year,
+                "pathway": source.metadata.scenario,
+                "outcome": outcome,
+                "curve_type": base.family if base is not None else None,
+                "normalized_rmse": getattr(quality, "normalized_rmse", None),
+                "maximum_absolute_residual": getattr(
+                    quality, "maximum_absolute_residual", None
+                ),
+                "attempted_families": [policy.family],
+                "failed_families": [policy.family] if outcome != "fitted" else [],
+                "fallback": False,
+                "reason": reason,
+                "message": message or f"{blocks} blocks",
+                "treatment": policy.fit_method,
+                "minimum_informative_value": None,
+            }
+        )
+
+    def record(curve: RasterCurve, outcome: str, **details: Any) -> None:
+        record_cell(curve.row, curve.column, len(curve.values), outcome, **details)
+
+    if writer is not None and hasattr(source, "skip_sink"):
+        # Cells a source drops before yielding a curve (no valid blocks, too
+        # few of them) are traced too, not only the ones that fail to fit.
+        source.skip_sink = lambda row, column, reason, message: record_cell(
+            row, column, 0, "skipped", reason=reason, message=message
+        )
+
+    try:
+        for curve in source.iter_curves(bounds):
+            valid = np.isfinite(curve.axis_values) & np.isfinite(curve.values)
+            periods = curve.axis_values[valid]
+            values = curve.values[valid]
+            if len(values) < 4:
+                record(curve, "skipped", reason="too_few_knots")
+                continue
+            try:
+                quality: Any = None
+                if policy.fit_method == "sample_mle":
+                    distribution, base = _fit_samples(values, policy)
+                else:
+                    tabulated = TabulatedDistribution.from_return_periods(
+                        periods,
+                        values,
+                        tail=policy.tail,
+                    )
+                    distribution, base, quality = _fit_curve(tabulated, policy)
+            except ValueError as error:
+                # Non-monotonic quantiles (e.g. small per-return-period modeling
+                # noise near a DEM sink or tile edge) fail the same way an
+                # unconverged/out-of-tolerance fit does -- both mean "this pixel
+                # can't be usefully fitted," so on_fit_failure governs both.
+                if policy.on_fit_failure == "skip":
+                    record(curve, "skipped", reason="fit_failed", message=str(error))
+                    continue
+                raise ValueError(
+                    f"failed to fit source pixel row={curve.row}, "
+                    f"column={curve.column}: {error}"
+                ) from error
+            geometry = Polygon(curve.boundary)
+            source_id = _source_id(
+                provider, source.metadata.path, curve.row, curve.column
             )
-        if len(hazard_rows) >= policy.batch_rows:
+            cells = intersecting_cells(geometry, policy.h3_resolution)
+            if not cells:
+                record(curve, "skipped", reason="no_cells", source_id=source_id)
+                continue
+            record(
+                curve,
+                "fitted",
+                cell=int(cells[0]),
+                source_id=source_id,
+                base=base,
+                quality=quality,
+            )
+            curve_kind = (
+                "hurdle" if isinstance(distribution, HurdleDistribution) else "fitted"
+            )
+            for cell_index in cells:
+                hazard_rows.append(
+                    {
+                        "cell_index": cell_index,
+                        "source_id": source_id,
+                        "source_geometry": geometry.wkb,
+                        "hazard_name": source.metadata.hazard_type,
+                        "horizon": source.metadata.year,
+                        "pathway": source.metadata.scenario,
+                        "curve_kind": curve_kind,
+                        "curve_type": base.family,
+                        "curve_shape": base.shape,
+                        "curve_location": base.location,
+                        "curve_scale": base.scale,
+                        "curve_atom_probability": (
+                            distribution.atom_probability
+                            if isinstance(distribution, HurdleDistribution)
+                            else None
+                        ),
+                        "curve_atom_location": (
+                            distribution.atom_location
+                            if isinstance(distribution, HurdleDistribution)
+                            else None
+                        ),
+                    }
+                )
+            if len(hazard_rows) >= policy.batch_rows:
+                hazards = validate_hazard_table(
+                    pa.Table.from_pylist(hazard_rows, schema=hazard_schema),
+                    metadata=metadata,
+                )
+                yield CanonicalHazardBatch(hazard_rows=hazards)
+                hazard_rows.clear()
+            if writer is not None and len(records) >= 65_536:
+                writer.write(records)
+                records.clear()
+        if hazard_rows:
             hazards = validate_hazard_table(
                 pa.Table.from_pylist(hazard_rows, schema=hazard_schema),
                 metadata=metadata,
             )
             yield CanonicalHazardBatch(hazard_rows=hazards)
-            hazard_rows.clear()
-    if hazard_rows:
-        hazards = validate_hazard_table(
-            pa.Table.from_pylist(hazard_rows, schema=hazard_schema),
-            metadata=metadata,
-        )
-        yield CanonicalHazardBatch(hazard_rows=hazards)
+        if writer is not None:
+            writer.write(records)
+            writer.finish()
+    except BaseException:
+        if writer is not None:
+            writer.abort()
+        raise
 
 
 def canonicalize_curve_source(

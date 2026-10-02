@@ -23,6 +23,7 @@ from crc_framework.distributions import (
 
 from crc_sdk.connectors.duckdb import detected_cpu_count
 from crc_sdk.types import CurveParameters, NoDataCurveError
+from crc_sdk.types.dataset import TemporalWindow
 
 CURVE_COLUMNS = (
     "curve_kind",
@@ -74,6 +75,101 @@ def warn_if_extrapolated(
             stacklevel=stacklevel,
         )
     return extrapolated
+
+
+class ProbabilitySemanticsWarning(UserWarning):
+    """Return-period evaluation on data whose probability axis is not one."""
+
+
+class HorizonExtrapolationWarning(UserWarning):
+    """A horizon was requested outside the dataset's fitted temporal window."""
+
+
+# ADR-0003: only these two kinds are not annual-exceedance-like. Absent
+# (``None``) means unspecified, and `estimate_confidence` is not refused.
+_NOT_RETURN_PERIOD_SEMANTICS = frozenset(
+    {"within_period_percentile", "projection_uncertainty"}
+)
+
+
+def _semantics_of(source: Any) -> str | None:
+    if source is None or isinstance(source, str):
+        return source
+    if isinstance(source, Mapping):
+        value = source.get("probability_semantics")
+    else:
+        value = getattr(source, "probability_semantics", None)
+    return None if value is None else str(value)
+
+
+def check_return_period_semantics(
+    metadata_or_semantics: Any,
+    *,
+    strict: bool = False,
+    stacklevel: int = 2,
+) -> bool:
+    """Check that return-period evaluation is meaningful for a dataset (ADR-0003).
+
+    Accepts dataset metadata (anything with a ``probability_semantics``
+    attribute, or a mapping with that key) or the semantics string itself.
+    On `within_period_percentile` or `projection_uncertainty` data -- a daily
+    percentile or an ensemble spread, not a return period -- this warns with
+    :class:`ProbabilitySemanticsWarning`, or raises ``ValueError`` when
+    ``strict=True``. `annual_exceedance`, `annual_value_distribution`,
+    `estimate_confidence` and unspecified (``None``) are silent. Returns
+    ``True`` when return-period evaluation is supported.
+    """
+    semantics = _semantics_of(metadata_or_semantics)
+    if semantics not in _NOT_RETURN_PERIOD_SEMANTICS:
+        return True
+    message = (
+        f"probability_semantics={semantics!r} is not a return-period "
+        "distribution; return-period values are not meaningful"
+    )
+    if strict:
+        raise ValueError(message)
+    import warnings
+
+    warnings.warn(message, ProbabilitySemanticsWarning, stacklevel=stacklevel)
+    return False
+
+
+def warn_if_outside_window(
+    horizon: int,
+    window: TemporalWindow | None,
+    *,
+    strict: bool = False,
+    stacklevel: int = 2,
+) -> bool:
+    """Warn when a horizon lies outside a dataset's fitted temporal window.
+
+    A ``window`` dataset covers ``start_year..end_year`` inclusive; a
+    ``time_invariant`` one covers only its ``reference_year``. Outside that the
+    evaluation is an extrapolation: this warns with
+    :class:`HorizonExtrapolationWarning`, or raises ``ValueError`` when
+    ``strict=True``. ``window=None`` (no declared window) is silent. Returns
+    ``True`` when the horizon is inside the window.
+    """
+    if window is None:
+        return True
+    if isinstance(horizon, bool) or not isinstance(horizon, int):
+        raise TypeError("horizon must be an integer year")
+    if window.kind == "time_invariant":
+        inside = horizon == window.reference_year
+        described = f"time-invariant at reference year {window.reference_year}"
+    else:
+        assert window.start_year is not None and window.end_year is not None
+        inside = window.start_year <= horizon <= window.end_year
+        described = f"window {window.start_year}-{window.end_year}"
+    if inside:
+        return True
+    message = f"horizon {horizon} is outside the dataset's temporal {described}"
+    if strict:
+        raise ValueError(message)
+    import warnings
+
+    warnings.warn(message, HorizonExtrapolationWarning, stacklevel=stacklevel)
+    return False
 
 
 def _python_value(value: Any) -> Any:

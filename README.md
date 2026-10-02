@@ -418,6 +418,109 @@ manifests pin the resolved EDO version, years, bounds, source URLs, local
 objects, and checksums; `prefetch()` followed by `mode="offline"` avoids later
 network access.
 
+### ERA5 historical baselines
+
+ERA5 hourly reanalysis becomes an annual-extreme baseline through the same lazy
+workflow. Supported recipes are `txx` (annual maximum of daily maximum 2 m
+temperature), `tnn`, `rx1day` and `rx5day`; days are UTC days. Data is read
+anonymously from public Zarr copies (`crc-sdk[zarr,netcdf,geometry]`), reduced
+to one small file per year, and only those annual extremes are cached.
+
+```python
+from crc_sdk.workflows import BlockExtremaPolicy, HazardDataset
+
+plan = (
+    HazardDataset.era5("txx", store="wb2-1p5")  # or "arco-0p25" (native, slow)
+    .for_area((-10.0, 36.0, 22.0, 56.0), land_only=True)
+    .years(1991, 2020)
+    .cache("cache/era5", mode="reuse")
+    .canonicalize(policy=BlockExtremaPolicy.curated(h3_resolution=5))
+)
+print(plan.explain())
+hazard = plan.materialize("hazards/era5-txx.parquet")
+annual = plan.annual_extremes()  # the per-year samples behind every curve
+```
+
+`wb2-1p5` is a 1.5 degree copy (about 30 seconds per variable-year);
+`arco-0p25` is native 0.25 degrees but one hour per chunk, so expect minutes per
+variable-year. Only final (non-ERA5T) years are used, and the cache is keyed by
+the final record's end date. Files carry schema-1.3 metadata: CC-BY-4.0
+licence and attribution, retrieval time, the fitted window
+(`temporal_window`), `ensemble.pooling="single_member"` and
+`probability_semantics="annual_exceedance"`. Pass
+`BlockExtremaPolicy(diagnostics="diag.parquet")` for a row-level trace of every
+fitted or skipped cell. See `docs/spikes/era5.md` for access details and caveats:
+reanalysis is a blend of observations and a model, convective rainfall extremes
+are underestimated, and a grid cell is an area average, not a point.
+
+`BlockExtremaCurveSource` (`crc_sdk.connectors.blocks`) is the generic engine
+behind this and the EDO drought workflow: any reader that yields per-block
+statistics (a year, a season or a water year; max, min, k-day sum or mean, or a
+threshold count) can be fitted with a plotting position and least squares, or
+with `fit_method="sample_mle"`.
+
+### Bringing your own data
+
+`HazardDataset.from_table`, `from_zarr` and `from_raster` onboard local data
+through the same lazy plan (`BYOPlan`): `canonicalize(policy=...)`, `explain()`,
+`materialize(output)`, `ensure_materialized()` and `for_assets(...)`. Nothing
+is opened or fitted until `materialize()`; `ensure_materialized()` and
+`for_assets(...)` also need `.cache(directory)`, which gives a deterministic
+canonical path (`mode="refresh"` rewrites it). Tables use the fit policy
+described above, so diagnostics, strictness, `lower_bound` and the 1.3
+metadata flow through unchanged.
+
+A table of distributions already keyed by H3 cell (Parquet, CSV or any
+DuckDB-readable path, or an Arrow table):
+
+```python
+from crc_sdk.fitting import CDFColumnSchema, CDFCurveFitPolicy
+from crc_sdk.types import SourceProvenance
+from crc_sdk.workflows import HazardDataset
+
+policy = CDFCurveFitPolicy(
+    h3_resolution=5, family="gumbel_r", value_unit="mm",
+    value_semantics="annual maximum 1-day rainfall", producer="me",
+    source=SourceProvenance(provider="lab", dataset="rx1day", version="v1"),
+    source_id="lab-rx1day", probability_semantics="annual_value_distribution",
+)
+plan = HazardDataset.from_table(
+    "rx1day.parquet", columns=CDFColumnSchema(), policy=policy,
+    probabilities=[i / 10 for i in range(11)],  # or return_periods=[...]
+)
+hazard = plan.materialize("hazards/rx1day.parquet")
+```
+
+A return-period Zarr array (needs `crc-sdk[zarr]` and `crc-sdk[geometry]`),
+optionally windowed to WGS84 bounds:
+
+```python
+from crc_sdk.connectors import CurveFitIngestPolicy
+
+plan = HazardDataset.from_zarr(
+    "s3://bucket/flood.zarr", array="depth", storage_options={"anon": True},
+    hazard_type="RiverineInundation", indicator_id="flood_depth",
+    scenario="historical", year=2020, units="m",
+    policy=CurveFitIngestPolicy(h3_resolution=8, family="gumbel_r", producer="me"),
+).for_area((7.75, 49.75, 8.45, 50.25))
+print(plan.explain())
+hazard = plan.cache("cache/byo").ensure_materialized()
+```
+
+The Zarr array carries `index_name` (containing "return period"),
+`index_values` and `transform_mat3x3` attributes. Same-grid GeoTIFFs, one per
+explicit return period (needs `crc-sdk[raster]` and `crc-sdk[geometry]`):
+
+```python
+plan = HazardDataset.from_raster(
+    {10: "rp10.tif", 50: "rp50.tif", 100: "rp100.tif", 500: "rp500.tif"},
+    hazard_type="RiverineInundation", indicator_id="flood_depth",
+    scenario="historical", year=2020, units="m",
+    policy=CurveFitIngestPolicy(h3_resolution=8, family="gumbel_r", producer="me"),
+)
+hazard = plan.for_area((7.75, 49.75, 8.45, 50.25)).materialize("hazards/flood.parquet")
+```
+
 ### Evaluating asset portfolios at return periods
 
 Canonical curve parameters can be evaluated for a portfolio without returning

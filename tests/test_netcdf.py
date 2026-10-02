@@ -8,11 +8,8 @@ import numpy as np
 import pytest
 from shapely.geometry import Polygon  # type: ignore[import-untyped]
 
-from crc_sdk.connectors.duckdb.netcdf import (
-    NetCDFRaster,
-    _pixel_boundary,
-    _strip_row_count,
-)
+from crc_sdk.connectors.blocks import _strip_row_count
+from crc_sdk.connectors.duckdb.netcdf import NetCDFRaster, _pixel_boundary
 
 # 4x4 grid, descending lat (like EDO's own north-to-south axis) and
 # ascending lon; row 0 (northernmost) holds the largest values so

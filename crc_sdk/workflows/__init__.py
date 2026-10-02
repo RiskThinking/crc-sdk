@@ -2,9 +2,14 @@
 
 from ._remote import MaterializationResult, PrefetchResult
 from .agriculture import AgriculturalLayer
+from .blocks import BlockExtremaPolicy
+from .byo import BYOPlan
 from .distributions import (
     CURVE_COLUMNS,
+    HorizonExtrapolationWarning,
+    ProbabilitySemanticsWarning,
     ReturnPeriodExtrapolationWarning,
+    check_return_period_semantics,
     curve_parameters_from_row,
     curve_quantiles,
     distribution_from_hazard_row,
@@ -12,6 +17,7 @@ from .distributions import (
     return_periods_to_probabilities,
     stream_curve_quantiles_wide_to_parquet,
     warn_if_extrapolated,
+    warn_if_outside_window,
 )
 from .edo import (
     EDOAreaPlan,
@@ -19,6 +25,12 @@ from .edo import (
     EDODroughtPolicy,
     EDOSourcePlan,
     EDOYearPlan,
+)
+from .era5 import (
+    ERA5AreaPlan,
+    ERA5CanonicalizationPlan,
+    ERA5SourcePlan,
+    ERA5YearPlan,
 )
 from .jrc import (
     JRCAreaPlan,
@@ -48,6 +60,12 @@ from .tiling import (
 )
 
 __all__ = [
+    "BlockExtremaPolicy",
+    "ERA5AreaPlan",
+    "ERA5CanonicalizationPlan",
+    "ERA5SourcePlan",
+    "ERA5YearPlan",
+    "BYOPlan",
     "AgriculturalLayer",
     "AssetPortfolio",
     "CellColumn",
@@ -73,7 +91,11 @@ __all__ = [
     "PrefetchResult",
     "PortfolioEvaluation",
     "PortfolioEvaluationResult",
+    "HorizonExtrapolationWarning",
+    "ProbabilitySemanticsWarning",
     "ReturnPeriodExtrapolationWarning",
+    "check_return_period_semantics",
+    "warn_if_outside_window",
     "curve_parameters_from_row",
     "curve_quantiles",
     "curve_quantiles_at",
