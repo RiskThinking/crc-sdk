@@ -19,7 +19,6 @@ mirroring `GeoTiffRaster.open`'s own convention exactly.
 from __future__ import annotations
 
 import math
-import warnings
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,6 +28,17 @@ import fsspec  # type: ignore[import-untyped]
 import numpy as np
 import pyarrow as pa  # type: ignore[import-untyped]
 
+from crc_sdk.connectors.blocks import (
+    STRIP_BYTES,
+    BlockExtremaCurveSource,
+    BlockSpec,
+    BlockStatistic,
+    _index_range,
+    _strip_row_count,
+    pixel_boundary,
+    plotting_position_curve,
+    reduce_block_samples,
+)
 from crc_sdk.geometry.h3 import (
     max_pixel_spacing_m,
     pixel_grid_resolution,
@@ -40,11 +50,8 @@ from crc_sdk.geometry.h3 import (
 from .connection import DuckDBConnection, default_work_dir
 from .geotiff import _materialize_local
 from .stream import ArrowBatchSource, DuckDBPipeline
-from .zarr import Bounds, Point, RasterCurve, RasterMetadata
+from .zarr import Bounds, Point, RasterMetadata
 
-# Decompressed bytes per strip read; bounds worker RAM independent of raster
-# size while keeping the HDF5 chunk-read count low. Same default as GeoTIFF.
-STRIP_BYTES = 256 * 1024**2
 CHUNK_POINTS = 262_144
 
 
@@ -89,46 +96,6 @@ def _fill_value(variable: Any, override: float | None) -> float | None:
         return None
     value = np.asarray(raw).reshape(-1)[0]
     return float(value)
-
-
-def _index_range(
-    coords: np.ndarray, low: float, high: float, step: float
-) -> tuple[int, int]:
-    """Half-open `[start, stop)` index range covering `[low, high]` along `coords`.
-
-    Works regardless of whether `coords` is ascending or descending (EDO's
-    own `lat` axis runs north-to-south, i.e. descending).
-    """
-    half_step = abs(step) / 2
-    mask = (coords >= low - half_step) & (coords <= high + half_step)
-    indices = np.flatnonzero(mask)
-    if indices.size == 0:
-        raise ValueError("bounds do not intersect the raster")
-    return int(indices.min()), int(indices.max()) + 1
-
-
-def _strip_row_count(
-    strip_bytes: int,
-    width: int,
-    itemsize: int,
-    block_height: int,
-    *,
-    leading_axis: int = 1,
-) -> int:
-    """Row count per strip, bounding `leading_axis * rows * width * itemsize`
-    by `strip_bytes` and aligned to `block_height`.
-
-    `leading_axis` is 1 for a single-time-slice read (`NetCDFRaster`); a
-    caller reading `leading_axis` steps per row at once (e.g.
-    `EDOAnnualMinimaCurveSource` reading a whole year's dekads before
-    reducing them) must pass that count, or the strip is undersized by
-    roughly that factor -- the actual resident array before any reduction
-    is `(leading_axis, rows, width)`, not `(rows, width)`.
-    """
-    rows_per_strip = max(
-        block_height, strip_bytes // max(1, width * itemsize * leading_axis)
-    )
-    return max(block_height, (rows_per_strip // block_height) * block_height)
 
 
 class NetCDFRaster:
@@ -537,61 +504,103 @@ def _pixel_boundary(
     """Pixel corner boundary, in the same counter-clockwise convention as
     `ZarrRaster.pixel_boundary`/`geotiff._pixel_boundary`.
 
-    Uses `abs(step)` rather than the signed step: unlike a GeoTIFF/Zarr
-    raster (always stored north-up, i.e. row index increasing always means
-    latitude decreasing), a NetCDF coordinate array's direction is not
-    guaranteed by the format -- EDO's own `lat` happens to run north-to-
-    south (descending), but nothing else here assumes that. Corners are
-    built in a fixed NW/SW/SE/NE geographic order instead of one derived
-    from the coordinate array's own direction, so the ring winds the same
-    way regardless of whether `lat`/`lon` are ascending or descending.
+    See `crc_sdk.connectors.blocks.pixel_boundary` for why the corners are
+    built from `abs(step)` in a fixed NW/SW/SE/NE order.
     """
-    half_lat = abs(raster._lat_step) / 2
-    half_lon = abs(raster._lon_step) / 2
-    lat = float(raster._lat[row])
-    lon = float(raster._lon[column])
-    return (
-        (lon - half_lon, lat + half_lat),
-        (lon - half_lon, lat - half_lat),
-        (lon + half_lon, lat - half_lat),
-        (lon + half_lon, lat + half_lat),
+    return pixel_boundary(
+        raster._lat, raster._lon, raster._lat_step, raster._lon_step, row, column
     )
 
 
-def _annual_minima_curve(annual_minima: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def _annual_minima_curve(
+    annual_minima: np.ndarray[Any, Any],
+) -> tuple[np.ndarray[Any, Any], np.ndarray[Any, Any]]:
     """One pixel's per-year minima -> (periods, values) ready to fit.
 
-    Treats each year's block minimum as one extreme-value sample (missing
-    years, e.g. a pixel with no valid dekad that year, are dropped rather
-    than zero-filled). Assigns each an empirical return period via the
-    Gringorten plotting position (`a = 0.44`, a standard, mildly
-    conservative choice for annual extremes) -- the estimate that this
-    value's severity recurs, on average, once every that-many years. There
-    is no distribution-family assumption here; the plotting position is
-    purely rank-based, ready to fit like any other tabulated curve via
-    `TabulatedDistribution.from_return_periods(periods, values,
-    tail="lower")` (the periods decrease as the values increase, the shape
-    a "lower" fit expects -- rarer years are *more* severe, i.e. *lower*
-    SMI, not higher).
-
-    Returns two empty arrays if fewer than 4 years are valid -- the same
-    per-pixel curve floor `_canonical_batches` (crc_sdk.connectors.adapters)
-    already enforces for any curve source, checked here too so a caller
-    iterating this source directly sees the same "too few knots" signal.
+    The lower-tail case of `crc_sdk.connectors.blocks.plotting_position_curve`:
+    each year's block minimum is one extreme-value sample, and rarer years are
+    *lower* SMI, the shape a ``tail="lower"`` fit expects. Kept as a named
+    helper for callers iterating an EDO source directly.
     """
-    valid = annual_minima[np.isfinite(annual_minima)]
-    n = valid.size
-    if n < 4:
-        return np.array([]), np.array([])
-    values = np.sort(valid)
-    ranks = np.arange(1, n + 1, dtype=np.float64)
-    probabilities = (ranks - 0.44) / (n + 0.12)
-    periods = 1.0 / probabilities
-    return periods, values
+    return plotting_position_curve(annual_minima, "lower")
 
 
-@dataclass
-class EDOAnnualMinimaCurveSource:
+class NetCDFBlockReader:
+    """`BlockReader` over one `NetCDFRaster` per block label (one file per year).
+
+    Each file's whole time axis is one block: for a bounded window it is read
+    in one strided read per strip and reduced by ``spec.statistic`` (EDO's
+    dekadal SMI -> its annual minimum). A cached "annual extremes" file with a
+    single time step reduces to itself under any statistic.
+    """
+
+    def __init__(
+        self,
+        rasters: dict[int, NetCDFRaster],
+        *,
+        spec: BlockSpec,
+        strict_grid: bool = True,
+    ) -> None:
+        if not rasters:
+            raise ValueError("at least one year is required")
+        self.rasters = rasters
+        self.spec = spec
+        self._labels = tuple(sorted(rasters))
+        self._reference = rasters[self._labels[0]]
+        if strict_grid:
+            for year, raster in rasters.items():
+                if not np.array_equal(
+                    raster._lat, self._reference._lat
+                ) or not np.array_equal(raster._lon, self._reference._lon):
+                    raise ValueError(
+                        f"year {year} raster grid does not match the others "
+                        "in this stack"
+                    )
+
+    @property
+    def lat(self) -> np.ndarray[Any, Any]:
+        return self._reference._lat
+
+    @property
+    def lon(self) -> np.ndarray[Any, Any]:
+        return self._reference._lon
+
+    @property
+    def labels(self) -> tuple[int, ...]:
+        return self._labels
+
+    @property
+    def leading_axis_samples(self) -> int:
+        return max(int(raster._variable.shape[0]) for raster in self.rasters.values())
+
+    @property
+    def block_height(self) -> int:
+        chunk_shape = getattr(self._reference._variable, "chunks", None)
+        return int(chunk_shape[1]) if chunk_shape else 1
+
+    def reduce_block(
+        self, label: int, rows: slice, columns: slice
+    ) -> np.ndarray[Any, Any]:
+        raster = self.rasters[label]
+        block = np.asarray(
+            raster._variable[:, rows, columns],
+            dtype=np.float64,
+        )
+        finite = np.isfinite(block)
+        if raster.nodata is not None:
+            finite &= block != raster.nodata
+        return reduce_block_samples(np.where(finite, block, np.nan), self.spec)
+
+    def close(self) -> None:
+        for raster in self.rasters.values():
+            raster.close()
+
+
+#: EDO's annual block is the whole file: its minimum over the dekads.
+_EDO_SPEC = BlockSpec(statistic=BlockStatistic.minimum())
+
+
+class EDOAnnualMinimaCurveSource(BlockExtremaCurveSource):
     """Presents N years of EDO dekadal SMI as one annual-block-minima curve source.
 
     Each year's SMI file is opened once (one `NetCDFRaster` per year, at
@@ -604,119 +613,24 @@ class EDOAnnualMinimaCurveSource:
     and OS-Climate both use, via `crc_sdk.connectors.jrc_edo.canonicalize_edo_drought`
     -- just with empirical (Gringorten) plotting-position return periods
     instead of literal return-period rasters or quantile samples.
+
+    A thin, EDO-flavoured constructor over `BlockExtremaCurveSource` with a
+    `NetCDFBlockReader` -- the regression anchor for the generic source.
     """
 
-    rasters: dict[int, NetCDFRaster]
-    metadata: RasterMetadata
-    strip_bytes: int = STRIP_BYTES
-
-    def __post_init__(self) -> None:
-        if not self.rasters:
-            raise ValueError("at least one year is required")
-        if self.strip_bytes < 1:
-            raise ValueError("strip_bytes must be positive")
-        self._years = tuple(sorted(self.rasters))
-        reference = self.rasters[self._years[0]]
-        for year, raster in self.rasters.items():
-            if not np.array_equal(raster._lat, reference._lat) or not np.array_equal(
-                raster._lon, reference._lon
-            ):
-                raise ValueError(
-                    f"year {year} raster grid does not match the others in this stack"
-                )
-        self._reference = reference
-
-    def close(self) -> None:
-        for raster in self.rasters.values():
-            raster.close()
+    def __init__(
+        self,
+        rasters: dict[int, NetCDFRaster],
+        metadata: RasterMetadata,
+        strip_bytes: int = STRIP_BYTES,
+    ) -> None:
+        self.rasters = rasters
+        super().__init__(
+            reader=NetCDFBlockReader(rasters, spec=_EDO_SPEC),
+            metadata=metadata,
+            tail="lower",
+            strip_bytes=strip_bytes,
+        )
 
     def __enter__(self) -> EDOAnnualMinimaCurveSource:
         return self
-
-    def __exit__(self, *exc_info: Any) -> None:
-        self.close()
-
-    @property
-    def axis_name(self) -> str:
-        return "return period (empirical, Gringorten plotting position)"
-
-    @property
-    def return_period_support(self) -> tuple[float, float]:
-        count = len(self._years)
-        probabilities = (np.array([count, 1], dtype=np.float64) - 0.44) / (count + 0.12)
-        periods = 1.0 / probabilities
-        return float(periods[0]), float(periods[1])
-
-    @property
-    def bounds(self) -> Bounds:
-        return self._reference.bounds
-
-    def iter_curves(self, bounds: Bounds | None = None) -> Iterator[RasterCurve]:
-        reference = self._reference
-        row_start, row_stop, col_start, col_stop = reference._row_col_window(
-            bounds or self.bounds
-        )
-        width = col_stop - col_start
-        years = self._years
-        n_years = len(years)
-
-        itemsize = np.dtype(np.float64).itemsize
-        chunk_shape = getattr(reference._variable, "chunks", None)
-        block_height = chunk_shape[1] if chunk_shape else 1
-        # Budget for whichever is larger: the persistent per-strip
-        # annual-minima array (n_years, strip_rows, width), or the bigger
-        # transient per-year block read before it's reduced away
-        # (n_dekads, strip_rows, width, one year at a time). Sizing off
-        # n_years alone (as if the per-year read were already reduced)
-        # undercounts by roughly n_dekads / n_years -- worst with short
-        # year ranges, since a single year's raw dekadal read is what's
-        # actually resident in memory at that point, not the reduced curve.
-        max_dekads = max(raster._variable.shape[0] for raster in self.rasters.values())
-        leading_axis = max(n_years, max_dekads)
-        strip_rows = _strip_row_count(
-            self.strip_bytes, width, itemsize, block_height, leading_axis=leading_axis
-        )
-
-        for row_off in range(row_start, row_stop, strip_rows):
-            row_end = min(row_off + strip_rows, row_stop)
-            annual_minima = np.empty(
-                (n_years, row_end - row_off, width), dtype=np.float64
-            )
-            for index, year in enumerate(years):
-                raster = self.rasters[year]
-                block = np.asarray(
-                    raster._variable[:, row_off:row_end, col_start:col_stop],
-                    dtype=np.float64,
-                )
-                finite = np.isfinite(block)
-                if raster.nodata is not None:
-                    finite &= block != raster.nodata
-                block = np.where(finite, block, np.nan)
-                with warnings.catch_warnings():
-                    # A pixel with zero valid dekads this year (e.g. outside
-                    # the dataset's own coverage) is an expected, not
-                    # exceptional, all-NaN slice.
-                    warnings.simplefilter("ignore", category=RuntimeWarning)
-                    annual_minima[index] = np.nanmin(block, axis=0)
-
-            valid_any = np.isfinite(annual_minima).any(axis=0)
-            if not valid_any.any():
-                continue
-            local_rows, local_columns = np.where(valid_any)
-            for local_row, local_column in zip(
-                local_rows.tolist(), local_columns.tolist()
-            ):
-                periods, values = _annual_minima_curve(
-                    annual_minima[:, local_row, local_column]
-                )
-                if periods.size == 0:
-                    continue
-                source_row = row_off + local_row
-                source_column = col_start + local_column
-                yield RasterCurve(
-                    row=source_row,
-                    column=source_column,
-                    boundary=_pixel_boundary(reference, source_row, source_column),
-                    axis_values=periods,
-                    values=values,
-                )

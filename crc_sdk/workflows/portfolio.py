@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pickle
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Union
@@ -21,8 +21,15 @@ from .distributions import (
 )
 
 if TYPE_CHECKING:
+    import pyarrow as pa
+
+    from crc_sdk.connectors.adapters import CurveFitIngestPolicy
+    from crc_sdk.fitting.workflows import CDFColumnSchema, CDFCurveFitPolicy
+
     from ._remote import MaterializationResult
+    from .byo import BYOPlan
     from .edo import EDOSourcePlan
+    from .era5 import ERA5SourcePlan
     from .jrc import JRCSourcePlan
 
 PORTFOLIO_METADATA_KEY = "crc.hazard.evaluation"
@@ -295,6 +302,128 @@ class HazardDataset:
     def smi(cls, *, version: str = "latest") -> EDOSourcePlan:
         """Plan lazy ingestion of EDO Soil Moisture Index drought curves."""
         return cls.edo("smi", version=version)
+
+    @classmethod
+    def from_table(
+        cls,
+        source: str | Path | pa.Table,
+        *,
+        columns: CDFColumnSchema | None = None,
+        policy: CDFCurveFitPolicy | None = None,
+        probabilities: Sequence[float] | None = None,
+        return_periods: Sequence[float] | None = None,
+    ) -> BYOPlan:
+        """Plan canonicalization of one-row-per-distribution tabular data.
+
+        `source` is a Parquet path, a DuckDB-readable path (CSV, JSON, ...) or
+        a pyarrow Table whose rows are already keyed by H3 cell.
+        """
+        from crc_sdk.fitting.workflows import CDFColumnSchema as Columns
+
+        from .byo import table_plan
+
+        return table_plan(
+            source,
+            columns=columns or Columns(),
+            policy=policy,
+            probabilities=probabilities,
+            return_periods=return_periods,
+        )
+
+    @classmethod
+    def from_zarr(
+        cls,
+        source: str | Path | Any,
+        *,
+        hazard_type: str,
+        indicator_id: str,
+        scenario: str,
+        year: int,
+        units: str,
+        array: str | None = None,
+        policy: CurveFitIngestPolicy | None = None,
+        bounds: Sequence[float] | None = None,
+        storage_options: Mapping[str, Any] | None = None,
+    ) -> BYOPlan:
+        """Plan canonicalization of a return-period Zarr raster.
+
+        `source` is a Zarr URL/path (opened lazily; `array` names the array
+        inside a group) or an already-open array.
+        """
+        from .byo import zarr_plan
+
+        return zarr_plan(
+            source,
+            hazard_type=hazard_type,
+            indicator_id=indicator_id,
+            scenario=scenario,
+            year=year,
+            units=units,
+            array=array,
+            policy=policy,
+            bounds=bounds,
+            storage_options=storage_options,
+        )
+
+    @classmethod
+    def from_raster(
+        cls,
+        paths: Mapping[int, str | Path] | Sequence[str | Path],
+        *,
+        return_periods: Sequence[int] | None = None,
+        hazard_type: str,
+        indicator_id: str,
+        scenario: str,
+        year: int,
+        units: str,
+        policy: CurveFitIngestPolicy | None = None,
+        bounds: Sequence[float] | None = None,
+        band: int = 1,
+        assumed_crs: str | None = None,
+    ) -> BYOPlan:
+        """Plan canonicalization of same-grid GeoTIFFs, one per return period.
+
+        Pass `{return_period: path}`, or a path sequence with `return_periods`.
+        """
+        from .byo import raster_plan
+
+        return raster_plan(
+            paths,
+            return_periods=return_periods,
+            hazard_type=hazard_type,
+            indicator_id=indicator_id,
+            scenario=scenario,
+            year=year,
+            units=units,
+            policy=policy,
+            bounds=bounds,
+            band=band,
+            assumed_crs=assumed_crs,
+        )
+
+    @classmethod
+    def era5(
+        cls,
+        recipe: str,
+        *,
+        store: str = "arco-0p25",
+        version: str = "latest",
+    ) -> ERA5SourcePlan:
+        """Plan a lazy ERA5 historical baseline for one supported recipe.
+
+        ``recipe`` is ``txx``, ``tnn``, ``rx1day`` or ``rx5day``; ``store`` is
+        ``arco-0p25`` (native 0.25 degrees, minutes per year) or ``wb2-1p5``
+        (1.5 degree copy, ~30 seconds per year).
+        """
+        from crc_sdk.providers.era5 import era5_recipe, era5_store
+
+        from .era5 import ERA5SourcePlan
+
+        era5_recipe(recipe)
+        era5_store(store)
+        return ERA5SourcePlan(
+            recipe=recipe.lower(), store=store.lower(), requested_version=version
+        )
 
     def metadata(self) -> HazardDatasetMetadata:
         """Return this canonical dataset's embedded metadata."""

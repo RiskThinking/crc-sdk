@@ -1060,7 +1060,7 @@ wheels = [
 
 [[package]]
 name = "crc-sdk"
-version = "0.8.0a1"
+version = "0.8.0a2"
 source = { editable = "." }
 dependencies = [
     { name = "crc-framework" },
@@ -1090,6 +1090,10 @@ geometry = [
     { name = "h3ronpy" },
     { name = "shapely", version = "2.0.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
     { name = "shapely", version = "2.1.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
+]
+icechunk = [
+    { name = "icechunk", marker = "python_full_version >= '3.12'" },
+    { name = "zarr", version = "3.3.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
 netcdf = [
     { name = "h5netcdf" },
@@ -1126,6 +1130,7 @@ requires-dist = [
     { name = "h5netcdf", marker = "extra == 'netcdf'", specifier = ">=1.3" },
     { name = "h5py", marker = "extra == 'netcdf'", specifier = ">=3" },
     { name = "icechunk", marker = "python_full_version >= '3.12' and extra == 'agriculture'", specifier = ">=2.1,<3" },
+    { name = "icechunk", marker = "python_full_version >= '3.12' and extra == 'icechunk'", specifier = ">=2.1,<3" },
     { name = "mypy", marker = "extra == 'test'", specifier = ">=1.10" },
     { name = "psutil", specifier = ">=5" },
     { name = "pyarrow", specifier = ">=14" },
@@ -1137,9 +1142,10 @@ requires-dist = [
     { name = "s3fs", specifier = ">=2024" },
     { name = "shapely", marker = "extra == 'geometry'", specifier = ">=2" },
     { name = "zarr", marker = "python_full_version >= '3.12' and extra == 'agriculture'", specifier = ">=3,<4" },
+    { name = "zarr", marker = "python_full_version >= '3.12' and extra == 'icechunk'", specifier = ">=3,<4" },
     { name = "zarr", marker = "extra == 'zarr'", specifier = ">=2.18,<4" },
 ]
-provides-extras = ["zarr", "agriculture", "raster", "netcdf", "geometry", "test"]
+provides-extras = ["zarr", "agriculture", "icechunk", "raster", "netcdf", "geometry", "test"]
 
 [[package]]
 name = "cryptography"
