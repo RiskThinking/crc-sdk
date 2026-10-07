@@ -31,7 +31,7 @@ class BlockExtremaPolicy:
     on_fit_failure: Literal["raise", "skip"] = "skip"
     maximum_normalized_rmse: float | None = None
     maximum_absolute_residual: float | None = None
-    fit_method: Literal["quantile_least_squares", "sample_mle"] = (
+    fit_method: Literal["quantile_least_squares", "sample_mle", "sample_lmoments"] = (
         "quantile_least_squares"
     )
     diagnostics: str | Path | None = None

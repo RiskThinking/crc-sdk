@@ -669,3 +669,44 @@ the normal workflow.
 
 CRC SDK is licensed under the GNU Affero General Public License, version 3 or
 later.
+
+### Experimental L-moments fitting for annual extremes
+
+The ERA5 defaults remain Gumbel with quantile least squares. To opt into the
+standalone GEV L-moment estimator, use:
+
+```python
+from crc_sdk.workflows import BlockExtremaPolicy
+
+policy = BlockExtremaPolicy(
+    family="genextreme",
+    fit_method="sample_lmoments",
+    h3_resolution=4,
+)
+# Supply policy to the existing ERA5 plan's .canonicalize(policy=policy).
+```
+
+This method also supports `gumbel_r` and `gumbel_l`. It requires genuine
+observations (annual extremes), rather than probability-labelled hazard knots;
+quantile quality gates and hurdle fits are not supported. The canonical metadata
+records `sample_lmoments` as the estimator, and diagnostics retain skipped cells.
+
+This feature branch pins the published `crc-framework==0.3.0a1` prerelease.
+Installing the SDK pulls it in automatically; a compatible prebuilt wheel
+requires neither a local backend checkout nor a Rust toolchain. Python 3.12
+is recommended for the notebook test workspace.
+
+After updating your SDK checkout, run this from the existing notebook/scratch
+workspace (adjust `../crc-sdk` to your checkout's location):
+
+```bash
+uv pip install --python .venv/bin/python --reinstall-package crc-framework --editable ../crc-sdk
+```
+
+This also replaces a previously linked local backend with the published package.
+Restart the notebook kernel after installation. No global prerelease flag is
+needed because the SDK explicitly requires this release.
+
+Reuse the annual-extremes cache to compare policies without downloading hourly
+data again. L-moment fitting alone does not quantify return-level uncertainty;
+use resampling or independent validation to assess a proposed default.

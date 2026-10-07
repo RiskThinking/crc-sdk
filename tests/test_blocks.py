@@ -6,6 +6,7 @@ from typing import Any
 import numpy as np
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
 import pytest
+from crc_framework import fit_distribution
 
 from crc_sdk.connectors import CurveFitIngestPolicy, read_hazard_metadata
 from crc_sdk.connectors.adapters import CurveSourceInfo, canonicalize_curve_source
@@ -265,25 +266,50 @@ def test_canonicalization_records_schema_13_metadata(tmp_path: Path) -> None:
     assert pq.read_table(output).num_rows > 0
 
 
-def test_sample_mle_and_diagnostics_sidecar(tmp_path: Path) -> None:
+@pytest.mark.parametrize("method", ["sample_mle", "sample_lmoments"])
+def test_sample_fit_and_diagnostics_sidecar(tmp_path: Path, method: str) -> None:
     sidecar = tmp_path / "diag.parquet"
     source = _source(_stack(), CurveSourceInfo())
     output = tmp_path / "txx.parquet"
     stream = canonicalize_curve_source(
         source,
-        _policy(fit_method="sample_mle", diagnostics=sidecar),
+        _policy(fit_method=method, diagnostics=sidecar),
         provider="era5",
     )
     write_hazard_stream(stream, output)
     metadata = read_hazard_metadata(output)
     assert metadata.fitting is not None
-    assert metadata.fitting.method == "sample_mle"
-    assert metadata.fitting.initialization == "lmoments"
+    assert metadata.fitting.method == method
+    assert metadata.fitting.initialization == (
+        "lmoments" if method == "sample_mle" else None
+    )
     rows = [
         row for row in pq.read_table(sidecar).to_pylist() if row["outcome"] == "fitted"
     ]
     assert len(rows) == 5
-    assert {row["treatment"] for row in rows} == {"sample_mle"}
+    assert {row["treatment"] for row in rows} == {method}
+
+    # The canonical parameters must come from the requested sample estimator,
+    # not from the plotting-position quantiles or the other sample fitter.
+    stack = _stack()
+    expected = []
+    for row, column in [(0, 0), (0, 1), (0, 2), (1, 0), (1, 1)]:
+        fit = fit_distribution(
+            stack[:, row, column],
+            "gumbel_r",
+            method="lmoments" if method == "sample_lmoments" else "default",
+        ).distribution
+        expected.append([fit.location, fit.scale])
+    parameters = pq.read_table(output).select(["curve_location", "curve_scale"])
+    actual = sorted(
+        set(
+            zip(
+                parameters["curve_location"].to_pylist(),
+                parameters["curve_scale"].to_pylist(),
+            )
+        )
+    )
+    np.testing.assert_allclose(actual, sorted(expected), rtol=1e-14)
 
 
 def test_quantile_fit_diagnostics_carry_fit_quality(tmp_path: Path) -> None:
@@ -300,19 +326,19 @@ def test_quantile_fit_diagnostics_carry_fit_quality(tmp_path: Path) -> None:
     assert all(row["maximum_absolute_residual"] is not None for row in rows)
 
 
-def test_sample_mle_rejected_for_probability_labelled_sources() -> None:
+@pytest.mark.parametrize("method", ["sample_mle", "sample_lmoments"])
+def test_sample_fit_rejected_for_probability_labelled_sources(method: str) -> None:
     source = _source(_stack())
     source.values_are_samples = False
-    stream = canonicalize_curve_source(
-        source, _policy(fit_method="sample_mle"), provider="x"
-    )
+    stream = canonicalize_curve_source(source, _policy(fit_method=method), provider="x")
     with pytest.raises(ValueError, match="genuine samples"):
         stream.read_all()
 
 
-def test_policy_rejects_mle_with_quality_gates() -> None:
-    with pytest.raises(ValueError, match="sample_mle"):
-        _policy(fit_method="sample_mle", maximum_normalized_rmse=0.1)
+@pytest.mark.parametrize("method", ["sample_mle", "sample_lmoments"])
+def test_policy_rejects_sample_fit_with_quality_gates(method: str) -> None:
+    with pytest.raises(ValueError, match=method):
+        _policy(fit_method=method, maximum_normalized_rmse=0.1)
 
 
 def test_skipped_cells_leave_a_trace(tmp_path: Path) -> None:
@@ -341,3 +367,22 @@ def test_source_level_drops_are_traced(tmp_path: Path) -> None:
     reasons = sorted(row["reason"] for row in rows if row["outcome"] == "skipped")
     assert reasons == ["no_data", "too_few_blocks"]
     assert len(rows) == 6  # every cell of the 2x3 grid is accounted for
+
+
+def test_lmoments_rejects_unsupported_family() -> None:
+    with pytest.raises(ValueError, match="supports"):
+        _policy(family="genpareto", fit_method="sample_lmoments")
+
+
+def test_lmoments_reports_old_backend_instead_of_skipping_cells(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def legacy_fit(values: Any, *, family: str) -> Any:
+        raise AssertionError("the old backend cannot accept method=lmoments")
+
+    monkeypatch.setattr("crc_sdk.connectors.adapters.fit_distribution", legacy_fit)
+    stream = canonicalize_curve_source(
+        _source(_stack()), _policy(fit_method="sample_lmoments"), provider="era5"
+    )
+    with pytest.raises(RuntimeError, match="requires crc-framework"):
+        stream.read_all()

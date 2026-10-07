@@ -137,7 +137,9 @@ class CurveFitProvenance(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    method: Literal["quantile_least_squares", "sample_mle"] = "quantile_least_squares"
+    method: Literal["quantile_least_squares", "sample_mle", "sample_lmoments"] = (
+        "quantile_least_squares"
+    )
     initialization: Optional[str] = None
     input_kind: Optional[Literal["probability_labelled", "samples"]] = None
     sample_resampling: Optional[int] = Field(default=None, ge=2)

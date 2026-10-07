@@ -140,9 +140,10 @@ class CurveFitIngestPolicy:
     on_fit_failure: Literal["raise", "skip"] = "raise"
     # "sample_mle" fits the per-block samples themselves with crc-framework's
     # maximum-likelihood `fit_distribution` instead of least-squares on the
-    # plotting-position knots; only for sources whose curve values are genuine
+    # plotting-position knots. "sample_lmoments" uses the standalone L-moment
+    # estimator for GEV/Gumbel. Both are only for sources whose values are genuine
     # samples (`values_are_samples`), never for probability-labelled inputs.
-    fit_method: Literal["quantile_least_squares", "sample_mle"] = (
+    fit_method: Literal["quantile_least_squares", "sample_mle", "sample_lmoments"] = (
         "quantile_least_squares"
     )
     # Persist one row per source pixel (fitted, or skipped with its reason) to
@@ -150,15 +151,31 @@ class CurveFitIngestPolicy:
     diagnostics: str | Path | None = None
 
     def __post_init__(self) -> None:
-        if self.fit_method not in ("quantile_least_squares", "sample_mle"):
-            raise ValueError("fit_method must be quantile_least_squares or sample_mle")
-        if self.fit_method == "sample_mle" and (
+        if self.fit_method not in (
+            "quantile_least_squares",
+            "sample_mle",
+            "sample_lmoments",
+        ):
+            raise ValueError(
+                "fit_method must be quantile_least_squares, sample_mle "
+                "or sample_lmoments"
+            )
+        if self.fit_method != "quantile_least_squares" and (
             self.hurdle is not None
             or self.maximum_normalized_rmse is not None
             or self.maximum_absolute_residual is not None
         ):
             raise ValueError(
-                "sample_mle does not support hurdle fits or quantile quality gates"
+                f"{self.fit_method} does not support hurdle fits "
+                "or quantile quality gates"
+            )
+        if self.fit_method == "sample_lmoments" and self.family not in (
+            "genextreme",
+            "gumbel_r",
+            "gumbel_l",
+        ):
+            raise ValueError(
+                "sample_lmoments supports genextreme, gumbel_r and gumbel_l only"
             )
         if not 0 <= self.h3_resolution <= 15:
             raise ValueError("H3 resolution must be between 0 and 15")
@@ -285,7 +302,7 @@ def _fit_curve(
 ) -> tuple[Any, Any, Any]:
     distribution: FittedDistribution | HurdleDistribution
     diagnostics: QuantileFitDiagnostics
-    if policy.fit_method == "sample_mle":
+    if policy.fit_method != "quantile_least_squares":
         raise AssertionError("sample fits go through _fit_samples")
     if policy.hurdle is None:
         quantile_result = fit_quantiles(tabulated, family=policy.family)
@@ -328,8 +345,17 @@ def _fit_curve(
 
 
 def _fit_samples(values: Any, policy: CurveFitIngestPolicy) -> tuple[Any, Any]:
-    """Maximum-likelihood fit of one pixel's genuine block samples."""
-    result = fit_distribution(values, family=policy.family)
+    """Fit one pixel's genuine block samples using the selected estimator."""
+    if policy.fit_method == "sample_lmoments":
+        try:
+            result = fit_distribution(values, family=policy.family, method="lmoments")
+        except TypeError as error:
+            raise RuntimeError(
+                "sample_lmoments requires crc-framework with L-moments support; "
+                "reinstall crc-framework==0.3.0a1 in this environment"
+            ) from error
+    else:
+        result = fit_distribution(values, family=policy.family)
     return result.distribution, result.distribution
 
 
@@ -353,11 +379,11 @@ def _canonical_batches(
         raise ValueError(
             f"{source.metadata.path} has axis {source.axis_name!r}, not return periods"
         )
-    if policy.fit_method == "sample_mle" and not getattr(
+    if policy.fit_method != "quantile_least_squares" and not getattr(
         source, "values_are_samples", False
     ):
         raise ValueError(
-            "fit_method='sample_mle' needs a source whose curve values are "
+            f"fit_method={policy.fit_method!r} needs a source whose curve values are "
             "genuine samples; probability-labelled inputs use quantile fits"
         )
     writer = None
@@ -427,7 +453,7 @@ def _canonical_batches(
                 continue
             try:
                 quality: Any = None
-                if policy.fit_method == "sample_mle":
+                if policy.fit_method != "quantile_least_squares":
                     distribution, base = _fit_samples(values, policy)
                 else:
                     tabulated = TabulatedDistribution.from_return_periods(
