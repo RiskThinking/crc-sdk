@@ -12,8 +12,8 @@ Gumbel/GEV/tabulated allocation near optimizer convergence boundaries.
 
 ## Decision
 
-- `CurveFitProvenance.method`: `quantile_least_squares` \| `sample_mle`, plus an
-  optional `initialization` (e.g. `lmoments`), `input_kind`
+- `CurveFitProvenance.method`: `quantile_least_squares` \| `sample_mle` \|
+  `sample_lmoments`, plus an optional `initialization` (e.g. `lmoments`), `input_kind`
   (`probability_labelled` \| `samples`) and `sample_resampling` (knot count
   when samples were resampled to a quantile grid).
 - **Probability-labelled inputs** (CDF quantiles, return-period vectors)
@@ -39,3 +39,13 @@ Gumbel/GEV/tabulated allocation near optimizer convergence boundaries.
   `samples` for cyclone/inundation arrays resampled to 1001 knots).
 - (b) Block-extrema recipes (Phase 1B) choose plotting position + LS or
   `sample_mle` and record it.
+
+## Standalone L-moments estimator
+
+`sample_lmoments` fits genuine block samples using unbiased sample L-moments,
+with an explicit GEV or Gumbel family. This is an estimator, not an optimizer
+initialization: record `method="sample_lmoments"` and leave `initialization`
+unset. It does not use likelihood refinement, automatic family selection,
+hurdle fits or quantile residual gates. ERA5's default fitting policy is
+unchanged. This feature branch requires the published `crc-framework==0.3.0a1`
+prerelease, so notebook testing does not require a local Rust backend checkout.

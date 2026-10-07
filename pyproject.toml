@@ -17,7 +17,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "crc-framework>=0.2.6,<0.3",
+    "crc-framework==0.3.0a1",
     "pydantic>=2,<3",
     "duckdb>=1,<2",
     "pyarrow>=14",

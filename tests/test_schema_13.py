@@ -163,6 +163,7 @@ def test_1_3_fit_provenance_requires_schema_1_3() -> None:
         {"sample_resampling": 11},
         {"initialization": "lmoments"},
         {"method": "sample_mle"},
+        {"method": "sample_lmoments"},
     ):
         with pytest.raises(ValidationError, match="require schema 1.3"):
             _metadata(schema_version="1.2", fitting=fit(**extra))

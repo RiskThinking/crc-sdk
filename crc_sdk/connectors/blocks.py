@@ -547,7 +547,8 @@ class BlockExtremaCurveSource:
     skip_sink: Any = None
 
     #: The curve values are genuine per-block samples, so a sample-based fit
-    #: (``fit_method="sample_mle"``) is meaningful for this source.
+    #: (``fit_method="sample_mle"`` or ``"sample_lmoments"``) is meaningful
+    #: for this source.
     values_are_samples = True
 
     def __post_init__(self) -> None:

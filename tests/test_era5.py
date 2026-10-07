@@ -301,3 +301,28 @@ def test_accumulations_need_the_next_midnight_to_close_the_last_year(
             era5_recipe("rx5day"), 2007, (-50.0, -2.0, 50.0, 2.0), tmp_path / "x.nc"
         )
     provider.check_years([2006], era5_recipe("rx1day"))
+
+
+@pytest.mark.parametrize("family", ["genextreme", "gumbel_r", "gumbel_l"])
+def test_lmoments_materialization(
+    store: ERA5Store, tmp_path: Path, family: str
+) -> None:
+    plan = _plan(tmp_path, family=family, fit_method="sample_lmoments", h3_resolution=3)
+    plan.prefetch()
+    dataset = plan.cache(tmp_path / "cache", mode="offline").materialize(
+        tmp_path / "lmoments.parquet"
+    )
+    metadata = dataset.metadata()
+    assert metadata.fitting is not None
+    assert metadata.fitting.method == "sample_lmoments"
+    assert metadata.fitting.families == (family,)
+    assert metadata.fitting.initialization is None
+    assert dataset.materialization is not None
+    assert dataset.materialization.source_cache_misses == 0
+    assert dataset.materialization.canonical_rows > 0
+
+
+def test_era5_defaults_unchanged() -> None:
+    policy = BlockExtremaPolicy.curated()
+    assert policy.family == "gumbel_r"
+    assert policy.fit_method == "quantile_least_squares"
