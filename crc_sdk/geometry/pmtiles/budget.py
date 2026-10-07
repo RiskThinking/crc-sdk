@@ -45,8 +45,8 @@ _GIB = 1024**3
 # one workload shape (lossless + very wide attributes); narrower/lossy
 # schemas (e.g. the ``POINTS`` preset) very likely need proportionally less,
 # but this stays one constant for every preset until there's comparable
-# measured evidence to split it. Validating against a larger, still
-# wide-attribute country is the concrete next step.
+# measured evidence to split it. Recalibration requires measurements from
+# larger areas and comparable attribute widths.
 DEFAULT_TEMP_TO_INPUT_FACTOR = 30
 _DEFAULT_SCRATCH_FRACTION = 0.25
 _MIN_SAFE_SCRATCH_BYTES = 2 * _GIB

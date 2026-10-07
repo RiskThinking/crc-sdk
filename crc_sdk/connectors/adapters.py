@@ -352,7 +352,7 @@ def _fit_samples(values: Any, policy: CurveFitIngestPolicy) -> tuple[Any, Any]:
         except TypeError as error:
             raise RuntimeError(
                 "sample_lmoments requires crc-framework with L-moments support; "
-                "reinstall crc-framework==0.3.0a1 in this environment"
+                "install crc-framework 0.3.0 or newer in this environment"
             ) from error
     else:
         result = fit_distribution(values, family=policy.family)

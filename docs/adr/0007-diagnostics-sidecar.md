@@ -24,7 +24,7 @@ failed_families, fallback, reason, treatment`
 `skipped`, `rejected`; `reason` carries the `no_data` reason, the rejection
 cause (e.g. `missing_axis_labels`) or the skip error.
 
-Block-extrema recipes (Phase 1B) additionally store the per-cell annual series
+Block-extrema recipes additionally store the per-cell annual series
 with valid and excluded years in a companion table.
 
 The sidecar is written to a partial path and published only on successful

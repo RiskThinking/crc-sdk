@@ -30,5 +30,5 @@ Defaults follow internal practice: **r5 for climate indices, r7 for water**.
 ## Application
 
 - (a) Unchanged: r5 indices, r7 water, already keyed to the source grid.
-- (b) Each adapter documents native resolution; station adapters (Phase 3)
+- (b) Each adapter documents native resolution; station adapters
   implement the Voronoi rule and persist the geometry.

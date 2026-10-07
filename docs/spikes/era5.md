@@ -1,4 +1,4 @@
-# Access spike: ERA5 (Phase 2)
+# ERA5 access evaluation
 
 Date: 2026-10-02. Question: what is the cheapest *machine-access* route to
 hourly ERA5 for annual-extreme recipes, with no account and no GRIB tooling?
@@ -11,7 +11,7 @@ hourly ERA5 for annual-extreme recipes, with no account and no GRIB tooling?
 | `co/single-level-reanalysis.zarr-v2` (same bucket) | None | Reduced-Gaussian flat `values` axis, time-chunk 1 | Rejected: not a regular lat/lon grid. |
 | `ar/1959-2022-6h-1440x721.zarr` | None | 6-hourly, chunk 1 | Rejected: 6-hourly samples miss the diurnal peak, so TXx is biased low. |
 | **WeatherBench2 regridded copies** (`gs://weatherbench2/datasets/era5/1959-2022-1h-240x121_…conservative.zarr`, also 360×181) | None | Hourly, 1.5° (1°), chunk **8 hours** × global field, dims `(time, longitude, latitude)`, lat ascending −90…90 | Works; used as the laptop store. ~30 s per variable-year (≈21 s effective with four years in flight). Stops at 2022. |
-| CDS ARCO / CDS API | CDS token + licence acceptance, rate limited | Time-series layouts exist | Deferred to Phase 5 (`CopernicusRequest`); not needed for a first pass. |
+| CDS ARCO / CDS API | CDS token + licence acceptance, rate limited | Time-series layouts exist | Requires authenticated access; the adapter uses anonymous Zarr stores. |
 | `s3://era5-pds` | — | — | Not reachable anonymously (403) at test time. |
 
 ## Findings that shaped the adapter
@@ -24,7 +24,7 @@ hourly ERA5 for annual-extreme recipes, with no account and no GRIB tooling?
   attributes. The adapter uses **final data only**, refuses years outside the
   complete final record, and versions a cache by `final-through-<date>`, so it
   stays valid while the store appends.
-* **ERA5T** is therefore never used silently; there is no opt-in yet.
+* **ERA5T** is excluded; the adapter accepts only final data.
 * `total_precipitation` is an hourly accumulation in metres over the hour
   **ending** at the stamp, so the hour stamped 00:00 belongs to the day that
   just ended (`DailyAggregation.interval_end_stamps`). Tested.
@@ -40,11 +40,12 @@ hourly ERA5 for annual-extreme recipes, with no account and no GRIB tooling?
   `licence`/`attribution`/`retrieved_at` on every canonical file. WeatherBench2
   copies are derived from the same reanalysis.
 
-## Not done
+## Limitations
 
 * **ERA5-Land**: no public anonymous ARCO store was found, so the second recipe
   family is not implemented. `ERA5Store` is the extension point (a store
   descriptor plus variable names).
 * **0.25° quick runs**: the native store is too slow for a laptop demo; no
-  cheaper public layout exists. Ship small caches of annual extremes instead.
+  cheaper public layout was found in this evaluation. Use small caches of
+  annual extremes for repeated local runs.
 * No live test runs in CI; unit tests use a synthetic ERA5-shaped Zarr.

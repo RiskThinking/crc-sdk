@@ -25,9 +25,9 @@ Absent means `unknown`; nothing is inferred or warned about.
 Defaults:
 
 - Pooled proprietary CDFs are legitimate and are labelled `pooled`, not forbidden.
-- New open adapters produce **one model / member / scenario / window per
+- Open adapters produce **one model / member / scenario / window per
   canonical dataset** (`single_member`). Changes across models are summarised
-  separately (Phase 4). An open adapter may offer an explicitly labelled
+  separately. An open adapter may offer an explicitly labelled
   `pooled` output for comparison with our product; it is never the default.
 
 ## Alternatives rejected
@@ -35,7 +35,7 @@ Defaults:
 - Encode model identity in `source_id`: opaque, unqueryable, breaks the row key
   meaning.
 - A model dimension in the row key or a collection API: a physical schema
-  change; deferred until a concrete need survives Phase 4.
+  change requiring a concrete use case beyond dataset-level identity.
 
 ## Application
 
