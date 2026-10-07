@@ -45,8 +45,8 @@ A registry of canonical pathway ids maps every known label to crc-framework
 - `historic` and `historical` as **aliases of one canonical id**.
 
 Writes keep the **source's label**. Unknown labels warn; `strict=True` rejects
-them. Existing files are never rewritten. The crosswalk is code, introduced
-with the first adapter that needs it (Phase 1B/2); this ADR fixes the rules.
+them. Existing files are never rewritten. The `crc_sdk.pathways` module
+provides the crosswalk and source-label validation.
 
 ## Alternatives rejected
 

@@ -698,8 +698,7 @@ class JRCReturnPeriodRaster:
     GeoTIFF stack that way, satisfying `crc_sdk.connectors.adapters.CurveSource`
     so `canonicalize_curve_source` can fit it exactly like an OS-Climate
     raster, via `crc_sdk.connectors.jrc.canonicalize_jrc_flood`. It reuses
-    `GeoTiffRaster.open()` unchanged for the actual I/O -- no new low-level
-    reader, just a different pixel-stack iteration order.
+    `GeoTiffRaster.open()` for I/O and iterates the stack by pixel.
     """
 
     def __init__(

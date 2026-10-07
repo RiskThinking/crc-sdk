@@ -1,7 +1,9 @@
 # Schema compatibility smoke test (0.7.1 ↔ 0.8.0a1)
 
-Run 2026-10-01 with `tools/compat/` (throwaway venvs: published `crc-sdk==0.7.1`
-vs this checkout, both on crc-framework 0.2.6). Reproduce:
+Run 2026-10-01 with `tools/compat/` (isolated venvs: published `crc-sdk==0.7.1`
+vs `crc-sdk==0.8.0a1`, both on crc-framework 0.2.6). The harness compares the
+published SDK with the local checkout; reproducing these results requires the
+recorded versions:
 
 ```bash
 tools/compat/setup.sh /tmp/crc-compat                  # builds old/ and new/ venvs
@@ -75,11 +77,11 @@ Wall time is unaffected. The earlier synthetic 2M-row benchmark (1,192 / 598 /
 360 MiB) is the clearer memory signal; the global-partition transient (3.5–4 GiB)
 needs a real r0 run to confirm.
 
-## Recommendations (for decision)
+## Migration recommendations
 
-1. **Roll out readers before writers.** Release 0.8.x, upgrade consumers
+1. **Upgrade readers before writers.** Upgrade consumers to 0.8.x
    (downstream packages pinned `<0.8`, documentation pipelines, anything calling
-   `read_hazard_dataset`), *then* let producers write 1.3. Until then producers
+   `read_hazard_dataset`) before producers write 1.3. For older consumers, producers
    can pass `schema_version="1.2"`: bit-identical curves and fully readable by
    0.7.x.
 2. **Add a producer switch.** Expose the 1.2/1.3 choice in the production CLI
@@ -89,14 +91,13 @@ needs a real r0 run to confirm.
    fields until the flip.
 3. **Make readers tolerant of future minors.** Accept unknown `1.N` versions
    with a warning instead of a validation error (physical columns are
-   unchanged within a minor by contract). This turns the next bump (1.4) into a
-   non-event for new readers. Not implemented; needs your decision.
+   unchanged within a minor by contract). This is an optional compatibility
+   policy change; the tested reader rejects unknown schema versions.
 4. **Keep table-level readers (tile builders, explorers) on columns only.** They already
    survive 1.3; do not start reading metadata JSON there.
 5. **Writer default:** keep `ordered` + a `memory_limit` sized to the container
    (e.g. 40–50% of the pod limit) rather than `unordered`: same wall time, same
    file size, no loss of key clustering. Revisit only if a global r0 partition
    still exceeds the pod limit.
-6. **Commit the harness?** `tools/compat/` is excluded from ruff and CI. It needs
-   network (PyPI, JRC) and GCS slices, so keep it manual; add it to CI only if
-   you want a nightly forward/backward check.
+6. **Keep the harness manual.** `tools/compat/` is excluded from ruff and CI.
+   Automated runs require network access (PyPI, JRC) and production GCS slices.
