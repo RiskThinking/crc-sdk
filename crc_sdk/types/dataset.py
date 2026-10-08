@@ -156,6 +156,10 @@ class CurveFitProvenance(BaseModel):
     minimum_informative_knots: int = Field(default=0, ge=0)
     minimum_distinct_informative_values: int = Field(default=0, ge=0)
     parametric_failure_action: Literal["raise", "skip", "tabulated"] = "raise"
+    require_sample_support: bool = False
+    validation_return_periods: tuple[float, ...] = ()
+    minimum_return_value: Optional[float] = None
+    maximum_return_value: Optional[float] = None
     maximum_normalized_rmse: Optional[float] = None
     maximum_absolute_residual: Optional[float] = None
     on_fit_failure: Literal["raise", "skip"]

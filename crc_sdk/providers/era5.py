@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import numpy as np
+from crc_framework.distributions import DistributionFamily
 
 from crc_sdk.connectors.blocks import (
     STRIP_BYTES,
@@ -126,6 +127,10 @@ class ERA5Recipe:
     unit: str
     value_semantics: str
     spec: BlockSpec
+    default_family: DistributionFamily = "genextreme"
+    default_fit_method: Literal[
+        "quantile_least_squares", "sample_mle", "sample_lmoments"
+    ] = "sample_lmoments"
 
     @property
     def tail(self) -> Literal["upper", "lower"]:
@@ -330,6 +335,15 @@ class ERA5BlockReader:
         self._cols = columns if columns.size >= 2 else _at_least_two(columns, lon.size)
         self._lat: np.ndarray[Any, Any] = lat[self._rows]
         self._lon: np.ndarray[Any, Any] = lon180[self._cols]
+        if columns.size == 1 and self._cols.size == 2:
+            # The padding neighbour is adjacent in the store's 0-360 index but
+            # can sit across the +/-180 seam after normalisation; keep it one
+            # grid step from the real column so pixel geometry stays local.
+            anchor = int(np.flatnonzero(self._cols == columns[0])[0])
+            gap = (
+                (lon[self._cols[1 - anchor]] - lon[columns[0]] + 180.0) % 360.0
+            ) - 180.0
+            self._lon[1 - anchor] = self._lon[anchor] + gap
         self._mask: np.ndarray[Any, Any] | None = None
         if land_only:
             self._mask = self._read_land_mask()

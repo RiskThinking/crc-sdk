@@ -157,6 +157,18 @@ class ERA5YearPlan:
             raise TypeError(
                 "policy must be 'curated', BlockExtremaPolicy, or CurveFitIngestPolicy"
             )
+        if isinstance(normalized, BlockExtremaPolicy):
+            recipe = era5_recipe(self.area.source.recipe)
+            normalized = normalized.resolve(
+                family=recipe.default_family,
+                fit_method=recipe.default_fit_method,
+            )
+            # Validate resolved combinations before any annual data is fetched.
+            normalized.ingest_policy(
+                tail=recipe.tail,
+                value_semantics=recipe.value_semantics,
+                source_version=self.area.source.requested_version,
+            )
         return ERA5CanonicalizationPlan(years=self, policy=normalized)
 
 
@@ -248,6 +260,10 @@ class ERA5CanonicalizationPlan:
             "years": self.years.selected_years,
             "return_period_tail": recipe.tail,
             "daily_boundary": "UTC",
+            "fitting": {
+                "family": self.policy.family,
+                "method": self.policy.fit_method,
+            },
             "cache": {
                 "mode": self.years.cache_mode,
                 "directory": str(cache_dir) if cache_dir else None,
@@ -274,6 +290,7 @@ class ERA5CanonicalizationPlan:
             f"Cache: {self.years.cache_mode}"
             f"{f' ({cache_dir})' if cache_dir else ''}\n"
             f"Tail: {recipe.tail}; daily boundary: UTC\n"
+            f"Fit: {self.policy.family}, {self.policy.fit_method}\n"
             "Network access and fitting occur only at prefetch/materialize/write."
         )
 
@@ -432,7 +449,7 @@ class ERA5CanonicalizationPlan:
         prepared = self._prepare(progress)
         source = self._source(prepared)
         with source:
-            stack, lat, lon = source.block_array()
+            stack, lat, lon = source.block_array(self.years.area.bounds)
             labels = source.labels
         year, row, column = np.nonzero(np.isfinite(stack))
         return pa.table(
