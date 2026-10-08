@@ -11,6 +11,11 @@ redistribution decision.
 - **Code:** crc-sdk is AGPL-3.0-or-later. That governs the *code*; it does not
   attach to data the code produces, and no source licence below is "viral" onto
   our code.
+- **CRC Open dataset** (our published open subset of canonical curves):
+  [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/)
+  (`CC-BY-NC-4.0`). Non-commercial use with attribution; commercial use
+  needs a separate licence. The software licence does not set this. Catalogue
+  and fixture metadata record `CC-BY-NC-4.0`.
 - **Derived canonical files** (fitted parameters, H3 curves) are adaptations of
   the source data. They inherit each source's attribution and
   "indicate changes" duties. None of the verified sources below carried
@@ -45,7 +50,7 @@ redistribution decision.
 | ISIMIP3b | Per-dataset (recalled CC-BY 4.0 / CC0) | Credit data + impact-model identities | Upstream climate inputs' terms | Verify the chosen dataset's licence before implementing an adapter. | **No** |
 | NRCan flood-map inventory | OGL-Canada (recalled) | As ECCC | Polygons are regulatory zones; legal misuse risk is about interpretation, not licence | Verify the source licence and document the limits of interpretation. | **No** |
 | NOAA ISD / GHCNh (NCEI) | NOAA Open Data Dissemination terms: open use; attribution requested; must not imply NOAA endorsement; modified data must not be presented as unaltered NOAA data | Station-derived annual extremes are modified data: label them as derived from NOAA ISD | NOAA notes GHCNh replaces ISD; WMO Resolution 40 position for some national contributions not confirmed | Verify terms for the chosen product; attribution + "modified" wording in the adapter. | Partly ([NCEI NODD terms](https://www.ncei.noaa.gov/products/ncei-data-noaa-open-dissemination-program)); WMO Res. 40 **not** checked |
-| **RiskThinking open subset** (our release) | We choose (suggested CC-BY-4.0) | Must carry attributions required by whatever upstream inputs the bias correction used (reanalysis/CMIP6 terms) | Derived-from-ERA5/CMIP6 inputs: confirm the CC-BY / CC0 obligations are satisfied by our attribution page; pooled proprietary curves published openly sit beside "open per-model only" advice below | Legal review of upstream inputs list; ship attribution in `_CATALOG.json`; reconsider cross-cutting item 3 (it assumed we would not publish pooled curves). | No |
+| **CRC Open dataset** (our release) | [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/) (`CC-BY-NC-4.0`) | Attribution required; non-commercial use only. Commercial use needs a separate licence. Still carry attributions required by bias-correction inputs (reanalysis/CMIP6 terms) | NC restricts commercial redistribution of this release. Upstream CC-BY / CC0 credit still applies. The strict `-NC` reject below is for upstream sources ingested into other canonical files | Catalogue and Parquet metadata record `licence="CC-BY-NC-4.0"` | Yes ([CC BY-NC 4.0 deed](https://creativecommons.org/licenses/by-nc/4.0/)) |
 | OS-Climate / WRI hazard layers | Mixed per layer | Per layer | Aqueduct 4.0 etc. are explicitly out of scope | Carry the layer's own licence from the OS-Climate metadata. | n/a |
 
 ## Cross-cutting issues worth deciding
@@ -55,13 +60,15 @@ redistribution decision.
    report writer so it survives into screenshots and PDFs.
 2. **Share-alike contamination.** The recorded review found no share-alike
    terms in the verified target sources, but older CMIP6 mirrors have them.
-   Rule: `strict=True` rejects any source
-   whose recorded licence contains `-SA` or `-NC`; non-strict warns.
+   Rule: `strict=True` rejects any *upstream* source
+   whose recorded licence contains `-SA` or `-NC`; non-strict warns. This
+   gate keeps connector-derived files free of those terms. It does not apply
+   to the CRC Open release, which is CC BY-NC 4.0.
 3. **Redistribution of derived canonical files** (publishing them, not just
-   using them internally): permitted under every verified licence with
-   attribution and a changes notice. Still open: whether we *want* to publish
-   them, given the pooled proprietary curves share a schema. Update 2026-10-01: we are publishing the pooled SSP5-8.5 curves as a subset
-   (see the open-subset row), so the earlier advice (per-model only) no longer
+   using them internally): permitted under every verified *upstream* licence with
+   attribution and a changes notice. CRC Open redistribution is under CC BY-NC 4.0,
+   so commercial use needs a separate licence. Update 2026-10-01: we are publishing the pooled SSP5-8.5 curves as a subset
+   (see the CRC Open row), so the earlier advice (per-model only) no longer
    holds for that release; keep per-model for connector-derived files and label
    the pooled release unmistakably as pooled.
 4. **Open-vs-proprietary comparison results.** Publishing a validation that

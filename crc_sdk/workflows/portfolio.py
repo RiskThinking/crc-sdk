@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Union
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
 from crc_framework import CallableImpact, ImpactFunction
 
+from crc_sdk.providers.crc_open import FIXTURE_RELEASE
 from crc_sdk.providers.local import LocalProvider
 from crc_sdk.types import HazardDatasetMetadata, SourceProvenance
 
@@ -28,6 +29,7 @@ if TYPE_CHECKING:
 
     from ._remote import MaterializationResult
     from .byo import BYOPlan
+    from .crc_open import CRCOpenPlan
     from .edo import EDOSourcePlan
     from .era5 import ERA5SourcePlan
     from .jrc import JRCSourcePlan
@@ -257,6 +259,34 @@ class HazardDataset:
     ) -> HazardDataset:
         """Open a canonical local Parquet hazard dataset."""
         return cls(LocalProvider(source), materialization=materialization)
+
+    @classmethod
+    def crc_open(
+        cls,
+        *,
+        release: str = FIXTURE_RELEASE,
+        pathway: str = "ssp585",
+        source: str | Path | None = None,
+        fixtures: str | Path | None = None,
+    ) -> CRCOpenPlan:
+        """Read canonical CRC curves from a pinned catalogue release.
+
+        The default is the crc-docs fixture HTTP root. Override ``fixtures``
+        for another fixture root or ``source`` for a catalogue root. Both accept
+        HTTP(S) URLs and directories. I/O begins at execution.
+        """
+        from crc_sdk.providers.crc_open import DOCS_FIXTURES
+
+        from .crc_open import CRCOpenPlan
+
+        if source is not None and fixtures is not None:
+            raise ValueError("choose source or fixtures, not both")
+        return CRCOpenPlan(
+            release=release,
+            pathway=pathway,
+            source=str(source if source is not None else fixtures or DOCS_FIXTURES),
+            fixture_fallback=source is None,
+        )
 
     @classmethod
     def jrc(
