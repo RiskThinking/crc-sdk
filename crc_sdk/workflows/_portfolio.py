@@ -21,10 +21,12 @@ from crc_sdk.schema import hazard_fields_for_version
 
 from .distributions import (
     CURVE_COLUMNS,
+    check_return_period_semantics,
     return_period_value_columns,
     return_periods_to_probabilities,
     stream_curve_quantiles_wide_to_parquet,
     warn_if_extrapolated,
+    warn_if_outside_window,
 )
 from .portfolio import (
     PORTFOLIO_METADATA_KEY,
@@ -216,6 +218,9 @@ def evaluate_hazard_portfolio(
         field.name for field in hazard_fields_for_version(metadata.schema_version)
     }
     curve_columns = tuple(name for name in CURVE_COLUMNS if name in version_columns)
+    check_return_period_semantics(metadata, stacklevel=3)
+    for horizon in horizons or ():
+        warn_if_outside_window(horizon, metadata.temporal_window, stacklevel=3)
     warn_if_extrapolated(periods, metadata.return_period_support, stacklevel=3)
     probabilities = return_periods_to_probabilities(
         return_periods,

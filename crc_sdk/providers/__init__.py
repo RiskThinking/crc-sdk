@@ -1,5 +1,6 @@
 """Storage provider interfaces and implementations."""
 
+from .crc_open import CRCOpenFixtureWarning, CRCOpenHazards
 from .era5 import (
     ARCO_0P25,
     ERA5_RECIPES,
@@ -32,6 +33,8 @@ from .os_climate import (
 from .protocol import Provider
 
 __all__ = [
+    "CRCOpenFixtureWarning",
+    "CRCOpenHazards",
     "ARCO_0P25",
     "ERA5_RECIPES",
     "ERA5_STORES",
