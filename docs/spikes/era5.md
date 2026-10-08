@@ -32,6 +32,9 @@ hourly ERA5 for annual-extreme recipes, with no account and no GRIB tooling?
   of 24 hourly values and slightly underestimates the true extreme.
 * Daily boundary is **UTC** (`DailyAggregation.utc_offset_hours` exists, but
   recipes use UTC).
+* TXx, TNn, RX1day and RX5day fit the original annual extremes with GEV
+  and L-moments. An explicit policy can
+  override either choice; no automatic family fallback is applied.
 * `land_sea_mask` exists in both stores (a time-indexed copy in ARCO); a cell
   is land at ≥ 0.5.
 * The Zarr copies are v2 format, readable by zarr 2.18 and 3.x; the loader

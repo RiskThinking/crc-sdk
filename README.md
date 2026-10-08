@@ -426,6 +426,23 @@ temperature), `tnn`, `rx1day` and `rx5day`; days are UTC days. Data is read
 anonymously from public Zarr copies (`crc-sdk[zarr,netcdf,geometry]`), reduced
 to one small file per year, and only those annual extremes are cached.
 
+All ERA5 recipes and generic `BlockExtremaPolicy` fits default to GEV with L-moments:
+
+| Recipe | Family | Estimator |
+|---|---|---|
+| `txx`, `tnn`, `rx1day`, `rx5day` | GEV (`genextreme`) | Sample L-moments (`sample_lmoments`) |
+
+`BlockExtremaPolicy` inherits these choices when `family` or `fit_method` is
+unspecified, including when you customize resolution, minimum years, or
+diagnostics. Explicit choices override the corresponding recipe default.
+For block extremes fitted with Gumbel and L-moments, use
+`BlockExtremaPolicy.curated(family="gumbel_r")`. To reproduce a Gumbel
+quantile-least-squares fit, specify both `family="gumbel_r"` and
+`fit_method="quantile_least_squares"`. A `CurveFitIngestPolicy` is fully
+explicit and does not inherit recipe defaults.
+Quantile residual gates require `fit_method="quantile_least_squares"`;
+incompatible resolved policies are rejected when the plan is constructed.
+
 ```python
 from crc_sdk.workflows import BlockExtremaPolicy, HazardDataset
 
@@ -457,7 +474,8 @@ are underestimated, and a grid cell is an area average, not a point.
 behind this and the EDO drought workflow: any reader that yields per-block
 statistics (a year, a season or a water year; max, min, k-day sum or mean, or a
 threshold count) can be fitted with a plotting position and least squares, or
-with `fit_method="sample_mle"`.
+with `fit_method="sample_mle"` or `fit_method="sample_lmoments"`. Sample
+estimators use the original annual values without interpolation or resampling.
 
 ### Bringing your own data
 
@@ -672,8 +690,8 @@ later.
 
 ### L-moments fitting for annual extremes
 
-ERA5 defaults to Gumbel with quantile least squares. To opt into the
-standalone GEV L-moment estimator, use:
+ERA5 recipes and generic block-extrema policies default to GEV with L-moments. To select the standalone GEV L-moment estimator
+explicitly, use:
 
 ```python
 from crc_sdk.workflows import BlockExtremaPolicy
@@ -709,3 +727,32 @@ Restart the notebook kernel after installation.
 Reuse the annual-extremes cache to compare policies without downloading hourly
 data again. L-moment fitting alone does not quantify return-level uncertainty;
 use resampling or independent validation to assess a proposed default.
+
+Block sample fits validate GEV support and finite return levels at 2, 5, 10,
+20, 50 and 100 years by default. Configure `validation_return_periods` for your
+application; set `minimum_return_value=0` for nonnegative rainfall return levels,
+or supply an application-specific `maximum_return_value`. These bounds apply
+only at the configured periods and do not truncate or otherwise alter a fitted
+curve. Negative temperatures remain valid. GEV observed-support
+checks apply to sample estimators only. Return-level checks also apply to
+quantile-least-squares fits, independently of quantile residual gates, and
+evaluate the complete distribution for hurdle fits.
+
+A Gumbel fallback is opt-in and requires a diagnostics sidecar:
+
+```python
+policy = BlockExtremaPolicy.curated(
+    minimum_return_value=0,  # rainfall example
+    fallback_family="gumbel_r",
+    diagnostics="rx1day-fit-diagnostics.parquet",
+)
+```
+
+Only a failed GEV L-moment fit or its failed quality checks triggers the fallback.
+Short and constant records remain ineligible; the fallback must pass the same
+checks. The sidecar records both attempted families, failures, the original
+failure reason and the selected family. Dataset provenance lists both candidate
+families with `selection_metric="first_acceptable"`; each canonical row records
+its actual family. For a lower-tail experiment, `gumbel_l` is also available.
+No shape clipping, bootstrap uncertainty threshold or automatic zero point-mass
+treatment is applied.

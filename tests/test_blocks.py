@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
@@ -280,6 +280,7 @@ def test_sample_fit_and_diagnostics_sidecar(tmp_path: Path, method: str) -> None
     metadata = read_hazard_metadata(output)
     assert metadata.fitting is not None
     assert metadata.fitting.method == method
+    assert metadata.fitting.input_kind == "samples"
     assert metadata.fitting.initialization == (
         "lmoments" if method == "sample_mle" else None
     )
@@ -295,7 +296,7 @@ def test_sample_fit_and_diagnostics_sidecar(tmp_path: Path, method: str) -> None
     expected = []
     for row, column in [(0, 0), (0, 1), (0, 2), (1, 0), (1, 1)]:
         fit = fit_distribution(
-            stack[:, row, column],
+            stack[:, row, column].tolist(),
             "gumbel_r",
             method="lmoments" if method == "sample_lmoments" else "default",
         ).distribution
@@ -386,3 +387,257 @@ def test_lmoments_reports_old_backend_instead_of_skipping_cells(
     )
     with pytest.raises(RuntimeError, match="requires crc-framework"):
         stream.read_all()
+
+
+@pytest.mark.parametrize("shape, endpoint", [(0.5, 14.0), (-0.5, 6.0), (0.0, None)])
+def test_gev_support_check(shape: float, endpoint: float | None) -> None:
+    from crc_framework import FittedDistribution
+
+    from crc_sdk.connectors.adapters import _validate_sample_fit
+
+    fit = FittedDistribution("genextreme", location=10, scale=2, shape=shape)
+    policy = _policy(
+        family="genextreme", fit_method="sample_lmoments", require_sample_support=True
+    )
+    values = np.array([8.0, 10.0, 12.0] if endpoint is None else [10.0, endpoint])
+    _validate_sample_fit(fit, values, policy)
+    if endpoint is not None:
+        # Permit endpoint roundoff, but reject a material support violation.
+        _validate_sample_fit(
+            fit,
+            np.array([np.nextafter(endpoint, np.inf if shape > 0 else -np.inf)]),
+            policy,
+        )
+        with pytest.raises(ValueError, match="outside fitted GEV support"):
+            _validate_sample_fit(
+                fit, np.array([endpoint + (0.01 if shape > 0 else -0.01)]), policy
+            )
+    else:
+        _validate_sample_fit(fit, np.array([-1e100, 1e100]), policy)
+
+
+@pytest.mark.parametrize("tail", ["upper", "lower"])
+def test_sample_return_level_bounds_use_selected_tail(tail: str) -> None:
+    from crc_framework import FittedDistribution
+
+    from crc_sdk.connectors.adapters import _validate_sample_fit
+
+    fit = FittedDistribution("gumbel_r", location=0, scale=1)
+    policy = _policy(
+        fit_method="sample_lmoments",
+        tail=tail,
+        validation_return_periods=(100,),
+        minimum_return_value=0 if tail == "lower" else None,
+        maximum_return_value=4 if tail == "upper" else None,
+    )
+    with pytest.raises(ValueError, match="return levels"):
+        _validate_sample_fit(fit, np.array([-1, 0, 1, 2]), policy)
+
+
+@pytest.mark.parametrize("period", [0, 1, float("nan"), float("inf")])
+def test_sample_checks_reject_invalid_periods(period: float) -> None:
+    with pytest.raises(ValueError, match="validation_return_periods"):
+        _policy(fit_method="sample_lmoments", validation_return_periods=(period,))
+
+
+def test_sample_checks_reject_incompatible_options() -> None:
+    with pytest.raises(ValueError, match="sample support checks"):
+        _policy(require_sample_support=True)
+    with pytest.raises(ValueError, match="require validation_return_periods"):
+        _policy(fit_method="sample_lmoments", minimum_return_value=0)
+    with pytest.raises(ValueError, match="exceeds"):
+        _policy(
+            fit_method="sample_lmoments",
+            validation_return_periods=(2,),
+            minimum_return_value=10,
+            maximum_return_value=0,
+        )
+    with pytest.raises(ValueError, match="requires diagnostics"):
+        _policy(
+            family="genextreme",
+            fit_method="sample_lmoments",
+            fallback_family="gumbel_r",
+        )
+
+
+@pytest.mark.parametrize("fallback_succeeds", [True, False])
+def test_gev_fallback_is_audited_and_obeys_same_checks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fallback_succeeds: bool
+) -> None:
+    from types import SimpleNamespace
+
+    from crc_framework import FittedDistribution
+
+    calls: list[str] = []
+
+    def fake_fit(values: Any, *, family: str, method: str) -> Any:
+        calls.append(family)
+        assert method == "lmoments"
+        fit = (
+            FittedDistribution("genextreme", location=0, scale=1, shape=1)
+            if family == "genextreme"
+            else FittedDistribution(
+                "gumbel_r", location=30 if fallback_succeeds else -100, scale=2
+            )
+        )
+        return SimpleNamespace(distribution=fit)
+
+    monkeypatch.setattr("crc_sdk.connectors.adapters.fit_distribution", fake_fit)
+    stack = _stack()
+    stack[:, 0, 0] = 0  # A degenerate record must never trigger fallback.
+    sidecar = tmp_path / "diag.parquet"
+    stream = canonicalize_curve_source(
+        _source(stack, CurveSourceInfo()),
+        _policy(
+            family="genextreme",
+            fit_method="sample_lmoments",
+            require_sample_support=True,
+            validation_return_periods=(2, 100),
+            minimum_return_value=0,
+            fallback_family="gumbel_r",
+            diagnostics=sidecar,
+        ),
+        provider="era5",
+    )
+    table = stream.read_all()
+    assert calls == ["genextreme", "gumbel_r"] * 4
+    metadata = stream.metadata.fitting
+    assert metadata is not None
+    assert metadata.families == ("genextreme", "gumbel_r")
+    assert metadata.selection_metric == "first_acceptable"
+    assert metadata.require_sample_support and metadata.minimum_return_value == 0
+    rows = pq.read_table(sidecar).to_pylist()
+    attempted = [row for row in rows if len(row["attempted_families"]) == 2]
+    assert len(attempted) == 4
+    assert all(
+        row["failed_families"]
+        == (["genextreme"] if fallback_succeeds else ["genextreme", "gumbel_r"])
+        for row in attempted
+    )
+    if fallback_succeeds:
+        assert table.num_rows > 0
+        assert set(table["curve_type"].to_pylist()) == {"gumbel_r"}
+        assert all(row["fallback"] and "support" in row["message"] for row in attempted)
+    else:
+        assert table.num_rows == 0
+        assert all(
+            row["outcome"] == "skipped" and "minimum_return_value" in row["message"]
+            for row in attempted
+        )
+
+
+def test_return_level_check_rejects_nonfinite_levels() -> None:
+    from crc_framework import FittedDistribution
+
+    from crc_sdk.connectors.adapters import _validate_sample_fit
+
+    fit = FittedDistribution("gumbel_r", location=0, scale=1e308)
+    with pytest.raises(ValueError, match="nonfinite"):
+        _validate_sample_fit(
+            fit,
+            np.array([0, 1, 2, 3]),
+            _policy(fit_method="sample_lmoments", validation_return_periods=(100,)),
+        )
+
+
+@pytest.mark.parametrize("on_failure", ["skip", "raise"])
+@pytest.mark.parametrize("tail", ["upper", "lower"])
+def test_quantile_return_level_gates_are_enforced(
+    tmp_path: Path, on_failure: str, tail: Literal["upper", "lower"]
+) -> None:
+    sidecar = tmp_path / "qls-diagnostics.parquet"
+    source = _source(_stack())
+    source.tail = tail
+    stream = canonicalize_curve_source(
+        source,
+        _policy(
+            validation_return_periods=(2, 10),
+            maximum_return_value=0,
+            tail=tail,
+            diagnostics=sidecar,
+            on_fit_failure=on_failure,
+        ),
+        provider="test",
+    )
+    if on_failure == "raise":
+        with pytest.raises(ValueError, match="above maximum_return_value"):
+            stream.read_all()
+        assert not sidecar.exists()
+        assert not Path(str(sidecar) + ".partial").exists()
+    else:
+        assert stream.read_all().num_rows == 0
+        rows = pq.read_table(sidecar).to_pylist()
+        failures = [row for row in rows if row["reason"] == "fit_failed"]
+        assert len(failures) == 5
+        assert all("above maximum_return_value" in row["message"] for row in failures)
+
+
+def test_quantile_return_level_gates_accept_valid_fit() -> None:
+    stream = canonicalize_curve_source(
+        _source(_stack(), CurveSourceInfo()),
+        _policy(
+            validation_return_periods=(2, 10),
+            minimum_return_value=0,
+            maximum_return_value=100,
+        ),
+        provider="test",
+    )
+    assert stream.read_all().num_rows > 0
+    assert stream.metadata.fitting is not None
+    assert stream.metadata.fitting.validation_return_periods == (2, 10)
+    assert stream.metadata.fitting.minimum_return_value == 0
+
+
+def test_quantile_return_level_gate_checks_complete_hurdle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from crc_framework import (
+        FittedDistribution,
+        HurdleDistribution,
+        TabulatedDistribution,
+    )
+
+    from crc_sdk.connectors.adapters import HurdleFitPolicy, _fit_curve
+
+    base = FittedDistribution("gumbel_r", location=30, scale=2)
+    hurdle = HurdleDistribution(base, atom_probability=0.75, atom_location=-1)
+    monkeypatch.setattr(
+        "crc_sdk.connectors.adapters.fit_hurdle_quantiles",
+        lambda *args, **kwargs: SimpleNamespace(
+            distribution=hurdle,
+            diagnostics=SimpleNamespace(tail=SimpleNamespace(converged=True)),
+        ),
+    )
+    knots = TabulatedDistribution.from_return_periods(
+        [2, 5, 10, 20], [-1, 30, 35, 40], tail="upper"
+    )
+    with pytest.raises(ValueError, match="below minimum_return_value"):
+        _fit_curve(
+            knots,
+            _policy(
+                hurdle=HurdleFitPolicy(0.75, -1),
+                validation_return_periods=(2,),
+                minimum_return_value=0,
+            ),
+        )
+
+
+@pytest.mark.parametrize("values_are_samples", [False, True])
+def test_quantile_provenance_records_original_source_kind(
+    tmp_path: Path, values_are_samples: bool
+) -> None:
+    source = _source(_stack(), CurveSourceInfo())
+    source.values_are_samples = values_are_samples
+    output = tmp_path / "quantile-fit.parquet"
+    write_hazard_stream(
+        canonicalize_curve_source(source, _policy(), provider="test"), output
+    )
+    metadata = read_hazard_metadata(output)
+    assert metadata.fitting is not None
+    assert metadata.fitting.method == "quantile_least_squares"
+    assert metadata.fitting.input_kind == (
+        "samples" if values_are_samples else "probability_labelled"
+    )
+    assert metadata.fitting.initialization is None

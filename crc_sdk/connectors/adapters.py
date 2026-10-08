@@ -19,7 +19,7 @@ pixels that can't be usefully fitted rather than aborting a whole ingest.
 from __future__ import annotations
 
 from collections.abc import Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Literal, Protocol, get_args, runtime_checkable
@@ -149,6 +149,14 @@ class CurveFitIngestPolicy:
     # Persist one row per source pixel (fitted, or skipped with its reason) to
     # this Parquet path (ADR-0007).
     diagnostics: str | Path | None = None
+    # GEV observed-support validation is specific to raw-sample fits.
+    require_sample_support: bool = False
+    # Return-level gates apply to either estimator, including hurdle quantiles.
+    validation_return_periods: tuple[float, ...] = ()
+    minimum_return_value: float | None = None
+    maximum_return_value: float | None = None
+    # An audited, opt-in fallback for otherwise valid GEV L-moment samples.
+    fallback_family: Literal["gumbel_r", "gumbel_l"] | None = None
 
     def __post_init__(self) -> None:
         if self.fit_method not in (
@@ -177,6 +185,39 @@ class CurveFitIngestPolicy:
             raise ValueError(
                 "sample_lmoments supports genextreme, gumbel_r and gumbel_l only"
             )
+        if any(not np.isfinite(t) or t <= 1 for t in self.validation_return_periods):
+            raise ValueError(
+                "validation_return_periods must be finite and greater than one"
+            )
+        for bound in (self.minimum_return_value, self.maximum_return_value):
+            if bound is not None and not np.isfinite(bound):
+                raise ValueError("return-value bounds must be finite")
+        if (
+            self.minimum_return_value is not None
+            and self.maximum_return_value is not None
+            and self.minimum_return_value > self.maximum_return_value
+        ):
+            raise ValueError("minimum_return_value exceeds maximum_return_value")
+        if (
+            self.minimum_return_value is not None
+            or self.maximum_return_value is not None
+        ) and not self.validation_return_periods:
+            raise ValueError("return-value bounds require validation_return_periods")
+        if self.fit_method == "quantile_least_squares" and self.require_sample_support:
+            raise ValueError("sample support checks require a sample fit method")
+        if self.fallback_family is not None:
+            if (
+                self.family != "genextreme"
+                or self.fit_method != "sample_lmoments"
+                or self.fallback_family not in ("gumbel_r", "gumbel_l")
+            ):
+                raise ValueError(
+                    "fallback_family requires a GEV sample_lmoments primary fit"
+                )
+            if self.diagnostics is None:
+                raise ValueError(
+                    "fallback_family requires diagnostics for its audit trail"
+                )
         if not 0 <= self.h3_resolution <= 15:
             raise ValueError("H3 resolution must be between 0 and 15")
         if self.family not in get_args(DistributionFamily):
@@ -273,23 +314,38 @@ def _metadata(
             retrieved_at=info.retrieved_at,
             checksum=info.checksum,
         ),
-        fitting=_fit_provenance(policy),
+        fitting=_fit_provenance(source, policy),
         probability_semantics=info.probability_semantics,
         temporal_window=info.temporal_window,
         ensemble=info.ensemble,
     )
 
 
-def _fit_provenance(policy: CurveFitIngestPolicy) -> CurveFitProvenance:
-    sample_fit = policy.fit_method == "sample_mle"
+def _fit_provenance(
+    source: CurveSource, policy: CurveFitIngestPolicy
+) -> CurveFitProvenance:
+    # Initialization describes optimizer seeding. Standalone L-moments is the
+    # complete estimator, so it has no optimizer or initialization (ADR-0006).
+    # input_kind describes original source data, before plotting positions.
     return CurveFitProvenance(
         method=policy.fit_method,
-        initialization="lmoments" if sample_fit else None,
-        input_kind="samples",
+        initialization="lmoments" if policy.fit_method == "sample_mle" else None,
+        input_kind="samples"
+        if getattr(source, "values_are_samples", False)
+        else "probability_labelled",
         platform=platform_tag(),
         crc_framework_version=framework_version(),
-        families=(policy.family,),
+        families=(policy.family,)
+        if policy.fallback_family is None
+        else (policy.family, policy.fallback_family),
+        selection_metric="fixed_family"
+        if policy.fallback_family is None
+        else "first_acceptable",
         atom_policy="none",
+        require_sample_support=policy.require_sample_support,
+        validation_return_periods=policy.validation_return_periods,
+        minimum_return_value=policy.minimum_return_value,
+        maximum_return_value=policy.maximum_return_value,
         maximum_normalized_rmse=policy.maximum_normalized_rmse,
         maximum_absolute_residual=policy.maximum_absolute_residual,
         on_fit_failure=policy.on_fit_failure,
@@ -336,6 +392,7 @@ def _fit_curve(
             f"{diagnostics.maximum_absolute_residual} exceeds policy "
             f"{policy.maximum_absolute_residual}"
         )
+    _validate_return_levels(distribution, policy)
     base = (
         distribution.base
         if isinstance(distribution, HurdleDistribution)
@@ -356,7 +413,63 @@ def _fit_samples(values: Any, policy: CurveFitIngestPolicy) -> tuple[Any, Any]:
             ) from error
     else:
         result = fit_distribution(values, family=policy.family)
+    _validate_sample_fit(result.distribution, values, policy)
     return result.distribution, result.distribution
+
+
+def _validate_sample_fit(
+    distribution: FittedDistribution, values: Any, policy: CurveFitIngestPolicy
+) -> None:
+    """Check parameters, GEV sample support and configured tail return levels.
+
+    The framework uses SciPy's shape c (opposite to the common xi). Checking
+    the dimensionless support margin avoids division by a near-zero shape.
+    Endpoint equality is allowed, including roundoff at machine precision.
+    """
+    parameters = [distribution.location, distribution.scale]
+    if distribution.shape is not None:
+        parameters.append(distribution.shape)
+    if not np.all(np.isfinite(parameters)) or distribution.scale <= 0:
+        raise ValueError("sample fit has invalid parameters")
+    if policy.require_sample_support and distribution.family == "genextreme":
+        c = distribution.shape
+        assert c is not None
+        if c != 0:
+            # Support is linear in x: checking both sample extrema is sufficient.
+            endpoints = np.array([np.min(values), np.max(values)])
+            with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+                z = (endpoints - distribution.location) / distribution.scale
+                product = c * z
+                margin = 1 - product
+                tolerance = 64 * np.finfo(float).eps * np.maximum(1, np.abs(product))
+            if not np.all(np.isfinite(margin)) or np.any(margin < -tolerance):
+                raise ValueError("observations outside fitted GEV support")
+    _validate_return_levels(distribution, policy)
+
+
+def _validate_return_levels(
+    distribution: FittedDistribution | HurdleDistribution,
+    policy: CurveFitIngestPolicy,
+) -> None:
+    """Validate the complete fitted curve at the policy's tail probabilities."""
+    if policy.validation_return_periods:
+        periods = np.asarray(policy.validation_return_periods, dtype=float)
+        probabilities = 1 - 1 / periods if policy.tail == "upper" else 1 / periods
+        if np.any((probabilities <= 0) | (probabilities >= 1)):
+            raise ValueError(
+                "validation return periods exceed numerical probability precision"
+            )
+        levels = np.asarray(distribution.ppf(probabilities))
+        if not np.all(np.isfinite(levels)):
+            raise ValueError("nonfinite validation return levels")
+        if policy.minimum_return_value is not None and np.any(
+            levels < policy.minimum_return_value
+        ):
+            raise ValueError("validation return levels below minimum_return_value")
+        if policy.maximum_return_value is not None and np.any(
+            levels > policy.maximum_return_value
+        ):
+            raise ValueError("validation return levels above maximum_return_value")
 
 
 def _canonical_batches(
@@ -406,6 +519,8 @@ def _canonical_batches(
         message: str | None = None,
         base: Any = None,
         quality: Any = None,
+        attempted: list[str] | None = None,
+        failed: list[str] | None = None,
     ) -> None:
         if writer is None:
             return
@@ -423,15 +538,21 @@ def _canonical_batches(
                 "maximum_absolute_residual": getattr(
                     quality, "maximum_absolute_residual", None
                 ),
-                "attempted_families": [policy.family],
-                "failed_families": [policy.family] if outcome != "fitted" else [],
-                "fallback": False,
+                "attempted_families": attempted or [policy.family],
+                "failed_families": failed
+                if failed is not None
+                else ([policy.family] if outcome != "fitted" else []),
+                "fallback": base is not None and base.family != policy.family,
                 "reason": reason,
                 "message": message or f"{blocks} blocks",
                 "treatment": policy.fit_method,
                 "minimum_informative_value": None,
             }
         )
+        # Bound diagnostics memory even when every cell is skipped.
+        if len(records) >= 65_536:
+            writer.write(records)
+            records.clear()
 
     def record(curve: RasterCurve, outcome: str, **details: Any) -> None:
         record_cell(curve.row, curve.column, len(curve.values), outcome, **details)
@@ -451,10 +572,38 @@ def _canonical_batches(
             if len(values) < 4:
                 record(curve, "skipped", reason="too_few_knots")
                 continue
+            attempted = [policy.family]
+            failed: list[str] = []
+            fallback_reason: str | None = None
             try:
                 quality: Any = None
                 if policy.fit_method != "quantile_least_squares":
-                    distribution, base = _fit_samples(values, policy)
+                    # Invalid samples are never rescued by changing family.
+                    if np.min(values) == np.max(values):
+                        raise ValueError("constant samples cannot be fitted")
+                    try:
+                        distribution, base = _fit_samples(values, policy)
+                    except ValueError as primary_error:
+                        failed.append(policy.family)
+                        if policy.fallback_family is None:
+                            raise
+                        attempted.append(policy.fallback_family)
+                        fallback_reason = str(primary_error)
+                        try:
+                            distribution, base = _fit_samples(
+                                values,
+                                replace(
+                                    policy,
+                                    family=policy.fallback_family,
+                                    fallback_family=None,
+                                ),
+                            )
+                        except ValueError as fallback_error:
+                            failed.append(policy.fallback_family)
+                            raise ValueError(
+                                f"{policy.family}: {primary_error}; "
+                                f"{policy.fallback_family}: {fallback_error}"
+                            ) from fallback_error
                 else:
                     tabulated = TabulatedDistribution.from_return_periods(
                         periods,
@@ -468,7 +617,14 @@ def _canonical_batches(
                 # unconverged/out-of-tolerance fit does -- both mean "this pixel
                 # can't be usefully fitted," so on_fit_failure governs both.
                 if policy.on_fit_failure == "skip":
-                    record(curve, "skipped", reason="fit_failed", message=str(error))
+                    record(
+                        curve,
+                        "skipped",
+                        reason="fit_failed",
+                        message=str(error),
+                        attempted=attempted,
+                        failed=failed or [policy.family],
+                    )
                     continue
                 raise ValueError(
                     f"failed to fit source pixel row={curve.row}, "
@@ -489,6 +645,10 @@ def _canonical_batches(
                 source_id=source_id,
                 base=base,
                 quality=quality,
+                attempted=attempted,
+                failed=failed,
+                reason="primary_fit_failed" if fallback_reason is not None else None,
+                message=fallback_reason,
             )
             curve_kind = (
                 "hurdle" if isinstance(distribution, HurdleDistribution) else "fitted"
@@ -526,9 +686,6 @@ def _canonical_batches(
                 )
                 yield CanonicalHazardBatch(hazard_rows=hazards)
                 hazard_rows.clear()
-            if writer is not None and len(records) >= 65_536:
-                writer.write(records)
-                records.clear()
         if hazard_rows:
             hazards = validate_hazard_table(
                 pa.Table.from_pylist(hazard_rows, schema=hazard_schema),
