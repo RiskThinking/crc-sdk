@@ -1,9 +1,12 @@
 """Cross-module analytical workflows."""
 
+from crc_sdk.providers.crc_open import CRCOpenFixtureWarning
+
 from ._remote import MaterializationResult, PrefetchResult
 from .agriculture import AgriculturalLayer
 from .blocks import BlockExtremaPolicy
 from .byo import BYOPlan
+from .crc_open import CRCOpenPlan
 from .distributions import (
     CURVE_COLUMNS,
     HorizonExtrapolationWarning,
@@ -60,6 +63,8 @@ from .tiling import (
 )
 
 __all__ = [
+    "CRCOpenPlan",
+    "CRCOpenFixtureWarning",
     "BlockExtremaPolicy",
     "ERA5AreaPlan",
     "ERA5CanonicalizationPlan",

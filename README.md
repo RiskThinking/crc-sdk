@@ -709,20 +709,8 @@ observations (annual extremes), rather than probability-labelled hazard knots;
 quantile quality gates and hurdle fits are not supported. The canonical metadata
 records `sample_lmoments` as the estimator, and diagnostics retain skipped cells.
 
-L-moment fitting is available in crc-framework 0.3.0 and later.
-Installing the SDK pulls it in automatically; a compatible prebuilt wheel
-requires neither a local backend checkout nor a Rust toolchain. Python 3.12
-is recommended for the notebook test workspace.
-
-To use an editable SDK checkout in a notebook environment, run this from the
-notebook workspace (adjust `../crc-sdk` to your checkout's location):
-
-```bash
-uv pip install --python .venv/bin/python --reinstall-package crc-framework --editable ../crc-sdk
-```
-
-This also replaces a previously linked local backend with the published package.
-Restart the notebook kernel after installation.
+L-moment fitting requires crc-framework 0.3.0 or later, installed automatically
+with the SDK.
 
 Reuse the annual-extremes cache to compare policies without downloading hourly
 data again. L-moment fitting alone does not quantify return-level uncertainty;
@@ -756,3 +744,52 @@ families with `selection_metric="first_acceptable"`; each canonical row records
 its actual family. For a lower-tail experiment, `gumbel_l` is also available.
 No shape clipping, bootstrap uncertainty threshold or automatic zero point-mass
 treatment is applied.
+
+## CRC canonical open subset
+
+`HazardDataset.crc_open()` reads pinned releases of canonical curves. Available
+in crc-sdk 0.8.0a3 and later, it uses the crc-docs SSP585 fixture HTTP root by
+default. Fixtures have sampled coverage and emit `CRCOpenFixtureWarning` at
+execution.
+
+```python
+from crc_sdk.workflows import HazardDataset
+
+plan = (
+    HazardDataset.crc_open(release="ssp585-fixture-2026-10-08-v2")
+    .for_area((-79.5, 43.5, -79.2, 43.8))
+    .hazards(["rx1day"])
+    .horizons([2050])
+    .cache("work/crc-open", mode="reuse")
+)
+print(plan.explain())  # no I/O
+plan.prefetch()
+curves = plan.materialize("work/rx1day.parquet")
+```
+
+Use `fixtures=` to select another fixture root, or `source=` for a catalogue
+root. Both accept HTTP(S) URLs and directories containing release directories.
+Each release supplies `_CATALOG.json`, its `_SUCCESS` SHA256, and relative
+Parquet partition paths. A commit-pinned HTTP root makes the source reproducible.
+
+Plans prune partitions by area and select hazards, horizons and pathways without
+refitting. `reuse`, `offline` and `refresh` use verified persistent caches;
+`stream` verifies temporary downloads. Cache manifests record the request,
+release, checksums, licence and attribution. `refresh` rejects changed catalogue
+bytes under an existing release ID.
+
+`materialize()` returns one ordinary `HazardDataset` for a selected hazard;
+`materialize_all(directory)` returns a mapping with each hazard's units, tail
+and native resolution preserved. Unsupported selections and areas without
+coverage raise clear errors. Metadata governs probability and temporal-window
+warnings during portfolio evaluation.
+
+The SSP585 fixture contains 61 hazards and excludes `cflood` and `rflood`, whose
+source has no SSP585 rows. Cyclone labels reuse a time/scenario-independent
+pooled distribution; inundation retains unspecified probability semantics.
+There is no historical baseline in the fixture, and pooled curves do not
+represent per-model ensemble spread.
+
+See the [access contract](docs/spikes/crc-open-subset.md),
+[fixture coverage and terms](https://github.com/RiskThinking/crc-docs/blob/main/fixtures/crc_open/README.md),
+and [portfolio example](https://github.com/RiskThinking/crc-docs/blob/main/pipelines/crc_open_pipeline.py).

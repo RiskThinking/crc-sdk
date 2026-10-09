@@ -1,35 +1,34 @@
-# CRC open subset access spike — 2026-10-08
+# CRC canonical release access
 
-Phase 1C starts with an explicitly limited crc-docs fixture release. A dedicated
-anonymous upstream does not exist yet; sponsorship and hosting are pending.
+CRC releases use a catalogue rather than remote directory listing. A source root
+contains immutable release directories with:
 
-- Private extraction source: `gs://climate_indices/bias_correction_distributions/curve_fitted/`.
-  Authenticated GCS access succeeded. No SDK dependency on this private bucket.
-- Existing canonical Parquet is schema 1.2, native r5 for climate indices, with
-  all scenarios mixed in each r0 partition. The Toronto rx1day partition is
-  42,729,689 bytes / 2,260,713 rows. Extract only literal `ssp585` rows; no
-  historic, warming-band, water or cyclone rows. Preserve curves without refitting.
-- Temporary public contract: a pinned release directory in crc-docs/fixtures,
-  `_CATALOG.json`, `_SUCCESS` (SHA256 of catalogue), and relative Hive-style
-  Parquet paths with SHA256, size and row count. No remote directory listing.
-- Access: ordinary HTTP GET (GitHub raw content after the fixtures are committed
-  and pushed), or a local directory / HTTP server during development. No auth,
-  requester-pays or cloud credentials for SDK consumers. HTTP transfers download
-  only selected catalogue partitions; each fixture file stays below 10 MiB and
-  the complete release below 40 MiB, safely below GitHub's ordinary file limits.
-- Release IDs are immutable by contract; cached catalogue bytes and checksums pin
-  a release. Prefer a commit-pinned HTTP base URL for reproducibility. There is
-  deliberately no invented permanent upstream URL and no automatic live lookup.
-- The fixture is a geographically varied demonstration sample, not global
-  coverage or a statistically representative scientific validation dataset.
-  Actual cells, hazard coverage, horizons and curve-kind counts are recorded.
-- The release licence requires the maintainer's decision. Do not infer an open
-  data licence from the SDK's software licence. Source attribution is retained.
-- Fixture metadata is upgraded additively to 1.3 with pooled ensemble and annual
-  value distribution semantics. Window lengths are unknown in these source
-  files: do not invent them. Keep original fit provenance; publish only public
-  interpretation fields in the catalogue, never the private registry.
+- `_CATALOG.json`: release ID, canonical schema version, data licence and
+  attribution, public hazard interpretation fields, coverage and partition paths.
+- `_SUCCESS`: SHA256 of the exact catalogue bytes.
+- `{hazard}/h3_r0={cell}/part-00000.parquet`: canonical curves, with SHA256,
+  byte size and row count recorded in the catalogue.
 
-The SDK accepts an explicit catalogue root via `source=...`; an opt-in
-`fixtures=...` fallback emits an alpha coverage warning. The same contract can
-move to dedicated hosting later without changing evaluation or curve fitting.
+SDK consumers use ordinary HTTP(S) GETs or a directory. The default fixture root
+is `https://raw.githubusercontent.com/RiskThinking/crc-docs/main/fixtures/crc_open`.
+`fixtures=` selects another fixture root; `source=` selects a catalogue root.
+Neither route requires cloud credentials or bucket listing. Use a commit-pinned
+HTTP root when the host supports it.
+
+Cache manifests pin catalogue and partition checksums, request, licence and
+attribution. Area selection prunes r0 partitions and checks recorded sparse-cell
+coverage before download. Each materialized hazard keeps its native resolution,
+units, tail and fitting provenance. Existing curves are never refitted.
+
+The SSP585 fixture covers 59 climate indices plus inundation and cyclone.
+Coastal and river flood are excluded because their canonical source has no
+SSP585 pathway. Cyclone's upstream labels broadcast a time/scenario-independent
+curve; inundation's probability semantics are unspecified. These caveats are
+preserved in metadata and public catalogue notes. Fixture coverage is sampled,
+and no historical baseline is included.
+
+Fixture production uses authenticated access to
+`gs://climate_indices/bias_correction_distributions/curve_fitted/`; this is a
+producer concern, not an SDK source default. The crc-docs extraction tool records
+source checksums and preserves curve values. Data terms are carried independently
+of the SDK's software licence.
