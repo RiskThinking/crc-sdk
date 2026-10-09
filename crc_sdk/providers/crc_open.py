@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Literal
 from urllib.parse import urlparse
 from urllib.request import urlopen
@@ -131,7 +131,11 @@ class CRCOpenHazards:
         self.source = str(source).rstrip("/")
         self.release = release
         parsed = urlparse(self.source)
-        if parsed.scheme and parsed.scheme not in {"http", "https"}:
+        if (
+            parsed.scheme
+            and parsed.scheme not in {"http", "https"}
+            and not PureWindowsPath(self.source).drive
+        ):
             raise ValueError("CRC source must be an HTTP(S) root or local directory")
 
     def fetch(self, relative: str) -> bytes:

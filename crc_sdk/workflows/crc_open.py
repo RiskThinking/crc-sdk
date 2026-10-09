@@ -26,7 +26,7 @@ from crc_sdk.providers.crc_open import (
     CRCOpenHazards,
     CRCPartition,
 )
-from crc_sdk.types import HazardDatasetMetadata
+from crc_sdk.types import EnsembleDescriptor, HazardDatasetMetadata
 
 from ._remote import (
     Bounds,
@@ -351,13 +351,27 @@ class CRCOpenPlan:
                 or current.value_unit != hazard.unit
                 or current.return_period_tail != hazard.tail
                 or current.value_semantics != hazard.value_semantics
-                or current.probability_semantics != hazard.probability_semantics
                 or current.schema_version != catalog.schema_version
-                or current.ensemble is None
-                or current.ensemble.pooling != hazard.pooling
+                or (
+                    current.schema_version == "1.3"
+                    and (
+                        current.probability_semantics != hazard.probability_semantics
+                        or current.ensemble is None
+                        or current.ensemble.pooling != hazard.pooling
+                    )
+                )
             ):
                 raise ValueError(
                     f"partition metadata disagrees with catalogue for {name}"
+                )
+            if current.schema_version == "1.2":
+                # Older partitions cannot encode these catalogue declarations.
+                current = current.model_copy(
+                    update={
+                        "schema_version": "1.3",
+                        "probability_semantics": hazard.probability_semantics,
+                        "ensemble": EnsembleDescriptor(pooling=hazard.pooling),
+                    }
                 )
             if set(table["hazard_name"].to_pylist()) != {name}:
                 raise ValueError(f"partition contains unexpected hazards for {name}")
@@ -490,8 +504,42 @@ class CRCOpenPlan:
     def ensure_materialized(
         self, *, progress: ProgressCallback | None = None
     ) -> HazardDataset:
-        directory = Path(tempfile.mkdtemp(prefix="crc-open-materialized-"))
-        return self.materialize(directory / "hazards.parquet", progress=progress)
+        if self.cache_dir is None:
+            raise ValueError(
+                "ensure_materialized requires a persistent cache; "
+                "use cache(path) or materialize(output) explicitly"
+            )
+        identity = json.dumps(
+            [
+                self.source,
+                self.release,
+                self.pathway,
+                self.bounds,
+                self.selected_hazards,
+                self.selected_horizons,
+            ],
+            separators=(",", ":"),
+        )
+        digest = hashlib.sha256(identity.encode()).hexdigest()
+        output = self.cache_dir / "canonical" / f"hazard-{digest}.parquet"
+        receipt = output.with_suffix(".sha256")
+        if len(self.selected_hazards) != 1:
+            raise ValueError("ensure_materialized requires hazards([name])")
+        with self._prepare(progress) as (catalog, paths, hits, misses, checksum):
+            if (
+                self.cache_mode != "refresh"
+                and output.is_file()
+                and receipt.is_file()
+                and file_checksum(output) == receipt.read_text().strip()
+            ):
+                dataset = HazardDataset.local(output)
+                if dataset.provenance().checksum == checksum:
+                    return dataset
+            dataset = self._write(
+                output, self.selected_hazards[0], catalog, paths, hits, misses, checksum
+            )
+            receipt.write_text(file_checksum(output) + "\n")
+            return dataset
 
     def for_assets(self, assets: Any | AssetPortfolio) -> RemotePortfolioEvaluation:
         portfolio = (
@@ -532,6 +580,16 @@ class CRCOpenPortfolioEvaluation(RemotePortfolioEvaluation):
             ).issubset(plan.selected_horizons):
                 raise ValueError("portfolio horizons are outside the CRC open request")
             plan = plan.horizons(selection.horizons)
+        if plan.cache_dir is None:
+            # Keep the canonical file alive through evaluation, then remove it
+            # and the downloaded partitions even if evaluation raises.
+            with tempfile.TemporaryDirectory(prefix="crc-open-portfolio-") as scratch:
+                return RemotePortfolioEvaluation.write_parquet(
+                    replace(self, plan=plan.cache(scratch)),
+                    output,
+                    execution=execution,
+                    progress=progress,
+                )
         return RemotePortfolioEvaluation.write_parquet(
             replace(self, plan=plan), output, execution=execution, progress=progress
         )

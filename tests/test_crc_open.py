@@ -316,3 +316,113 @@ def test_exclusions_and_unknown_semantics_are_preserved(tmp_path: Path) -> None:
     with pytest.warns(CRCOpenFixtureWarning):
         with pytest.raises(ValueError, match="Source has no SSP585"):
             plan.hazards(["cflood"]).materialize(tmp_path / "excluded.parquet")
+
+
+@pytest.mark.parametrize("source", ["C:/data", r"C:\data", r"\\server\share\data"])
+def test_windows_catalogue_roots_are_local(source: str) -> None:
+    provider = CRCOpenHazards(source, RELEASE)
+    with patch("pathlib.Path.read_bytes", return_value=b"local") as read:
+        with patch("crc_sdk.providers.crc_open.urlopen", side_effect=AssertionError):
+            assert provider.fetch("_CATALOG.json") == b"local"
+    read.assert_called_once()
+    with pytest.raises(ValueError, match="HTTP"):
+        CRCOpenHazards("gs://private/data", RELEASE)
+
+
+def test_schema_12_materialization_upgrades_catalogue_metadata(tmp_path: Path) -> None:
+    source, catalog = _release(tmp_path)
+    catalog["schema_version"] = "1.2"
+    for hazard in catalog["hazards"].values():
+        for entry in hazard["partitions"]:
+            path = source / RELEASE / entry["path"]
+            table = pq.ParquetFile(path).read()
+            metadata = HazardDatasetMetadata.from_parquet_metadata(
+                table.schema.metadata
+            )
+            older = metadata.model_copy(
+                update={
+                    "schema_version": "1.2",
+                    "probability_semantics": None,
+                    "ensemble": None,
+                }
+            )
+            write_hazard_dataset(table, path, older)
+            entry["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+            entry["size_bytes"] = path.stat().st_size
+    _publish_catalog(source / RELEASE, catalog)
+    plan = HazardDataset.crc_open(release=RELEASE, fixtures=source)
+    with pytest.warns(CRCOpenFixtureWarning):
+        datasets = plan.materialize_all(tmp_path / "upgraded")
+        single = plan.hazards(["rx1day"]).materialize(tmp_path / "single.parquet")
+    for dataset in [*datasets.values(), single]:
+        metadata = dataset.metadata()
+        assert metadata.schema_version == "1.3"
+        assert metadata.probability_semantics == "annual_value_distribution"
+        assert metadata.ensemble is not None and metadata.ensemble.pooling == "pooled"
+        assert metadata.ensemble.scenario is None
+        assert dataset.provenance().licence == "CC-BY-4.0"
+        assert pq.read_table(dataset.provider.source).num_rows == 4
+
+
+def test_automatic_materialization_reuses_verified_cache(tmp_path: Path) -> None:
+    source, _ = _release(tmp_path)
+    plan = (
+        HazardDataset.crc_open(release=RELEASE, fixtures=source)
+        .hazards(["rx1day"])
+        .cache(tmp_path / "cache")
+    )
+    with pytest.warns(CRCOpenFixtureWarning):
+        first = plan.ensure_materialized()
+    path = Path(first.provider.source)
+    with patch.object(type(plan), "_write", side_effect=AssertionError("rewritten")):
+        with pytest.warns(CRCOpenFixtureWarning):
+            assert plan.ensure_materialized().provider.source == first.provider.source
+    path.write_bytes(b"corrupt")
+    with pytest.warns(CRCOpenFixtureWarning):
+        repaired = plan.ensure_materialized()
+        refreshed = plan.cache(tmp_path / "cache", mode="refresh").ensure_materialized()
+    assert pq.read_table(repaired.provider.source).num_rows == 4
+    assert repaired.provider.source == refreshed.provider.source
+    assert len(list((tmp_path / "cache/canonical").glob("*.parquet"))) == 1
+    with pytest.warns(CRCOpenFixtureWarning):
+        other = plan.horizons([2050]).ensure_materialized()
+    assert other.provider.source != repaired.provider.source
+    with pytest.raises(ValueError, match="persistent cache"):
+        plan.cache(None, mode="stream").ensure_materialized()
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_stream_portfolio_cleans_scratch(tmp_path: Path, fail: bool) -> None:
+    source, _ = _release(tmp_path)
+    assets = pa.table(dict(asset_id=["Toronto"], longitude=[-79.38], latitude=[43.65]))
+    request = (
+        HazardDataset.crc_open(release=RELEASE, fixtures=source)
+        .hazards(["rx1day"])
+        .for_assets(assets)
+        .return_periods([10])
+    )
+    import tempfile
+
+    from crc_sdk.workflows.portfolio import PortfolioEvaluation
+
+    scratch = []
+    original = tempfile.TemporaryDirectory
+
+    def temporary(**kwargs: Any) -> Any:
+        directory = original(dir=tmp_path, **kwargs)
+        scratch.append(Path(directory.name))
+        return directory
+
+    with patch("crc_sdk.workflows.crc_open.tempfile.TemporaryDirectory", temporary):
+        with pytest.warns(CRCOpenFixtureWarning):
+            if fail:
+                with patch.object(
+                    PortfolioEvaluation,
+                    "write_parquet",
+                    side_effect=RuntimeError("evaluation"),
+                ):
+                    with pytest.raises(RuntimeError, match="evaluation"):
+                        request.write_parquet(tmp_path / "result.parquet")
+            else:
+                assert request.write_parquet(tmp_path / "result.parquet").row_count == 2
+    assert scratch and all(not directory.exists() for directory in scratch)
