@@ -12,13 +12,15 @@ affect Gumbel/GEV/tabulated allocation near optimizer convergence boundaries.
 
 ## Decision
 
-- `CurveFitProvenance.method`: `quantile_least_squares` \| `sample_mle` \|
-  `sample_lmoments`, plus an optional `initialization` (e.g. `lmoments`), `input_kind`
-  (`probability_labelled` \| `samples`) and `sample_resampling` (knot count
-  when samples were resampled to a quantile grid).
+- `CurveFitProvenance.method`: `quantile_least_squares` \|
+  `censored_quantile` \| `sample_mle` \| `sample_lmoments`, plus an optional
+  `initialization` (e.g. `lmoments`), `input_kind` (`probability_labelled` \|
+  `samples`) and `sample_resampling` (knot count when samples were resampled
+  to a quantile grid).
 - **Probability-labelled inputs** (CDF quantiles, return-period vectors)
-  **always** use quantile least squares. Sample-based MLE is for genuine
-  samples only.
+  use quantile least squares by default. Sparse, bound-valued return-period
+  curves may explicitly use a Gaussian left-censored quantile likelihood.
+  Sample-based MLE is for genuine samples only.
 - Genuine samples may use sample MLE (GEV starts from L-moments/PWM, refined
   by penalised MLE), standalone L-moments, or plotting positions + least
   squares. The choice is recorded.
@@ -31,6 +33,21 @@ affect Gumbel/GEV/tabulated allocation near optimizer convergence boundaries.
 - Bit-identical output across architectures: not achievable with iterative
   optimisers near convergence boundaries.
 - Fit return-period vectors as samples: statistically invalid.
+
+## Censored return-period curves
+
+`censored_quantile` treats values at or below `censor_location` as left
+censored and positive values as noisy observations of latent distribution
+quantiles. It is intended for already-return-period-based flood/inundation
+curves, not raw annual samples and not sources with a known hurdle probability.
+The canonical observed curve clamps the latent fit at the censor location and
+uses the existing hurdle representation.
+
+GEV has three curve parameters; a three-knot positive tail can therefore drive
+the fitted residual standard deviation toward zero. The optimizer enforces
+`residual_scale_floor_ratio * robust_value_scale` (default `1e-3`) and records
+both the ratio and fitted scale in provenance/diagnostics. Publication checks
+must verify that nearby floor ratios do not materially change evaluated depths.
 
 ## Application
 

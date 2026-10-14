@@ -624,6 +624,33 @@ def test_quantile_return_level_gate_checks_complete_hurdle(
         )
 
 
+def test_connector_censored_quantile_fit_preserves_sparse_flood_transition() -> None:
+    from crc_framework import HurdleDistribution, TabulatedDistribution
+
+    from crc_sdk.connectors.adapters import _fit_curve
+
+    periods = [2, 5, 10, 25, 50, 100, 250, 500, 1000]
+    depths = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.03, 0.06, 0.10]
+    tabulated = TabulatedDistribution.from_return_periods(
+        periods, depths, tail="upper"
+    )
+    distribution, base, diagnostics = _fit_curve(
+        tabulated,
+        _policy(
+            family="genextreme",
+            fit_method="censored_quantile",
+            on_fit_failure="raise",
+        ),
+    )
+    assert isinstance(distribution, HurdleDistribution)
+    assert base.family == "genextreme"
+    fitted = distribution.quantiles(1.0 - 1.0 / np.asarray(periods))
+    np.testing.assert_array_equal(fitted[:6], np.zeros(6))
+    np.testing.assert_allclose(fitted[6:], depths[6:], atol=0.002)
+    assert diagnostics.censored_point_count == 6
+    assert diagnostics.uncensored_point_count == 3
+
+
 @pytest.mark.parametrize("values_are_samples", [False, True])
 def test_quantile_provenance_records_original_source_kind(
     tmp_path: Path, values_are_samples: bool

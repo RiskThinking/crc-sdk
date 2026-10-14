@@ -14,7 +14,11 @@ from typing import Any, Literal, NamedTuple
 
 import numpy as np
 import pyarrow as pa  # type: ignore[import-untyped]
-from crc_framework import fit_hurdle_quantiles, fit_quantiles
+from crc_framework import (
+    fit_censored_quantiles,
+    fit_hurdle_quantiles,
+    fit_quantiles,
+)
 from crc_framework.distributions import DistributionFamily, HurdleDistribution
 
 from crc_sdk._version import framework_version, platform_tag, sdk_version
@@ -96,6 +100,11 @@ class CDFCurveFitPolicy:
     source_id: str
     creation_version: str = field(default_factory=sdk_version)
     fallback_families: tuple[DistributionFamily, ...] = ()
+    fit_method: Literal["quantile_least_squares", "censored_quantile"] = (
+        "quantile_least_squares"
+    )
+    censor_location: float = 0.0
+    residual_scale_floor_ratio: float = 1.0e-3
     atom_policy: Literal["none", "infer_min_plateau"] = "infer_min_plateau"
     minimum_informative_value: float | None = None
     minimum_informative_knots: int = 0
@@ -179,6 +188,15 @@ class CDFCurveFitPolicy:
             raise ValueError("no_data_min_rows must be positive")
         if self.atom_policy not in ("none", "infer_min_plateau"):
             raise ValueError("unknown atom policy")
+        if self.fit_method not in ("quantile_least_squares", "censored_quantile"):
+            raise ValueError("unknown quantile fit method")
+        if not np.isfinite(self.censor_location):
+            raise ValueError("censor_location must be finite")
+        if (
+            not np.isfinite(self.residual_scale_floor_ratio)
+            or self.residual_scale_floor_ratio <= 0.0
+        ):
+            raise ValueError("residual_scale_floor_ratio must be finite and positive")
         if self.on_fit_failure not in ("raise", "skip"):
             raise ValueError("on_fit_failure must be 'raise' or 'skip'")
         if self.parametric_failure_action not in ("raise", "skip", "tabulated"):
@@ -254,6 +272,7 @@ class CDFFitSummary:
     canonical_rows: int = 0
     parametric_rows: int = 0
     hurdle_rows: int = 0
+    censored_rows: int = 0
     point_mass_rows: int = 0
     tabulated_rows: int = 0
     no_data_rows: int = 0
@@ -455,7 +474,19 @@ def _fit_family(
 ) -> dict[str, Any]:
     distribution: Any
     diagnostics: Any
-    if policy.atom_policy == "infer_min_plateau" and plateau_count >= 2:
+    censored_diagnostics: Any | None = None
+    if policy.fit_method == "censored_quantile":
+        censored_result = fit_censored_quantiles(
+            probabilities.tolist(),
+            values.tolist(),
+            family=family,
+            censor_location=policy.censor_location,
+            residual_scale_floor_ratio=policy.residual_scale_floor_ratio,
+        )
+        distribution = censored_result.distribution
+        diagnostics = censored_result.diagnostics.observed
+        censored_diagnostics = censored_result.diagnostics
+    elif policy.atom_policy == "infer_min_plateau" and plateau_count >= 2:
         hurdle_result = fit_hurdle_quantiles(
             probabilities.tolist(),
             values.tolist(),
@@ -499,11 +530,27 @@ def _fit_family(
             if isinstance(distribution, HurdleDistribution)
             else None
         ),
-        _treatment=f"parametric:{family}",
+        _treatment=(
+            f"censored_quantile:{family}"
+            if censored_diagnostics is not None
+            else f"parametric:{family}"
+        ),
         _normalized_rmse=float(diagnostics.normalized_rmse),
         _maximum_absolute_residual=float(diagnostics.maximum_absolute_residual),
     )
-    if policy.lower_bound is not None and curve["curve_kind"] == "fitted":
+    if censored_diagnostics is not None:
+        _censor_at_bound(curve, base, policy.censor_location)
+        curve.update(
+            _censored_fit=True,
+            _negative_log_likelihood=float(
+                censored_diagnostics.negative_log_likelihood
+            ),
+            _residual_scale=float(censored_diagnostics.residual_scale),
+            _residual_scale_floor=float(censored_diagnostics.residual_scale_floor),
+            _censored_point_count=int(censored_diagnostics.censored_point_count),
+            _uncensored_point_count=int(censored_diagnostics.uncensored_point_count),
+        )
+    elif policy.lower_bound is not None and curve["curve_kind"] == "fitted":
         _censor_at_bound(curve, base, policy.lower_bound)
     return curve
 
@@ -708,6 +755,10 @@ def _fit_or_error(
 
 
 def _family_failure_reason(message: str) -> str:
+    if "requires censored and uncensored" in message:
+        return "missing_censor_support"
+    if "censor transition" in message:
+        return "censor_transition_mismatch"
     if "did not converge" in message:
         return "optimizer_nonconvergence"
     if "normalized RMSE" in message:
@@ -739,6 +790,7 @@ def _provenance(
 ) -> CurveFitProvenance:
     legacy = policy.schema_version == "1.2"
     return CurveFitProvenance(
+        method=policy.fit_method,
         input_kind=None if legacy else input_kind,
         sample_resampling=(
             policy.sample_quantile_count
@@ -746,13 +798,25 @@ def _provenance(
             else None
         ),
         lower_bound=policy.lower_bound,
+        censor_location=(
+            policy.censor_location
+            if policy.fit_method == "censored_quantile"
+            else None
+        ),
+        residual_scale_floor_ratio=(
+            policy.residual_scale_floor_ratio
+            if policy.fit_method == "censored_quantile"
+            else None
+        ),
         platform=None if legacy else platform_tag(),
         crc_framework_version=None if legacy else framework_version(),
         families=policy.families,
         selection_metric=(
             "fixed_family" if len(policy.families) == 1 else "first_acceptable"
         ),
-        atom_policy=policy.atom_policy,
+        atom_policy=(
+            "none" if policy.fit_method == "censored_quantile" else policy.atom_policy
+        ),
         constant_policy="point_mass",
         minimum_informative_value=policy.minimum_informative_value,
         minimum_informative_knots=policy.minimum_informative_knots,
@@ -773,6 +837,11 @@ def _diagnostic_record(
     curve_type: str | None = None,
     normalized_rmse: float | None = None,
     maximum_absolute_residual: float | None = None,
+    negative_log_likelihood: float | None = None,
+    residual_scale: float | None = None,
+    residual_scale_floor: float | None = None,
+    censored_point_count: int | None = None,
+    uncensored_point_count: int | None = None,
     attempted: Sequence[str] = (),
     failed: Sequence[str] = (),
     reason: str | None = None,
@@ -786,6 +855,11 @@ def _diagnostic_record(
         "curve_type": curve_type,
         "normalized_rmse": normalized_rmse,
         "maximum_absolute_residual": maximum_absolute_residual,
+        "negative_log_likelihood": negative_log_likelihood,
+        "residual_scale": residual_scale,
+        "residual_scale_floor": residual_scale_floor,
+        "censored_point_count": censored_point_count,
+        "uncensored_point_count": uncensored_point_count,
         "attempted_families": list(attempted),
         "failed_families": list(failed),
         "fallback": len(attempted) > 1,
@@ -1085,12 +1159,24 @@ def fit_cdf_quantile_batches(
                     nrmse = curve.pop("_normalized_rmse", None)
                     max_residual = curve.pop("_maximum_absolute_residual", None)
                     censored = bool(curve.pop("_censored", False))
+                    censored_fit = bool(curve.pop("_censored_fit", False))
+                    negative_log_likelihood = curve.pop(
+                        "_negative_log_likelihood", None
+                    )
+                    residual_scale = curve.pop("_residual_scale", None)
+                    residual_scale_floor = curve.pop("_residual_scale_floor", None)
+                    censored_point_count = curve.pop("_censored_point_count", None)
+                    uncensored_point_count = curve.pop(
+                        "_uncensored_point_count", None
+                    )
                     curve.pop("_minimum_informative_value", None)
                     kind = curve["curve_kind"]
                     summary.canonical_rows += 1
                     summary.treatment_counts[treatment] += 1
                     if censored:
                         summary.treatment_counts["bound_censored"] += 1
+                    if censored_fit:
+                        summary.censored_rows += 1
                     for family in attempts:
                         summary.family_attempts[family] += 1
                     for family, message in family_errors:
@@ -1134,11 +1220,18 @@ def fit_cdf_quantile_batches(
                                 curve_type=str(curve["curve_type"]),
                                 normalized_rmse=nrmse,
                                 maximum_absolute_residual=max_residual,
+                                negative_log_likelihood=negative_log_likelihood,
+                                residual_scale=residual_scale,
+                                residual_scale_floor=residual_scale_floor,
+                                censored_point_count=censored_point_count,
+                                uncensored_point_count=uncensored_point_count,
                                 attempted=attempts,
                                 failed=[family for family, _ in family_errors],
                                 reason=(
                                     str(curve["curve_type"])
                                     if kind == "no_data"
+                                    else "censored_quantile"
+                                    if censored_fit
                                     else "bound_censored"
                                     if censored
                                     else None

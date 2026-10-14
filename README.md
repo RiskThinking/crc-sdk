@@ -251,11 +251,19 @@ one passed in, a per-row list (`CDFColumnSchema(probabilities=...)`), or
 labelled return periods (`CDFColumnSchema(return_periods=...)`, converted with
 the policy's explicit `return_period_convention`). Raw samples
 (`CDFColumnSchema(samples=...)`) are sorted and resampled to
-`sample_quantile_count` probabilities. Probability-labelled inputs are always
-fitted by quantile least squares. Notable `CDFCurveFitPolicy` options:
+`sample_quantile_count` probabilities. Probability-labelled inputs default to
+quantile least squares. Sparse return-period flood/inundation curves with
+bound-valued lower knots should select `fit_method="censored_quantile"`,
+`family="genextreme"` and their physical `censor_location` (normally zero).
+That method fits all knots with a left-censored likelihood, then stores the
+clamped result as the existing hurdle representation. Notable
+`CDFCurveFitPolicy` options:
 
 - `lower_bound` censors values below a physical bound before fitting and turns
   fitted mass below it into a hurdle atom (for example depth `>= 0`);
+- `censor_location` and `residual_scale_floor_ratio` configure the hardened
+  censored likelihood. The floor prevents sparse, exactly determined tails
+  from collapsing residual variance to zero and is recorded in provenance;
 - `short_axis_action` (`tabulated` by default) handles rows with fewer than
   four interior knots inside the fitter; unlabelled or length-mismatched rows
   are rejected with a reason rather than dropped;
@@ -332,10 +340,11 @@ selects and records the dataset resolution.
 
 OS-Climate return-period rasters can be canonicalized with
 `OSClimateIngestPolicy` and `canonicalize_os_climate`. The caller must choose
-the distribution family and, for zero-heavy hazards, provide an explicit
-`HurdleFitPolicy`; the SDK does not infer an exact point mass from sparse
-knots. Plain curves use `fit_quantiles`, while hurdle curves use
-`fit_hurdle_quantiles`. `LocalProvider` queries persisted hazard rows through
+the distribution family and fit method. Use `censored_quantile` for sparse
+already-return-period-based flood or inundation curves whose lower values are
+at a physical bound. Use an explicit `HurdleFitPolicy` only when the source
+defines a known point-mass probability; the SDK does not infer that probability
+from sparse knots. `LocalProvider` queries persisted hazard rows through
 `HazardQuery`.
 
 ### Ingesting JRC flood maps
