@@ -151,6 +151,81 @@ def test_return_period_axis_uses_explicit_convention(tmp_path: Path) -> None:
     assert row["curve_location"] == pytest.approx(fits["poisson"]["curve_location"])
 
 
+def test_sparse_return_period_curve_uses_censored_gev(tmp_path: Path) -> None:
+    periods = [2.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0]
+    depths = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.03, 0.06, 0.10]
+    sidecar = tmp_path / "censored.parquet"
+    result = fit_cdf_quantile_batches(
+        _table([depths], hazard="riverine_flood", axis=[periods]),
+        None,
+        _policy(
+            family="genextreme",
+            fit_method="censored_quantile",
+            value_unit="m",
+            value_semantics="flood depth",
+            diagnostics=sidecar,
+        ),
+        columns=CDFColumnSchema(return_periods="axis"),
+    )
+    row = list(result.stream.batches)[0].hazard_rows.to_pylist()[0]
+    assert row["curve_kind"] == "hurdle"
+    assert row["curve_type"] == "genextreme"
+    curve = CurveParameters(**row).to_distribution()
+    probabilities = return_periods_to_probabilities(periods)
+    fitted = curve.quantiles(probabilities)
+    np.testing.assert_array_equal(fitted[:6], np.zeros(6))
+    np.testing.assert_allclose(fitted[6:], depths[6:], atol=0.002)
+
+    metadata = result.stream.metadata
+    assert metadata.fitting is not None
+    assert metadata.fitting.method == "censored_quantile"
+    assert metadata.fitting.censor_location == 0.0
+    assert metadata.fitting.residual_scale_floor_ratio == 1.0e-3
+    assert metadata.fitting.atom_policy == "none"
+    assert result.summary.censored_rows == 1
+    diagnostics = pq.read_table(sidecar).to_pylist()[0]
+    assert diagnostics["outcome"] == "hurdle"
+    assert diagnostics["reason"] == "censored_quantile"
+    assert diagnostics["censored_point_count"] == 6
+    assert diagnostics["uncensored_point_count"] == 3
+    assert diagnostics["residual_scale"] >= diagnostics["residual_scale_floor"]
+
+
+def test_censored_policy_keeps_dry_wet_and_failed_rows_distinct() -> None:
+    periods = [2.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0]
+    wet = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.03, 0.06, 0.10]
+    result = fit_cdf_quantile_batches(
+        _table(
+            [
+                [0.0] * len(periods),
+                wet,
+                [0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08, 0.09],
+            ],
+            hazard="riverine_flood",
+            axis=[periods] * 3,
+        ),
+        None,
+        _policy(
+            family="genextreme",
+            fit_method="censored_quantile",
+            parametric_failure_action="skip",
+            on_fit_failure="skip",
+        ),
+        columns=CDFColumnSchema(return_periods="axis"),
+    )
+    rows = pa.concat_tables([batch.hazard_rows for batch in result.stream.batches])
+    assert rows["curve_kind"].to_pylist() == ["point_mass", "hurdle"]
+    assert result.summary.point_mass_rows == 1
+    assert result.summary.censored_rows == 1
+    assert result.summary.skipped_rows == 1
+    assert (
+        result.summary.family_failure_reasons["genextreme"][
+            "missing_censor_support"
+        ]
+        == 1
+    )
+
+
 def test_poisson_return_period_probabilities() -> None:
     upper = return_periods_to_probabilities([10.0], convention="poisson")
     assert upper == pytest.approx((np.exp(-0.1),))

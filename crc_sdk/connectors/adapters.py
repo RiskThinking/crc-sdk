@@ -7,9 +7,9 @@ by accident: crc-sdk's own contract treats "source knots and fit
 diagnostics" as transient ingest inputs, never a second persisted data
 contract (see README.md, "Canonical hazard datasets"), and JRC's per-pixel
 depth-by-return-period sequence -- typically zero at low return periods,
-positive and increasing from some higher return period onward -- is exactly
-the zero-inflated shape `HurdleFitPolicy`/`fit_hurdle_quantiles` already
-exists to fit. Reading a fitted/hurdle curve back at a given return period
+positive and increasing from some higher return period onward -- can be fitted
+as left-censored quantiles. `HurdleFitPolicy` remains for sources that provide
+an explicit point-mass probability. Reading a fitted/hurdle curve at a period
 therefore evaluates the curve rather than reproducing the source pixel's
 value bit-for-bit; `maximum_normalized_rmse`/`maximum_absolute_residual`
 bound how far that evaluation may drift, and `on_fit_failure="skip"` drops
@@ -31,6 +31,7 @@ from crc_framework import (
     HurdleDistribution,
     QuantileFitDiagnostics,
     TabulatedDistribution,
+    fit_censored_quantiles,
     fit_distribution,
     fit_hurdle_quantiles,
     fit_quantiles,
@@ -138,14 +139,18 @@ class CurveFitIngestPolicy:
     # exceed the hazard threshold and carry a constant, unfittable curve;
     # "skip" drops those rather than aborting the whole area ingest.
     on_fit_failure: Literal["raise", "skip"] = "raise"
-    # "sample_mle" fits the per-block samples themselves with crc-framework's
-    # maximum-likelihood `fit_distribution` instead of least-squares on the
-    # plotting-position knots. "sample_lmoments" uses the standalone L-moment
-    # estimator for GEV/Gumbel. Both are only for sources whose values are genuine
-    # samples (`values_are_samples`), never for probability-labelled inputs.
-    fit_method: Literal["quantile_least_squares", "sample_mle", "sample_lmoments"] = (
-        "quantile_least_squares"
-    )
+    # "censored_quantile" fits probability-labelled knots with a left-censored
+    # likelihood. "sample_mle" fits per-block samples with crc-framework's MLE;
+    # "sample_lmoments" uses standalone GEV/Gumbel L-moments. Sample methods are
+    # only for genuine samples (`values_are_samples`).
+    fit_method: Literal[
+        "quantile_least_squares",
+        "censored_quantile",
+        "sample_mle",
+        "sample_lmoments",
+    ] = "quantile_least_squares"
+    censor_location: float = 0.0
+    residual_scale_floor_ratio: float = 1.0e-3
     # Persist one row per source pixel (fitted, or skipped with its reason) to
     # this Parquet path (ADR-0007).
     diagnostics: str | Path | None = None
@@ -161,14 +166,15 @@ class CurveFitIngestPolicy:
     def __post_init__(self) -> None:
         if self.fit_method not in (
             "quantile_least_squares",
+            "censored_quantile",
             "sample_mle",
             "sample_lmoments",
         ):
             raise ValueError(
-                "fit_method must be quantile_least_squares, sample_mle "
-                "or sample_lmoments"
+                "fit_method must be quantile_least_squares, censored_quantile, "
+                "sample_mle or sample_lmoments"
             )
-        if self.fit_method != "quantile_least_squares" and (
+        if self.fit_method in ("sample_mle", "sample_lmoments") and (
             self.hurdle is not None
             or self.maximum_normalized_rmse is not None
             or self.maximum_absolute_residual is not None
@@ -177,6 +183,17 @@ class CurveFitIngestPolicy:
                 f"{self.fit_method} does not support hurdle fits "
                 "or quantile quality gates"
             )
+        if self.fit_method == "censored_quantile" and self.hurdle is not None:
+            raise ValueError(
+                "censored_quantile infers the bound mass; do not set hurdle"
+            )
+        if not np.isfinite(self.censor_location):
+            raise ValueError("censor_location must be finite")
+        if (
+            not np.isfinite(self.residual_scale_floor_ratio)
+            or self.residual_scale_floor_ratio <= 0.0
+        ):
+            raise ValueError("residual_scale_floor_ratio must be finite and positive")
         if self.fit_method == "sample_lmoments" and self.family not in (
             "genextreme",
             "gumbel_r",
@@ -203,7 +220,10 @@ class CurveFitIngestPolicy:
             or self.maximum_return_value is not None
         ) and not self.validation_return_periods:
             raise ValueError("return-value bounds require validation_return_periods")
-        if self.fit_method == "quantile_least_squares" and self.require_sample_support:
+        if self.fit_method in (
+            "quantile_least_squares",
+            "censored_quantile",
+        ) and self.require_sample_support:
             raise ValueError("sample support checks require a sample fit method")
         if self.fallback_family is not None:
             if (
@@ -334,6 +354,16 @@ def _fit_provenance(
         if getattr(source, "values_are_samples", False)
         else "probability_labelled",
         platform=platform_tag(),
+        censor_location=(
+            policy.censor_location
+            if policy.fit_method == "censored_quantile"
+            else None
+        ),
+        residual_scale_floor_ratio=(
+            policy.residual_scale_floor_ratio
+            if policy.fit_method == "censored_quantile"
+            else None
+        ),
         crc_framework_version=framework_version(),
         families=(policy.family,)
         if policy.fallback_family is None
@@ -358,12 +388,32 @@ def _fit_curve(
 ) -> tuple[Any, Any, Any]:
     distribution: FittedDistribution | HurdleDistribution
     diagnostics: QuantileFitDiagnostics
-    if policy.fit_method != "quantile_least_squares":
+    quality: Any
+    if policy.fit_method not in ("quantile_least_squares", "censored_quantile"):
         raise AssertionError("sample fits go through _fit_samples")
-    if policy.hurdle is None:
+    if policy.fit_method == "censored_quantile":
+        censored_result = fit_censored_quantiles(
+            tabulated,
+            family=policy.family,
+            censor_location=policy.censor_location,
+            residual_scale_floor_ratio=policy.residual_scale_floor_ratio,
+        )
+        base = censored_result.distribution
+        diagnostics = censored_result.diagnostics.observed
+        quality = censored_result.diagnostics
+        atom_probability = float(base.cdf(policy.censor_location))
+        if not 0.0 < atom_probability < 1.0:
+            raise ValueError("censored fit produced a degenerate bound mass")
+        distribution = HurdleDistribution(
+            base,
+            atom_probability=atom_probability,
+            atom_location=policy.censor_location,
+        )
+    elif policy.hurdle is None:
         quantile_result = fit_quantiles(tabulated, family=policy.family)
         distribution = quantile_result.distribution
         diagnostics = quantile_result.diagnostics
+        quality = diagnostics
     else:
         hurdle_result = fit_hurdle_quantiles(
             tabulated,
@@ -373,6 +423,7 @@ def _fit_curve(
         )
         distribution = hurdle_result.distribution
         diagnostics = hurdle_result.diagnostics.tail
+        quality = diagnostics
     if not diagnostics.converged:
         raise ValueError("quantile optimizer did not converge")
     if (
@@ -398,7 +449,7 @@ def _fit_curve(
         if isinstance(distribution, HurdleDistribution)
         else distribution
     )
-    return distribution, base, diagnostics
+    return distribution, base, quality
 
 
 def _fit_samples(values: Any, policy: CurveFitIngestPolicy) -> tuple[Any, Any]:
@@ -492,7 +543,7 @@ def _canonical_batches(
         raise ValueError(
             f"{source.metadata.path} has axis {source.axis_name!r}, not return periods"
         )
-    if policy.fit_method != "quantile_least_squares" and not getattr(
+    if policy.fit_method in ("sample_mle", "sample_lmoments") and not getattr(
         source, "values_are_samples", False
     ):
         raise ValueError(
@@ -524,6 +575,7 @@ def _canonical_batches(
     ) -> None:
         if writer is None:
             return
+        observed_quality = getattr(quality, "observed", quality)
         records.append(
             {
                 "cell_index": cell,
@@ -534,9 +586,24 @@ def _canonical_batches(
                 "pathway": source.metadata.scenario,
                 "outcome": outcome,
                 "curve_type": base.family if base is not None else None,
-                "normalized_rmse": getattr(quality, "normalized_rmse", None),
+                "normalized_rmse": getattr(
+                    observed_quality, "normalized_rmse", None
+                ),
                 "maximum_absolute_residual": getattr(
-                    quality, "maximum_absolute_residual", None
+                    observed_quality, "maximum_absolute_residual", None
+                ),
+                "negative_log_likelihood": getattr(
+                    quality, "negative_log_likelihood", None
+                ),
+                "residual_scale": getattr(quality, "residual_scale", None),
+                "residual_scale_floor": getattr(
+                    quality, "residual_scale_floor", None
+                ),
+                "censored_point_count": getattr(
+                    quality, "censored_point_count", None
+                ),
+                "uncensored_point_count": getattr(
+                    quality, "uncensored_point_count", None
                 ),
                 "attempted_families": attempted or [policy.family],
                 "failed_families": failed
@@ -577,7 +644,7 @@ def _canonical_batches(
             fallback_reason: str | None = None
             try:
                 quality: Any = None
-                if policy.fit_method != "quantile_least_squares":
+                if policy.fit_method in ("sample_mle", "sample_lmoments"):
                     # Invalid samples are never rescued by changing family.
                     if np.min(values) == np.max(values):
                         raise ValueError("constant samples cannot be fitted")
@@ -620,7 +687,11 @@ def _canonical_batches(
                     record(
                         curve,
                         "skipped",
-                        reason="fit_failed",
+                        reason=(
+                            "censored_fit_failed"
+                            if policy.fit_method == "censored_quantile"
+                            else "fit_failed"
+                        ),
                         message=str(error),
                         attempted=attempted,
                         failed=failed or [policy.family],

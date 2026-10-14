@@ -137,13 +137,18 @@ class CurveFitProvenance(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    method: Literal["quantile_least_squares", "sample_mle", "sample_lmoments"] = (
-        "quantile_least_squares"
-    )
+    method: Literal[
+        "quantile_least_squares",
+        "censored_quantile",
+        "sample_mle",
+        "sample_lmoments",
+    ] = "quantile_least_squares"
     initialization: Optional[str] = None
     input_kind: Optional[Literal["probability_labelled", "samples"]] = None
     sample_resampling: Optional[int] = Field(default=None, ge=2)
     lower_bound: Optional[float] = None
+    censor_location: Optional[float] = None
+    residual_scale_floor_ratio: Optional[float] = Field(default=None, gt=0.0)
     platform: Optional[str] = None
     crc_framework_version: Optional[str] = None
     families: tuple[str, ...]
@@ -231,6 +236,8 @@ class HazardDatasetMetadata(BaseModel):
                         "input_kind",
                         "sample_resampling",
                         "lower_bound",
+                        "censor_location",
+                        "residual_scale_floor_ratio",
                         "platform",
                         "crc_framework_version",
                     )
