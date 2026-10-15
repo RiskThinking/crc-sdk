@@ -40,7 +40,9 @@ from crc_sdk.connectors.blocks import (
     UnitConversion,
     _strip_row_count,
     aggregate_daily,
+    contiguous_runs,
     reduce_days,
+    select_grid_window,
 )
 from crc_sdk.connectors.duckdb.netcdf import NetCDFBlockReader, NetCDFRaster
 from crc_sdk.connectors.duckdb.zarr import Bounds, RasterMetadata
@@ -248,23 +250,6 @@ def _decode_time(array: Any) -> np.ndarray[Any, Any]:
     return origin + raw * np.timedelta64(seconds, "s")
 
 
-def _runs(indices: np.ndarray[Any, Any]) -> list[tuple[int, int]]:
-    """Maximal ``[start, stop)`` runs of consecutive ascending integers."""
-    if indices.size == 0:
-        return []
-    breaks = np.flatnonzero(np.diff(indices) != 1) + 1
-    starts = np.r_[0, breaks]
-    stops = np.r_[breaks, indices.size]
-    return [(int(indices[a]), int(indices[b - 1]) + 1) for a, b in zip(starts, stops)]
-
-
-def _at_least_two(indices: np.ndarray[Any, Any], size: int) -> np.ndarray[Any, Any]:
-    if indices.size >= 2 or size < 2:
-        return indices
-    only = int(indices[0])
-    return np.array([only, only + 1] if only + 1 < size else [only - 1, only])
-
-
 @dataclass(frozen=True)
 class ERA5Coverage:
     first_year: int
@@ -313,37 +298,16 @@ class ERA5BlockReader:
             )
         self._axis = {role: dims.index(role) for role in wanted}
         self._times = provider.times
-        lat = np.asarray(group[store.lat_name][:], dtype=np.float64)
-        lon = np.asarray(group[store.lon_name][:], dtype=np.float64)
-        lon180 = ((lon + 180.0) % 360.0) - 180.0
-
-        min_lon, min_lat, max_lon, max_lat = bounds
-        half_lat = abs(float(lat[1] - lat[0])) / 2
-        half_lon = abs(float(lon[1] - lon[0])) / 2
-        # The 180 meridian is one column that normalises to -180; a window that
-        # ends at +180 (and does not start at -180) must see it at +180.
-        if min_lon > -180.0 + half_lon:
-            lon180[np.isclose(lon180, -180.0)] = 180.0
-        rows = np.flatnonzero((lat >= min_lat - half_lat) & (lat <= max_lat + half_lat))
-        columns = np.flatnonzero(
-            (lon180 >= min_lon - half_lon) & (lon180 <= max_lon + half_lon)
+        window = select_grid_window(
+            np.asarray(group[store.lat_name][:], dtype=np.float64),
+            np.asarray(group[store.lon_name][:], dtype=np.float64),
+            bounds,
+            source="ERA5",
         )
-        if rows.size == 0 or columns.size == 0:
-            raise ValueError("bounds do not intersect the ERA5 grid")
-        columns = columns[np.argsort(lon180[columns], kind="stable")]
-        self._rows = _at_least_two(rows, lat.size)
-        self._cols = columns if columns.size >= 2 else _at_least_two(columns, lon.size)
-        self._lat: np.ndarray[Any, Any] = lat[self._rows]
-        self._lon: np.ndarray[Any, Any] = lon180[self._cols]
-        if columns.size == 1 and self._cols.size == 2:
-            # The padding neighbour is adjacent in the store's 0-360 index but
-            # can sit across the +/-180 seam after normalisation; keep it one
-            # grid step from the real column so pixel geometry stays local.
-            anchor = int(np.flatnonzero(self._cols == columns[0])[0])
-            gap = (
-                (lon[self._cols[1 - anchor]] - lon[columns[0]] + 180.0) % 360.0
-            ) - 180.0
-            self._lon[1 - anchor] = self._lon[anchor] + gap
+        self._rows = window.rows
+        self._cols = window.columns
+        self._lat: np.ndarray[Any, Any] = window.lat
+        self._lon: np.ndarray[Any, Any] = window.lon
         self._mask: np.ndarray[Any, Any] | None = None
         if land_only:
             self._mask = self._read_land_mask()
@@ -394,7 +358,7 @@ class ERA5BlockReader:
         if has_time:
             order.insert(0, dims.index(store.time_name))
         pieces = []
-        for c0, c1 in _runs(cols):
+        for c0, c1 in contiguous_runs(cols):
             key: list[Any] = [slice(None)] * len(dims)
             key[lat_axis] = slice(r0, r1)
             key[lon_axis] = slice(c0, c1)

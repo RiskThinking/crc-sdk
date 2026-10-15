@@ -477,6 +477,65 @@ threshold count) can be fitted with a plotting position and least squares, or
 with `fit_method="sample_mle"` or `fit_method="sample_lmoments"`. Sample
 estimators use the original annual values without interpolation or resampling.
 
+### CMIP6 projections
+
+CMIP6 daily model output becomes an annual-extreme projection through the same
+workflow, with the same four recipes as ERA5 (`txx`, `tnn`, `rx1day`,
+`rx5day`) and the same definitions, so a historical baseline and a scenario run
+are directly comparable. Data is read anonymously from the Zarr copies on the
+AWS Open Data registry (`s3://cmip6-pds`, the Pangeo mirror); as for ERA5, only
+the per-year annual extremes are cached, never the daily fields.
+
+```python
+from crc_sdk.workflows import BlockExtremaPolicy, HazardDataset
+
+plan = (
+    HazardDataset.cmip6(
+        "rx1day", model="GFDL-ESM4", scenario="ssp585", member="r1i1p1f1"
+    )
+    .for_area((-125.0, 42.0, -116.0, 49.0))
+    .years(2021, 2050)
+    .cache("cache/cmip6", mode="reuse")
+    .canonicalize(policy=BlockExtremaPolicy.curated(h3_resolution=5))
+)
+print(plan.explain())
+hazard = plan.materialize("hazards/cmip6-rx1day-ssp585.parquet")
+```
+
+Three things have no ERA5 counterpart:
+
+- **The dataset is found, not configured.** CMIP6 is a catalogue of one Zarr
+  per (model, experiment, member, variable, grid, version).
+  `CMIP6Catalogue` resolves a selection to exactly one of them — preferring the
+  model's native grid (`gn`) and the newest DRS version, and raising with the
+  candidates listed rather than guessing when that is not enough. The 80 MB
+  catalogue CSV is read with DuckDB, and its daily subset is cached in the plan's
+  cache directory, so later lookups are local. Pin a grid with
+  `.with_grid("gr")` and a release with `.version("20180701")`.
+- **Calendars are the model's.** CMIP6 models run `noleap`, `360_day` or
+  `all_leap` years as readily as Gregorian ones, so time is decoded into the
+  model's own calendar (`CFCalendar`) and blocks are cut on calendar day
+  ordinals. Samples are placed by date rather than position, so a gap in the
+  record stays a gap. The resolved calendar is recorded in
+  `temporal_window.calendar`.
+- **The pathway is the experiment.** `scenario` is the CMIP6 `experiment_id`
+  (`historical`, `ssp126`, `ssp245`, `ssp370`, `ssp585`, ...) and travels into
+  the canonical rows as the source's own pathway label, checked against the
+  `crc_sdk.pathways` crosswalk (ADR-0002). Files carry
+  `ensemble.pooling="single_member"` with the model and member named, and the
+  licence and attribution the store itself declares.
+
+One model, one member, one pathway per canonical dataset (ADR-0001): build one
+file per model and compare or difference them, rather than pooling inside a
+single file. Because `horizon` is the window's centre year and `pathway` the
+experiment, an `ssp585` file and a `historical` file for the same area join on
+`(hazard_name, horizon, pathway, cell_index)` and subtract to a change map.
+
+See `docs/spikes/cmip6.md` for access details and caveats: a climate model is a
+model world, so these are change signals rather than design values; one member
+of one model is one realisation, not an ensemble; and a ~1 degree cell damps
+orographic and convective extremes further than reanalysis does.
+
 ### Bringing your own data
 
 `HazardDataset.from_table`, `from_zarr` and `from_raster` onboard local data
