@@ -6,6 +6,12 @@ from ._remote import MaterializationResult, PrefetchResult
 from .agriculture import AgriculturalLayer
 from .blocks import BlockExtremaPolicy
 from .byo import BYOPlan
+from .cmip6 import (
+    CMIP6AreaPlan,
+    CMIP6CanonicalizationPlan,
+    CMIP6SourcePlan,
+    CMIP6YearPlan,
+)
 from .crc_open import CRCOpenPlan
 from .distributions import (
     CURVE_COLUMNS,
@@ -63,6 +69,10 @@ from .tiling import (
 )
 
 __all__ = [
+    "CMIP6AreaPlan",
+    "CMIP6CanonicalizationPlan",
+    "CMIP6SourcePlan",
+    "CMIP6YearPlan",
     "CRCOpenPlan",
     "CRCOpenFixtureWarning",
     "BlockExtremaPolicy",

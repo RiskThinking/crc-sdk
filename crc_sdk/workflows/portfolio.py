@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 
     from ._remote import MaterializationResult
     from .byo import BYOPlan
+    from .cmip6 import CMIP6SourcePlan
     from .crc_open import CRCOpenPlan
     from .edo import EDOSourcePlan
     from .era5 import ERA5SourcePlan
@@ -453,6 +454,54 @@ class HazardDataset:
         era5_store(store)
         return ERA5SourcePlan(
             recipe=recipe.lower(), store=store.lower(), requested_version=version
+        )
+
+    @classmethod
+    def cmip6(
+        cls,
+        recipe: str,
+        *,
+        model: str,
+        scenario: str,
+        member: str = "r1i1p1f1",
+        grid_label: str | None = None,
+        archive: str = "aws",
+        version: str = "latest",
+        strict_licence: bool = False,
+    ) -> CMIP6SourcePlan:
+        """Plan a lazy CMIP6 projection for one recipe, model, pathway and member.
+
+        ``recipe`` is ``txx``, ``tnn``, ``rx1day`` or ``rx5day`` -- the same
+        definitions as :meth:`era5`, so a historical baseline and a scenario
+        run can be differenced. ``scenario`` is the CMIP6 ``experiment_id``
+        (``historical``, ``ssp245``, ``ssp585``, ...) and becomes the dataset's
+        pathway label; ``member`` is the variant label (``r1i1p1f1``).
+
+        One model, one member, one pathway per dataset (ADR-0001): the spread
+        across models is a comparison between canonical files, never a silent
+        pooling inside one.
+
+        Licences are per modelling centre and read from the store itself. One
+        that goes beyond attribution (NOAA-GFDL publishes share-alike) is
+        warned about and recorded; ``strict_licence=True`` refuses it instead.
+        """
+        from crc_sdk.providers.cmip6 import cmip6_archive, cmip6_recipe
+
+        from .cmip6 import CMIP6SourcePlan
+
+        cmip6_recipe(recipe)
+        cmip6_archive(archive)
+        if not model or not scenario or not member:
+            raise ValueError("model, scenario and member must be non-empty")
+        return CMIP6SourcePlan(
+            recipe=recipe.lower(),
+            model=model,
+            scenario=scenario,
+            member=member,
+            grid_label=grid_label.lower() if grid_label else None,
+            archive=archive.lower(),
+            requested_version=version,
+            strict_licence=strict_licence,
         )
 
     def metadata(self) -> HazardDatasetMetadata:

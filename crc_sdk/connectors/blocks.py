@@ -128,6 +128,113 @@ def pixel_boundary(
 
 
 # ---------------------------------------------------------------------------
+# Grid windowing
+# ---------------------------------------------------------------------------
+
+
+def contiguous_runs(indices: np.ndarray[Any, Any]) -> list[tuple[int, int]]:
+    """Maximal ``[start, stop)`` runs of consecutive ascending integers.
+
+    Column selections that cross the +/-180 seam come back as two runs, so a
+    reader can issue one strided store read per run instead of one per column.
+    """
+    if indices.size == 0:
+        return []
+    breaks = np.flatnonzero(np.diff(indices) != 1) + 1
+    starts = np.r_[0, breaks]
+    stops = np.r_[breaks, indices.size]
+    return [(int(indices[a]), int(indices[b - 1]) + 1) for a, b in zip(starts, stops)]
+
+
+def _at_least_two(indices: np.ndarray[Any, Any], size: int) -> np.ndarray[Any, Any]:
+    """Pad a single-index selection with its neighbour.
+
+    A curve source needs two coordinate values to know the grid step, so a
+    window narrower than one cell borrows the adjacent column or row.
+    """
+    if indices.size >= 2 or size < 2:
+        return indices
+    only = int(indices[0])
+    return np.array([only, only + 1] if only + 1 < size else [only - 1, only])
+
+
+@dataclass(frozen=True)
+class GridWindow:
+    """The rows, columns and coordinates one bounding box selects on a grid.
+
+    ``rows``/``columns`` index the *store's* arrays; ``lat``/``lon`` are the
+    coordinates of the selection, with longitude normalised to [-180, 180].
+    """
+
+    rows: np.ndarray[Any, Any]
+    columns: np.ndarray[Any, Any]
+    lat: np.ndarray[Any, Any]
+    lon: np.ndarray[Any, Any]
+
+
+def select_grid_window(
+    lat: np.ndarray[Any, Any],
+    lon: np.ndarray[Any, Any],
+    bounds: Bounds,
+    *,
+    source: str = "grid",
+) -> GridWindow:
+    """Select the cells of a regular lat/lon grid covering ``bounds``.
+
+    Handles the two things every global store makes awkward: longitudes
+    published on 0-360 (normalised here, and re-sorted so the selection runs
+    west to east even when it crosses the seam), and the single column at the
+    +/-180 meridian, which must read as +180 for a window that ends there.
+    Cells are selected by *coverage*, so a box smaller than one cell still
+    selects the cell containing it.
+    """
+    lat = np.asarray(lat, dtype=np.float64)
+    lon = np.asarray(lon, dtype=np.float64)
+    if lat.ndim != 1 or lon.ndim != 1:
+        raise ValueError(
+            f"{source} lat/lon must be 1-D coordinate arrays; "
+            f"got shapes {lat.shape} and {lon.shape} (a curvilinear grid: "
+            "use a regridded copy of this dataset)"
+        )
+    if lat.size < 2 or lon.size < 2:
+        raise ValueError(f"{source} grid needs at least two cells per axis")
+    lon180 = ((lon + 180.0) % 360.0) - 180.0
+
+    min_lon, min_lat, max_lon, max_lat = bounds
+    half_lat = abs(float(lat[1] - lat[0])) / 2
+    half_lon = abs(float(lon[1] - lon[0])) / 2
+    # The 180 meridian is one column that normalises to -180; a window that
+    # ends at +180 (and does not start at -180) must see it at +180.
+    if min_lon > -180.0 + half_lon:
+        lon180[np.isclose(lon180, -180.0)] = 180.0
+    rows = np.flatnonzero((lat >= min_lat - half_lat) & (lat <= max_lat + half_lat))
+    columns = np.flatnonzero(
+        (lon180 >= min_lon - half_lon) & (lon180 <= max_lon + half_lon)
+    )
+    if rows.size == 0 or columns.size == 0:
+        raise ValueError(f"bounds do not intersect the {source} grid")
+    columns = columns[np.argsort(lon180[columns], kind="stable")]
+    selected_rows = _at_least_two(rows, lat.size)
+    selected_cols = columns if columns.size >= 2 else _at_least_two(columns, lon.size)
+    window_lon = lon180[selected_cols]
+    if columns.size == 1 and selected_cols.size == 2:
+        # The padding neighbour is adjacent in the store's 0-360 index but
+        # can sit across the +/-180 seam after normalisation; keep it one
+        # grid step from the real column so pixel geometry stays local.
+        anchor = int(np.flatnonzero(selected_cols == columns[0])[0])
+        gap = (
+            (lon[selected_cols[1 - anchor]] - lon[columns[0]] + 180.0) % 360.0
+        ) - 180.0
+        window_lon[1 - anchor] = window_lon[anchor] + gap
+    return GridWindow(
+        rows=selected_rows,
+        columns=selected_cols,
+        lat=lat[selected_rows],
+        lon=window_lon,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Block definitions and statistics
 # ---------------------------------------------------------------------------
 

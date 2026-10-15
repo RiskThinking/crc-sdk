@@ -1,5 +1,21 @@
 """Storage provider interfaces and implementations."""
 
+from .cmip6 import (
+    AWS_OPEN_DATA,
+    CMIP6_ARCHIVES,
+    CMIP6_RECIPES,
+    RESTRICTIVE_LICENCES,
+    CFCalendar,
+    CMIP6Archive,
+    CMIP6Catalogue,
+    CMIP6Dataset,
+    CMIP6Provider,
+    CMIP6Recipe,
+    RestrictiveLicenceWarning,
+    cmip6_archive,
+    cmip6_recipe,
+    normalize_licence,
+)
 from .crc_open import CRCOpenFixtureWarning, CRCOpenHazards
 from .era5 import (
     ARCO_0P25,
@@ -33,6 +49,20 @@ from .os_climate import (
 from .protocol import Provider
 
 __all__ = [
+    "AWS_OPEN_DATA",
+    "CFCalendar",
+    "CMIP6Archive",
+    "CMIP6Catalogue",
+    "CMIP6Dataset",
+    "CMIP6Provider",
+    "CMIP6Recipe",
+    "CMIP6_ARCHIVES",
+    "CMIP6_RECIPES",
+    "RESTRICTIVE_LICENCES",
+    "RestrictiveLicenceWarning",
+    "cmip6_archive",
+    "cmip6_recipe",
+    "normalize_licence",
     "CRCOpenFixtureWarning",
     "CRCOpenHazards",
     "ARCO_0P25",
