@@ -87,6 +87,35 @@ class RestrictiveLicenceWarning(UserWarning):
     """A source licence carries terms beyond attribution."""
 
 
+def enforce_licence(identifier: str, *, dataset: str, strict: bool = False) -> str:
+    """Surface a licence whose terms go beyond attribution.
+
+    The obligation belongs to the *output*, not to the act of reading the
+    store, so this is applied wherever a canonical dataset is produced or
+    handed back -- including from a warm cache or an already-materialized
+    file, which never reopen the store. ``strict=True`` refuses instead of
+    warning (docs/licence-policy.md).
+    """
+    if identifier in RESTRICTIVE_LICENCES:
+        message = (
+            f"{dataset} is published under {identifier}, whose terms go beyond "
+            "attribution; canonical files derived from it inherit them "
+            "(see docs/licence-policy.md)"
+        )
+    elif identifier == CMIP6_LICENCE_UNKNOWN:
+        message = (
+            f"{dataset} declares a licence this adapter does not recognise; it "
+            f"is recorded as {CMIP6_LICENCE_UNKNOWN!r}, and the terms should be "
+            "read before anything derived from it is published"
+        )
+    else:
+        return identifier
+    if strict:
+        raise ValueError(message)
+    warnings.warn(message, RestrictiveLicenceWarning, stacklevel=3)
+    return identifier
+
+
 def normalize_licence(text: str) -> str:
     """One licence identifier for a store's free-text licence attribute."""
     for pattern, identifier in _LICENCE_PATTERNS:
@@ -841,35 +870,15 @@ class CMIP6Provider:
         return normalize_licence(text) if text else CMIP6_LICENCE_UNKNOWN
 
     def check_licence(self, *, strict: bool = False) -> str:
-        """Resolve the licence and surface terms beyond attribution.
+        """Read this store's licence and apply the policy to it.
 
         CMIP6 licences are per modelling centre, and a share-alike or
         non-commercial one attaches an obligation to every canonical file
-        derived from it -- so it is reported rather than recorded silently
-        (docs/licence-policy.md). ``strict=True`` refuses such a source.
+        derived from it -- so it is reported rather than recorded silently.
         """
-        identifier = self.licence
-        if identifier not in RESTRICTIVE_LICENCES:
-            if identifier == CMIP6_LICENCE_UNKNOWN:
-                message = (
-                    f"{self.dataset.describe()} declares a licence this adapter "
-                    "does not recognise; it is recorded as "
-                    f"{CMIP6_LICENCE_UNKNOWN!r}, and the terms should be read "
-                    "before anything derived from it is published"
-                )
-                if strict:
-                    raise ValueError(message)
-                warnings.warn(message, RestrictiveLicenceWarning, stacklevel=2)
-            return identifier
-        message = (
-            f"{self.dataset.describe()} is published under {identifier}, whose "
-            "terms go beyond attribution; canonical files derived from it "
-            "inherit them (see docs/licence-policy.md)"
+        return enforce_licence(
+            self.licence, dataset=self.dataset.describe(), strict=strict
         )
-        if strict:
-            raise ValueError(message)
-        warnings.warn(message, RestrictiveLicenceWarning, stacklevel=2)
-        return identifier
 
     def attribution(self) -> str:
         attributes = dict(self.group.attrs)

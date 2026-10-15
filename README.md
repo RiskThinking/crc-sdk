@@ -532,7 +532,12 @@ Three things have no ERA5 counterpart:
   the canonical rows as the source's own pathway label, checked against the
   `crc_sdk.pathways` crosswalk (ADR-0002). Files carry
   `ensemble.pooling="single_member"` with the model and member named, and the
-  licence and attribution the store itself declares.
+  licence and attribution the store itself declares. Licences are per
+  modelling centre and not all are CC-BY — NOAA-GFDL publishes share-alike —
+  so the adapter records the store's own licence, warns on terms beyond
+  attribution, and refuses them under `strict_licence=True`. The obligation
+  belongs to the output, so that check applies wherever a dataset is produced
+  *or handed back*, including from a warm cache or an already-fitted file.
 
 One model, one member, one pathway per canonical dataset (ADR-0001): build one
 file per model and compare or difference them, rather than pooling inside a

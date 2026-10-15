@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import csv
+import warnings
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
 import pytest
 
@@ -804,3 +806,114 @@ def test_a_plan_materializes_whatever_calendar_the_model_runs(
     # The wet day is found in its own year whatever the year's length.
     values = sorted(set(np.round(plan.annual_extremes().column("value").to_numpy(), 3)))
     assert values[0] == 20.0 and values[-1] == float(20 + len(YEARS) - 1 + LAT.size - 1)
+
+
+# ---------------------------------------------------------------------------
+# The licence policy applies to the output, not to opening the store
+# ---------------------------------------------------------------------------
+
+
+def _share_alike_plan(tmp_path: Path, *, strict: bool) -> Any:
+    return (
+        HazardDataset.cmip6(
+            "rx1day",
+            model=MODEL,
+            scenario="ssp585",
+            archive="licensed",
+            strict_licence=strict,
+        )
+        .for_area(AREA)
+        .years(YEARS[0], YEARS[-1])
+        .cache(tmp_path / "cache")
+        .canonicalize(policy=BlockExtremaPolicy(minimum_years=8, h3_resolution=3))
+    )
+
+
+@pytest.fixture()
+def warm_share_alike_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A cache and canonical file built by someone who accepted the licence."""
+    _store_with_licence(
+        tmp_path,
+        monkeypatch,
+        "Creative Commons Attribution-ShareAlike 4.0 International License",
+    )
+    lenient = _share_alike_plan(tmp_path, strict=False)
+    # Warming is not what is under test here, and the warning it raises is
+    # asserted on its own below.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RestrictiveLicenceWarning)
+        lenient.prefetch()
+        lenient.ensure_materialized()
+    return tmp_path
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        pytest.param(lambda plan: plan.prefetch(), id="prefetch"),
+        pytest.param(lambda plan: plan.annual_extremes(), id="annual_extremes"),
+        pytest.param(
+            lambda plan: plan.materialize(Path(plan.years.cache_dir) / "o.parquet"),
+            id="materialize",
+        ),
+        pytest.param(lambda plan: plan.ensure_materialized(), id="ensure_materialized"),
+        pytest.param(
+            lambda plan: (
+                plan.for_assets(
+                    pa.table({"asset_id": ["a"], "longitude": [0.0], "latitude": [0.0]})
+                )
+                .return_periods([2])
+                .write_parquet(Path(plan.years.cache_dir) / "assets.parquet")
+            ),
+            id="for_assets",
+        ),
+    ],
+)
+def test_a_warm_cache_is_not_a_way_around_strict_licence(
+    warm_share_alike_cache: Path, call: Any
+) -> None:
+    # Every year and the canonical file are already cached, so none of these
+    # reopens the store -- the policy has to come from what was recorded.
+    plan = _share_alike_plan(warm_share_alike_cache, strict=True)
+    with pytest.raises(ValueError, match="CC-BY-SA-4.0"):
+        call(plan)
+
+
+def test_reuse_keeps_warning_rather_than_going_quiet(
+    warm_share_alike_cache: Path,
+) -> None:
+    plan = _share_alike_plan(warm_share_alike_cache, strict=False)
+    with pytest.warns(RestrictiveLicenceWarning, match="beyond attribution"):
+        plan.prefetch()
+    with pytest.warns(RestrictiveLicenceWarning, match="beyond attribution"):
+        plan.ensure_materialized()
+
+
+def test_offline_reuse_enforces_without_touching_the_catalogue(
+    warm_share_alike_cache: Path,
+) -> None:
+    (warm_share_alike_cache / "licensed.csv").unlink()
+    offline = _share_alike_plan(warm_share_alike_cache, strict=True).cache(
+        warm_share_alike_cache / "cache", mode="offline"
+    )
+    with pytest.raises(ValueError, match="CC-BY-SA-4.0"):
+        offline.prefetch()
+
+
+def test_the_licence_choice_does_not_fork_the_output_path(
+    warm_share_alike_cache: Path,
+) -> None:
+    """Strict and lenient plans fit identical data, so they share one file."""
+    lenient = _share_alike_plan(warm_share_alike_cache, strict=False)
+    strict = _share_alike_plan(warm_share_alike_cache, strict=True)
+    assert lenient._automatic_output() == strict._automatic_output()
+
+
+def test_an_unknown_licence_is_enforced_on_reuse_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _store_with_licence(tmp_path, monkeypatch, "see our terms of use")
+    with pytest.warns(RestrictiveLicenceWarning, match="does not recognise"):
+        _share_alike_plan(tmp_path, strict=False).prefetch()
+    with pytest.raises(ValueError, match="does not recognise"):
+        _share_alike_plan(tmp_path, strict=True).prefetch()
