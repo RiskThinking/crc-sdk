@@ -14,6 +14,7 @@ from .cmip6 import (
     RestrictiveLicenceWarning,
     cmip6_archive,
     cmip6_recipe,
+    enforce_licence,
     normalize_licence,
 )
 from .crc_open import CRCOpenFixtureWarning, CRCOpenHazards
@@ -62,6 +63,7 @@ __all__ = [
     "RestrictiveLicenceWarning",
     "cmip6_archive",
     "cmip6_recipe",
+    "enforce_licence",
     "normalize_licence",
     "CRCOpenFixtureWarning",
     "CRCOpenHazards",

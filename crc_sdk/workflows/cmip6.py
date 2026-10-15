@@ -32,9 +32,14 @@ import pyarrow as pa  # type: ignore[import-untyped]
 from crc_sdk.connectors import CurveFitIngestPolicy
 from crc_sdk.connectors.adapters import CurveSourceInfo, canonicalize_curve_source
 from crc_sdk.connectors.duckdb.zarr import RasterMetadata
-from crc_sdk.connectors.parquet import read_hazard_dataset, write_hazard_stream
+from crc_sdk.connectors.parquet import (
+    read_hazard_dataset,
+    read_hazard_metadata,
+    write_hazard_stream,
+)
 from crc_sdk.pathways import resolve_pathway
 from crc_sdk.providers.cmip6 import (
+    CMIP6_LICENCE_UNKNOWN,
     CFCalendar,
     CMIP6Archive,
     CMIP6Catalogue,
@@ -43,6 +48,7 @@ from crc_sdk.providers.cmip6 import (
     CMIP6Recipe,
     cmip6_archive,
     cmip6_recipe,
+    enforce_licence,
 )
 from crc_sdk.types import EnsembleDescriptor, TemporalWindow
 
@@ -372,9 +378,18 @@ class CMIP6CanonicalizationPlan:
                 )
         if len(cached) == len(years) and mode in ("reuse", "offline"):
             assert cache_dir is not None
-            return self._from_entries(
+            prepared = self._from_entries(
                 [cached[year] for year in years], cache_dir, hits=len(years), misses=0
             )
+            # The store is never reopened on this path, so the licence policy
+            # is applied to the identifier the cache recorded when it was --
+            # a warm cache must not be a way around it.
+            enforce_licence(
+                prepared.licence,
+                dataset=prepared.dataset.describe(),
+                strict=source.strict_licence,
+            )
+            return prepared
 
         assert cache_dir is not None
         catalogue = self._catalogue(cache_dir)
@@ -663,7 +678,6 @@ class CMIP6CanonicalizationPlan:
                 source.member,
                 source.grid_label,
                 source.requested_version,
-                source.strict_licence,
                 self.years.area.bounds,
                 self.years.selected_years,
                 repr(self.policy),
@@ -678,6 +692,18 @@ class CMIP6CanonicalizationPlan:
     ) -> HazardDataset:
         output = self._automatic_output()
         if output.is_file() and self.years.cache_mode != "refresh":
+            # Handing back an already-fitted file is a use of the source like
+            # any other, and the file records the licence it was built from.
+            source = self.years.area.source
+            metadata = read_hazard_metadata(output)
+            enforce_licence(
+                metadata.source.licence or CMIP6_LICENCE_UNKNOWN,
+                dataset=(
+                    f"{source.model} {source.scenario} {source.member} day "
+                    f"{self._recipe.variable}"
+                ),
+                strict=source.strict_licence,
+            )
             return HazardDataset.local(output)
         return self.materialize(output, progress=progress)
 

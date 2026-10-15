@@ -48,7 +48,11 @@ no ESGF account and no per-file NetCDF wrangling?
   the same design: pay once, keep a few kilobytes per year.
 * **Licence is per-source.** Most CMIP6 output is CC-BY-4.0, but the licence is
   a global attribute of each store, so it is read from the store and carried
-  into the canonical file rather than hard-coded.
+  into the canonical file rather than hard-coded. The obligation attaches to
+  the *derived file*, not to the act of reading the store, so the check runs on
+  every path that produces or returns a dataset -- a warm year cache and an
+  already-materialized canonical file both carry the recorded identifier and
+  are enforced from it, with no network access.
 
 ## Caveats to carry into any use of the results
 
