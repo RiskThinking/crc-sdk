@@ -35,6 +35,7 @@ from crc_sdk.connectors.duckdb.zarr import RasterMetadata
 from crc_sdk.connectors.parquet import read_hazard_dataset, write_hazard_stream
 from crc_sdk.pathways import resolve_pathway
 from crc_sdk.providers.cmip6 import (
+    CFCalendar,
     CMIP6Archive,
     CMIP6Catalogue,
     CMIP6Dataset,
@@ -562,7 +563,11 @@ class CMIP6CanonicalizationPlan:
         window = TemporalWindow(
             start_year=first,
             end_year=last,
-            calendar=prepared.calendar,  # type: ignore[arg-type]
+            # The manifest keeps the model's own calendar name, which is the
+            # more informative one for audit; `TemporalWindow` has a narrower
+            # vocabulary (no `all_leap`, and `proleptic_gregorian` is spelled
+            # `gregorian`), so the window records the mapped spelling.
+            calendar=CFCalendar.parse(prepared.calendar).window_calendar,
             minimum_complete_years=(
                 self.policy.minimum_years
                 if isinstance(self.policy, BlockExtremaPolicy)
