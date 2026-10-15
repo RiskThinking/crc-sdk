@@ -14,6 +14,7 @@ pytest.importorskip("h5netcdf")
 from crc_sdk.connectors import read_hazard_metadata  # noqa: E402
 from crc_sdk.connectors.blocks import BlockDefinition  # noqa: E402
 from crc_sdk.providers.cmip6 import (  # noqa: E402
+    _CALENDAR_ALIASES,
     CATALOGUE_COLUMNS,
     CMIP6_ARCHIVES,
     CMIP6_RECIPES,
@@ -28,6 +29,7 @@ from crc_sdk.providers.cmip6 import (  # noqa: E402
     decode_time_ordinals,
     normalize_licence,
 )
+from crc_sdk.types import TemporalWindow  # noqa: E402
 from crc_sdk.workflows import BlockExtremaPolicy, HazardDataset  # noqa: E402
 
 YEARS = tuple(range(2015, 2027))
@@ -109,9 +111,20 @@ def test_decoding_accepts_sub_daily_units() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _build_zarr(path: Path, *, precip_units: str = "kg m-2 s-1") -> Path:
-    """A tiny CMIP6-shaped store: noleap daily `pr` and `tasmax`."""
-    steps = 365 * len(YEARS)
+def _build_zarr(
+    path: Path, *, precip_units: str = "kg m-2 s-1", calendar: str = "noleap"
+) -> Path:
+    """A tiny CMIP6-shaped store: daily `pr` and `tasmax` in any CF calendar.
+
+    Years are laid out by calendar ordinal rather than a fixed 365, so the wet
+    day falls on the same day *of its year* whatever the model calendar — the
+    only way a leap-bearing or 360-day store is a fair test of the reader.
+    """
+    model_calendar = CFCalendar.parse(calendar)
+    annual = BlockDefinition.annual()
+    spans = [model_calendar.block_ordinals(annual, year) for year in YEARS]
+    origin = spans[0][0]
+    steps = spans[-1][1] - origin
     group = zarr.open_group(str(path), mode="w", zarr_format=2)
     group.attrs.update(
         {"license": "CC-BY-4.0", "institution": "NOAA GFDL", "source_id": MODEL}
@@ -120,7 +133,7 @@ def _build_zarr(path: Path, *, precip_units: str = "kg m-2 s-1") -> Path:
     time.attrs.update(
         {
             "units": "days since 2015-01-01",
-            "calendar": "noleap",
+            "calendar": calendar,
             "_ARRAY_DIMENSIONS": ["time"],
         }
     )
@@ -132,8 +145,8 @@ def _build_zarr(path: Path, *, precip_units: str = "kg m-2 s-1") -> Path:
     # year and the row, plus a flat five-day spell for the rolling recipe.
     precip = np.zeros((steps, LAT.size, LON.size), dtype=np.float32)
     temperature = np.full((steps, LAT.size, LON.size), 280.0, dtype=np.float32)
-    for index in range(len(YEARS)):
-        offset = index * 365
+    for index, (start, _) in enumerate(spans):
+        offset = start - origin
         depth = 20.0 + index + np.arange(LAT.size, dtype=np.float32)
         precip[offset + WET_DAY] = depth[:, None] / 86400.0
         precip[offset + 200 : offset + 205] = 3.0 / 86400.0
@@ -725,3 +738,69 @@ def test_the_recorded_licence_is_the_identifier_not_the_paragraph(
     manifest = (tmp_path / "cache" / "manifest.json").read_text()
     assert "pcmdi.llnl.gov" in manifest
     assert "Licence: CC-BY-SA-4.0" in str(plan.explain())
+
+
+# ---------------------------------------------------------------------------
+# Every supported calendar must survive the whole plan
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("label", sorted(_CALENDAR_ALIASES))
+def test_every_supported_calendar_has_a_window_spelling(label: str) -> None:
+    """`TemporalWindow` has a narrower calendar vocabulary than CF does.
+
+    `CFCalendar.name` is the model's own spelling and is not always one of
+    them, so the mapped `window_calendar` is what a window may be built from.
+    """
+    calendar = CFCalendar.parse(label)
+    window = TemporalWindow(
+        start_year=2021, end_year=2050, calendar=calendar.window_calendar
+    )
+    assert window.calendar == calendar.window_calendar
+
+
+@pytest.mark.parametrize(
+    ("calendar", "recorded"),
+    [
+        # Most CMIP6 models (MPI, EC-Earth, CNRM, IPSL, ACCESS) are Gregorian,
+        # whose CF name is not the one `TemporalWindow` spells.
+        ("standard", "gregorian"),
+        ("gregorian", "gregorian"),
+        ("noleap", "noleap"),
+        ("360_day", "360_day"),
+        ("all_leap", "unspecified"),
+    ],
+)
+def test_a_plan_materializes_whatever_calendar_the_model_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, calendar: str, recorded: str
+) -> None:
+    store = _build_zarr(tmp_path / f"{calendar}.zarr", calendar=calendar)
+    catalogue = _write_catalogue(tmp_path / "cat.csv", [_row(store)])
+    monkeypatch.setitem(
+        CMIP6_ARCHIVES,
+        "calendars",
+        CMIP6Archive(
+            name="calendars", catalogue_url=str(catalogue), storage_options={}
+        ),
+    )
+    plan = (
+        HazardDataset.cmip6(
+            "rx1day", model=MODEL, scenario="ssp585", archive="calendars"
+        )
+        .for_area(AREA)
+        .years(YEARS[0], YEARS[-1])
+        .cache(tmp_path / "cache")
+        .canonicalize(policy=BlockExtremaPolicy(minimum_years=8, h3_resolution=3))
+    )
+    dataset = plan.materialize(tmp_path / f"{calendar}.parquet")
+    metadata = read_hazard_metadata(dataset.provider.source)
+    assert metadata.temporal_window is not None
+    assert metadata.temporal_window.calendar == recorded
+    # The model's own calendar name stays in the manifest, unmapped.
+    assert (
+        f'"calendar": "{CFCalendar.parse(calendar).name}"'
+        in (tmp_path / "cache" / "manifest.json").read_text()
+    )
+    # The wet day is found in its own year whatever the year's length.
+    values = sorted(set(np.round(plan.annual_extremes().column("value").to_numpy(), 3)))
+    assert values[0] == 20.0 and values[-1] == float(20 + len(YEARS) - 1 + LAT.size - 1)
