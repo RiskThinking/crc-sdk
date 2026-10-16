@@ -786,9 +786,10 @@ and native resolution preserved. Unsupported selections and areas without
 coverage raise clear errors. Metadata governs probability and temporal-window
 warnings during portfolio evaluation.
 
-The SSP585 fixture contains 63 hazards, including `cflood` and `rflood` SSP585
-rows added in the same release. Cyclone labels reuse a time/scenario-independent
-pooled distribution; inundation retains unspecified probability semantics.
+The SSP585 fixture contains 63 hazards. Coastal and river flood use
+scenario-compatible SSP585-labelled curves rather than independently fitted
+SSP585 projections. Cyclone labels reuse a time/scenario-independent pooled
+distribution; inundation retains unspecified probability semantics.
 There is no historical baseline in the fixture, and pooled curves do not
 represent per-model ensemble spread. The data licence is
 [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/)
