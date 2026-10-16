@@ -21,12 +21,12 @@ coverage before download. Each materialized hazard keeps its native resolution,
 units, tail and fitting provenance. Existing curves are never refitted.
 
 The SSP585 fixture covers 59 climate indices plus inundation, cyclone, coastal
-flood and river flood. Coastal and river flood SSP585 rows were added in place
-on 15 Oct 2026 from the canonical flood pathway broadcast, using the existing
-r7 sample. Cyclone's upstream labels broadcast a time/scenario-independent
-curve; inundation's probability semantics are unspecified. These caveats are
-preserved in metadata and public catalogue notes. Fixture coverage is sampled,
-and no historical baseline is included.
+flood and river flood. Coastal and river flood use scenario-compatible
+SSP585-labelled curves rather than independently fitted SSP585 projections.
+Cyclone reuses a time/scenario-independent curve; inundation's probability
+semantics are unspecified. These caveats are preserved in metadata and public
+catalogue notes. Fixture coverage is sampled, and no historical baseline is
+included.
 
 The published fixture records source checksums and preserves curve values.
 Data terms are carried independently of the SDK's software licence. The CRC Open
