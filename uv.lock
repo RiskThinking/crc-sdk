@@ -1175,7 +1175,7 @@ wheels = [
 
 [[package]]
 name = "crc-framework"
-version = "0.4.0a1"
+version = "0.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy", version = "2.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
@@ -1183,26 +1183,28 @@ dependencies = [
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
     { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d5/b6/7a735c628fec954a3d608f07f636bc108bedd29b37c14ec5aebcfddc3eaf/crc_framework-0.4.0a1.tar.gz", hash = "sha256:ad81f8527698bedb3ad76fb9b71c2a5ce9b56ff3f4af50c3c422a0f9ba98b550", size = 5929204, upload-time = "2026-10-14T21:07:56.096Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/55/80/0c9af2890d8270f4d69e34fe7183e97209925ad5166eaa1a6a8fadaceb0e/crc_framework-0.4.0.tar.gz", hash = "sha256:91ff7da60440c4f8192b2aeaa42a48df02f184586a4d3dbbf07031c76a860e5c", size = 5962708, upload-time = "2026-10-19T17:33:01.062Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e2/55/95bbf73c4a46bbe178849344f6de23f838320f79769eb6ba916ead939582/crc_framework-0.4.0a1-cp311-cp311-macosx_10_12_x86_64.whl", hash = "sha256:20647457ac245394ad8e7c9b00b5a967334cde682dda6e16ebb141336ee34365", size = 3013094, upload-time = "2026-10-14T21:07:29.766Z" },
-    { url = "https://files.pythonhosted.org/packages/b6/f1/c5f751bcc01ec232b3dbfb80a8f76a4df6b2c44a289c6d8879e7dcfcb881/crc_framework-0.4.0a1-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:e5e14a7dc25e1b9e272b23fa820d1fe4594eae1b4f9da4dd01332fb47bfda188", size = 3089458, upload-time = "2026-10-14T21:07:31.939Z" },
-    { url = "https://files.pythonhosted.org/packages/8e/d1/669b26a29908b2c49410bb8d9c687cfcdd0fa5aacdd437b5277e0f2f57f9/crc_framework-0.4.0a1-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:2fdebbd24f29d262f7fdb24ccc1f86feddf4fec9113bb88f9e0c8e13d14cfe4b", size = 3104545, upload-time = "2026-10-14T21:07:33.814Z" },
-    { url = "https://files.pythonhosted.org/packages/4d/0e/00acde7f068007b05b431e199565a4b69a9ab5bf25ef6f92403bc3b75fb2/crc_framework-0.4.0a1-cp312-cp312-macosx_10_12_x86_64.whl", hash = "sha256:0006f8a27223b7a5802f7493f51095ac3b15f3fe87746353ae60c24ce91798f7", size = 3014669, upload-time = "2026-10-14T21:07:35.807Z" },
-    { url = "https://files.pythonhosted.org/packages/30/4f/543076a82057e0392ec5a6be9e321fc8e8d79afb251731fcf7fbe47dcd96/crc_framework-0.4.0a1-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:19f93e32f3dcf68ff728d42bdeb8211c3cef552cadbd87130d6f0f13dce23071", size = 3082994, upload-time = "2026-10-14T21:07:38.067Z" },
-    { url = "https://files.pythonhosted.org/packages/66/7a/9d1ae7b5caa137e15e14f18fdc978d601f85feb78aaac567dee28c89907e/crc_framework-0.4.0a1-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:0eebcc2e7ed6e8077c8f2eba596551baab7fb9caa23db8146e10c8abc3c0e769", size = 3098226, upload-time = "2026-10-14T21:07:40.008Z" },
-    { url = "https://files.pythonhosted.org/packages/d3/9a/029370d85495e648362227ec58e73b66381d4da821da5584ceea68f4c3c6/crc_framework-0.4.0a1-cp313-cp313-macosx_10_12_x86_64.whl", hash = "sha256:c3086288fb92631865395ad1cc0ea4d7bc9379ee047acdda4a8927d1b983eea1", size = 3014145, upload-time = "2026-10-14T21:07:41.814Z" },
-    { url = "https://files.pythonhosted.org/packages/70/fc/a730226831a60a02c3efe15e8b0f8a80e72824db85fef196fdbf4efe429c/crc_framework-0.4.0a1-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:d9f9452482bab76a97a2e8ef421e234f0dd9277f63f7e05966b8121c0709ad73", size = 3081985, upload-time = "2026-10-14T21:07:43.871Z" },
-    { url = "https://files.pythonhosted.org/packages/4c/b2/243761a20e48f1c38ad31930cd6d677e3f0a645754179cbf5c4ccb759fd6/crc_framework-0.4.0a1-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:7b1e20515fea86dc66cad8d306fea15dabbb9fd847f96c22a19141719f23fe95", size = 3097732, upload-time = "2026-10-14T21:07:46.021Z" },
-    { url = "https://files.pythonhosted.org/packages/e9/86/3fcf3ce8a5fe499e30fef6963428e8392c10bcf27fd1da2182d4c9710755/crc_framework-0.4.0a1-cp314-cp314-manylinux_2_28_x86_64.whl", hash = "sha256:afab8358cbc36038625d921ca59d0b7ce2491927640bebbd9c34aec5c105ddff", size = 3098805, upload-time = "2026-10-14T21:07:47.962Z" },
-    { url = "https://files.pythonhosted.org/packages/80/79/0365b8ff0faa9dcd0df07d89d3c873ca6ba4a3d73b81f9d655e475e436db/crc_framework-0.4.0a1-cp314-cp314t-macosx_10_12_x86_64.whl", hash = "sha256:3e1ccb1d439aa1600b2bdce80a9cdb2f22fb1616e338093489f53be0b8c9f873", size = 3014457, upload-time = "2026-10-14T21:07:50.05Z" },
-    { url = "https://files.pythonhosted.org/packages/23/ff/2103bb84418de3a0c20cfec458f79ab9d75306cae4f0cd1f623817f59c3b/crc_framework-0.4.0a1-cp314-cp314t-macosx_11_0_arm64.whl", hash = "sha256:13a782f8a7d29edd6763f203a3600de85a7b0c7a8ca2822d45ba4261f10ec4ff", size = 3081851, upload-time = "2026-10-14T21:07:51.862Z" },
-    { url = "https://files.pythonhosted.org/packages/43/aa/0365ee1daf73b84c79129ffde36ba2dc61693bda955846fb7cb1f545d8f6/crc_framework-0.4.0a1-cp314-cp314t-manylinux_2_28_x86_64.whl", hash = "sha256:96dda6038095071f0f684e6d9973ac5822b774efb2ff456adb5ff1e043717291", size = 3100286, upload-time = "2026-10-14T21:07:54.018Z" },
+    { url = "https://files.pythonhosted.org/packages/ef/8a/4ef300d8ae322f2e1beeebfb796b3d97ba7f04a4da3fd1ffc361cd128d0d/crc_framework-0.4.0-cp311-cp311-macosx_10_12_x86_64.whl", hash = "sha256:19006a3fb3b8d14b3e3f120e9e2b416c3b2c7ce564073d7a58f72ac318d04a7e", size = 3018770, upload-time = "2026-10-19T17:32:33.177Z" },
+    { url = "https://files.pythonhosted.org/packages/e9/b4/80dca96a26c6f490263908a259be09c1f3c0a14dd48d3b4c5ac3412aae75/crc_framework-0.4.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:cef991421ffd25a0789e6a33c2f46220d2f2a263703bc4d366dfc8ed1449c1a7", size = 3090262, upload-time = "2026-10-19T17:32:35.169Z" },
+    { url = "https://files.pythonhosted.org/packages/c9/70/906309c01190559d3738dc4661b44d64aba19a516d64d6f53a1fd95877ca/crc_framework-0.4.0-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:c0050eed4d40496039302fa662f86bebad226d2d315e47bd0e8ca97d7974018c", size = 3107515, upload-time = "2026-10-19T17:32:36.905Z" },
+    { url = "https://files.pythonhosted.org/packages/d6/26/e06184564f80912423abafe09d095b3351c35faa45637bb4f4f3a9648248/crc_framework-0.4.0-cp312-cp312-macosx_10_12_x86_64.whl", hash = "sha256:7149952453de11555f8191175a76c20fb7c26bc5468965840bc9a066411e9ff7", size = 3019931, upload-time = "2026-10-19T17:32:38.655Z" },
+    { url = "https://files.pythonhosted.org/packages/fc/8b/ba6388e11821f22b30a3921560dd8a09d6e4eb7898356a85c66ca8bb97d1/crc_framework-0.4.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:5a99a8d7bae69cd0c60ecbc7e069785f13895cee91bb7d69273531ed2b17efbf", size = 3084964, upload-time = "2026-10-19T17:32:40.358Z" },
+    { url = "https://files.pythonhosted.org/packages/6b/09/cd86443acfd20ede402af79bf70f1dd9c9d2d8c917ccb22cbf6bb0537006/crc_framework-0.4.0-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:bf81ea114d7b80e0459e310d29cf1548f236f0da6ab52e7f5d688dcb2c41f9fd", size = 3100881, upload-time = "2026-10-19T17:32:42.551Z" },
+    { url = "https://files.pythonhosted.org/packages/82/4e/f5f39f0e993245e93dbbab01265e4f362624d9366478c765b44a9d093bb6/crc_framework-0.4.0-cp313-cp313-macosx_10_12_x86_64.whl", hash = "sha256:02968a7b5ae84f5af135cdfd391ef21d425625ad46952d21bc877b32e0a49567", size = 3019104, upload-time = "2026-10-19T17:32:44.643Z" },
+    { url = "https://files.pythonhosted.org/packages/1f/5f/4fe56c8c91449ab307543368b5dba860b98b9aead129162af9c50a00fc8b/crc_framework-0.4.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:03ac820b78322180a50cfc9471d291ab1bcd52dd0aebbcc407e323617e98f823", size = 3084689, upload-time = "2026-10-19T17:32:46.549Z" },
+    { url = "https://files.pythonhosted.org/packages/97/bc/ff07fac29968c7e4659240cbd4595fcc0ba3d9b3f1ca6be47ef4a5a720d8/crc_framework-0.4.0-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:488554edb4f7bca731ced20e535bfbb888923d66ec67390686a685474bddbba6", size = 3100479, upload-time = "2026-10-19T17:32:48.343Z" },
+    { url = "https://files.pythonhosted.org/packages/11/5b/c4c61f9f7673cad64de6c27cbce66a717263d9c68a1b481595e38ce69f87/crc_framework-0.4.0-cp314-cp314-manylinux_2_28_x86_64.whl", hash = "sha256:6be9f5221030beb7eb5e234e1fae4449e095137ef54b0fd337aafb6df58db0ef", size = 3101395, upload-time = "2026-10-19T17:32:50.061Z" },
+    { url = "https://files.pythonhosted.org/packages/78/a7/889726c96b8bb370008e4780f703f441cf39a4382a2cac30bf61f4686a49/crc_framework-0.4.0-cp314-cp314t-macosx_10_12_x86_64.whl", hash = "sha256:ce078b671aede990b089ba13753e45b08bf34418c2d8ab2728f36f70a22472d1", size = 3020054, upload-time = "2026-10-19T17:32:51.64Z" },
+    { url = "https://files.pythonhosted.org/packages/a2/a4/3b06c46227ef7d5081088864a243db6bee68fed3479b93fd8025cd16745e/crc_framework-0.4.0-cp314-cp314t-macosx_11_0_arm64.whl", hash = "sha256:530db9c9292c8b5acb2fa9fb677d165e4d14da713252154ace3addee24c4a48d", size = 3084949, upload-time = "2026-10-19T17:32:54.339Z" },
+    { url = "https://files.pythonhosted.org/packages/41/98/a8325928bae63dcf8498a47f904b01b89dd64e4b3442a8753e6003e05a0a/crc_framework-0.4.0-cp314-cp314t-manylinux_2_28_x86_64.whl", hash = "sha256:0a716c6fcaf6f645df837bf151756d5bbb649a7e87325d9c612d2d3f238e4c4d", size = 3103426, upload-time = "2026-10-19T17:32:56.327Z" },
+    { url = "https://files.pythonhosted.org/packages/c4/00/b462d2b66faf0dbb81561acc058f92e8b74286c9ce7fc399085d0fa06217/crc_framework-0.4.0-cp315-cp315-macosx_10_12_x86_64.whl", hash = "sha256:9dc788b9a1232deb3beea3d95d7da542839cc73133446f46fdc4b0fe1f819531", size = 3020234, upload-time = "2026-10-19T17:32:58.02Z" },
+    { url = "https://files.pythonhosted.org/packages/74/8f/812f63caed38953c232f98ff79b02dd8d98b80a7ea13faad78f49cd98936/crc_framework-0.4.0-cp315-cp315-macosx_11_0_arm64.whl", hash = "sha256:d7279f47203f773d5ea3fd1b1596e1a2e2d3f4f38c50836983351e7e422564c7", size = 3085931, upload-time = "2026-10-19T17:32:59.528Z" },
 ]
 
 [[package]]
 name = "crc-sdk"
-version = "0.8.0a3"
+version = "0.8.0"
 source = { editable = "." }
 dependencies = [
     { name = "crc-framework" },
@@ -1263,7 +1265,7 @@ zarr = [
 
 [package.metadata]
 requires-dist = [
-    { name = "crc-framework", specifier = ">=0.4.0a1,<1" },
+    { name = "crc-framework", specifier = ">=0.4.0,<1" },
     { name = "duckdb", specifier = ">=1,<2" },
     { name = "fsspec", specifier = ">=2024" },
     { name = "gcsfs", specifier = ">=2024" },
