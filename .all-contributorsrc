@@ -1,0 +1,90 @@
+{
+  "projectName": "crc-sdk",
+  "projectOwner": "RiskThinking",
+  "repoType": "github",
+  "repoHost": "https://github.com",
+  "files": [
+    "README.md"
+  ],
+  "imageSize": 80,
+  "contributorsPerLine": 7,
+  "commit": false,
+  "contributors": [
+    {
+      "login": "ChrisHampu",
+      "name": "Chris Hampu",
+      "avatar_url": "https://avatars.githubusercontent.com/u/6600532",
+      "profile": "https://github.com/ChrisHampu",
+      "contributions": [
+        "code",
+        "review"
+      ]
+    },
+    {
+      "login": "woozyking",
+      "name": "Runzhou Li (Leo)",
+      "avatar_url": "https://avatars.githubusercontent.com/u/2837532",
+      "profile": "https://github.com/woozyking",
+      "contributions": [
+        "code",
+        "review"
+      ]
+    },
+    {
+      "login": "awiebe42",
+      "name": "awiebe42",
+      "avatar_url": "https://avatars.githubusercontent.com/u/65562157",
+      "profile": "https://github.com/awiebe42",
+      "contributions": [
+        "code",
+        "review",
+        "research"
+      ]
+    },
+    {
+      "login": "kylalangotsky",
+      "name": "kylalangotsky",
+      "avatar_url": "https://avatars.githubusercontent.com/u/91707255",
+      "profile": "https://github.com/kylalangotsky",
+      "contributions": [
+        "research"
+      ]
+    },
+    {
+      "login": "reshmasoman",
+      "name": "reshmasoman",
+      "avatar_url": "https://avatars.githubusercontent.com/u/102987481",
+      "profile": "https://github.com/reshmasoman",
+      "contributions": [
+        "research"
+      ]
+    },
+    {
+      "login": "rkodamana",
+      "name": "Rithwik Kodamana",
+      "avatar_url": "https://avatars.githubusercontent.com/u/84455891",
+      "profile": "https://github.com/rkodamana",
+      "contributions": [
+        "research",
+        "review"
+      ]
+    },
+    {
+      "login": "dilshank",
+      "name": "Dilshan Kathriarachchi",
+      "avatar_url": "https://avatars.githubusercontent.com/u/1534562",
+      "profile": "https://github.com/dilshank",
+      "contributions": [
+        "research"
+      ]
+    }
+  ],
+  "contributorTemplate": "<a href=\"<%= contributor.profile %>\"><img src=\"<%= contributor.avatar_url %>?s=<%= options.imageSize %>\" width=\"<%= options.imageSize %>\" alt=\"@<%- contributor.login %>\" /><br /><sub><b>@<%- contributor.login %></b></sub></a><br /><%= contributions %>",
+  "types": {
+    "research": {
+      "symbol": "\ud83d\udd2c",
+      "description": "Research",
+      "link": "<%= contributor.profile %>"
+    }
+  }
+}
