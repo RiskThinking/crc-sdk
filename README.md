@@ -861,18 +861,61 @@ its actual family. For a lower-tail experiment, `gumbel_l` is also available.
 No shape clipping, bootstrap uncertainty threshold or automatic zero point-mass
 treatment is applied.
 
-## CRC canonical open subset
+## CRC Open canonical data
 
-`HazardDataset.crc_open()` reads pinned releases of canonical curves. Available
-in crc-sdk 0.8.0a3 and later, it uses the crc-docs SSP585 fixture HTTP root by
-default. Fixtures have sampled coverage and emit `CRCOpenFixtureWarning` at
-execution.
+`HazardDataset.crc_open()` reads the public source at
+`https://data.riskthinking.ai/crc-open`, with
+`ssp585-global-2026-10-20-v1` pinned as its default release. No credentials,
+release index or bucket listing are required. Use `release="another-release"`
+to select a future published release explicitly; an existing plan never follows
+a mutable "latest" alias.
+
+Discover hazards and partitions without downloading curve files:
 
 ```python
 from crc_sdk.workflows import HazardDataset
 
+plan = HazardDataset.crc_open().cache("work/crc-open", mode="reuse")
+catalog = plan.catalog()
+print(sorted(catalog.hazards))
+
+selection = plan.hazards(["rx1day"]).resolve()
+print(selection.total_bytes, selection.total_rows)
+for partition, url in zip(selection.partitions, selection.urls):
+    print(partition.h3_r0, partition.rows, url)
+```
+
+`catalog()` returns all release declarations. `resolve()` honors the plan's
+hazard, area and horizon selection using available partition metadata. Its URLs
+point to **whole files**: byte and row totals describe those complete files,
+before row or column filtering. An available r0 partition does not imply coverage
+of every finer cell inside it. If per-partition horizons or sampled cells are not
+listed, discovery keeps the file rather than guessing that coverage is absent.
+
+For direct DuckDB integration, pass the discovered URL list:
+
+```python
+import duckdb
+
+selection = plan.hazards(["rx1day"]).horizons([2050]).resolve()
+with duckdb.connect() as con:
+    rows = con.execute(
+        "SELECT count(*) FROM read_parquet(?, hive_partitioning=false) "
+        "WHERE pathway = 'ssp585' AND horizon = 2050",
+        [list(selection.urls)],
+    ).fetchone()
+    print(rows)
+```
+
+Direct URL consumers must apply their own row filters. DuckDB can use HTTP range
+requests and Parquet projection/filter pushdown; discovery does not fetch the
+Parquet files or verify their complete file checksums.
+
+To create an SDK dataset with verified downloads and canonical metadata:
+
+```python
 plan = (
-    HazardDataset.crc_open(release="ssp585-fixture-2026-10-08-v2")
+    HazardDataset.crc_open(release="ssp585-global-2026-10-20-v1")
     .for_area((-79.5, 43.5, -79.2, 43.8))
     .hazards(["rx1day"])
     .horizons([2050])
@@ -883,32 +926,42 @@ plan.prefetch()
 curves = plan.materialize("work/rx1day.parquet")
 ```
 
-Use `fixtures=` to select another fixture root, or `source=` for a catalogue
-root. Both accept HTTP(S) URLs and directories containing release directories.
 Each release supplies `_CATALOG.json`, its `_SUCCESS` SHA256, and relative
-Parquet partition paths. A commit-pinned HTTP root makes the source reproducible.
+Parquet partition paths. Discovery rejects an absent or mismatched completion
+marker. `reuse`, `offline` and `refresh` use verified persistent caches; resolving
+metadata alone is sufficient for subsequent offline discovery. Offline data
+materialization additionally requires the selected partition files in the cache.
+`refresh` rejects changed catalogue bytes under an existing release ID.
 
-Plans prune partitions by area and select hazards, horizons and pathways without
-refitting. `reuse`, `offline` and `refresh` use verified persistent caches;
-`stream` verifies temporary downloads. Cache manifests record the request,
-release, checksums, licence and attribution. `refresh` rejects changed catalogue
-bytes under an existing release ID.
-
+Downloads stream to disk with SHA256 and size verification before installation.
+Materialization processes Arrow batches and uses the SDK's DuckDB streaming
+writer for key validation and canonical ordering, spilling to disk as needed.
+`stream` cache mode uses temporary downloads; it still requires local disk.
 `materialize()` returns one ordinary `HazardDataset` for a selected hazard;
-`materialize_all(directory)` returns a mapping with each hazard's units, tail
-and native resolution preserved. Unsupported selections and areas without
-coverage raise clear errors. Metadata governs probability and temporal-window
-warnings during portfolio evaluation.
+`materialize_all(directory)` returns a mapping preserving each hazard's units,
+tail, native resolution and scientific provenance. No fitting or resampling occurs.
 
-The SSP585 fixture contains 63 hazards. Coastal and river flood use
+Use `source=` to select another HTTP(S) catalogue root or local directory
+containing release directories. Sampled GitHub fixtures remain explicit:
+
+```python
+from crc_sdk.providers.crc_open import DOCS_FIXTURES, FIXTURE_RELEASE
+
+fixture = HazardDataset.crc_open(fixtures=DOCS_FIXTURES, release=FIXTURE_RELEASE)
+```
+
+Fixtures emit `CRCOpenFixtureWarning`. Hazard interpretation notes emit
+`CRCOpenWarning`, including for the public dataset. Coastal and river flood use
 scenario-compatible SSP585-labelled curves rather than independently fitted
 SSP585 projections. Cyclone labels reuse a time/scenario-independent pooled
-distribution; inundation retains unspecified probability semantics.
-There is no historical baseline in the fixture, and pooled curves do not
-represent per-model ensemble spread. The data licence is
-[CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/)
-(`CC-BY-NC-4.0`).
+distribution; inundation retains unspecified probability semantics. No historical
+baseline is included, and pooled curves do not represent per-model ensemble spread.
+The data licence is [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/)
+(`CC-BY-NC-4.0`), separate from the SDK software licence.
 
-See the [access contract](docs/spikes/crc-open-subset.md),
-[fixture coverage and terms](https://github.com/RiskThinking/crc-docs/blob/main/fixtures/crc_open/README.md),
-and [portfolio example](https://github.com/RiskThinking/crc-docs/blob/main/pipelines/crc_open_pipeline.py).
+See the [access contract](docs/spikes/crc-open-subset.md). To run the opt-in public
+integration checks against the completed release:
+
+```bash
+CRC_OPEN_LIVE=1 python -m pytest -q tests/test_crc_open_public.py
+```

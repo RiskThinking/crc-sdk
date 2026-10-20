@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import warnings
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -14,9 +15,14 @@ import pytest
 from crc_sdk.connectors.parquet import hazard_arrow_schema, write_hazard_dataset
 from crc_sdk.geometry import point_to_cell
 from crc_sdk.providers.crc_open import (
+    DEFAULT_RELEASE,
+    DOCS_FIXTURES,
+    FIXTURE_RELEASE,
+    PUBLIC_SOURCE,
     CRCCatalog,
     CRCOpenFixtureWarning,
     CRCOpenHazards,
+    CRCOpenWarning,
     CRCPartition,
 )
 from crc_sdk.types import EnsembleDescriptor, HazardDatasetMetadata, SourceProvenance
@@ -119,7 +125,16 @@ def test_lazy_construction_and_explicit_source(tmp_path: Path) -> None:
         plan = HazardDataset.crc_open().hazards(["rx1day"]).for_area([-80, 43, -79, 44])
         details = plan.explain(format="json")
         assert isinstance(details, dict)
-        assert details["fixture_fallback"] is True
+        assert details["fixture_fallback"] is False
+        assert plan.source == PUBLIC_SOURCE
+        assert plan.release == DEFAULT_RELEASE == "ssp585-global-2026-10-20-v1"
+        assert HazardDataset.crc_open(release="next-v1").release == "next-v1"
+        fixture = HazardDataset.crc_open(
+            fixtures=DOCS_FIXTURES, release=FIXTURE_RELEASE
+        )
+        assert fixture.source == DOCS_FIXTURES
+        assert fixture.release == FIXTURE_RELEASE
+        assert fixture.fixture_fallback is True
         assert HazardDataset.crc_open(source=tmp_path).fixture_fallback is False
     with pytest.raises(ValueError, match="choose source"):
         HazardDataset.crc_open(source=tmp_path, fixtures=tmp_path)
@@ -309,7 +324,7 @@ def test_exclusions_and_unknown_semantics_are_preserved(tmp_path: Path) -> None:
         entry["size_bytes"] = path.stat().st_size
     _publish_catalog(source / RELEASE, catalog)
     plan = HazardDataset.crc_open(release=RELEASE, fixtures=source)
-    with pytest.warns(CRCOpenFixtureWarning) as recorded:
+    with pytest.warns((CRCOpenFixtureWarning, CRCOpenWarning)) as recorded:
         dataset = plan.hazards(["heat"]).materialize(tmp_path / "unknown.parquet")
     assert any("semantics are unspecified" in str(w.message) for w in recorded)
     assert dataset.metadata().probability_semantics is None
@@ -409,7 +424,8 @@ def test_stream_portfolio_cleans_scratch(tmp_path: Path, fail: bool) -> None:
     original = tempfile.TemporaryDirectory
 
     def temporary(**kwargs: Any) -> Any:
-        directory = original(dir=tmp_path, **kwargs)
+        kwargs.setdefault("dir", tmp_path)
+        directory = original(**kwargs)
         scratch.append(Path(directory.name))
         return directory
 
@@ -426,3 +442,196 @@ def test_stream_portfolio_cleans_scratch(tmp_path: Path, fail: bool) -> None:
             else:
                 assert request.write_parquet(tmp_path / "result.parquet").row_count == 2
     assert scratch and all(not directory.exists() for directory in scratch)
+
+
+def test_public_catalogue_discovery_is_metadata_only(tmp_path: Path) -> None:
+    source, catalog = _release(tmp_path)
+    catalog["fixture"] = False
+    _publish_catalog(source / RELEASE, catalog)
+    requested: list[str] = []
+
+    def get(url: str, timeout: int) -> io.BytesIO:
+        requested.append(url)
+        relative = url.split(f"/{RELEASE}/", 1)[1]
+        assert relative in {"_CATALOG.json", "_SUCCESS"}
+        return io.BytesIO((source / RELEASE / relative).read_bytes())
+
+    plan = (
+        HazardDataset.crc_open(release=RELEASE, source="https://data.example/crc-open")
+        .hazards(["rx1day"])
+        .cache(tmp_path / "cache")
+    )
+    with patch("crc_sdk.providers.crc_open.urlopen", side_effect=get):
+        with patch.object(
+            CRCOpenHazards, "download_partition", side_effect=AssertionError
+        ):
+            with warnings.catch_warnings(record=True) as recorded:
+                metadata = plan.catalog()
+                resolved = plan.resolve()
+                area = plan.for_area([-79.4, 43.6, -79.3, 43.7]).resolve()
+    assert not recorded
+    assert set(metadata.hazards) == {"rx1day", "heat"}
+    assert len(resolved.partitions) == 2
+    assert len(area.partitions) == 1
+    assert resolved.total_bytes == sum(p.size_bytes for p in resolved.partitions)
+    assert resolved.total_rows == 4
+    assert (
+        resolved.catalog_sha256
+        == hashlib.sha256((source / RELEASE / "_CATALOG.json").read_bytes()).hexdigest()
+    )
+    assert resolved.urls == tuple(
+        f"https://data.example/crc-open/{RELEASE}/{p.path}" for p in resolved.partitions
+    )
+    assert len(requested) == 2
+    assert not list((tmp_path / "cache").rglob("*.parquet"))
+    with patch.object(CRCOpenHazards, "fetch", side_effect=AssertionError("network")):
+        assert plan.cache(tmp_path / "cache", mode="offline").resolve() == resolved
+        with pytest.raises(FileNotFoundError, match="missing or corrupt"):
+            plan.cache(tmp_path / "cache", mode="offline").prefetch()
+
+
+def test_resolution_prunes_partition_horizons(tmp_path: Path) -> None:
+    source, catalog = _release(tmp_path)
+    entries = catalog["hazards"]["rx1day"]["partitions"]
+    entries[0]["horizons"] = [2050]
+    entries[1]["horizons"] = [2090]
+    _publish_catalog(source / RELEASE, catalog)
+    plan = HazardDataset.crc_open(release=RELEASE, source=source).hazards(["rx1day"])
+    with pytest.warns(CRCOpenFixtureWarning):
+        resolved = plan.horizons([2090]).resolve()
+    assert [p.path for p in resolved.partitions] == [entries[1]["path"]]
+    # Missing per-partition horizon metadata means unknown, rather than no data.
+    entries[0]["horizons"] = []
+    _publish_catalog(source / RELEASE, catalog)
+    with pytest.warns(CRCOpenFixtureWarning):
+        assert len(plan.horizons([2090]).resolve().partitions) == 2
+
+
+def test_discovery_rejects_incomplete_or_changed_release(tmp_path: Path) -> None:
+    source, catalog = _release(tmp_path)
+    root = source / RELEASE
+    plan = HazardDataset.crc_open(release=RELEASE, source=source).cache(
+        tmp_path / "cache"
+    )
+    (root / "_SUCCESS").unlink()
+    with pytest.raises(FileNotFoundError, match="unavailable"):
+        plan.catalog()
+    assert not list((tmp_path / "cache").rglob("_CATALOG.json"))
+    _publish_catalog(root, catalog)
+    assert plan.catalog().release == RELEASE
+    (root / "_SUCCESS").write_text("0" * 64)
+    with pytest.raises(ValueError, match="_SUCCESS"):
+        plan.cache(tmp_path / "cache", mode="refresh").catalog()
+    catalog["attribution"] = "different release bytes"
+    _publish_catalog(root, catalog)
+    with pytest.raises(ValueError, match="pinned CRC release changed"):
+        plan.cache(tmp_path / "cache", mode="refresh").catalog()
+
+
+@pytest.mark.parametrize("failure", [None, "checksum", "oversize", "disconnect"])
+def test_streamed_download_is_bounded_and_atomic(
+    tmp_path: Path, failure: str | None
+) -> None:
+    payload = b"x" * (2 * 1024 * 1024 + 17)
+    partition = CRCPartition(
+        path="rx1day/h3_r0=8019fffffffffff/part-00000.parquet",
+        h3_r0="8019fffffffffff",
+        rows=1,
+        size_bytes=len(payload),
+        sha256=hashlib.sha256(payload).hexdigest(),
+    )
+    if failure == "checksum":
+        partition = partition.model_copy(update={"sha256": "0" * 64})
+    if failure == "oversize":
+        partition = partition.model_copy(update={"size_bytes": len(payload) - 1})
+
+    class Response(io.BytesIO):
+        def read(self, size: int | None = -1) -> bytes:
+            assert size is not None and 0 < size <= 1024 * 1024
+            if failure == "disconnect" and self.tell():
+                raise OSError("transfer interrupted")
+            return super().read(size)
+
+    provider = CRCOpenHazards("https://data.example/crc-open", RELEASE)
+    target = tmp_path / "cache" / "partition.parquet"
+    target.parent.mkdir()
+    target.write_bytes(b"existing verified copy")
+    with patch("crc_sdk.providers.crc_open.urlopen", return_value=Response(payload)):
+        if failure:
+            with pytest.raises((ValueError, OSError)):
+                provider.download_partition(partition, target)
+            assert target.read_bytes() == b"existing verified copy"
+        else:
+            assert provider.download_partition(partition, target) == target
+            assert target.read_bytes() == payload
+    assert list(target.parent.iterdir()) == [target]
+
+
+def test_scientific_notes_are_not_fixture_warnings(tmp_path: Path) -> None:
+    source, catalog = _release(tmp_path)
+    catalog["fixture"] = False
+    catalog["hazards"]["heat"]["notes"] = "Probability semantics are unspecified"
+    _publish_catalog(source / RELEASE, catalog)
+    with pytest.warns(CRCOpenWarning, match="semantics are unspecified") as recorded:
+        HazardDataset.crc_open(release=RELEASE, source=source).hazards(
+            ["heat"]
+        ).resolve()
+    assert not any(issubclass(w.category, CRCOpenFixtureWarning) for w in recorded)
+
+
+@pytest.mark.parametrize("invalid", [None, "duplicate", "cells"])
+def test_materialization_streams_batches_and_preserves_output_on_failure(
+    tmp_path: Path, invalid: str | None
+) -> None:
+    source, catalog = _release(tmp_path)
+    entry = catalog["hazards"]["rx1day"]["partitions"][0]
+    path = source / RELEASE / entry["path"]
+    original = pq.ParquetFile(path).read()
+    rows = original.to_pylist() * 10_000
+    for index, row in enumerate(rows):
+        # Copies prevent repeated source rows sharing the same Python mapping.
+        rows[index] = dict(row, source_id=f"row-{index}")
+    if invalid == "duplicate":
+        rows[-1] = dict(rows[1])
+    table = pa.Table.from_pylist(rows, schema=original.schema)
+    pq.write_table(table, path)
+    entry.update(
+        rows=len(rows),
+        size_bytes=path.stat().st_size,
+        sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+    )
+    if invalid == "cells":
+        entry["cells"] = []
+    _publish_catalog(source / RELEASE, catalog)
+    output = tmp_path / "result.parquet"
+    output.write_bytes(b"previous result")
+    observed = []
+    iterate = pq.ParquetFile.iter_batches
+
+    def batches(file: Any, *, batch_size: int, **kwargs: Any) -> Any:
+        for batch in iterate(file, batch_size=batch_size, **kwargs):
+            observed.append(batch.num_rows)
+            yield batch
+
+    plan = HazardDataset.crc_open(release=RELEASE, source=source).hazards(["rx1day"])
+    with patch.object(pq.ParquetFile, "iter_batches", batches):
+        with patch.object(
+            pq.ParquetFile, "read", side_effect=AssertionError("whole file")
+        ):
+            with patch(
+                "pyarrow.concat_tables", side_effect=AssertionError("whole hazard")
+            ):
+                with pytest.warns(CRCOpenFixtureWarning):
+                    if invalid:
+                        with pytest.raises(ValueError, match=invalid):
+                            plan.materialize(output)
+                    else:
+                        result = plan.materialize(output)
+                        assert result.materialization is not None
+                        assert result.materialization.canonical_rows == 20_002
+    assert observed and max(observed) <= 8192
+    if invalid:
+        assert output.read_bytes() == b"previous result"
+    else:
+        assert pq.ParquetFile(output).metadata.num_rows == 20_002
+    assert not list(tmp_path.glob(".crc-open-write-*"))

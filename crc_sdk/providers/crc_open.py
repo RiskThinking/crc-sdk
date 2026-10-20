@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import tempfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Literal
 from urllib.parse import urlparse
@@ -14,13 +16,19 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from crc_sdk.types import ProbabilitySemantics
 
+DEFAULT_RELEASE = "ssp585-global-2026-10-20-v1"
+PUBLIC_SOURCE = "https://data.riskthinking.ai/crc-open"
 FIXTURE_RELEASE = "ssp585-fixture-2026-10-08-v2"
 DOCS_FIXTURES = (
     "https://raw.githubusercontent.com/RiskThinking/crc-docs/main/fixtures/crc_open"
 )
 
 
-class CRCOpenFixtureWarning(UserWarning):
+class CRCOpenWarning(UserWarning):
+    """Scientific interpretation notes for a published CRC Open hazard."""
+
+
+class CRCOpenFixtureWarning(CRCOpenWarning):
     """The selected fixture has sampled geographic coverage."""
 
 
@@ -139,11 +147,15 @@ class CRCOpenHazards:
             raise ValueError("CRC source must be an HTTP(S) root or local directory")
 
     def fetch(self, relative: str) -> bytes:
-        location = f"{self.source}/{self.release}/{relative}"
+        location = self.location(relative)
         if urlparse(self.source).scheme in {"http", "https"}:
             with urlopen(location, timeout=60) as response:
                 return response.read()  # type: ignore[no-any-return]
         return Path(location).read_bytes()
+
+    def location(self, relative: str) -> str:
+        """Resolve a catalogue-relative resource against the pinned release."""
+        return f"{self.source}/{self.release}/{relative}"
 
     def catalog_bytes(self) -> bytes:
         payload = self.fetch("_CATALOG.json")
@@ -169,3 +181,45 @@ class CRCOpenHazards:
         ):
             raise ValueError(f"CRC partition checksum/size mismatch: {partition.path}")
         return payload
+
+    def download_partition(
+        self, partition: CRCPartition, destination: str | Path
+    ) -> Path:
+        """Stream a partition to disk and atomically install it after verification."""
+        target = Path(destination)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        location = self.location(partition.path)
+        digest = hashlib.sha256()
+        size = 0
+        temporary: Path | None = None
+        try:
+            response = (
+                urlopen(location, timeout=60)
+                if urlparse(self.source).scheme in {"http", "https"}
+                else Path(location).open("rb")
+            )
+            with response as source:
+                with tempfile.NamedTemporaryFile(
+                    dir=target.parent, prefix=f".{target.name}.", delete=False
+                ) as output:
+                    temporary = Path(output.name)
+                    while chunk := source.read(1024 * 1024):
+                        size += len(chunk)
+                        if size > partition.size_bytes:
+                            raise ValueError(
+                                "CRC partition checksum/size mismatch: "
+                                f"{partition.path}"
+                            )
+                        digest.update(chunk)
+                        output.write(chunk)
+                    output.flush()
+                    os.fsync(output.fileno())
+            if size != partition.size_bytes or digest.hexdigest() != partition.sha256:
+                raise ValueError(
+                    f"CRC partition checksum/size mismatch: {partition.path}"
+                )
+            temporary.replace(target)
+            return target
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
