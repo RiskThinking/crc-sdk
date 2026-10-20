@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import tempfile
 import warnings
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -62,6 +63,11 @@ def _box(bounds: Bounds) -> Any:
     return box(*bounds)
 
 
+def _default_cache_dir() -> Path:
+    root = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
+    return root / "crc-sdk" / "crc-open"
+
+
 @dataclass(frozen=True)
 class CRCOpenSelection:
     """Verified catalogue and selected whole-file resources; no curves downloaded.
@@ -101,8 +107,8 @@ class CRCOpenPlan:
     bounds: Bounds | None = None
     selected_hazards: tuple[str, ...] = ()
     selected_horizons: tuple[int, ...] | None = None
-    cache_dir: Path | None = None
-    cache_mode: CacheMode = "stream"
+    cache_dir: Path | None = field(default_factory=_default_cache_dir)
+    cache_mode: CacheMode = "reuse"
 
     def __post_init__(self) -> None:
         CRCOpenHazards(self.source, self.release)
@@ -350,6 +356,11 @@ class CRCOpenPlan:
     def _prepare(
         self, progress: ProgressCallback | None = None
     ) -> Iterator[tuple[CRCCatalog, list[tuple[str, Path]], int, int, str]]:
+        if not self.selected_hazards:
+            raise ValueError(
+                "curve downloads require explicit hazards([name, ...]); "
+                "use catalog() or resolve() to discover available data"
+            )
         provider = CRCOpenHazards(self.source, self.release)
         temporary = (
             tempfile.TemporaryDirectory(prefix="crc-open-")
@@ -702,6 +713,8 @@ class CRCOpenPortfolioEvaluation(RemotePortfolioEvaluation):
         execution: ExecutionOptions | None = None,
         progress: ProgressCallback | None = None,
     ) -> PortfolioEvaluationResult:
+        if self.periods is None:
+            raise ValueError("return_periods(...) must be configured before writing")
         plan = self.plan
         selection = self.selection
         if selection.pathways is not None and selection.pathways != (plan.pathway,):
@@ -721,6 +734,11 @@ class CRCOpenPortfolioEvaluation(RemotePortfolioEvaluation):
             ).issubset(plan.selected_horizons):
                 raise ValueError("portfolio horizons are outside the CRC open request")
             plan = plan.horizons(selection.horizons)
+        if plan.bounds is None:
+            raise ValueError(
+                "CRC Open portfolio acquisition requires for_area(bounds) "
+                "to limit partition downloads"
+            )
         if plan.cache_dir is None:
             # Keep the canonical file alive through evaluation, then remove it
             # and the downloaded partitions even if evaluation raises.

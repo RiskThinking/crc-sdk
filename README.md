@@ -870,6 +870,12 @@ release index or bucket listing are required. Use `release="another-release"`
 to select a future published release explicitly; an existing plan never follows
 a mutable "latest" alias.
 
+The default plan reuses a persistent local cache at
+`$XDG_CACHE_HOME/crc-sdk/crc-open` (or `~/.cache/crc-sdk/crc-open`). Repeated
+requests for verified cached data do not contact the server. Use `.cache(path)`
+to choose a different location. Temporary downloads require the explicit opt-out
+`.cache(None, mode="stream")`; `mode="refresh"` explicitly downloads data again.
+
 Discover hazards and partitions without downloading curve files:
 
 ```python
@@ -932,6 +938,13 @@ marker. `reuse`, `offline` and `refresh` use verified persistent caches; resolvi
 metadata alone is sufficient for subsequent offline discovery. Offline data
 materialization additionally requires the selected partition files in the cache.
 `refresh` rejects changed catalogue bytes under an existing release ID.
+
+Curve downloads require explicit `.hazards([name, ...])` selection. Unfiltered
+`catalog()` and `resolve()` remain available for discovery, but `prefetch()` and
+`materialize_all()` never implicitly download all hazards. Selecting one hazard
+without `.for_area()` intentionally requests its complete published coverage.
+Portfolio evaluation requires `.for_area(bounds)` to bound acquisition before
+reading curve files, even when the asset table itself is small.
 
 Downloads stream to disk with SHA256 and size verification before installation.
 Materialization processes Arrow batches and uses the SDK's DuckDB streaming
