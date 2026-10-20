@@ -43,6 +43,20 @@ whole file is read. SDK downloads verify complete files instead.
 
 ## Cached materialization
 
+Plans use a persistent local cache by default, under
+`$XDG_CACHE_HOME/crc-sdk/crc-open` or `~/.cache/crc-sdk/crc-open`. `.cache(path)`
+overrides its location; `.cache(None, mode="stream")` explicitly opts into
+temporary downloads. Repeated use of verified cached data makes no network
+requests. Explicit refresh and temporary modes can repeat downloads.
+
+Curve acquisition requires named hazards. `prefetch()` and `materialize_all()`
+reject an unspecified hazard selection before network I/O. Metadata-only
+discovery can still inspect all hazards. To request every hazard intentionally,
+pass `.hazards(list(plan.catalog().hazards))`. A named hazard without area bounds
+requests all its published partitions; portfolio evaluation requires
+`.for_area(bounds)` so a small asset collection cannot silently trigger global
+acquisition. The asset table is not implicitly treated as the acquisition area.
+
 Metadata discovery needs only the catalogue and marker. A persistent cache pins
 the catalogue checksum, release identity, licence and attribution. `reuse` uses
 verified cached metadata; `refresh` fetches metadata again and rejects changes

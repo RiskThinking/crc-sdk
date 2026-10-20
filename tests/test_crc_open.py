@@ -31,6 +31,11 @@ from crc_sdk.workflows import HazardDataset, HorizonExtrapolationWarning
 RELEASE = "test-v1"
 
 
+@pytest.fixture(autouse=True)
+def isolated_default_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache-home"))
+
+
 def _publish_catalog(root: Path, catalog: dict[str, Any]) -> None:
     payload = json.dumps(catalog, sort_keys=True).encode()
     (root / "_CATALOG.json").write_bytes(payload)
@@ -184,7 +189,7 @@ def test_scope_guards_and_sparse_coverage(tmp_path: Path) -> None:
         with pytest.raises(ValueError, match="not in the open subset"):
             HazardDataset.crc_open(
                 release=RELEASE, source=source, pathway="historic"
-            ).materialize_all(tmp_path / "bad")
+            ).hazards(["rx1day"]).materialize_all(tmp_path / "bad")
     with pytest.warns(CRCOpenFixtureWarning):
         with pytest.raises(LookupError, match="no coverage"):
             base.for_area([130, 30, 131, 31]).materialize(tmp_path / "empty.parquet")
@@ -202,7 +207,9 @@ def test_mixed_hazards_keep_metadata_separate(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="materialize_all"):
         plan.materialize(tmp_path / "mixed.parquet")
     with pytest.warns(CRCOpenFixtureWarning):
-        datasets = plan.materialize_all(tmp_path / "outputs")
+        datasets = plan.hazards(["rx1day", "heat"]).materialize_all(
+            tmp_path / "outputs"
+        )
     assert datasets["rx1day"].metadata().h3_resolution == 5
     assert datasets["heat"].metadata().h3_resolution == 7
     assert datasets["heat"].metadata().value_unit == "degC"
@@ -304,7 +311,7 @@ def test_metadata_disagreement_and_empty_offline_cache(tmp_path: Path) -> None:
         with pytest.raises(ValueError, match="metadata disagrees"):
             plan.materialize(tmp_path / "bad-unit.parquet")
     with pytest.raises(ValueError, match="persistent cache"):
-        plan.prefetch()
+        plan.cache(None, mode="stream").prefetch()
 
 
 def test_exclusions_and_unknown_semantics_are_preserved(tmp_path: Path) -> None:
@@ -367,7 +374,9 @@ def test_schema_12_materialization_upgrades_catalogue_metadata(tmp_path: Path) -
     _publish_catalog(source / RELEASE, catalog)
     plan = HazardDataset.crc_open(release=RELEASE, fixtures=source)
     with pytest.warns(CRCOpenFixtureWarning):
-        datasets = plan.materialize_all(tmp_path / "upgraded")
+        datasets = plan.hazards(["rx1day", "heat"]).materialize_all(
+            tmp_path / "upgraded"
+        )
         single = plan.hazards(["rx1day"]).materialize(tmp_path / "single.parquet")
     for dataset in [*datasets.values(), single]:
         metadata = dataset.metadata()
@@ -413,6 +422,8 @@ def test_stream_portfolio_cleans_scratch(tmp_path: Path, fail: bool) -> None:
     request = (
         HazardDataset.crc_open(release=RELEASE, fixtures=source)
         .hazards(["rx1day"])
+        .for_area([-80, 43, -79, 44])
+        .cache(None, mode="stream")
         .for_assets(assets)
         .return_periods([10])
     )
@@ -496,7 +507,11 @@ def test_resolution_prunes_partition_horizons(tmp_path: Path) -> None:
     entries[0]["horizons"] = [2050]
     entries[1]["horizons"] = [2090]
     _publish_catalog(source / RELEASE, catalog)
-    plan = HazardDataset.crc_open(release=RELEASE, source=source).hazards(["rx1day"])
+    plan = (
+        HazardDataset.crc_open(release=RELEASE, source=source)
+        .hazards(["rx1day"])
+        .cache(None, mode="stream")
+    )
     with pytest.warns(CRCOpenFixtureWarning):
         resolved = plan.horizons([2090]).resolve()
     assert [p.path for p in resolved.partitions] == [entries[1]["path"]]
@@ -635,3 +650,54 @@ def test_materialization_streams_batches_and_preserves_output_on_failure(
     else:
         assert pq.ParquetFile(output).metadata.num_rows == 20_002
     assert not list(tmp_path.glob(".crc-open-write-*"))
+
+
+@pytest.mark.parametrize("operation", ["prefetch", "materialize_all"])
+def test_bulk_downloads_require_hazard_selection_before_any_io(
+    tmp_path: Path, operation: str
+) -> None:
+    plan = HazardDataset.crc_open()
+    with patch.object(CRCOpenHazards, "fetch", side_effect=AssertionError("network")):
+        with patch.object(
+            CRCOpenHazards, "download_partition", side_effect=AssertionError("network")
+        ):
+            with pytest.raises(ValueError, match="explicit hazards"):
+                if operation == "prefetch":
+                    plan.prefetch()
+                else:
+                    plan.materialize_all(tmp_path / "all")
+    assert plan.cache_dir is not None
+    assert not plan.cache_dir.exists()
+
+
+def test_default_cache_avoids_repeated_requests(tmp_path: Path) -> None:
+    source, catalog = _release(tmp_path)
+    catalog["fixture"] = False
+    _publish_catalog(source / RELEASE, catalog)
+    first = HazardDataset.crc_open(release=RELEASE, source=source).hazards(["rx1day"])
+    assert first.cache_mode == "reuse"
+    assert first.cache_dir == tmp_path / "cache-home" / "crc-sdk" / "crc-open"
+    assert first.prefetch().cache_misses == 2
+    # A new plan shares the verified cache without catalogue GETs or object HEADs.
+    second = HazardDataset.crc_open(release=RELEASE, source=source).hazards(["rx1day"])
+    with patch.object(CRCOpenHazards, "fetch", side_effect=AssertionError("network")):
+        with patch.object(
+            CRCOpenHazards, "download_partition", side_effect=AssertionError("network")
+        ):
+            assert second.prefetch().cache_hits == 2
+            assert len(second.resolve().partitions) == 2
+            result = second.materialize(tmp_path / "reused.parquet")
+    assert pq.ParquetFile(result.provider.source).metadata.num_rows == 4
+
+
+def test_portfolio_requires_acquisition_area_before_any_io(tmp_path: Path) -> None:
+    assets = pa.table(dict(asset_id=["Toronto"], longitude=[-79.38], latitude=[43.65]))
+    request = (
+        HazardDataset.crc_open()
+        .hazards(["rx1day"])
+        .for_assets(assets)
+        .return_periods([10])
+    )
+    with patch.object(CRCOpenHazards, "fetch", side_effect=AssertionError("network")):
+        with pytest.raises(ValueError, match="for_area"):
+            request.write_parquet(tmp_path / "portfolio.parquet")
