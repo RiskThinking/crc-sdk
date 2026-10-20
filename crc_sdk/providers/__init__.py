@@ -17,7 +17,7 @@ from .cmip6 import (
     enforce_licence,
     normalize_licence,
 )
-from .crc_open import CRCOpenFixtureWarning, CRCOpenHazards
+from .crc_open import CRCOpenFixtureWarning, CRCOpenHazards, CRCOpenWarning
 from .era5 import (
     ARCO_0P25,
     ERA5_RECIPES,
@@ -67,6 +67,7 @@ __all__ = [
     "normalize_licence",
     "CRCOpenFixtureWarning",
     "CRCOpenHazards",
+    "CRCOpenWarning",
     "ARCO_0P25",
     "ERA5_RECIPES",
     "ERA5_STORES",

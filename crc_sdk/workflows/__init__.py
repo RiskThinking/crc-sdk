@@ -1,6 +1,6 @@
 """Cross-module analytical workflows."""
 
-from crc_sdk.providers.crc_open import CRCOpenFixtureWarning
+from crc_sdk.providers.crc_open import CRCOpenFixtureWarning, CRCOpenWarning
 
 from ._remote import MaterializationResult, PrefetchResult
 from .agriculture import AgriculturalLayer
@@ -12,7 +12,7 @@ from .cmip6 import (
     CMIP6SourcePlan,
     CMIP6YearPlan,
 )
-from .crc_open import CRCOpenPlan
+from .crc_open import CRCOpenPlan, CRCOpenSelection
 from .distributions import (
     CURVE_COLUMNS,
     HorizonExtrapolationWarning,
@@ -74,7 +74,9 @@ __all__ = [
     "CMIP6SourcePlan",
     "CMIP6YearPlan",
     "CRCOpenPlan",
+    "CRCOpenSelection",
     "CRCOpenFixtureWarning",
+    "CRCOpenWarning",
     "BlockExtremaPolicy",
     "ERA5AreaPlan",
     "ERA5CanonicalizationPlan",

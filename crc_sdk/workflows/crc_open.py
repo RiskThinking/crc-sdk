@@ -15,15 +15,18 @@ from typing import Any, Literal
 
 import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.compute as pc  # type: ignore[import-untyped]
+import pyarrow.parquet as pq  # type: ignore[import-untyped]
 
-from crc_sdk.connectors.parquet import read_hazard_dataset, write_hazard_dataset
+from crc_sdk.connectors.adapters import CanonicalHazardBatch, CanonicalHazardStream
+from crc_sdk.connectors.parquet import read_hazard_metadata, write_hazard_stream
 from crc_sdk.geometry.h3 import cell_polygon, intersecting_cells
 from crc_sdk.providers.crc_open import (
-    DOCS_FIXTURES,
-    FIXTURE_RELEASE,
+    DEFAULT_RELEASE,
+    PUBLIC_SOURCE,
     CRCCatalog,
     CRCOpenFixtureWarning,
     CRCOpenHazards,
+    CRCOpenWarning,
     CRCPartition,
 )
 from crc_sdk.types import EnsembleDescriptor, HazardDatasetMetadata
@@ -60,6 +63,30 @@ def _box(bounds: Bounds) -> Any:
 
 
 @dataclass(frozen=True)
+class CRCOpenSelection:
+    """Verified catalogue and selected whole-file resources; no curves downloaded.
+
+    URLs identify complete partitions. Callers reading them directly must apply
+    the plan's row-level area, pathway and horizon filters themselves.
+    """
+
+    catalog: CRCCatalog
+    catalog_sha256: str
+    partitions: tuple[CRCPartition, ...]
+    urls: tuple[str, ...]
+
+    @property
+    def total_bytes(self) -> int:
+        """Sum of complete partition sizes, before row or column filtering."""
+        return sum(partition.size_bytes for partition in self.partitions)
+
+    @property
+    def total_rows(self) -> int:
+        """Sum of complete partition row counts, before row filtering."""
+        return sum(partition.rows for partition in self.partitions)
+
+
+@dataclass(frozen=True)
 class CRCOpenPlan:
     """An immutable catalogue request; construction and explain do no I/O.
 
@@ -67,9 +94,9 @@ class CRCOpenPlan:
     Use materialize_all for multiple hazards with different scientific metadata.
     """
 
-    release: str = FIXTURE_RELEASE
-    source: str = DOCS_FIXTURES
-    fixture_fallback: bool = True
+    release: str = DEFAULT_RELEASE
+    source: str = PUBLIC_SOURCE
+    fixture_fallback: bool = False
     pathway: str = "ssp585"
     bounds: Bounds | None = None
     selected_hazards: tuple[str, ...] = ()
@@ -185,16 +212,139 @@ class CRCOpenPlan:
                         cell_polygon(cell).intersects(area) for cell in entry.cells
                     ):
                         continue
+                if (
+                    self.selected_horizons is not None
+                    and entry.horizons
+                    and not set(self.selected_horizons).intersection(entry.horizons)
+                ):
+                    continue
                 entries.append((name, entry))
         if not entries:
-            raise LookupError(
-                "area has no coverage in the open subset; "
-                "fixtures have sampled coverage"
-            )
+            raise LookupError("area or horizons have no coverage in the open subset")
         missing = set(names) - {name for name, _ in entries}
         if missing:
             raise LookupError(f"area has no open-subset coverage for {sorted(missing)}")
         return entries
+
+    def _catalog_directory(self, root: Path) -> Path:
+        identity = hashlib.sha256(
+            json.dumps([self.source, self.release]).encode()
+        ).hexdigest()[:20]
+        return root / identity
+
+    def _catalog(
+        self, root: Path | None, progress: ProgressCallback | None = None
+    ) -> tuple[CRCCatalog, str]:
+        provider = CRCOpenHazards(self.source, self.release)
+        directory = self._catalog_directory(root) if root is not None else None
+        manifest = read_manifest(directory) if directory is not None else None
+        catalog_path = directory / "_CATALOG.json" if directory is not None else None
+        cached = (
+            manifest is not None
+            and manifest.get("source") == self.source
+            and manifest.get("release") == self.release
+            and catalog_path is not None
+            and catalog_path.is_file()
+            and file_checksum(catalog_path) == manifest.get("catalog_sha256")
+        )
+        if self.cache_mode == "offline" and not cached:
+            raise FileNotFoundError(
+                "no valid pinned CRC catalogue in cache; resolve online first"
+            )
+        if cached and self.cache_mode in {"reuse", "offline"}:
+            assert catalog_path is not None
+            payload = catalog_path.read_bytes()
+        else:
+            if progress:
+                progress("resolve", {"release": self.release})
+            try:
+                payload = provider.catalog_bytes()
+            except OSError as error:
+                raise FileNotFoundError(
+                    f"CRC release {self.release!r} is unavailable "
+                    f"at {self.source!r}. Check the release ID and catalogue root. "
+                    "source= and fixtures= accept HTTP(S) roots or directories "
+                    "containing releases."
+                ) from error
+            digest = hashlib.sha256(payload).hexdigest()
+            if manifest is not None and manifest.get("catalog_sha256") != digest:
+                raise ValueError(
+                    "pinned CRC release changed; use a new release ID "
+                    "or cache directory"
+                )
+        catalog = provider.parse_catalog(payload)
+        checksum = hashlib.sha256(payload).hexdigest()
+        if directory is not None and not (
+            cached and self.cache_mode in {"reuse", "offline"}
+        ):
+            directory.mkdir(parents=True, exist_ok=True)
+            assert catalog_path is not None
+            pending: Path | None = None
+            try:
+                with tempfile.NamedTemporaryFile(dir=directory, delete=False) as output:
+                    pending = Path(output.name)
+                    output.write(payload)
+                pending.replace(catalog_path)
+            finally:
+                if pending is not None:
+                    pending.unlink(missing_ok=True)
+            write_manifest(
+                directory,
+                dict(
+                    provider="crc_open",
+                    source=self.source,
+                    release=self.release,
+                    catalog_sha256=checksum,
+                    retrieved_at=datetime.now(timezone.utc).isoformat(),
+                    licence=catalog.licence,
+                    attribution=catalog.attribution,
+                    resources=manifest.get("resources", []) if manifest else [],
+                ),
+            )
+        return catalog, checksum
+
+    def catalog(self) -> CRCCatalog:
+        """Load verified release metadata without fetching any curve partitions.
+
+        This lists every hazard regardless of the plan's selection. Persistent
+        catalogue caches honor reuse, refresh and offline modes.
+        """
+        return self._catalog(self.cache_dir)[0]
+
+    def _resolve(
+        self, root: Path | None, progress: ProgressCallback | None = None
+    ) -> CRCOpenSelection:
+        catalog, checksum = self._catalog(root, progress)
+        if self.fixture_fallback or catalog.fixture:
+            warnings.warn(
+                "CRC fixtures provide sampled SSP585 coverage with pooled "
+                "ensembles and no historical baseline. Check the catalogue for "
+                "available cells and hazard-specific interpretation notes. "
+                "Use source= to select another catalogue root.",
+                CRCOpenFixtureWarning,
+                stacklevel=3,
+            )
+        selected = self._selection(catalog)
+        for name in sorted({name for name, _ in selected}):
+            note = catalog.hazards[name].notes
+            if note:
+                warnings.warn(f"{name}: {note}", CRCOpenWarning, stacklevel=3)
+        provider = CRCOpenHazards(self.source, self.release)
+        partitions = tuple(entry for _, entry in selected)
+        return CRCOpenSelection(
+            catalog=catalog,
+            catalog_sha256=checksum,
+            partitions=partitions,
+            urls=tuple(provider.location(entry.path) for entry in partitions),
+        )
+
+    def resolve(self, *, progress: ProgressCallback | None = None) -> CRCOpenSelection:
+        """Discover matching partition URLs and sizes without downloading curves.
+
+        Area and horizon metadata prune whole files. Returned resources may also
+        contain rows outside the requested area, pathway or horizons.
+        """
+        return self._resolve(self.cache_dir, progress)
 
     @contextmanager
     def _prepare(
@@ -209,66 +359,12 @@ class CRCOpenPlan:
         root = Path(temporary.name) if temporary is not None else self.cache_dir
         assert root is not None
         try:
-            identity = hashlib.sha256(
-                json.dumps([self.source, self.release]).encode()
-            ).hexdigest()[:20]
-            directory = root / identity
-            manifest = read_manifest(directory)
-            catalog_path = directory / "_CATALOG.json"
-            cached = (
-                manifest is not None
-                and manifest.get("source") == self.source
-                and manifest.get("release") == self.release
-                and catalog_path.is_file()
-                and file_checksum(catalog_path) == manifest.get("catalog_sha256")
-            )
-            if self.cache_mode == "offline" and not cached:
-                raise FileNotFoundError(
-                    "no valid pinned CRC catalogue in cache; prefetch online first"
-                )
-            if cached and self.cache_mode in {"reuse", "offline"}:
-                payload = catalog_path.read_bytes()
-            else:
-                if progress:
-                    progress("resolve", {"release": self.release})
-                try:
-                    payload = provider.catalog_bytes()
-                except OSError as error:
-                    raise FileNotFoundError(
-                        f"CRC release {self.release!r} is unavailable "
-                        f"at {self.source!r}. "
-                        "Check the release ID and catalogue root. source= and "
-                        "fixtures= accept HTTP(S) roots or directories "
-                        "containing releases."
-                    ) from error
-                digest = hashlib.sha256(payload).hexdigest()
-                if manifest is not None and manifest.get("catalog_sha256") != digest:
-                    raise ValueError(
-                        "pinned CRC release changed; use a new release ID "
-                        "or cache directory"
-                    )
-                directory.mkdir(parents=True, exist_ok=True)
-                catalog_path.write_bytes(payload)
-            catalog = provider.parse_catalog(payload)
-            if self.fixture_fallback or catalog.fixture:
-                warnings.warn(
-                    "CRC fixtures provide sampled SSP585 coverage with pooled "
-                    "ensembles and no historical baseline. Check the catalogue for "
-                    "available cells and hazard-specific interpretation notes. "
-                    "Use source= to select another catalogue root.",
-                    CRCOpenFixtureWarning,
-                    stacklevel=3,
-                )
-            selected = self._selection(catalog)
-            for name in sorted({name for name, _ in selected}):
-                note = catalog.hazards[name].notes
-                if note:
-                    warnings.warn(
-                        f"{name}: {note}", CRCOpenFixtureWarning, stacklevel=3
-                    )
+            resolved = self._resolve(root, progress)
+            directory = self._catalog_directory(root)
             paths = []
             hits = misses = 0
-            for name, entry in selected:
+            for entry in resolved.partitions:
+                name = entry.path.split("/", 1)[0]
                 destination = directory / entry.path
                 valid = (
                     destination.is_file()
@@ -284,33 +380,22 @@ class CRCOpenPlan:
                         )
                     if progress:
                         progress("fetch", {"hazard": name, "partition": entry.path})
-                    data = provider.partition_bytes(entry)
-                    destination.parent.mkdir(parents=True, exist_ok=True)
-                    pending = destination.with_suffix(".tmp")
-                    pending.write_bytes(data)
-                    pending.replace(destination)
+                    provider.download_partition(entry, destination)
                     misses += 1
                 paths.append((name, destination))
-            write_manifest(
-                directory,
-                dict(
-                    provider="crc_open",
-                    source=self.source,
-                    release=self.release,
-                    catalog_sha256=hashlib.sha256(payload).hexdigest(),
-                    retrieved_at=datetime.now(timezone.utc).isoformat(),
-                    request=dict(
-                        bounds=self.bounds,
-                        hazards=self.selected_hazards,
-                        pathway=self.pathway,
-                        horizons=self.selected_horizons,
-                    ),
-                    licence=catalog.licence,
-                    attribution=catalog.attribution,
-                    resources=[entry.model_dump() for _, entry in selected],
+            manifest = read_manifest(directory)
+            assert manifest is not None
+            manifest.update(
+                request=dict(
+                    bounds=self.bounds,
+                    hazards=self.selected_hazards,
+                    pathway=self.pathway,
+                    horizons=self.selected_horizons,
                 ),
+                resources=[entry.model_dump() for entry in resolved.partitions],
             )
-            yield catalog, paths, hits, misses, hashlib.sha256(payload).hexdigest()
+            write_manifest(directory, manifest)
+            yield resolved.catalog, paths, hits, misses, resolved.catalog_sha256
         finally:
             if temporary is not None:
                 temporary.cleanup()
@@ -333,19 +418,20 @@ class CRCOpenPlan:
     ) -> HazardDataset:
         if any(output.resolve() == path.resolve() for _, path in paths):
             raise ValueError("output must not overwrite a cached source partition")
-        tables = []
-        metadata: HazardDatasetMetadata | None = None
         hazard = catalog.hazards[name]
+        sources: list[tuple[Path, CRCPartition]] = []
+        metadata: HazardDatasetMetadata | None = None
         for source_name, path in paths:
             if source_name != name:
                 continue
-            table = read_hazard_dataset(path)
             entry = next(
-                p for p in hazard.partitions if path.as_posix().endswith("/" + p.path)
+                entry
+                for entry in hazard.partitions
+                if path.as_posix().endswith("/" + entry.path)
             )
-            if table.num_rows != entry.rows:
+            if pq.ParquetFile(path).metadata.num_rows != entry.rows:
                 raise ValueError("partition row count disagrees with catalogue")
-            current = HazardDatasetMetadata.from_parquet_metadata(table.schema.metadata)
+            current = read_hazard_metadata(path)
             if (
                 current.h3_resolution != hazard.h3_resolution
                 or current.value_unit != hazard.unit
@@ -365,7 +451,6 @@ class CRCOpenPlan:
                     f"partition metadata disagrees with catalogue for {name}"
                 )
             if current.schema_version == "1.2":
-                # Older partitions cannot encode these catalogue declarations.
                 current = current.model_copy(
                     update={
                         "schema_version": "1.3",
@@ -373,63 +458,103 @@ class CRCOpenPlan:
                         "ensemble": EnsembleDescriptor(pooling=hazard.pooling),
                     }
                 )
-            if set(table["hazard_name"].to_pylist()) != {name}:
-                raise ValueError(f"partition contains unexpected hazards for {name}")
-            if not set(table["pathway"].to_pylist()).issubset(hazard.pathways):
-                raise ValueError(
-                    "partition contains a pathway outside its catalogue scope"
-                )
-            if not set(table["horizon"].to_pylist()).issubset(hazard.horizons):
-                raise ValueError(
-                    "partition contains a horizon outside its catalogue scope"
-                )
             if metadata is not None:
-                # Source objects may differ, scientific dataset metadata may not.
                 left = metadata.model_dump(exclude={"source"})
                 right = current.model_dump(exclude={"source"})
                 if left != right:
                     raise ValueError(
                         f"incompatible scientific metadata across {name} partitions"
                     )
-            cells_in_file = set(table["cell_index"].to_pylist())
-            if entry.cells is not None and cells_in_file != set(entry.cells):
-                raise ValueError("partition cells disagree with catalogue")
-            for cell in cells_in_file:
-                parent = (cell & ~(15 << 52)) | ((1 << 45) - 1)
-                if (
-                    parent != int(entry.h3_r0, 16)
-                    or (cell >> 52) & 15 != hazard.h3_resolution
-                ):
-                    raise ValueError("partition H3 addresses disagree with catalogue")
             metadata = current
-            mask = pc.equal(table["pathway"], self.pathway)
-            if self.selected_horizons is not None:
-                mask = pc.and_(
-                    mask,
-                    pc.is_in(
-                        table["horizon"], value_set=pa.array(self.selected_horizons)
-                    ),
-                )
-            if self.bounds is not None:
-                area = _box(self.bounds)
-                cells = [
-                    cell
-                    for cell in set(table["cell_index"].to_pylist())
-                    if cell_polygon(cell).intersects(area)
-                ]
-                mask = pc.and_(
-                    mask,
-                    pc.is_in(
-                        table["cell_index"], value_set=pa.array(cells, type=pa.uint64())
-                    ),
-                )
-            tables.append(table.filter(mask))
+            sources.append((path, entry))
         assert metadata is not None
-        table = pa.concat_tables(tables)
-        if not table.num_rows:
-            raise LookupError(
-                f"no {name} rows match the requested open-subset area/scenario/horizons"
-            )
+        area = _box(self.bounds) if self.bounds is not None else None
+        selected_rows = 0
+        errors: list[Exception] = []
+
+        def batches() -> Iterator[CanonicalHazardBatch]:
+            nonlocal selected_rows
+            try:
+                for path, entry in sources:
+                    seen_cells: set[int] | None = (
+                        set() if entry.cells is not None else None
+                    )
+                    horizons: set[int] = set()
+                    for batch in pq.ParquetFile(path).iter_batches(batch_size=8192):
+                        table = pa.Table.from_batches([batch])
+                        if set(table["hazard_name"].to_pylist()) != {name}:
+                            raise ValueError(
+                                f"partition contains unexpected hazards for {name}"
+                            )
+                        if not set(table["pathway"].to_pylist()).issubset(
+                            hazard.pathways
+                        ):
+                            raise ValueError(
+                                "partition contains a pathway outside "
+                                "its catalogue scope"
+                            )
+                        current_horizons = set(table["horizon"].to_pylist())
+                        if not current_horizons.issubset(hazard.horizons):
+                            raise ValueError(
+                                "partition contains a horizon outside "
+                                "its catalogue scope"
+                            )
+                        horizons.update(current_horizons)
+                        cells = set(table["cell_index"].to_pylist())
+                        for cell in cells:
+                            if cell is None:
+                                raise ValueError(
+                                    "cell_index must not contain null values"
+                                )
+                            parent = (cell & ~(15 << 52)) | ((1 << 45) - 1)
+                            if (
+                                parent != int(entry.h3_r0, 16)
+                                or (cell >> 52) & 15 != hazard.h3_resolution
+                            ):
+                                raise ValueError(
+                                    "partition H3 addresses disagree with catalogue"
+                                )
+                        if seen_cells is not None:
+                            seen_cells.update(cells)
+                        mask = pc.equal(table["pathway"], self.pathway)
+                        if self.selected_horizons is not None:
+                            mask = pc.and_(
+                                mask,
+                                pc.is_in(
+                                    table["horizon"],
+                                    value_set=pa.array(self.selected_horizons),
+                                ),
+                            )
+                        if area is not None:
+                            matching = [
+                                cell
+                                for cell in cells
+                                if cell_polygon(cell).intersects(area)
+                            ]
+                            mask = pc.and_(
+                                mask,
+                                pc.is_in(
+                                    table["cell_index"],
+                                    value_set=pa.array(matching, type=pa.uint64()),
+                                ),
+                            )
+                        filtered = table.filter(mask)
+                        selected_rows += filtered.num_rows
+                        if filtered.num_rows:
+                            yield CanonicalHazardBatch(filtered)
+                    if seen_cells is not None and seen_cells != set(entry.cells or ()):
+                        raise ValueError("partition cells disagree with catalogue")
+                    if entry.horizons and horizons != set(entry.horizons):
+                        raise ValueError("partition horizons disagree with catalogue")
+                if not selected_rows:
+                    raise LookupError(
+                        f"no {name} rows match the requested open-subset "
+                        "area/scenario/horizons"
+                    )
+            except Exception as error:
+                errors.append(error)
+                raise
+
         request = json.dumps(
             dict(
                 bounds=self.bounds,
@@ -457,11 +582,27 @@ class CRCOpenPlan:
                 )
             }
         )
-        write_hazard_dataset(table, output, metadata)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(
+            prefix=".crc-open-write-", dir=output.parent
+        ) as scratch:
+            staged = Path(scratch) / "canonical.parquet"
+            try:
+                write_hazard_stream(
+                    CanonicalHazardStream(metadata, batches()),
+                    staged,
+                    work_dir=scratch,
+                    max_workers=1,
+                )
+            except Exception as error:
+                if errors:
+                    raise errors[0] from error
+                raise
+            staged.replace(output)
         return HazardDataset.local(
             output,
             materialization=MaterializationResult(
-                output, catalog.release, hits, misses, table.num_rows
+                output, catalog.release, hits, misses, selected_rows
             ),
         )
 

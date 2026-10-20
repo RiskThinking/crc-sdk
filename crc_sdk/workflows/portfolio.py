@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, Union
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
 from crc_framework import CallableImpact, ImpactFunction
 
-from crc_sdk.providers.crc_open import FIXTURE_RELEASE
+from crc_sdk.providers.crc_open import DEFAULT_RELEASE
 from crc_sdk.providers.local import LocalProvider
 from crc_sdk.types import HazardDatasetMetadata, SourceProvenance
 
@@ -265,18 +265,19 @@ class HazardDataset:
     def crc_open(
         cls,
         *,
-        release: str = FIXTURE_RELEASE,
+        release: str = DEFAULT_RELEASE,
         pathway: str = "ssp585",
         source: str | Path | None = None,
         fixtures: str | Path | None = None,
     ) -> CRCOpenPlan:
         """Read canonical CRC curves from a pinned catalogue release.
 
-        The default is the crc-docs fixture HTTP root. Override ``fixtures``
-        for another fixture root or ``source`` for a catalogue root. Both accept
-        HTTP(S) URLs and directories. I/O begins at execution.
+        The default is the public CRC Open source and a fixed release ID.
+        Override ``release`` to select another release, ``source`` for another
+        catalogue root, or ``fixtures`` for a fixture root. Roots accept HTTP(S)
+        URLs and directories. I/O begins at discovery or execution.
         """
-        from crc_sdk.providers.crc_open import DOCS_FIXTURES
+        from crc_sdk.providers.crc_open import PUBLIC_SOURCE
 
         from .crc_open import CRCOpenPlan
 
@@ -285,8 +286,8 @@ class HazardDataset:
         return CRCOpenPlan(
             release=release,
             pathway=pathway,
-            source=str(source if source is not None else fixtures or DOCS_FIXTURES),
-            fixture_fallback=source is None,
+            source=str(source if source is not None else fixtures or PUBLIC_SOURCE),
+            fixture_fallback=fixtures is not None,
         )
 
     @classmethod
