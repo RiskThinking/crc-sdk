@@ -234,8 +234,15 @@ def point_to_cell(longitude: float, latitude: float, resolution: int) -> int:
     return int(h3.str_to_int(h3.latlng_to_cell(latitude, longitude, resolution)))
 
 
-def intersecting_cells(geometry: Any, resolution: int) -> tuple[int, ...]:
-    """Return every H3 cell that overlaps a Polygon or MultiPolygon."""
+def intersecting_cells(
+    geometry: Any, resolution: int, *, cover_children: bool = False
+) -> tuple[int, ...]:
+    """Return H3 cells overlapping a Polygon or MultiPolygon.
+
+    With ``cover_children``, use conservative bounds covering every descendant.
+    Logical H3 children need not lie inside the parent cell's polygon, so this
+    mode is appropriate when pruning files partitioned by a coarser parent.
+    """
     if not 0 <= resolution <= 15:
         raise ValueError("H3 resolution must be between 0 and 15")
     if geometry is None or geometry.is_empty:
@@ -249,7 +256,7 @@ def intersecting_cells(geometry: Any, resolution: int) -> tuple[int, ...]:
     cells = h3.h3shape_to_cells_experimental(
         h3_shape,
         resolution,
-        contain="overlap",
+        contain="bbox_overlap" if cover_children else "overlap",
     )
     return tuple(sorted(h3.str_to_int(cell) for cell in cells))
 

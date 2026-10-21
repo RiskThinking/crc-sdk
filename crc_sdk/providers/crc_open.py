@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Literal
 from urllib.parse import urlparse
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -22,6 +22,10 @@ FIXTURE_RELEASE = "ssp585-fixture-2026-10-08-v2"
 DOCS_FIXTURES = (
     "https://raw.githubusercontent.com/RiskThinking/crc-docs/main/fixtures/crc_open"
 )
+
+
+def _http_request(location: str) -> Request:
+    return Request(location, headers={"User-Agent": "crc-sdk"})
 
 
 class CRCOpenWarning(UserWarning):
@@ -130,7 +134,7 @@ class CRCCatalog(BaseModel):
 class CRCOpenHazards:
     """Read a pinned release from an HTTP root or a local directory.
 
-    ``source`` contains release directories; it is never a private GCS default.
+    ``source`` is a public catalogue root or a local directory containing releases.
     """
 
     def __init__(self, source: str | Path, release: str) -> None:
@@ -149,7 +153,7 @@ class CRCOpenHazards:
     def fetch(self, relative: str) -> bytes:
         location = self.location(relative)
         if urlparse(self.source).scheme in {"http", "https"}:
-            with urlopen(location, timeout=60) as response:
+            with urlopen(_http_request(location), timeout=60) as response:
                 return response.read()  # type: ignore[no-any-return]
         return Path(location).read_bytes()
 
@@ -194,7 +198,7 @@ class CRCOpenHazards:
         temporary: Path | None = None
         try:
             response = (
-                urlopen(location, timeout=60)
+                urlopen(_http_request(location), timeout=60)
                 if urlparse(self.source).scheme in {"http", "https"}
                 else Path(location).open("rb")
             )

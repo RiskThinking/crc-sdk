@@ -9,7 +9,7 @@ provided by the versioned
 ## Contributors
 
 Thanks to the people who shape this project through code, reviews, research,
-and internal discussions and ideas.
+discussion, and ideas.
 
 <!-- ALL-CONTRIBUTORS-LIST:START - Do not remove or modify this section -->
 <!-- prettier-ignore-start -->
@@ -865,10 +865,9 @@ treatment is applied.
 
 `HazardDataset.crc_open()` reads the public source at
 `https://data.riskthinking.ai/crc-open`, with
-`ssp585-global-2026-10-20-v1` pinned as its default release. No credentials,
-release index or bucket listing are required. Use `release="another-release"`
-to select a future published release explicitly; an existing plan never follows
-a mutable "latest" alias.
+`ssp585-global-2026-10-20-v1` pinned as its default release. Public HTTPS access
+requires no credentials. Use `release="another-release"` to select a specific
+published release.
 
 The default plan reuses a persistent local cache at
 `$XDG_CACHE_HOME/crc-sdk/crc-open` (or `~/.cache/crc-sdk/crc-open`). Repeated
@@ -972,7 +971,7 @@ baseline is included, and pooled curves do not represent per-model ensemble spre
 The data licence is [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/)
 (`CC-BY-NC-4.0`), separate from the SDK software licence.
 
-See the [access contract](docs/spikes/crc-open-subset.md). To run the opt-in public
+See the [access contract](docs/crc-open.md). To run the opt-in public
 integration checks against the completed release:
 
 ```bash
