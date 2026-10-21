@@ -9,12 +9,12 @@ HTTP(S) roots and local directories contain release directories with:
   attribution, hazard interpretation fields, coverage and partition paths.
 - `_SUCCESS`: SHA256 of the exact catalogue bytes.
 - `{hazard}/h3_r0={cell}/part-00000.parquet`: canonical curves, with SHA256,
-  byte size and row count recorded in the catalogue. Consumers use the paths
-  listed in the catalogue rather than assuming one filename per r0 forever.
+  byte size and row count recorded in the catalogue. Partition paths are
+  authoritative; an r0 parent may contain multiple files.
 
-No release index, cloud credentials or bucket listing is required. A release is
-available only when its catalogue agrees with `_SUCCESS`. Published release IDs
-are immutable; requests for an unavailable release fail without fixture fallback.
+A release is available when its catalogue agrees with `_SUCCESS`. Published
+release IDs are immutable. The SDK reads the requested release over public
+HTTP(S) or from a local directory.
 
 ## Discovery
 
@@ -30,8 +30,10 @@ does no per-partition HEAD requests, and honors persistent/offline catalogue
 caches. `catalog()` ignores plan filters; `resolve()` applies them to file
 selection. Construction and `explain()` remain free of I/O.
 
-Area selection prunes by r0 and checks recorded sampled-cell coverage where
-available. Horizon selection prunes files with known non-overlapping horizons.
+Area selection uses conservative r0 bounds covering finer descendants, because
+H3 children can extend outside their logical parent's polygon. It also checks
+recorded sampled-cell coverage where available. Horizon selection prunes files
+with known non-overlapping horizons.
 Missing optional coverage metadata means unknown, not empty. An r0 record
 indicates that the partition contains data, not that every finer cell is present.
 
@@ -53,9 +55,8 @@ Curve acquisition requires named hazards. `prefetch()` and `materialize_all()`
 reject an unspecified hazard selection before network I/O. Metadata-only
 discovery can still inspect all hazards. To request every hazard intentionally,
 pass `.hazards(list(plan.catalog().hazards))`. A named hazard without area bounds
-requests all its published partitions; portfolio evaluation requires
-`.for_area(bounds)` so a small asset collection cannot silently trigger global
-acquisition. The asset table is not implicitly treated as the acquisition area.
+requests all its published partitions. Use `.for_area(bounds)` to bound downloads
+before portfolio evaluation.
 
 Metadata discovery needs only the catalogue and marker. A persistent cache pins
 the catalogue checksum, release identity, licence and attribution. `reuse` uses

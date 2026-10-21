@@ -257,3 +257,17 @@ def test_sample_grid_to_h3_reduces_points_landing_in_one_cell() -> None:
 
     with pytest.raises(ValueError):
         sample_grid_to_h3(lons, lats, values, resolution=16)
+
+
+def test_parent_pruning_covers_descendants_outside_parent_polygon() -> None:
+    import h3  # type: ignore[import-untyped]
+
+    child = "8556db2ffffffff"
+    parent = int(h3.cell_to_parent(child, 0), 16)
+    latitude, longitude = h3.cell_to_latlng(child)
+    area = box(
+        longitude - 0.00001, latitude - 0.00001, longitude + 0.00001, latitude + 0.00001
+    )
+    assert not cell_polygon(parent).intersects(area)
+    assert parent not in intersecting_cells(area, 0)
+    assert parent in intersecting_cells(area, 0, cover_children=True)

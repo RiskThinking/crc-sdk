@@ -13,6 +13,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
+from urllib.error import HTTPError
 
 import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.compute as pc  # type: ignore[import-untyped]
@@ -185,7 +186,7 @@ class CRCOpenPlan:
                 raise ValueError(f"hazards are not in the open subset: {reasons}")
             raise ValueError(f"hazards {sorted(unknown)} are not in the open subset")
         parents = (
-            set(intersecting_cells(_box(self.bounds), 0))
+            set(intersecting_cells(_box(self.bounds), 0, cover_children=True))
             if self.bounds is not None
             else None
         )
@@ -266,6 +267,10 @@ class CRCOpenPlan:
             try:
                 payload = provider.catalog_bytes()
             except OSError as error:
+                if not isinstance(error, FileNotFoundError) and not (
+                    isinstance(error, HTTPError) and error.code == 404
+                ):
+                    raise
                 raise FileNotFoundError(
                     f"CRC release {self.release!r} is unavailable "
                     f"at {self.source!r}. Check the release ID and catalogue root. "

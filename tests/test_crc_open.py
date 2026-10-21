@@ -4,9 +4,12 @@ import hashlib
 import io
 import json
 import warnings
+from email.message import Message
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
+from urllib.error import HTTPError
+from urllib.request import Request
 
 import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
@@ -144,7 +147,7 @@ def test_lazy_construction_and_explicit_source(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="choose source"):
         HazardDataset.crc_open(source=tmp_path, fixtures=tmp_path)
     with pytest.raises(ValueError, match="pinned"):
-        HazardDataset.crc_open(release="../private")
+        HazardDataset.crc_open(release="../outside")
 
 
 def test_pruned_materialize_cache_and_offline(tmp_path: Path) -> None:
@@ -198,7 +201,7 @@ def test_scope_guards_and_sparse_coverage(tmp_path: Path) -> None:
             base.horizons([2100]).materialize(tmp_path / "future.parquet")
     with pytest.warns(CRCOpenFixtureWarning):
         with pytest.raises(ValueError, match="hazards"):
-            base.hazards(["private"]).materialize(tmp_path / "private.parquet")
+            base.hazards(["not_published"]).materialize(tmp_path / "unknown.parquet")
 
 
 def test_mixed_hazards_keep_metadata_separate(tmp_path: Path) -> None:
@@ -232,7 +235,7 @@ def test_catalogue_and_partition_integrity(tmp_path: Path) -> None:
         CRCPartition.model_validate(
             dict(partition.model_dump(), path="../secret.parquet")
         )
-    catalog["hazards"]["rx1day"]["private_eligibility_override"] = 0.01
+    catalog["hazards"]["rx1day"]["unsupported_field"] = 0.01
     with pytest.raises(ValueError, match="Extra inputs"):
         CRCCatalog.model_validate(catalog)
 
@@ -261,7 +264,9 @@ def test_http_uses_catalogue_relative_paths(tmp_path: Path) -> None:
     root = source / RELEASE
     urls = []
 
-    def get(url: str, timeout: int) -> io.BytesIO:
+    def get(request: Request, timeout: int) -> io.BytesIO:
+        assert request.get_header("User-agent") == "crc-sdk"
+        url = request.full_url
         urls.append(url)
         assert timeout == 60
         return io.BytesIO((root / url.split(f"/{RELEASE}/", 1)[1]).read_bytes())
@@ -348,7 +353,7 @@ def test_windows_catalogue_roots_are_local(source: str) -> None:
             assert provider.fetch("_CATALOG.json") == b"local"
     read.assert_called_once()
     with pytest.raises(ValueError, match="HTTP"):
-        CRCOpenHazards("gs://private/data", RELEASE)
+        CRCOpenHazards("ftp://example.com/data", RELEASE)
 
 
 def test_schema_12_materialization_upgrades_catalogue_metadata(tmp_path: Path) -> None:
@@ -461,7 +466,9 @@ def test_public_catalogue_discovery_is_metadata_only(tmp_path: Path) -> None:
     _publish_catalog(source / RELEASE, catalog)
     requested: list[str] = []
 
-    def get(url: str, timeout: int) -> io.BytesIO:
+    def get(request: Request, timeout: int) -> io.BytesIO:
+        assert request.get_header("User-agent") == "crc-sdk"
+        url = request.full_url
         requested.append(url)
         relative = url.split(f"/{RELEASE}/", 1)[1]
         assert relative in {"_CATALOG.json", "_SUCCESS"}
@@ -571,7 +578,9 @@ def test_streamed_download_is_bounded_and_atomic(
     target = tmp_path / "cache" / "partition.parquet"
     target.parent.mkdir()
     target.write_bytes(b"existing verified copy")
-    with patch("crc_sdk.providers.crc_open.urlopen", return_value=Response(payload)):
+    with patch(
+        "crc_sdk.providers.crc_open.urlopen", return_value=Response(payload)
+    ) as request:
         if failure:
             with pytest.raises((ValueError, OSError)):
                 provider.download_partition(partition, target)
@@ -579,6 +588,7 @@ def test_streamed_download_is_bounded_and_atomic(
         else:
             assert provider.download_partition(partition, target) == target
             assert target.read_bytes() == payload
+    assert request.call_args.args[0].get_header("User-agent") == "crc-sdk"
     assert list(target.parent.iterdir()) == [target]
 
 
@@ -701,3 +711,56 @@ def test_portfolio_requires_acquisition_area_before_any_io(tmp_path: Path) -> No
     with patch.object(CRCOpenHazards, "fetch", side_effect=AssertionError("network")):
         with pytest.raises(ValueError, match="for_area"):
             request.write_parquet(tmp_path / "portfolio.parquet")
+
+
+@pytest.mark.parametrize("status", [403, 404, 429, 503])
+def test_catalogue_http_errors_preserve_actionable_status(status: int) -> None:
+    error = HTTPError(
+        "https://data.example/_CATALOG.json", status, "request failed", Message(), None
+    )
+    plan = HazardDataset.crc_open(source="https://data.example")
+    with patch.object(CRCOpenHazards, "catalog_bytes", side_effect=error):
+        if status == 404:
+            with pytest.raises(FileNotFoundError, match="unavailable"):
+                plan.catalog()
+        else:
+            with pytest.raises(HTTPError) as caught:
+                plan.catalog()
+            assert caught.value.code == status
+
+
+def test_area_selection_keeps_logical_parent_at_h3_boundary(tmp_path: Path) -> None:
+    import h3
+
+    source, catalog = _release(tmp_path)
+    child = "8556db2ffffffff"
+    parent = h3.cell_to_parent(child, 0)
+    entry = catalog["hazards"]["rx1day"]["partitions"][0]
+    table = pq.ParquetFile(source / RELEASE / entry["path"]).read()
+    metadata = HazardDatasetMetadata.from_parquet_metadata(table.schema.metadata)
+    table = table.set_column(
+        table.schema.get_field_index("cell_index"),
+        "cell_index",
+        pa.array([h3.str_to_int(child)] * table.num_rows, type=pa.uint64()),
+    )
+    entry.update(
+        path=f"rx1day/h3_r0={parent}/part-00000.parquet", h3_r0=parent, cells=None
+    )
+    target = source / RELEASE / entry["path"]
+    target.parent.mkdir(parents=True)
+    write_hazard_dataset(table, target, metadata)
+    entry.update(
+        sha256=hashlib.sha256(target.read_bytes()).hexdigest(),
+        size_bytes=target.stat().st_size,
+    )
+    _publish_catalog(source / RELEASE, catalog)
+    lat, lon = h3.cell_to_latlng(child)
+    plan = (
+        HazardDataset.crc_open(release=RELEASE, source=source)
+        .hazards(["rx1day"])
+        .for_area([lon - 0.00001, lat - 0.00001, lon + 0.00001, lat + 0.00001])
+    )
+    with pytest.warns(CRCOpenFixtureWarning):
+        assert entry["path"] in [p.path for p in plan.resolve().partitions]
+        result = plan.materialize(tmp_path / "boundary.parquet")
+    assert pq.ParquetFile(result.provider.source).metadata.num_rows == 2
