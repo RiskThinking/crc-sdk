@@ -52,7 +52,8 @@ redistribution decision.
 | NOAA IBTrACS, FEMA NFHL | US government works; NOAA asks for credit (recalled) | Credit | Third-party-sourced fields inside IBTrACS may have their own terms | Event-data utility only; verify source terms before implementation. | **No** |
 | ISIMIP3b | Per-dataset (recalled CC-BY 4.0 / CC0) | Credit data + impact-model identities | Upstream climate inputs' terms | Verify the chosen dataset's licence before implementing an adapter. | **No** |
 | NRCan flood-map inventory | OGL-Canada (recalled) | As ECCC | Polygons are regulatory zones; legal misuse risk is about interpretation, not licence | Verify the source licence and document the limits of interpretation. | **No** |
-| NOAA ISD / GHCNh (NCEI) | NOAA Open Data Dissemination terms: open use; attribution requested; must not imply NOAA endorsement; modified data must not be presented as unaltered NOAA data | Station-derived annual extremes are modified data: label them as derived from NOAA ISD | NOAA notes GHCNh replaces ISD; WMO Resolution 40 position for some national contributions not confirmed | Verify terms for the chosen product; attribution + "modified" wording in the adapter. | Partly ([NCEI NODD terms](https://www.ncei.noaa.gov/products/ncei-data-noaa-open-dissemination-program)); WMO Res. 40 **not** checked |
+| NOAA ISD (NCEI) | NOAA Open Data Dissemination terms: open use; attribution requested; must not imply NOAA endorsement; modified data must not be presented as unaltered NOAA data | Station-derived annual extremes are modified data: label them as derived from NOAA ISD | NOAA notes GHCNh replaces ISD; WMO Resolution 40 position for some national contributions not confirmed | Verify terms for the chosen product; attribution + "modified" wording in the adapter. | Partly ([NCEI NODD terms](https://www.ncei.noaa.gov/products/ncei-data-noaa-open-dissemination-program)); WMO Res. 40 **not** checked |
+| NOAA GHCNh (NCEI) | CC0-1.0 as explicitly stated by the GHCNh AWS NODD registry | Public reuse; attribution requested, no implied endorsement; derived data must be labelled modified | Product and historical objects are updated; preserve the exact retrieved object fingerprint | `licence="CC0-1.0"`, NOAA attribution and derivation notice in source provenance | Yes ([GHCNh AWS registry](https://registry.opendata.aws/noaa-ghcnh/)); verified 2026-10-22 |
 | **CRC Open dataset** (our release) | [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/) (`CC-BY-NC-4.0`) | Attribution required; non-commercial use only. Commercial use needs a separate licence. Still carry attributions required by bias-correction inputs (reanalysis/CMIP6 terms) | NC restricts commercial redistribution of this release. Upstream CC-BY / CC0 credit still applies. The strict `-NC` reject below is for upstream sources ingested into other canonical files | Catalogue and Parquet metadata record `licence="CC-BY-NC-4.0"` | Yes ([CC BY-NC 4.0 deed](https://creativecommons.org/licenses/by-nc/4.0/)) |
 | OS-Climate / WRI hazard layers | Mixed per layer | Per layer | Aqueduct 4.0 etc. are explicitly out of scope | Carry the layer's own licence from the OS-Climate metadata. | n/a |
 
@@ -87,3 +88,14 @@ redistribution decision.
 
 Verify a source's licence before publishing derived data from it. An unverified
 source does not block adapters using independently verified sources.
+
+### ISD archive adapter
+
+The ISD adapter uses the [AWS NODD CSV archive](https://registry.opendata.aws/noaa-isd/)
+and records the registry's open-use terms with NOAA attribution and an explicit
+derivation notice. This does not establish CC0 status for national-origin
+contributions or resolve WMO Resolution 40 restrictions. The adapter preserves
+this qualification in source provenance. Missing station/year objects are
+recorded as missing observations, not substituted from another source.
+[NOAA's service notice](https://www.nesdis.noaa.gov/news/service-location-change-integrated-surface-data-global-hourly)
+identifies the August 2025 archive cutoff and continued AWS access.

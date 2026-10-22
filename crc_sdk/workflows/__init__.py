@@ -41,6 +41,8 @@ from .era5 import (
     ERA5SourcePlan,
     ERA5YearPlan,
 )
+from .ghcnh import GHCNhPlan
+from .isd import ISDPlan
 from .jrc import (
     JRCAreaPlan,
     JRCCanonicalizationPlan,
@@ -94,6 +96,8 @@ __all__ = [
     "EDOSourcePlan",
     "EDOYearPlan",
     "HazardDataset",
+    "ISDPlan",
+    "GHCNhPlan",
     "HazardSelection",
     "ImpactContextColumns",
     "JRCAreaPlan",

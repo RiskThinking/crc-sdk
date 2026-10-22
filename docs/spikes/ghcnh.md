@@ -6,7 +6,9 @@ NOAA's Global Historical Climatology Network hourly (GHCNh) replaces ISD.
 Use anonymous station/year Parquet objects:
 `https://noaa-ghcnh-pds.s3.amazonaws.com/hourly/access/by-year/{year}/parquet/GHCNh_{station}_{year}.parquet`.
 The matching PSV and whole-period station products are not needed for this
-adapter. Parquet supports column projection and HTTP range reads.
+adapter. Parquet supports column projection and HTTP range reads. A live projected
+O'Hare 2020 read requested 262,353 bytes across three cache misses from the
+1,137,792-byte object; this measurement is specific to that object and layout.
 
 A live check of Chicago O'Hare `USW00094846`, 2020 returned HTTP 200,
 1,137,792 bytes, ETag `0d056d6911c7d407d9749b1fd640800e`. There are over
@@ -58,3 +60,13 @@ Store that product-specific label and a derivation notice.
 - [Station catalogue](https://noaa-ghcnh-pds.s3.amazonaws.com/hourly/doc/ghcnh-station-list.csv)
 
 Verified 2026-10-22.
+
+
+## Area selection
+
+The 2.2 MB AWS station-list CSV supports metadata-only bounding-box discovery.
+The normalized catalogue is shared across areas and recipes, filtered in DuckDB,
+and cached as Parquet. It contains station locations but not record dates or
+variable availability. Area selection cannot promise temperature coverage or
+complete years. Observation QC/completeness gates still decide fit eligibility.
+The source request records bounds, resolved IDs and the catalogue fingerprint.

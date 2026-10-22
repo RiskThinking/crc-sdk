@@ -24,6 +24,7 @@ from .parquet import (
     write_hazard_stream,
 )
 from .protocols import HazardReader
+from .stations import StationCurveSource
 
 __all__ = [
     "FTWFieldScan",
@@ -33,6 +34,7 @@ __all__ = [
     "CanonicalHazardStream",
     "CurveFitIngestPolicy",
     "CurveSource",
+    "StationCurveSource",
     "CurveSourceInfo",
     "EDOIngestPolicy",
     "HurdleFitPolicy",
