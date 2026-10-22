@@ -531,7 +531,7 @@ def _canonical_batches(
     bounds: Bounds | None,
 ) -> Iterator[CanonicalHazardBatch]:
     try:
-        from shapely.geometry import Polygon  # type: ignore[import-untyped]
+        from shapely.geometry import Point, Polygon  # type: ignore[import-untyped]
     except ImportError as error:
         raise ImportError(
             "Curve-fit ingest requires `pip install crc-sdk[geometry]`"
@@ -701,11 +701,22 @@ def _canonical_batches(
                     f"failed to fit source pixel row={curve.row}, "
                     f"column={curve.column}: {error}"
                 ) from error
-            geometry = Polygon(curve.boundary)
-            source_id = _source_id(
+            source_id = curve.source_id or _source_id(
                 provider, source.metadata.path, curve.row, curve.column
             )
-            cells = intersecting_cells(geometry, policy.h3_resolution)
+            if curve.point is not None:
+                import h3  # type: ignore[import-untyped]
+
+                longitude, latitude = curve.point
+                geometry = Point(longitude, latitude)
+                cells: tuple[int, ...] = (
+                    h3.str_to_int(
+                        h3.latlng_to_cell(latitude, longitude, policy.h3_resolution)
+                    ),
+                )
+            else:
+                geometry = Polygon(curve.boundary)
+                cells = intersecting_cells(geometry, policy.h3_resolution)
             if not cells:
                 record(curve, "skipped", reason="no_cells", source_id=source_id)
                 continue

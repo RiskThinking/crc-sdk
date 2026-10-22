@@ -33,6 +33,8 @@ if TYPE_CHECKING:
     from .crc_open import CRCOpenPlan
     from .edo import EDOSourcePlan
     from .era5 import ERA5SourcePlan
+    from .ghcnh import GHCNhPlan
+    from .isd import ISDPlan
     from .jrc import JRCSourcePlan
 
 PORTFOLIO_METADATA_KEY = "crc.hazard.evaluation"
@@ -432,6 +434,28 @@ class HazardDataset:
             band=band,
             assumed_crs=assumed_crs,
         )
+
+    @classmethod
+    def ghcnh(cls, recipe: str = "temperature_max") -> GHCNhPlan:
+        """Plan NOAA GHCNh sampled-temperature extremes with GHCN station IDs.
+
+        Shares the ISD workflow syntax, using projected Parquet reads and
+        source-specific GHCNh quality rules. Complete years exclude this year.
+        """
+        from .ghcnh import GHCNhPlan
+
+        return GHCNhPlan(recipe=recipe)
+
+    @classmethod
+    def isd(cls, recipe: str = "temperature_max") -> ISDPlan:
+        """Plan NOAA ISD sampled-temperature extremes at station points.
+
+        Select eleven-digit USAF + WBAN IDs with ``for_stations(...)`` and a
+        complete historical range with ``years(start, end)`` (1901–2024).
+        """
+        from .isd import ISDPlan
+
+        return ISDPlan(recipe=recipe)
 
     @classmethod
     def era5(

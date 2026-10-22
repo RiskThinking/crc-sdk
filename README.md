@@ -977,3 +977,154 @@ integration checks against the completed release:
 ```bash
 CRC_OPEN_LIVE=1 python -m pytest -q tests/test_crc_open_public.py
 ```
+
+### NOAA ISD station temperature observations
+
+```python
+from crc_sdk.workflows import BlockExtremaPolicy, HazardDataset
+
+plan = (
+    HazardDataset.isd("temperature_max")
+    .for_stations(["71624099999"])  # Toronto Pearson, USAF + WBAN
+    .years(2000, 2024)
+    .quality(minimum_hour_fraction=0.75, minimum_day_fraction=0.9)
+    .execution(workers=4, memory_limit="256MB")
+    .cache("data/isd", mode="reuse")
+    .canonicalize(policy=BlockExtremaPolicy.curated(
+        minimum_years=20, diagnostics="data/isd-fit-diagnostics.parquet",
+    ))
+)
+print(plan.explain())
+plan.prefetch()
+plan.write_annual_extremes("data/isd-annual.parquet")
+stations = plan.materialize("data/isd-curves.parquet")
+```
+
+`temperature_min` fits cold extremes with lower-tail Gumbel L-moments; the
+maximum recipe defaults to GEV L-moments. Both measure extremes of sampled
+`TMP` observations, named `isd_temperature_max` / `isd_temperature_min`, not
+instrument-based daily TXx/TNn. Defaults accept QC codes 1 and 5, require 18
+valid UTC hour bins per day and 90% valid calendar days per year. Duplicate
+reports cannot inflate coverage. Absent station/year objects (HTTP 404) and
+incomplete years have null annual values; other network errors raise. The
+annual QA table includes coordinates, elevation, valid days and report counts.
+
+Arrow streams selected CSV columns into DuckDB with a memory limit **per
+worker** and temporary spill storage. Only daily summaries are cached and
+shared between recipes. Fitting reads one station's annual series at a time;
+`write_annual_extremes` writes bounded Arrow batches. `annual_extremes()` is an
+in-memory QA view. Cache modes are `reuse`, `offline`, `refresh` and `stream`;
+offline verifies checksums without network access. The manifest records exact
+station/year requests, QC/completeness policy, retrieval dates, raw SHA-256,
+ETag, Last-Modified, licence and reduced-file checksums. The source version
+`isd-2025-08-24` identifies the documented archive cutoff, not an immutable
+upstream release. Source provenance retains the request and combined reduction
+checksum. No hourly files are retained.
+
+Curves carry WKB **station points**, stable station source IDs, and H3 lookup
+indexes. They imply no coverage of surrounding land or assets. Coordinate
+jumps above 0.05 degrees are rejected; smaller changes and instrumentation
+still need review. No homogenization is performed. Voronoi coverage,
+precipitation/gust recipes and station/grid validation
+are outside this adapter's supported recipes.
+
+[NOAA's retirement notice](https://www.nesdis.noaa.gov/news/service-location-change-integrated-surface-data-global-hourly)
+states ISD updates ended in August 2025; complete-year requests stop at 2024.
+The adapter uses the public [AWS ISD archive](https://registry.opendata.aws/noaa-isd/).
+Use GHCNh for current observations. Derived outputs carry NOAA attribution and
+a modification notice; originator terms may apply to national contributions.
+See [access and scientific decisions](docs/spikes/isd.md) and the
+[worked notebook and pipeline](https://github.com/RiskThinking/crc-docs#readme).
+
+### NOAA GHCNh station temperature observations
+
+[GHCNh](https://www.ncei.noaa.gov/products/global-historical-climatology-network-hourly)
+is NOAA's successor to ISD, with additional historical sources and daily
+updates. Use its explicit adapter with the same workflow:
+
+```python
+from crc_sdk.workflows import BlockExtremaPolicy, HazardDataset
+
+plan = (
+    HazardDataset.ghcnh("temperature_max")
+    .for_stations(["USW00094846"])  # Chicago O'Hare, GHCN identifier
+    .years(2000, 2025)
+    .quality(minimum_hour_fraction=0.75, minimum_day_fraction=0.9)
+    .execution(workers=4, memory_limit="256MB")
+    .cache("data/ghcnh", mode="reuse")
+    .canonicalize(policy=BlockExtremaPolicy.curated(
+        minimum_years=20, diagnostics="data/ghcnh-fit-diagnostics.parquet",
+    ))
+)
+plan.write_annual_extremes("data/ghcnh-annual.parquet")
+stations = plan.materialize("data/ghcnh-curves.parquet")
+```
+
+GHCNh uses eleven-character GHCN station IDs, including some with hyphens.
+They are not interchangeable with numeric ISD IDs; use NOAA's
+[station list](https://noaa-ghcnh-pds.s3.amazonaws.com/hourly/doc/ghcnh-station-list.csv).
+There is no automatic station crosswalk or source fallback. Complete years
+exclude the current UTC year. Both products share the daily-summary schema,
+completeness gates, annual audit and station fitter. GHCNh curves are named
+`ghcnh_temperature_max` / `ghcnh_temperature_min`, with `noaa-ghcnh:` source
+IDs and separate cache identities. Equivalent workflow syntax does not imply
+identical station histories or fitted curves.
+
+The GHCNh reader projects eight Parquet columns through HTTP range requests,
+streams Arrow batches into DuckDB and caches daily summaries. Units are already
+Celsius. Default QC accepts blank integrated flags and source-specific good
+legacy codes. Code `5` is accepted for legacy ISD sources but rejected for
+sources where it means "removed". `.quality(quality_codes=("",))` narrows the
+policy to unflagged observations; overrides cannot reinterpret a bad code as
+good. The manifest records the source URL, ETag, Last-Modified, object size,
+projected columns and their batch fingerprint, and reduced-file SHA-256.
+The projection fingerprint is not a checksum of the entire upstream object.
+Conditional range reads reject upstream changes during acquisition.
+`ghcnh-v1` identifies the product major version, not an immutable release;
+refresh obtains the current snapshot, while offline reuses verified reductions.
+
+The [GHCNh AWS registry](https://registry.opendata.aws/noaa-ghcnh/) explicitly
+labels the data CC0-1.0. Outputs retain NOAA attribution and a derivation notice.
+See [access, units and QC decisions](docs/spikes/ghcnh.md). This adapter uses the
+same two sampled-temperature recipes and point support as ISD; it does not add
+precipitation, gust or regional interpolation recipes.
+
+
+### Select observation stations by area
+
+Both station adapters accept the same WGS84 bounding-box workflow as gridded
+adapters. Station discovery reads a small NOAA catalogue, not observation files:
+
+```python
+plan = (
+    HazardDataset.ghcnh("temperature_max")
+    .for_area((-87.94, 41.95, -87.92, 41.97))
+    .years(2000, 2024)
+    .cache("data/ghcnh", mode="reuse")
+    .canonicalize()
+)
+selected = plan.stations()       # Arrow station metadata; no observation downloads
+pinned = plan.resolve_stations() # A new plan with explicit selected_stations IDs
+pinned.materialize("data/ghcnh-curves.parquet")
+```
+
+`plan.materialize(...)` can resolve the area directly. `.for_areas([box1, box2])`
+selects their union without duplicate stations. `.for_stations(ids)` replaces
+area selection; `.for_area(...)` replaces explicit IDs. Builders and `explain()`
+remain lazy. `stations()` and `resolve_stations()` are metadata-only terminal
+operations and can run before `years(...)`.
+
+The global catalogue is cached as compact Parquet and reused across areas and
+recipes. DuckDB filters its coordinates and, for ISD, known record dates against
+the requested year window. The GHCNh location catalogue does not report record
+dates or temperature availability; completeness is checked from observations.
+Offline selection requires a checksum-verified catalogue. Refresh updates it;
+`resolve_stations()` pins the selected IDs in the plan. Daily caches are keyed
+by station/year and QC policy, so area and explicit selection reuse identical
+reductions. Provenance records requested bounds, resolved station IDs and the
+catalogue's raw checksum. An empty selection raises before fetching observations.
+
+Selection uses catalogue station locations, without nearest-station assignment
+or interpolation. Curves retain station-point support, and requested bounds do
+not turn them into regional coverage. Catalogue locations and historical
+observation coordinates can differ; inspect metadata and the annual audit.

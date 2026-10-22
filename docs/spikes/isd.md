@@ -21,7 +21,7 @@ GHCNh replaces ISD, incorporates more historical holdings, has a different
 station identifier/element schema and is the appropriate source for current
 observations. ISD's established CSV schema and AWS station/year objects suit
 historical validation. This adapter does not silently substitute GHCNh or
-claim that ISD is still updated. GHCNh needs its own decoder and access spike.
+claim that ISD is still updated. The separate GHCNh adapter has its own decoder and [access spike](ghcnh.md).
 The AWS registry describes approximately 600 GB uncompressed and over 35,000
 stations over the archive's history; availability varies by station/year.
 
@@ -31,7 +31,8 @@ Stream selected CSV columns through Arrow into DuckDB. Reduce quality-filtered
 observations to UTC days, counting distinct valid hour bins rather than rows.
 Cache daily min/max, valid hours and station metadata, never hourly files.
 Exclude incomplete days and calendar years explicitly, including absent days
-and leap days in the denominator. Missing station/year objects are errors.
+and leap days in the denominator. HTTP 404 station/year objects are recorded as
+absent, incomplete years; other network failures remain errors.
 
 Pin the archive identity as `isd-2025-08-24`; this is the documented archive
 cutoff, not an immutable NOAA release. Record each request URL, raw SHA-256,
@@ -45,8 +46,10 @@ instantaneous temperature, so these are labelled `isd_temperature_max` and
 Precipitation accumulation periods overlap and gust reporting is intermittent;
 those recipes require separate completeness rules. Station curves retain WKB
 points and use H3 only for indexing; no spatial interpolation is implied.
-Voronoi coverage, geographic station discovery and gridded comparisons remain
-separate work.
+Voronoi coverage and gridded comparisons remain separate work. Area selection
+uses the AWS `isd-history.csv` catalogue (2,914,601 bytes in the access check),
+filters known record dates for overlap, and preserves USAF/WBAN leading zeros.
+The catalogue is cached as normalized Parquet, with raw and reduced checksums.
 
 ## Terms
 
