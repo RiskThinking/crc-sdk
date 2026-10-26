@@ -7,7 +7,7 @@ name = "crc-sdk"
 version = "0.9.0a1"
 description = "Python SDK for Climate Risk Commons data access and workflows"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 license = "AGPL-3.0-or-later"
 license-files = ["LICENSE"]
 authors = [{ name = "Riskthinking.AI" }]
