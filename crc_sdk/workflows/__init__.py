@@ -28,6 +28,7 @@ from .distributions import (
     warn_if_extrapolated,
     warn_if_outside_window,
 )
+from .eccc_idf import ECCCIDFPlan
 from .edo import (
     EDOAreaPlan,
     EDOCanonicalizationPlan,
@@ -90,6 +91,7 @@ __all__ = [
     "CellColumn",
     "CURVE_COLUMNS",
     "ExecutionOptions",
+    "ECCCIDFPlan",
     "EDOAreaPlan",
     "EDOCanonicalizationPlan",
     "EDODroughtPolicy",
