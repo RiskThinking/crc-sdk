@@ -193,7 +193,7 @@ class GeoTiffRaster:
         # build (and resource-tune) one when they didn't supply their own.
         # No extensions requested: scan()/scan_h3() only use core Arrow
         # ingestion plus plain relational aggregate/project, never spatial,
-        # httpfs (GDAL's own VSI handles remote reads), or h3 (h3ronpy is
+        # httpfs (GDAL's own VSI handles remote reads), or h3 (h3-py is
         # used directly) -- loading them here would be pure overhead.
         self.connection = connection or DuckDBConnection.for_analytics(
             work_dir or default_work_dir(), extensions=()

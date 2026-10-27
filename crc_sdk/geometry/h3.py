@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import math
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -398,6 +399,40 @@ def reduce_h3_values(
     return cells[starts], ufunc.reduceat(values, starts)
 
 
+def points_to_cells(
+    longitudes: Any,
+    latitudes: Any,
+    resolution: int,
+) -> np.ndarray:
+    """Index WGS84 points to unsigned integer H3 cells (one per point).
+
+    Requires `pip install crc-sdk[geometry]`.
+    """
+    if not 0 <= resolution <= 15:
+        raise ValueError("H3 resolution must be between 0 and 15")
+    lngs = np.asarray(longitudes, dtype=np.float64).ravel()
+    lats = np.asarray(latitudes, dtype=np.float64).ravel()
+    if lngs.shape != lats.shape:
+        raise ValueError("longitudes and latitudes must have the same length")
+    try:
+        from h3.api import basic_int  # type: ignore[import-untyped]
+    except ImportError as error:
+        raise ImportError(
+            "Point-to-H3 indexing requires `pip install crc-sdk[geometry]`"
+        ) from error
+    count = len(lats)
+    return np.fromiter(
+        map(
+            basic_int.latlng_to_cell,
+            lats.tolist(),
+            lngs.tolist(),
+            itertools.repeat(resolution, count),
+        ),
+        dtype=np.uint64,
+        count=count,
+    )
+
+
 def sample_grid_to_h3(
     longitudes: Any,
     latitudes: Any,
@@ -408,19 +443,7 @@ def sample_grid_to_h3(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Reduce WGS84 point samples to one value per H3 cell.
 
-    Vectorized via h3ronpy; requires `pip install crc-sdk[geometry]`.
+    Requires `pip install crc-sdk[geometry]`.
     """
-    if not 0 <= resolution <= 15:
-        raise ValueError("H3 resolution must be between 0 and 15")
-    try:
-        from h3ronpy.vector import coordinates_to_cells  # type: ignore[import-untyped]
-    except ImportError as error:
-        raise ImportError(
-            "Grid-to-H3 sampling requires `pip install crc-sdk[geometry]`"
-        ) from error
-    cells = coordinates_to_cells(
-        np.asarray(latitudes, dtype=np.float64),
-        np.asarray(longitudes, dtype=np.float64),
-        resolution,
-    )
+    cells = points_to_cells(longitudes, latitudes, resolution)
     return reduce_h3_values(cells, values, reduce=reduce)

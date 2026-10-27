@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "crc-sdk"
-version = "0.9.0a1"
+version = "0.9.0a2"
 description = "Python SDK for Climate Risk Commons data access and workflows"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -53,8 +53,7 @@ netcdf = [
     "h5py>=3",
 ]
 geometry = [
-    "h3>=4",
-    "h3ronpy>=0.19",
+    "h3>=4.2",
     "shapely>=2",
 ]
 test = [

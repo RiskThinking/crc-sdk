@@ -85,7 +85,7 @@ dependency, opted into only by the callers that need it:
 | `agriculture` | `icechunk`, Zarr v3, `pyproj` (Python 3.12+) | USDA CDL Icechunk AOI/year/class scans; FTW GeoParquet itself uses baseline DuckDB |
 | `raster` | `rasterio` | `GeoTiffRaster` (GeoTIFF/COG ingest, streamed via GDAL VSI) |
 | `netcdf` | `h5netcdf`, `h5py` | `NetCDFRaster` (NetCDF/CF ingest) |
-| `geometry` | `h3`, `h3ronpy`, `shapely` | `H3Indexer`, `intersecting_cells`, `cell_polygon`, other abstract H3/geometry math, vectorized batch H3 ops on Arrow data (`polyfill_wkb`, `expand_polygon_candidates`, raster-to-H3 sampling) |
+| `geometry` | `h3`, `shapely` | `H3Indexer`, `intersecting_cells`, `cell_polygon`, other abstract H3/geometry math, vectorized batch H3 ops on Arrow data (`polyfill_wkb`, `expand_polygon_candidates`, raster-to-H3 sampling) |
 | `test` | `mypy`, `pytest`, `ruff` | Development only |
 
 DuckDB's community `duckdb_zarr` extension can scan ordinary remote Zarr v2/v3
@@ -126,7 +126,7 @@ friendly, actionable error (with install instructions) if either is missing.
 - `crc_sdk.providers` describes storage and dataset discovery.
 - `crc_sdk.geometry` contains geometry conversion, DuckDB-native H3 polyfill
   (`H3Indexer`), Arrow batch polyfill (`polyfill_wkb`, `geometry`
-  extra for h3ronpy), raster-to-H3 sampling primitives
+  extra), raster-to-H3 sampling primitives
   (`pixel_grid_resolution`, `sample_grid_to_h3`), exploded coverage writers
   (`write_exploded_coverage`), optional nested lookup derivation
   (`LookupCatalog`, `write_lookup_contract`, `write_partitioned_lookup`), and
