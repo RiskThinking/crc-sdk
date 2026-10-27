@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from enum import Enum
+from itertools import pairwise
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
 import pyarrow as pa  # type: ignore[import-untyped]
 
 if TYPE_CHECKING:
@@ -14,19 +16,17 @@ if TYPE_CHECKING:
 class VectorContainment(str, Enum):
     """Containment modes for batch polygon→cell expansion.
 
-    Both modes use h3ronpy's Arrow vector path (no per-geometry Python loop).
-    ``COVERS`` is required for CGAZ admin-lookup parity. ``OVERLAP`` maps to
-    h3ronpy ``IntersectsBoundary``, the closest batch analogue of H3 overlap.
+    Both modes select every cell whose boundary intersects the polygon,
+    including the single cell enclosing a polygon smaller than one cell (H3
+    ``overlap`` containment). ``COVERS`` is required for CGAZ admin-lookup
+    parity; ``OVERLAP`` is kept as an alias for callers that already pass it.
     """
 
     COVERS = "covers"
     OVERLAP = "overlap"
 
 
-_H3RONPY_MODE = {
-    VectorContainment.COVERS: "Covers",
-    VectorContainment.OVERLAP: "IntersectsBoundary",
-}
+_EMPTY_CELLS = np.empty(0, dtype=np.uint64)
 
 
 def polyfill_wkb(
@@ -36,36 +36,85 @@ def polyfill_wkb(
     containment: VectorContainment | str = VectorContainment.COVERS,
     flatten: bool = False,
 ) -> Any:
-    """Polyfill WKB polygons into per-row H3 cell lists (Arrow list-array).
+    """Polyfill WKB geometries into per-row H3 cell lists.
 
-    Requires ``pip install crc-sdk[geometry]`` (h3ronpy).
+    Returns a ``list<uint64>`` Arrow array with one sorted, de-duplicated cell
+    list per input row (null WKB yields a null row, empty geometry an empty
+    list), or with ``flatten`` the concatenated ``uint64`` cells. Polygons use
+    overlap containment; points map to their cell and lines to the grid path
+    between consecutive vertex cells.
+
+    Requires ``pip install crc-sdk[geometry]``.
     """
     if not 0 <= resolution <= 15:
         raise ValueError("H3 resolution must be between 0 and 15")
-    mode = VectorContainment(containment)
+    VectorContainment(containment)
     array = _as_binary_array(wkb_values)
 
     try:
-        import h3ronpy.vector
+        import shapely  # type: ignore[import-untyped]
+        from h3.api import basic_int  # type: ignore[import-untyped]
     except ImportError as error:
         raise ImportError(
             "Batch polyfill requires `pip install crc-sdk[geometry]`"
         ) from error
 
-    containment_mode = getattr(h3ronpy.vector.ContainmentMode, _H3RONPY_MODE[mode])
-    try:
-        return h3ronpy.vector.wkb_to_cells(
-            array,
-            resolution,
-            containment_mode=containment_mode,
-            flatten=flatten,
+    geometries = shapely.force_2d(
+        shapely.from_wkb(np.asarray(array.to_numpy(zero_copy_only=False)))
+    )
+    rows = [
+        None
+        if geometry is None
+        else _unique_cells(_geometry_cells(geometry, resolution, basic_int, shapely))
+        for geometry in geometries
+    ]
+    values = np.concatenate([row for row in rows if row is not None] or [_EMPTY_CELLS])
+    flat = pa.array(values, type=pa.uint64())
+    if flatten:
+        return flat
+    lengths = np.array([0 if row is None else len(row) for row in rows], dtype=np.int32)
+    offsets = np.concatenate([[0], np.cumsum(lengths, dtype=np.int64)]).astype(np.int32)
+    mask = pa.array([row is None for row in rows], type=pa.bool_())
+    return pa.ListArray.from_arrays(
+        pa.array(offsets, type=pa.int32()), flat, mask=mask if mask.true_count else None
+    )
+
+
+def _unique_cells(cells: list[int]) -> np.ndarray:
+    if not cells:
+        return _EMPTY_CELLS
+    return np.unique(np.asarray(cells, dtype=np.uint64))
+
+
+def _geometry_cells(geometry: Any, resolution: int, h3: Any, shapely: Any) -> list[int]:
+    if geometry.is_empty:
+        return []
+    kind = geometry.geom_type
+    if kind in ("Polygon", "MultiPolygon"):
+        shape = h3.geo_to_h3shape(geometry.__geo_interface__)
+        return list(
+            h3.h3shape_to_cells_experimental(shape, resolution, contain="overlap")
         )
-    except TypeError:
-        return h3ronpy.vector.wkb_to_cells(
-            array,
-            resolution,
-            containment_mode=containment_mode,
-        )
+    if kind in ("Point", "MultiPoint"):
+        coords = shapely.get_coordinates(geometry)
+        return [h3.latlng_to_cell(lat, lng, resolution) for lng, lat in coords]
+    if kind in ("LineString", "LinearRing", "MultiLineString"):
+        cells: list[int] = []
+        for line in shapely.get_parts(geometry):
+            vertex_cells = [
+                h3.latlng_to_cell(lat, lng, resolution)
+                for lng, lat in shapely.get_coordinates(line)
+            ]
+            for start, end in pairwise(vertex_cells):
+                cells.extend(h3.grid_path_cells(start, end))
+        return cells
+    if kind == "GeometryCollection":
+        return [
+            cell
+            for part in shapely.get_parts(geometry)
+            for cell in _geometry_cells(part, resolution, h3, shapely)
+        ]
+    raise TypeError(f"unsupported geometry type {kind!r}")
 
 
 _AUTO_BATCH_THRESHOLD_ROWS = 500_000

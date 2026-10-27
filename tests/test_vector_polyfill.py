@@ -16,7 +16,7 @@ from crc_sdk.geometry import (
 from crc_sdk.geometry.vector import _to_pyarrow_array
 
 
-def test_to_pyarrow_array_uses_arrow_bridge_for_h3ronpy_cells() -> None:
+def test_to_pyarrow_array_passes_polyfill_cells_through() -> None:
     cells = polyfill_wkb(
         [dumps(box(0, 0, 1, 1))],
         2,
