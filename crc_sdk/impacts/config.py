@@ -220,13 +220,20 @@ class DerivedOrigin(StrictFrozenModel):
 
 
 class ImpactContext(StrictFrozenModel):
-    """Registry context. Persisted cells are 15 lowercase hex characters."""
+    """Registry context. Persisted cells are 15 lowercase hex characters.
+
+    ``supplied`` returns only the keys the caller set. An explicit null stays.
+    """
 
     cell: H3Cell | None = None
     country: Identifier | None = None
     continent: Identifier | None = None
     building_type: Identifier | None = None
     historic_mean: FiniteFloat | None = None
+
+    def supplied(self) -> Mapping[str, str | float | None]:
+        dumped = self.model_dump(mode="json")
+        return {key: dumped[key] for key in self.model_fields_set}
 
     @classmethod
     def from_transform_context(cls, context: TransformContext) -> ImpactContext:
@@ -575,8 +582,14 @@ class RegistryImpactReference(_NativeDocument):
         """Verified calibration for this factor, from the installed manifest."""
         manifest = impact_registry_manifest()
         meta = next(
-            item for item in manifest["factors"] if item["factor"] == self.factor
+            (item for item in manifest["factors"] if item["factor"] == self.factor),
+            None,
         )
+        if meta is None:
+            raise ImpactCalibrationError(
+                "unknown_exposure_semantics",
+                f"factor {self.factor!r} is not in the installed registry manifest",
+            )
         branches = dict(meta.get("branch_calibrations") or {})
         if branch is not None:
             if branch not in branches:
@@ -602,7 +615,7 @@ def _context_argument(
     value: ImpactContext | TransformContext | Mapping[str, Any] | None,
 ) -> Any:
     if isinstance(value, ImpactContext):
-        return value.model_dump(mode="json")
+        return dict(value.supplied())
     return value
 
 
