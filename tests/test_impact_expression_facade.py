@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 from crc_framework import ImpactExpression as FrameworkExpression
 from crc_framework import RegistryImpactReference as FrameworkReference
+from crc_framework import TransformContext
 
 from crc_sdk.impacts import (
     ImpactContext,
@@ -149,20 +150,20 @@ def test_partial_context_forwards_only_supplied_fields(
         spy_resolve,
     )
 
-    context = ImpactContext(country="USA")
+    context = TransformContext(country="USA")
     defaults = ImpactContext(continent="Europe", country=None)
     ImpactExpression.for_factor(
         "cyclone",
         context=context,
         context_defaults=defaults,
     )
-    reference = RegistryImpactReference.pinned("cyclone", context_defaults=defaults)
-    reference.resolve(context)
+    reference = RegistryImpactReference.pinned("cyclone", context_defaults=context)
+    reference.resolve(defaults)
 
     assert seen["expression_context"] == {"country": "USA"}
-    assert seen["expression_defaults"] == {"continent": "Europe", "country": None}
-    assert seen["reference_defaults"] == {"continent": "Europe", "country": None}
-    assert seen["resolve_context"] == {"country": "USA"}
+    assert seen["expression_defaults"] == {"continent": "Europe"}
+    assert seen["reference_defaults"] == {"country": "USA"}
+    assert seen["resolve_context"] == {"continent": "Europe"}
 
 
 def test_context_defaults_match_the_framework_reference() -> None:

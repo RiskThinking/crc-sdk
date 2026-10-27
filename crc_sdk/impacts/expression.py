@@ -44,6 +44,10 @@ class ImpactEvaluationResult(Generic[T]):
 def _context_argument(value: Any) -> Any:
     if isinstance(value, ImpactContext):
         return dict(value.supplied())
+    if isinstance(value, TransformContext):
+        return dict(ImpactContext.from_transform_context(value).supplied())
+    if isinstance(value, Mapping):
+        return {key: item for key, item in value.items() if item is not None}
     return value
 
 

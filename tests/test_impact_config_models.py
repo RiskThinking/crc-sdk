@@ -86,11 +86,11 @@ def test_equality_follows_the_content_hash() -> None:
     assert left != _definition(model={"kind": "linear", "slope": -1.0})
 
 
-def test_context_absence_is_not_explicit_null() -> None:
+def test_context_supplied_keeps_values_only() -> None:
     omitted = ImpactContext(continent="Europe")
     cleared = ImpactContext(continent="Europe", country=None)
     assert omitted.supplied() == {"continent": "Europe"}
-    assert cleared.supplied() == {"continent": "Europe", "country": None}
+    assert cleared.supplied() == {"continent": "Europe"}
 
 
 def test_override_absence_is_not_explicit_null() -> None:
@@ -116,8 +116,11 @@ def test_override_absence_is_not_explicit_null() -> None:
 
 
 def test_integer_cell_is_rejected_on_the_wire_and_accepted_from_context() -> None:
-    context = ImpactContext.from_transform_context(TransformContext(cell=0xABC))
+    context = ImpactContext.from_transform_context(
+        TransformContext(cell=0xABC, historic_mean=0.0)
+    )
     assert context.cell == f"{0xABC:015x}"
+    assert context.supplied() == {"cell": f"{0xABC:015x}", "historic_mean": 0.0}
     document = {
         "schema_version": "1.0",
         "semantics_version": "crc-impact/1",
