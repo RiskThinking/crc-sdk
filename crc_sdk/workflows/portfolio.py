@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from .byo import BYOPlan
     from .cmip6 import CMIP6SourcePlan
     from .crc_open import CRCOpenPlan
+    from .eccc_idf import ECCCIDFPlan
     from .edo import EDOSourcePlan
     from .era5 import ERA5SourcePlan
     from .ghcnh import GHCNhPlan
@@ -434,6 +435,15 @@ class HazardDataset:
             band=band,
             assumed_crs=assumed_crs,
         )
+
+    @classmethod
+    def eccc_idf(
+        cls, duration: str, *, province: str, version: str = "3.40"
+    ) -> ECCCIDFPlan:
+        """Plan ECCC station rainfall rates for one duration and pinned release."""
+        from .eccc_idf import ECCCIDFPlan
+
+        return ECCCIDFPlan(duration, province, version)
 
     @classmethod
     def ghcnh(cls, recipe: str = "temperature_max") -> GHCNhPlan:

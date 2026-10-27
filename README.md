@@ -1128,3 +1128,48 @@ Selection uses catalogue station locations, without nearest-station assignment
 or interpolation. Curves retain station-point support, and requested bounds do
 not turn them into regional coverage. Catalogue locations and historical
 observation coordinates can differ; inspect metadata and the annual audit.
+
+## ECCC design rainfall
+
+Read one published rainfall duration at ECCC station points:
+
+```python
+from crc_sdk.workflows import HazardDataset
+
+plan = (
+    HazardDataset.eccc_idf("1h", province="ON", version="3.40")
+    .for_stations(["6158731"])
+    .cache("idf-cache")
+)
+print(plan.explain())
+plan.prefetch()
+published = plan.source_curves()  # central mm/h rates and 95% confidence half-widths
+curves = plan.materialize("rainfall-1h.parquet")
+plan.duration("24h").cache("idf-cache", mode="offline").materialize("rainfall-24h.parquet")
+```
+
+The `geometry` extra is required for canonical point indexing. Supported durations
+are `5min`, `10min`, `15min`, `30min`, `1h`, `2h`, `6h`, `12h`, `24h`.
+Use `.for_area((west, south, east, north))` or `.for_areas([box1, box2])` to
+select station locations within the chosen province. Multiple boxes select a
+union; duplicates and overlaps never duplicate stations or archive requests.
+Area selection replaces explicit IDs, and `.for_stations(...)` clears areas.
+Each record retains its own midpoint horizon; H3 indexes
+points without assigning them an area of representativeness. Persistent caches
+support `reuse`, `offline`, `refresh`; `.cache(None, mode="stream")` uses temporary
+storage. Changed station bytes under a cached release are rejected.
+
+Release `3.40` requires staging the selected provincial ZIP on first acquisition
+(about 149 MB for Ontario), then retains only small station TXT files. Archived
+release `3.20` permits direct station-member range reads. Both releases are
+explicitly selected; no automatic substitution occurs. See the [access contract](docs/spikes/eccc-idf.md).
+
+Canonical `RainfallIntensity/<duration>` curves are Gumbel quantile refits of
+published central rates, with a default absolute residual limit of 0.15 mm/h.
+They are derived from ECCC IDF, not official ECCC curves. Confidence limits remain
+separate inspection data. Individual record windows can differ. A 24-hour moving
+rainfall maximum differs from calendar-day Rx1day; rainfall is not flood depth.
+Source provenance carries the Open Government Licence – Canada and ECCC credit.
+The [paired notebook](https://github.com/RiskThinking/crc-docs/blob/main/notebooks/eccc_rainfall_idf.ipynb)
+and [pipeline](https://github.com/RiskThinking/crc-docs/blob/main/pipelines/eccc_idf_pipeline.py)
+compare published rates, fitted values and release changes.

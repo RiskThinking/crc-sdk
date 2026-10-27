@@ -39,6 +39,7 @@ class RasterCurve:
 
     ``point`` overrides ``boundary`` for spatial indexing and WKB storage.
     ``source_id`` preserves an external location identifier when supplied.
+    ``horizon`` overrides the dataset year for records with different windows.
     """
 
     row: int
@@ -48,6 +49,7 @@ class RasterCurve:
     values: np.ndarray[Any, np.dtype[np.float64]]
     point: Optional[Point] = None
     source_id: Optional[str] = None
+    horizon: Optional[int] = None
 
 
 class ZarrRaster:

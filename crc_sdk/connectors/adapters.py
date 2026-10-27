@@ -97,6 +97,9 @@ class CurveSourceInfo:
     temporal_window: TemporalWindow | None = None
     ensemble: EnsembleDescriptor | None = None
     probability_semantics: ProbabilitySemantics | None = None
+    source_return_period_convention: Literal["one_minus_inverse", "poisson"] | None = (
+        None
+    )
 
 
 @dataclass(frozen=True)
@@ -335,6 +338,7 @@ def _metadata(
             checksum=info.checksum,
         ),
         fitting=_fit_provenance(source, policy),
+        source_return_period_convention=info.source_return_period_convention,
         probability_semantics=info.probability_semantics,
         temporal_window=info.temporal_window,
         ensemble=info.ensemble,
@@ -565,6 +569,7 @@ def _canonical_batches(
         outcome: str,
         *,
         cell: int | None = None,
+        horizon: int | None = None,
         source_id: str | None = None,
         reason: str | None = None,
         message: str | None = None,
@@ -582,7 +587,7 @@ def _canonical_batches(
                 "source_id": source_id
                 or _source_id(provider, source.metadata.path, row, column),
                 "hazard_name": source.metadata.hazard_type,
-                "horizon": source.metadata.year,
+                "horizon": horizon if horizon is not None else source.metadata.year,
                 "pathway": source.metadata.scenario,
                 "outcome": outcome,
                 "curve_type": base.family if base is not None else None,
@@ -622,7 +627,14 @@ def _canonical_batches(
             records.clear()
 
     def record(curve: RasterCurve, outcome: str, **details: Any) -> None:
-        record_cell(curve.row, curve.column, len(curve.values), outcome, **details)
+        record_cell(
+            curve.row,
+            curve.column,
+            len(curve.values),
+            outcome,
+            horizon=curve.horizon,
+            **details,
+        )
 
     if writer is not None and hasattr(source, "skip_sink"):
         # Cells a source drops before yielding a curve (no valid blocks, too
@@ -742,7 +754,9 @@ def _canonical_batches(
                         "source_id": source_id,
                         "source_geometry": geometry.wkb,
                         "hazard_name": source.metadata.hazard_type,
-                        "horizon": source.metadata.year,
+                        "horizon": curve.horizon
+                        if curve.horizon is not None
+                        else source.metadata.year,
                         "pathway": source.metadata.scenario,
                         "curve_kind": curve_kind,
                         "curve_type": base.family,
