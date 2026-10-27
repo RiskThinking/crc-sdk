@@ -222,7 +222,7 @@ class DerivedOrigin(StrictFrozenModel):
 class ImpactContext(StrictFrozenModel):
     """Registry context. Persisted cells are 15 lowercase hex characters.
 
-    ``supplied`` returns only the keys the caller set. An explicit null stays.
+    ``supplied`` returns keys that carry a value.
     """
 
     cell: H3Cell | None = None
@@ -231,20 +231,27 @@ class ImpactContext(StrictFrozenModel):
     building_type: Identifier | None = None
     historic_mean: FiniteFloat | None = None
 
-    def supplied(self) -> Mapping[str, str | float | None]:
+    def supplied(self) -> Mapping[str, str | float]:
         dumped = self.model_dump(mode="json")
-        return {key: dumped[key] for key in self.model_fields_set}
+        return {
+            key: dumped[key] for key in self.model_fields_set if dumped[key] is not None
+        }
 
     @classmethod
     def from_transform_context(cls, context: TransformContext) -> ImpactContext:
-        cell = None if context.cell is None else f"{int(context.cell):015x}"
-        return cls(
-            cell=cell,
-            country=context.country,
-            continent=context.continent,
-            building_type=context.building_type,
-            historic_mean=context.historic_mean,
-        )
+        """Copy fields that carry a value."""
+        values: dict[str, Any] = {}
+        if context.cell is not None:
+            values["cell"] = f"{int(context.cell):015x}"
+        if context.country is not None:
+            values["country"] = context.country
+        if context.continent is not None:
+            values["continent"] = context.continent
+        if context.building_type is not None:
+            values["building_type"] = context.building_type
+        if context.historic_mean is not None:
+            values["historic_mean"] = context.historic_mean
+        return cls(**values)
 
 
 _NULLABLE_OVERRIDE_KEYS = frozenset({"maximum_damage", "minimum_damage", "zero_below"})
@@ -616,6 +623,10 @@ def _context_argument(
 ) -> Any:
     if isinstance(value, ImpactContext):
         return dict(value.supplied())
+    if isinstance(value, TransformContext):
+        return dict(ImpactContext.from_transform_context(value).supplied())
+    if isinstance(value, Mapping):
+        return {key: item for key, item in value.items() if item is not None}
     return value
 
 
