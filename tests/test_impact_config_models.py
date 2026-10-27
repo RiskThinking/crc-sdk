@@ -86,6 +86,13 @@ def test_equality_follows_the_content_hash() -> None:
     assert left != _definition(model={"kind": "linear", "slope": -1.0})
 
 
+def test_context_absence_is_not_explicit_null() -> None:
+    omitted = ImpactContext(continent="Europe")
+    cleared = ImpactContext(continent="Europe", country=None)
+    assert omitted.supplied() == {"continent": "Europe"}
+    assert cleared.supplied() == {"continent": "Europe", "country": None}
+
+
 def test_override_absence_is_not_explicit_null() -> None:
     omitted = RegistryOverrides(midpoint=1.0)
     cleared = RegistryOverrides(midpoint=1.0, zero_below=None)

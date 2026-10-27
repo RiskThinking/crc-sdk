@@ -116,6 +116,18 @@ def test_response_labels_keep_free_text_semantics() -> None:
     assert raised.value.code == "unit_mismatch"
 
 
+def test_missing_manifest_factor_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    reference = RegistryImpactReference.pinned("rx1day")
+    monkeypatch.setattr(
+        "crc_sdk.impacts.config.impact_registry_manifest",
+        lambda: {"factors": []},
+    )
+    with pytest.raises(ImpactCalibrationError) as raised:
+        reference.calibration()
+    assert raised.value.code == "unknown_exposure_semantics"
+    assert "rx1day" in str(raised.value)
+
+
 def test_cooling_calibration_requires_a_branch() -> None:
     reference = RegistryImpactReference.pinned("cooling_degree_days")
     with pytest.raises(ImpactCalibrationError) as raised:

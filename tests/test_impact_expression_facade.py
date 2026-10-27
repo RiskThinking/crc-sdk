@@ -12,6 +12,7 @@ from typing import Any
 import numpy as np
 import pytest
 from crc_framework import ImpactExpression as FrameworkExpression
+from crc_framework import RegistryImpactReference as FrameworkReference
 
 from crc_sdk.impacts import (
     ImpactContext,
@@ -112,6 +113,56 @@ def test_shapes_and_recorded_results() -> None:
     assert recorded.record.to_dict()["operation"]["kind"] == "point"
     with pytest.raises(TypeError):
         expression.evaluate([1.0], context={"country": "USA"})  # type: ignore[call-arg]
+
+
+def test_partial_context_forwards_only_supplied_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, Any] = {}
+    original_expression = FrameworkExpression.for_factor
+    original_reference = FrameworkReference.for_factor
+    original_resolve = FrameworkReference.resolve
+
+    def spy_expression(factor: Any, **kwargs: Any) -> Any:
+        seen["expression_context"] = kwargs.get("context")
+        seen["expression_defaults"] = kwargs.get("context_defaults")
+        return original_expression(factor, **kwargs)
+
+    def spy_reference(factor: Any, **kwargs: Any) -> Any:
+        seen["reference_defaults"] = kwargs.get("context_defaults")
+        return original_reference(factor, **kwargs)
+
+    def spy_resolve(self: Any, context: Any = None) -> Any:
+        seen["resolve_context"] = context
+        return original_resolve(self, context)
+
+    monkeypatch.setattr(
+        "crc_sdk.impacts.expression.FrameworkExpression.for_factor",
+        spy_expression,
+    )
+    monkeypatch.setattr(
+        "crc_sdk.impacts.config.FrameworkReference.for_factor",
+        spy_reference,
+    )
+    monkeypatch.setattr(
+        "crc_sdk.impacts.config.FrameworkReference.resolve",
+        spy_resolve,
+    )
+
+    context = ImpactContext(country="USA")
+    defaults = ImpactContext(continent="Europe", country=None)
+    ImpactExpression.for_factor(
+        "cyclone",
+        context=context,
+        context_defaults=defaults,
+    )
+    reference = RegistryImpactReference.pinned("cyclone", context_defaults=defaults)
+    reference.resolve(context)
+
+    assert seen["expression_context"] == {"country": "USA"}
+    assert seen["expression_defaults"] == {"continent": "Europe", "country": None}
+    assert seen["reference_defaults"] == {"continent": "Europe", "country": None}
+    assert seen["resolve_context"] == {"country": "USA"}
 
 
 def test_context_defaults_match_the_framework_reference() -> None:

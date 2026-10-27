@@ -43,7 +43,7 @@ class ImpactEvaluationResult(Generic[T]):
 
 def _context_argument(value: Any) -> Any:
     if isinstance(value, ImpactContext):
-        return value.model_dump(mode="json")
+        return dict(value.supplied())
     return value
 
 
