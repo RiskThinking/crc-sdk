@@ -11,6 +11,7 @@ from crc_sdk import (
     fit_hurdle_quantiles,
     fit_quantiles,
 )
+from crc_sdk.impacts import ImpactEvaluationResult, ImpactExpression
 from crc_sdk.types import HazardQuery
 
 provider = LocalProvider(Path("/tmp/hazards"))
@@ -23,3 +24,13 @@ hurdle_fit: HurdleQuantileFitResult = fit_hurdle_quantiles(
     atom_probability=0.5,
 )
 hurdle: HurdleDistribution = hurdle_fit.distribution
+curve = ImpactExpression.linear(
+    1.0,
+    calibration={
+        "exposure_variable": "value",
+        "exposure_unit": "1",
+        "impact_metric": "response",
+        "impact_unit": "1",
+    },
+)
+recorded: ImpactEvaluationResult[float] = curve.expected_value_with_record(fit)

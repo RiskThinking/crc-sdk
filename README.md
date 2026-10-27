@@ -752,6 +752,46 @@ registry_request = request.impact(
 )
 ```
 
+A reproducible definition is a separate object from that workflow binding.
+Construct it with an explicit calibration, persist the canonical JSON, and
+reload it through the native parser. A registry selection is pinned to the
+installed registry and keeps its identity until it is resolved:
+
+```python
+from crc_sdk.impacts import (
+    ImpactCalibration,
+    ImpactExpression,
+    RegistryImpactReference,
+    check_exposure,
+    exposure_declaration,
+)
+
+calibration = ImpactCalibration(
+    exposure_variable="flood_depth",
+    exposure_unit="m",
+    impact_metric="damage_ratio",
+    impact_unit="1",
+)
+impact = ImpactExpression.tabulated(
+    [(0.0, 0.0), (0.3, 0.08), (1.0, 0.45), (2.0, 1.0)],
+    calibration=calibration,
+    clamp={"minimum": 0.0, "maximum": 1.0},
+)
+restored = ImpactExpression.from_json(impact.to_json())
+assert restored.definition_hash == impact.definition_hash
+
+pinned = RegistryImpactReference.pinned("rx1day")
+check_exposure(pinned.calibration(), exposure_declaration("rx1day"))
+```
+
+`to_json()` is the canonical encoding. `definition_hash` is the SHA-256 of
+those bytes. `exposure_declaration` reads the framework hazard catalog, so
+`rx1day` is millimetres per day and `fd` denotes `frost_days`. A caller unit
+of `days` matches the calibration unit `d` through the unit catalog. Hazards
+the catalog does not list need an explicit declaration.
+`PortfolioEvaluation.impact` still accepts the existing impact objects shown
+above.
+
 The generated H3 `cell_index` is always supplied to the framework impact
 context. Configured context columns are read from each asset, including when
 they are not retained as output passthrough columns. Stored registry context
