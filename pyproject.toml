@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "crc-sdk"
-version = "0.9.0a2"
+version = "0.9.0a3"
 description = "Python SDK for Climate Risk Commons data access and workflows"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -17,7 +17,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "crc-framework>=0.4.0,<1",
+    "crc-framework>=0.5.2,<0.6",
     "pydantic>=2,<3",
     "duckdb>=1,<2",
     "pyarrow>=14",
@@ -78,7 +78,7 @@ strict = true
 files = ["crc_sdk", "tests"]
 
 [tool.ruff]
-target-version = "py39"
+target-version = "py311"
 line-length = 88
 extend-exclude = ["tools"]
 
