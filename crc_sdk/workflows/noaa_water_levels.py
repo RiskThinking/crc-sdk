@@ -5,10 +5,8 @@ from __future__ import annotations
 import json
 import math
 import re
-import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TypeGuard, cast
 from urllib.parse import urlencode
@@ -16,7 +14,7 @@ from urllib.request import urlopen
 
 import pyarrow as pa  # type: ignore[import-untyped]
 
-from ._remote import file_checksum, read_manifest, write_manifest
+from ._noaa import prepare_resource
 
 _ENDPOINT = "https://api.tidesandcurrents.noaa.gov/dpapi/prod/webapi/product.json"
 _RESOURCES = ("station", "levels", "annuals")
@@ -117,60 +115,17 @@ class NOAAExtremeWaterLevelPlan:
         }
 
     def _fetch(self, resource: str) -> dict[str, Any]:
-        directory = self._directory(resource)
-        path = directory / "source.json"
-        manifest = read_manifest(directory)
-        url = self._url(resource)
-        expected = dict(self.checksums).get(resource)
-        if self.mode != "refresh" and path.exists() != (manifest is not None):
-            raise RuntimeError("incomplete NOAA water-level cache; refresh explicitly")
-        if self.mode != "refresh" and manifest is not None:
-            digest = file_checksum(path)
-            if manifest.get("url") != url or manifest.get("sha256") != digest:
-                raise RuntimeError(
-                    "NOAA water-level cache checksum or request mismatch"
-                )
-            if expected and digest != expected:
-                raise RuntimeError("NOAA snapshot does not match expected SHA-256")
-            return manifest
-        if self.mode == "offline":
-            raise FileNotFoundError(f"NOAA snapshot missing from {directory}")
-        directory.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(dir=directory) as scratch:
-            staged = Path(scratch) / "source.json"
-            with urlopen(url, timeout=120) as response:
-                raw = response.read(4 * 1024 * 1024 + 1)
-                etag = response.headers.get("ETag")
-                modified = response.headers.get("Last-Modified")
-                content_length = response.headers.get("Content-Length")
-            if len(raw) > 4 * 1024 * 1024:
-                raise ValueError("NOAA response exceeds the byte limit")
-            if content_length is not None and len(raw) != int(content_length):
-                raise RuntimeError("incomplete NOAA water-level download")
-            payload = json.loads(raw)
-            _validate_resource(payload, resource, self.station_id)
-            staged.write_bytes(raw)
-            digest = file_checksum(staged)
-            if expected and digest != expected:
-                raise RuntimeError("NOAA snapshot does not match expected SHA-256")
-            result: dict[str, Any] = {
-                "url": url,
-                "station_id": self.station_id,
-                "resource": resource,
-                "sha256": digest,
-                "retrieved_at": datetime.now(UTC).isoformat(),
-                "etag": etag,
-                "last_modified": modified,
-                "attribution": (
-                    "NOAA National Ocean Service, Center for Operational "
-                    "Oceanographic Products and Services"
-                ),
-                "source_documentation": "https://api.tidesandcurrents.noaa.gov/dpapi/prod/",
-                "terms_url": "https://oceanservice.noaa.gov/about/faq.html",
-            }
-            staged.replace(path)
-            write_manifest(directory, result)
-            return result
+        return prepare_resource(
+            directory=self._directory(resource),
+            url=self._url(resource),
+            mode=self.mode,
+            expected=dict(self.checksums).get(resource),
+            opener=urlopen,
+            validate=lambda payload: _validate_resource(
+                payload, resource, self.station_id
+            ),
+            metadata={"station_id": self.station_id, "resource": resource},
+        )
 
     def _payload(self, resource: str) -> dict[str, Any]:
         self._fetch(resource)
