@@ -118,3 +118,21 @@ def test_invalid_and_missing_requests(tmp_path: Path) -> None:
         plan(tmp_path).cache(tmp_path, mode="offline").prefetch()
     with pytest.raises(ValueError, match="checksum years"):
         plan(tmp_path).cache(tmp_path, sha256={2021: "0" * 64}).prefetch()
+
+
+def test_incomplete_page_sequence_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    page = {
+        "type": "FeatureCollection",
+        "features": [feature(1)],
+        "links": [],
+        "numberMatched": 2,
+        "numberReturned": 1,
+    }
+    monkeypatch.setattr(
+        "crc_sdk.workflows.eccc_daily.urlopen",
+        lambda *a, **kw: io.BytesIO(json.dumps(page).encode()),
+    )
+    with pytest.raises(RuntimeError, match="incomplete snapshot"):
+        plan(tmp_path).prefetch()

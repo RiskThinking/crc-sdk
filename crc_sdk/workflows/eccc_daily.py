@@ -2,22 +2,20 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import re
-import tempfile
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, replace
-from datetime import UTC, date, datetime
+from datetime import date
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode, urljoin, urlsplit
+from urllib.parse import urlencode
 from urllib.request import urlopen
 
 import pyarrow as pa  # type: ignore[import-untyped]
 
-from ._remote import file_checksum, read_manifest, write_manifest
+from ._geomet import prepare_snapshot
 
 _ENDPOINT = "https://api.weather.gc.ca/collections/climate-daily/items"
 _NUMERIC = (
@@ -136,95 +134,16 @@ class ECCCDailyPlan:
         }
 
     def _prepare_year(self, year: int) -> dict[str, Any]:
-        directory = self._directory(year)
-        path = directory / "observations.jsonl"
-        manifest = read_manifest(directory)
-        url = self._url(year)
-        expected = dict(self.checksums).get(year)
-        if self.mode != "refresh" and path.exists() != (manifest is not None):
-            raise RuntimeError("incomplete ECCC daily cache; refresh it explicitly")
-        if self.mode != "refresh" and manifest is not None:
-            digest = file_checksum(path)
-            if manifest.get("url") != url or manifest.get("sha256") != digest:
-                raise RuntimeError("ECCC daily cache checksum or request mismatch")
-            if expected and digest != expected:
-                raise RuntimeError(
-                    "ECCC daily snapshot does not match expected SHA-256"
-                )
-            return manifest
-        if self.mode == "offline":
-            raise FileNotFoundError(f"ECCC daily snapshot missing from {directory}")
-        directory.mkdir(parents=True, exist_ok=True)
-        seen: set[str] = set()
-        page_urls: list[str] = []
-        page_sha256: list[str] = []
-        count = 0
-        next_url: str | None = url
-        with tempfile.TemporaryDirectory(dir=directory) as scratch:
-            staged = Path(scratch) / "observations.jsonl"
-            with staged.open("w", encoding="utf-8") as target:
-                while next_url is not None:
-                    parsed = urlsplit(next_url)
-                    if (parsed.scheme, parsed.netloc, parsed.path) != (
-                        "https",
-                        "api.weather.gc.ca",
-                        "/collections/climate-daily/items",
-                    ):
-                        raise RuntimeError("unexpected ECCC pagination URL")
-                    if next_url in seen:
-                        raise RuntimeError("repeated ECCC pagination URL")
-                    seen.add(next_url)
-                    page_urls.append(next_url)
-                    with urlopen(next_url, timeout=120) as source:
-                        raw = source.read(16 * 1024 * 1024 + 1)
-                    if len(raw) > 16 * 1024 * 1024:
-                        raise ValueError("ECCC response exceeds page byte limit")
-                    page_sha256.append(hashlib.sha256(raw).hexdigest())
-                    page = json.loads(raw)
-                    if page.get("type") != "FeatureCollection" or not isinstance(
-                        page.get("features"), list
-                    ):
-                        raise ValueError("invalid ECCC daily response")
-                    features = page["features"]
-                    if len(features) > 500:
-                        raise ValueError("ECCC page exceeds requested limit")
-                    for feature in features:
-                        _observation(feature, self.climate_id, year)
-                        target.write(
-                            json.dumps(feature, separators=(",", ":"), sort_keys=True)
-                            + "\n"
-                        )
-                        count += 1
-                    links = [
-                        link["href"]
-                        for link in page.get("links", [])
-                        if link.get("rel") == "next"
-                    ]
-                    if len(links) > 1:
-                        raise ValueError("multiple ECCC next links")
-                    next_url = urljoin(next_url, links[0]) if links else None
-            digest = file_checksum(staged)
-            if expected and digest != expected:
-                raise RuntimeError(
-                    "ECCC daily snapshot does not match expected SHA-256"
-                )
-            result: dict[str, Any] = {
-                "url": url,
-                "climate_id": self.climate_id,
-                "year": year,
-                "sha256": digest,
-                "checksum_scope": "canonicalized feature JSON lines",
-                "page_urls": page_urls,
-                "page_sha256": page_sha256,
-                "observations": count,
-                "retrieved_at": datetime.now(UTC).isoformat(),
-                "licence": "OGL-Canada-2.0",
-                "service_licence_url": "https://eccc-msc.github.io/open-data/licence/readme_en/",
-                "attribution": "Data Source: Environment and Climate Change Canada",
-            }
-            staged.replace(path)
-            write_manifest(directory, result)
-            return result
+        return prepare_snapshot(
+            directory=self._directory(year),
+            url=self._url(year),
+            mode=self.mode,
+            expected=dict(self.checksums).get(year),
+            label="ECCC daily",
+            opener=urlopen,
+            validate=lambda feature: _observation(feature, self.climate_id, year),
+            metadata={"climate_id": self.climate_id, "year": year},
+        )
 
     def prefetch(self) -> tuple[dict[str, Any], ...]:
         if not self.selected_years:
