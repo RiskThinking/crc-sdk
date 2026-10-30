@@ -37,6 +37,10 @@ jobs:
       - name: Build
         run: uv build
 
+      - name: Verify release distributions
+        run: |
+          uv run --no-project --python 3.12 python -c 'from pathlib import Path; wheels=list(Path("dist").glob("*-py3-none-any.whl")); sdists=list(Path("dist").glob("*.tar.gz")); assert len(wheels) == 1 and len(sdists) == 1, "Expected one universal wheel and one source distribution"; print("Release distributions:", *wheels, *sdists)'
+
       - name: Determine prerelease
         id: prerelease
         run: |
@@ -57,3 +61,5 @@ jobs:
 
       - name: Publish package distributions to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
