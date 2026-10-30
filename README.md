@@ -600,6 +600,40 @@ model world, so these are change signals rather than design values; one member
 of one model is one realisation, not an ensemble; and a ~1 degree cell damps
 orographic and convective extremes further than reanalysis does.
 
+### NASA NEX-GDDP-CMIP6 projections
+
+NEX is a bias-adjusted, statistically downscaled CMIP6 product at 0.25°;
+it is not the native-grid CMIP6 store or an ensemble summary. Stream annual
+extremes for a single model and member using the same four CMIP6 recipes:
+
+```python
+from crc_sdk.workflows import HazardDataset
+
+plan = (HazardDataset.nex_gddp_cmip6(
+    "rx1day", model="ACCESS-CM2", scenario="historical", version="1.0"
+).for_area((-79.5, 43.5, -79.25, 43.75)).years(2014))
+for batch in plan.annual_extremes():
+    print(batch)  # Arrow batches, one bounded spatial strip at a time
+```
+
+Install `crc-sdk[netcdf]` for NetCDF support. Calls are lazy until batches
+are consumed. Select the source model, member, grid and file revision; a
+missing revision fails rather than silently falling back. The supported file
+revisions are 1.0, 1.1 and 1.2; coverage varies by model and year. The raw
+annual files are large and range reads can be slow. Batches carry the original
+file URL and retrieval time, but do not provide a checksum or transactional
+source snapshot. This interface exposes annual samples, not fitted canonical
+curves or portfolio evaluation.
+
+The [NASA AWS registry](https://registry.opendata.aws/nex-gddp-cmip6/) states
+that the archive is now CC0, while older files can retain original CMIP6 model
+licence metadata, including CC BY-SA. Both are retained and non-CC0 original
+metadata produces a warning; `strict_licence=True` refuses it. Review the
+current archive and original model terms before redistribution. Cite NASA and
+the source model, and keep the original licence and provenance with outputs.
+Bias adjustment does not remove model or downscaling uncertainty, and the grid
+resolution is not independent local detail or a design-rainfall estimate.
+
 ### Bringing your own data
 
 `HazardDataset.from_table`, `from_zarr` and `from_raster` onboard local data
