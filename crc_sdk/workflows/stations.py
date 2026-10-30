@@ -11,7 +11,7 @@ import tempfile
 from collections.abc import Iterator, Sequence
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass, replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from importlib import import_module
 from itertools import islice
 from pathlib import Path
@@ -138,10 +138,11 @@ class StationObservationPlan:
         )
         path = directory / "catalogues" / f"{self.provider}.parquet"
         path.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(dir=path.parent, suffix=".parquet") as tmp:
-            pq.write_table(table, tmp.name, compression="zstd")
-            checksum = file_checksum(Path(tmp.name))
-            Path(tmp.name).replace(path)
+        with tempfile.TemporaryDirectory(dir=path.parent) as tmp:
+            staged = Path(tmp) / "catalogue.parquet"
+            pq.write_table(table, staged, compression="zstd")
+            checksum = file_checksum(staged)
+            staged.replace(path)
         entry = {
             **remote,
             "normalization_version": 1,
@@ -149,7 +150,7 @@ class StationObservationPlan:
             "attribution": self._provider.ATTRIBUTION,
             "checksum": checksum,
             "local": path.relative_to(directory).as_posix(),
-            "retrieved_at": datetime.now(timezone.utc).isoformat(),
+            "retrieved_at": datetime.now(UTC).isoformat(),
         }
         catalogues[self.provider] = entry
         write_manifest(directory, {**manifest, "catalogues": catalogues})
@@ -414,17 +415,18 @@ class StationObservationPlan:
                 )
             path = directory / "daily" / f"{station}-{year}-{key[:16]}.parquet"
             path.parent.mkdir(parents=True, exist_ok=True)
-            with tempfile.NamedTemporaryFile(dir=path.parent, suffix=".parquet") as tmp:
-                pq.write_table(table, tmp.name, compression="zstd")
-                checksum = file_checksum(Path(tmp.name))
-                Path(tmp.name).replace(path)
+            with tempfile.TemporaryDirectory(dir=path.parent) as tmp:
+                staged = Path(tmp) / "daily.parquet"
+                pq.write_table(table, staged, compression="zstd")
+                checksum = file_checksum(staged)
+                staged.replace(path)
             return key, {
                 **remote,
                 "station": station,
                 "year": year,
                 "resolved_version": self._provider.VERSION,
                 "request": asdict(self.completeness),
-                "retrieved_at": datetime.now(timezone.utc).isoformat(),
+                "retrieved_at": datetime.now(UTC).isoformat(),
                 "licence": self._provider.LICENCE,
                 "attribution": self._provider.ATTRIBUTION,
                 "local": path.relative_to(directory).as_posix(),

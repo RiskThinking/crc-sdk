@@ -1,0 +1,49 @@
+name: Validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    # Newer interpreters remain visible while native dependencies catch up.
+    continue-on-error: ${{ matrix.python == '3.14' || matrix.python == '3.15' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12', '3.13', '3.14', '3.15']
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+      - name: Check lockfile and install all extras
+        run: uv sync --locked --all-extras --python "${{ matrix.python }}"
+      - name: Run tests against locked dependencies
+        run: uv run --locked --all-extras --python "${{ matrix.python }}" pytest -q
+      - name: Test minimum supported framework
+        if: matrix.python == '3.12'
+        shell: bash
+        run: |
+          set -euo pipefail
+          minimum=$(.venv/bin/python -c 'import re, tomllib; p=tomllib.load(open("pyproject.toml", "rb")); d=next(d for d in p["project"]["dependencies"] if d.startswith("crc-framework>=")); print(re.fullmatch(r"crc-framework>=(\d+\.\d+\.\d+),<[^,]+", d)[1])')
+          uv pip install --python .venv/bin/python --no-deps "crc-framework==$minimum"
+          .venv/bin/python -m pytest -q
+      - name: Build distributions
+        run: uv build
+      - name: Verify built wheel in a clean environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv venv --python "${{ matrix.python }}" "$RUNNER_TEMP/wheel-venv"
+          uv pip install --python "$RUNNER_TEMP/wheel-venv/bin/python" dist/*.whl
+          uv pip check --python "$RUNNER_TEMP/wheel-venv/bin/python"
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/wheel-venv/bin/python" -c 'import importlib.metadata as m; import crc_sdk; from crc_sdk.impacts import ImpactExpression; from crc_framework import DiscreteDistribution, impact_registry_manifest; print("crc-sdk", m.version("crc-sdk"), "crc-framework", m.version("crc-framework")); print(crc_sdk.__file__)'
