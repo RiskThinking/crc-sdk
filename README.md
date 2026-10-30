@@ -1432,3 +1432,33 @@ curve or spatial interpolation is inferred. Source: NOAA National Ocean
 Service, CO-OPS. See [NOAA's product documentation](https://api.tidesandcurrents.noaa.gov/dpapi/prod/),
 [notebook](https://github.com/RiskThinking/crc-docs/blob/main/notebooks/noaa_extreme_water_levels.ipynb)
 and [pipeline](https://github.com/RiskThinking/crc-docs/blob/main/pipelines/noaa_extreme_water_levels_pipeline.py).
+
+## NOAA 2022 sea-level scenarios
+
+Inspect 2022 U.S. interagency relative sea-level scenarios at a NOAA station:
+
+```python
+from crc_sdk.workflows import NOAASeaLevelPlan
+
+plan = NOAASeaLevelPlan.for_station("8638610").scenario("all").cache("cache")
+source = plan.prefetch()
+pinned = plan.cache("cache", mode="offline", sha256=source["sha256"])
+projections = pinned.projections()
+```
+
+NOAA CO-OPS serves this report's station projections in centimetres relative
+to a **2005 baseline**. That differs from some published tools' year-2000
+baseline. The adapter preserves NOAA's scenario names and interval bounds;
+it does not map them to emissions pathways or annual exceedance probabilities.
+Relative sea-level change is not an asset flood depth. Combining these
+projections with historical water-level estimates requires an explicit,
+scientifically justified datum and baseline adjustment; no transformation is
+applied.
+
+The response is cached with its SHA-256 and source provenance. The adapter
+requires the 2022 report, U.S. station support and the known one-page response;
+it rejects an unexpectedly paginated response rather than returning partial
+data. Source: NOAA National Ocean Service, CO-OPS. See NOAA's [2022 application
+guide](https://cdn.oceanservice.noaa.gov/oceanserviceprod/hazards/sealevelrise/noaa-nos-techrpt02-global-regional-SLR-scenarios-US-application-guide.pdf),
+the [notebook](https://github.com/RiskThinking/crc-docs/blob/main/notebooks/noaa_sea_level_scenarios.ipynb)
+and [pipeline](https://github.com/RiskThinking/crc-docs/blob/main/pipelines/noaa_sea_level_pipeline.py).
