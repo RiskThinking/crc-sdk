@@ -650,7 +650,7 @@ wheels = [
 
 [[package]]
 name = "crc-sdk"
-version = "0.9.1"
+version = "0.10.1a1"
 source = { editable = "." }
 dependencies = [
     { name = "crc-framework" },

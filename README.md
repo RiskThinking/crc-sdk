@@ -60,10 +60,11 @@ uv run ruff check .
 ```
 
 CI checks that the lockfile is current, runs the test suite with the locked
-dependencies on Python 3.11 through 3.15, exercises the minimum supported
+dependencies on Python 3.11 through 3.14, exercises the minimum supported
 crc-framework version, and verifies a clean installation of the built wheel.
-Python 3.14 and 3.15 checks are non-blocking while native dependency
-compatibility is being addressed; Python 3.11 through 3.13 gate releases.
+Python 3.14 is non-blocking while native dependency compatibility is being
+addressed; Python 3.11 through 3.13 gate releases. Python 3.15 is temporarily
+omitted while h5py support is pending.
 The release workflow runs these checks before publishing.
 
 
