@@ -1397,3 +1397,38 @@ Open Government Licence – Canada; see the [ECCC data services licence](https:/
 The [notebook](https://github.com/RiskThinking/crc-docs/blob/main/notebooks/hydat_daily_observations.ipynb)
 and [pipeline](https://github.com/RiskThinking/crc-docs/blob/main/pipelines/hydat_daily_pipeline.py)
 show an observation audit.
+
+## NOAA coastal extreme water levels
+
+Inspect NOAA CO-OPS published annual high-water exceedance estimates:
+
+```python
+from crc_sdk.workflows import NOAAExtremeWaterLevelPlan
+
+plan = NOAAExtremeWaterLevelPlan.for_station("8638610").cache("cache")
+sources = plan.prefetch()
+pinned = plan.cache(
+    "cache", mode="offline",
+    sha256={name: metadata["sha256"] for name, metadata in sources.items()},
+)
+info = pinned.source_info()
+levels = pinned.source_levels()
+annual = pinned.annual_extremes()
+```
+
+The levels are published station-point annual exceedance probabilities and
+heights in metres relative to NOAA's stated datum and epoch. The reported
+90% confidence limits describe uncertainty in those levels; they are not
+additional probability knots. NOAA's rounded probability and return-period
+labels are preserved independently. The annual series is detrended; its
+reference notice is retained on each row and it cannot be shifted to another
+datum as if it were an ordinary measured water level. This source is neither
+asset inundation depth nor a future sea-level projection.
+
+The station metadata, exceedance levels and detrended annual series are
+fetched separately and checksummed as raw responses; they are not an atomic
+upstream release. Retain all three snapshots for replay. No canonical hazard
+curve or spatial interpolation is inferred. Source: NOAA National Ocean
+Service, CO-OPS. See [NOAA's product documentation](https://api.tidesandcurrents.noaa.gov/dpapi/prod/),
+[notebook](https://github.com/RiskThinking/crc-docs/blob/main/notebooks/noaa_extreme_water_levels.ipynb)
+and [pipeline](https://github.com/RiskThinking/crc-docs/blob/main/pipelines/noaa_extreme_water_levels_pipeline.py).
