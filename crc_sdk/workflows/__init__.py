@@ -6,6 +6,7 @@ from ._remote import MaterializationResult, PrefetchResult
 from .agriculture import AgriculturalLayer
 from .blocks import BlockExtremaPolicy
 from .byo import BYOPlan
+from .chirps import CHIRPSMonthlyPlan
 from .cmip6 import (
     CMIP6AreaPlan,
     CMIP6CanonicalizationPlan,
@@ -74,6 +75,7 @@ from .tiling import (
 from .usgs import USGSStreamflowPlan
 
 __all__ = [
+    "CHIRPSMonthlyPlan",
     "CMIP6AreaPlan",
     "CMIP6CanonicalizationPlan",
     "CMIP6SourcePlan",

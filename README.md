@@ -1282,3 +1282,39 @@ see its [citation guidance](https://waterdata.usgs.gov/citation/) and
 [notebook](https://github.com/RiskThinking/crc-docs/blob/main/notebooks/usgs_streamflow.ipynb)
 and [pipeline](https://github.com/RiskThinking/crc-docs/blob/main/pipelines/usgs_streamflow_pipeline.py)
 show a daily-series inspection.
+
+## CHIRPS v3 monthly precipitation
+
+Read final monthly gridded precipitation from the Climate Hazards Center:
+
+```python
+from crc_sdk.workflows import CHIRPSMonthlyPlan
+
+plan = (
+    CHIRPSMonthlyPlan.monthly(2020, 1)
+    .for_area((36.75, -1.35, 36.85, -1.25))
+    .cache("cache")
+)
+print(plan.explain())
+source = plan.prefetch()
+for batch in plan.batches():
+    print(batch.num_rows)
+```
+
+Each output row represents a source pixel centre and a monthly precipitation
+total in millimetres. The scan excludes the source's `-9999` ocean/no-data
+sentinel, including when it is absent from the COG metadata; zero is valid.
+Bounds select a raster window. No spatial averaging, interpolation, daily
+disaggregation or extreme-rainfall fitting is implied.
+
+The default `stream` mode reads the requested window over HTTP and cannot
+verify a full-file checksum. `cache(...)` downloads the complete monthly COG
+in bounded chunks and records its SHA-256, source URL and retrieval metadata.
+Use `mode="offline"` and `sha256=source["sha256"]` to verify and replay a
+retained snapshot. The source may be revised; a version label does not pin its
+bytes. CHIRPS v3 covers 60°S–60°N from 1981; a grid estimate is not design
+rainfall or flood depth.
+
+Source: Climate Hazards Center, UC Santa Barbara, [CHIRPS3 Data Repository](https://doi.org/10.15780/G2JQ0P),
+CC BY 4.0. See the [notebook](https://github.com/RiskThinking/crc-docs/blob/main/notebooks/chirps_monthly.ipynb)
+and [pipeline](https://github.com/RiskThinking/crc-docs/blob/main/pipelines/chirps_monthly_pipeline.py).
