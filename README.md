@@ -1358,3 +1358,42 @@ services licence](https://eccc-msc.github.io/open-data/licence/readme_en/).
 The [notebook](https://github.com/RiskThinking/crc-docs/blob/main/notebooks/eccc_daily_observations.ipynb)
 and [pipeline](https://github.com/RiskThinking/crc-docs/blob/main/pipelines/eccc_daily_pipeline.py)
 show an observation and flag audit.
+
+## HYDAT daily mean hydrometric observations
+
+Inspect historical Canadian gauge observations from ECCC GeoMet:
+
+```python
+from crc_sdk.workflows import HYDATDailyPlan
+
+plan = (
+    HYDATDailyPlan.for_station("02HA014")
+    .years(2020, 2020)
+    .cache("cache")
+)
+print(plan.explain())
+sources = plan.prefetch()
+for batch in plan.batches():
+    print(batch.num_rows)
+```
+
+Output retains daily mean discharge in m³/s, gauge level in metres, missing
+values and the source's English and French data symbols. The level datum is
+not supplied by this daily endpoint and is recorded as unspecified. Gauge
+level is not asset flood depth or necessarily elevation above sea level; daily
+mean flow is not instantaneous peak flow. No quality or completeness policy
+is inferred. See [Water Survey data symbols](https://wateroffice.ec.gc.ca/contactus/faq_e.html)
+and [datum guidance](https://wateroffice.ec.gc.ca/report/datum_faq_e.html).
+
+Each year is fetched in bounded pages and stored as checksummed canonical
+feature records; manifests retain page URLs and raw HTTP response checksums.
+Pages are not an upstream transactional snapshot and records can be revised.
+Keep the cache and pass `mode="offline"` with recorded year-to-`sha256`
+values to replay captured records.
+
+Data source: Environment and Climate Change Canada, [Historical Hydrometric
+Data](https://open.canada.ca/data/en/dataset/1ee9e14d-0814-5201-a3be-705809d8ee0e),
+Open Government Licence – Canada; see the [ECCC data services licence](https://eccc-msc.github.io/open-data/licence/readme_en/).
+The [notebook](https://github.com/RiskThinking/crc-docs/blob/main/notebooks/hydat_daily_observations.ipynb)
+and [pipeline](https://github.com/RiskThinking/crc-docs/blob/main/pipelines/hydat_daily_pipeline.py)
+show an observation audit.
