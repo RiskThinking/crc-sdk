@@ -100,7 +100,7 @@ def _patch_proc_self_cgroup(monkeypatch, content: str | None) -> None:
     original_read_text = Path.read_text
 
     def fake_read_text(self, *args, **kwargs):
-        if str(self) == "/proc/self/cgroup":
+        if self == Path("/proc/self/cgroup"):
             if content is None:
                 raise OSError("no such file")
             return content
@@ -116,7 +116,7 @@ def _patch_cgroup_control_files(monkeypatch, existing: set[str]) -> None:
     original_exists = Path.exists
 
     def fake_exists(self, *args, **kwargs):
-        if str(self) in existing:
+        if self in {Path(path) for path in existing}:
             return True
         return original_exists(self, *args, **kwargs)
 

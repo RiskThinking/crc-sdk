@@ -14,11 +14,16 @@ jobs:
     name: Python ${{ matrix.python }}
     runs-on: ubuntu-latest
     # Newer interpreters remain visible while native dependencies catch up.
-    continue-on-error: ${{ matrix.python == '3.14' || matrix.python == '3.15' }}
+    continue-on-error: ${{ matrix.python == '3.14' }}
     strategy:
       fail-fast: false
       matrix:
-        python: ['3.11', '3.12', '3.13', '3.14', '3.15']
+        python:
+          - '3.11'
+          - '3.12'
+          - '3.13'
+          - '3.14'
+          # - '3.15'  # Restore when h5py supports Python 3.15.
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.2.0
@@ -47,3 +52,35 @@ jobs:
           uv pip check --python "$RUNNER_TEMP/wheel-venv/bin/python"
           cd "$RUNNER_TEMP"
           "$RUNNER_TEMP/wheel-venv/bin/python" -c 'import importlib.metadata as m; import crc_sdk; from crc_sdk.impacts import ImpactExpression; from crc_framework import DiscreteDistribution, impact_registry_manifest; print("crc-sdk", m.version("crc-sdk"), "crc-framework", m.version("crc-framework")); print(crc_sdk.__file__)'
+
+  windows:
+    name: Windows Python 3.12
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+      - name: Check lockfile and install all extras
+        run: uv sync --locked --all-extras --python 3.12
+      - name: Run tests against locked dependencies
+        run: uv run --locked --all-extras --python 3.12 pytest -q
+      - name: Build distributions
+        run: uv build
+      - name: Verify universal wheel with a binary framework dependency
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $wheel = @(Get-ChildItem dist/*-py3-none-any.whl)
+          if ($wheel.Count -ne 1) { throw 'Expected one universal SDK wheel' }
+          $venv = Join-Path $env:RUNNER_TEMP 'wheel-venv'
+          uv venv --python 3.12 $venv
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $python = Join-Path $venv 'Scripts/python.exe'
+          uv pip install --python $python --only-binary crc-framework $wheel[0].FullName
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          uv pip check --python $python
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Set-Location $env:RUNNER_TEMP
+          & $python -c 'import importlib.metadata as m; import crc_sdk; from crc_framework import DiscreteDistribution, impact_registry_manifest; print("crc-sdk", m.version("crc-sdk"), "crc-framework", m.version("crc-framework")); print(crc_sdk.__file__)'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

@@ -65,7 +65,7 @@ def test_tippecanoe_command_names_layer_and_zoom_flags() -> None:
         temp_dir=Path("/tmp/tc"),
     )
     assert command[0] == "tippecanoe"
-    assert "-o" in command and "/tmp/out.pmtiles" in command
+    assert "-o" in command and str(Path("/tmp/out.pmtiles")) in command
     assert "-l" in command and "buildings" in command
     assert "-Z11" in command
     assert "-z14" in command
