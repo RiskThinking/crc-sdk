@@ -71,6 +71,7 @@ from .tiling import (
     stream_curve_quantiles_to_parquet,
     tile_bounds,
 )
+from .usgs import USGSStreamflowPlan
 
 __all__ = [
     "CMIP6AreaPlan",
@@ -101,6 +102,7 @@ __all__ = [
     "HazardDataset",
     "IBTrACSPlan",
     "ISDPlan",
+    "USGSStreamflowPlan",
     "GHCNhPlan",
     "HazardSelection",
     "ImpactContextColumns",
