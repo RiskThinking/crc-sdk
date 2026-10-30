@@ -1318,3 +1318,43 @@ rainfall or flood depth.
 Source: Climate Hazards Center, UC Santa Barbara, [CHIRPS3 Data Repository](https://doi.org/10.15780/G2JQ0P),
 CC BY 4.0. See the [notebook](https://github.com/RiskThinking/crc-docs/blob/main/notebooks/chirps_monthly.ipynb)
 and [pipeline](https://github.com/RiskThinking/crc-docs/blob/main/pipelines/chirps_monthly_pipeline.py).
+
+## ECCC GeoMet daily climate observations
+
+Inspect selected Canadian daily station observations with their source flags:
+
+```python
+from crc_sdk.workflows import ECCCDailyPlan
+
+plan = (
+    ECCCDailyPlan.for_station("6158731")
+    .years(2020, 2020)
+    .cache("cache")
+)
+print(plan.explain())
+sources = plan.prefetch()
+for batch in plan.batches():
+    print(batch.num_rows)
+```
+
+The selector is the seven-character ECCC climate ID, not the separate
+Historical Climate Data web station ID. GeoMet contains a selected subset of
+stations. Output includes the source's daily measurements and flags; nulls and
+trace flags are retained, without applying a quality or completeness policy.
+The source local-date label is not an assertion that all stations share one UTC
+observation window. A station record is not an interpolated area or an AHCCD
+homogenized series, and daily precipitation is not subdaily design rainfall.
+
+Each year is fetched in bounded pages and retained as checksummed canonical
+feature records. Manifests include raw HTTP page checksums and request URLs.
+Pages are not an upstream transactional snapshot, and the service can revise
+data. For replay, keep the cache and pass `mode="offline"` with a mapping of
+years to the recorded `sha256` values.
+
+Data source: Environment and Climate Change Canada. The [GeoMet daily
+collection](https://open.canada.ca/data/en/dataset/5f963c2d-d4ed-5a79-8a31-c9c582ca5098)
+is offered under the Open Government Licence – Canada and the [ECCC data
+services licence](https://eccc-msc.github.io/open-data/licence/readme_en/).
+The [notebook](https://github.com/RiskThinking/crc-docs/blob/main/notebooks/eccc_daily_observations.ipynb)
+and [pipeline](https://github.com/RiskThinking/crc-docs/blob/main/pipelines/eccc_daily_pipeline.py)
+show an observation and flag audit.

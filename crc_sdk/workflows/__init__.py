@@ -29,6 +29,7 @@ from .distributions import (
     warn_if_extrapolated,
     warn_if_outside_window,
 )
+from .eccc_daily import ECCCDailyPlan
 from .eccc_idf import ECCCIDFPlan
 from .edo import (
     EDOAreaPlan,
@@ -95,6 +96,7 @@ __all__ = [
     "CellColumn",
     "CURVE_COLUMNS",
     "ExecutionOptions",
+    "ECCCDailyPlan",
     "ECCCIDFPlan",
     "EDOAreaPlan",
     "EDOCanonicalizationPlan",
