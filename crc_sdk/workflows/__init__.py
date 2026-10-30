@@ -43,6 +43,7 @@ from .era5 import (
     ERA5YearPlan,
 )
 from .ghcnh import GHCNhPlan
+from .ibtracs import IBTrACSPlan
 from .isd import ISDPlan
 from .jrc import (
     JRCAreaPlan,
@@ -98,6 +99,7 @@ __all__ = [
     "EDOSourcePlan",
     "EDOYearPlan",
     "HazardDataset",
+    "IBTrACSPlan",
     "ISDPlan",
     "GHCNhPlan",
     "HazardSelection",

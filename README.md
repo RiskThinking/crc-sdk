@@ -1221,3 +1221,30 @@ Source provenance carries the Open Government Licence – Canada and ECCC credit
 The [paired notebook](https://github.com/RiskThinking/crc-docs/blob/main/notebooks/eccc_rainfall_idf.ipynb)
 and [pipeline](https://github.com/RiskThinking/crc-docs/blob/main/pipelines/eccc_idf_pipeline.py)
 compare published rates, fitted values and release changes.
+
+## IBTrACS tropical cyclone tracks
+
+Inspect NOAA best-track observations without constructing a hazard curve:
+
+```python
+from pathlib import Path
+from crc_sdk.workflows import IBTrACSPlan
+
+plan = IBTrACSPlan("NA", Path("cache")).for_storms(["2024279N21265"])
+print(plan.explain())  # no network access
+provenance = plan.prefetch()
+for batch in plan.batches():
+    print(batch.num_rows)
+```
+
+NOAA updates v04r01 files in place. Save the cached source and manifest; specify
+`expected_sha256` and `mode="offline"` to replay the same bytes. `refresh`
+explicitly replaces the cached snapshot. Each source CSV is downloaded in full;
+selection is applied while reading bounded batches. Values retain the source
+columns and units, with blank fields represented as null strings. Track points
+are not asset wind estimates or return-period curves. Basin files may overlap;
+agency wind definitions and data quality differ. NOAA describes data access,
+commercial-use guidance and citation on its [IBTrACS page](https://www.ncei.noaa.gov/products/international-best-track-archive).
+The [notebook](https://github.com/RiskThinking/crc-docs/blob/main/notebooks/ibtracs_tracks.ipynb)
+and [pipeline](https://github.com/RiskThinking/crc-docs/blob/main/pipelines/ibtracs_pipeline.py)
+show an event inspection.
