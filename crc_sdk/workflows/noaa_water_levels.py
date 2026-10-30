@@ -6,17 +6,18 @@ import json
 import math
 import re
 import tempfile
+import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, TypeGuard, cast
+from typing import Any, TypeGuard
 from urllib.parse import urlencode
 from urllib.request import urlopen
 
 import pyarrow as pa  # type: ignore[import-untyped]
 
-from ._remote import file_checksum, read_manifest, write_manifest
+from ._noaa import prepare_resource
+from ._remote import read_manifest, write_manifest
 
 _ENDPOINT = "https://api.tidesandcurrents.noaa.gov/dpapi/prod/webapi/product.json"
 _RESOURCES = ("station", "levels", "annuals")
@@ -101,10 +102,23 @@ class NOAAExtremeWaterLevelPlan:
             raise ValueError("unknown NOAA resource")
         return _ENDPOINT + "?" + urlencode(parameters)
 
-    def _directory(self, resource: str) -> Path:
+    def _root(self) -> Path:
         if self.cache_dir is None:
             raise ValueError("cache(directory) must be configured")
-        return self.cache_dir / "noaa-extreme-water-levels" / self.station_id / resource
+        return self.cache_dir / "noaa-extreme-water-levels" / self.station_id
+
+    def _current(self) -> Path:
+        root = self._root()
+        manifest = read_manifest(root)
+        if manifest is None:
+            return root  # Cache layout used before grouped snapshots.
+        snapshot = manifest.get("snapshot")
+        if not isinstance(snapshot, str) or not re.fullmatch(r"[0-9a-f]{32}", snapshot):
+            raise RuntimeError("invalid NOAA snapshot pointer")
+        return root / "snapshots" / snapshot
+
+    def _directory(self, resource: str) -> Path:
+        return self._current() / resource
 
     def explain(self) -> dict[str, object]:
         return {
@@ -116,75 +130,29 @@ class NOAAExtremeWaterLevelPlan:
             "bounds": "confidence intervals are not return-probability knots",
         }
 
-    def _fetch(self, resource: str) -> dict[str, Any]:
-        directory = self._directory(resource)
-        path = directory / "source.json"
-        manifest = read_manifest(directory)
-        url = self._url(resource)
-        expected = dict(self.checksums).get(resource)
-        if self.mode != "refresh" and path.exists() != (manifest is not None):
-            raise RuntimeError("incomplete NOAA water-level cache; refresh explicitly")
-        if self.mode != "refresh" and manifest is not None:
-            digest = file_checksum(path)
-            if manifest.get("url") != url or manifest.get("sha256") != digest:
-                raise RuntimeError(
-                    "NOAA water-level cache checksum or request mismatch"
-                )
-            if expected and digest != expected:
-                raise RuntimeError("NOAA snapshot does not match expected SHA-256")
-            return manifest
-        if self.mode == "offline":
-            raise FileNotFoundError(f"NOAA snapshot missing from {directory}")
-        directory.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(dir=directory) as scratch:
-            staged = Path(scratch) / "source.json"
-            with urlopen(url, timeout=120) as response:
-                raw = response.read(4 * 1024 * 1024 + 1)
-                etag = response.headers.get("ETag")
-                modified = response.headers.get("Last-Modified")
-                content_length = response.headers.get("Content-Length")
-            if len(raw) > 4 * 1024 * 1024:
-                raise ValueError("NOAA response exceeds the byte limit")
-            if content_length is not None and len(raw) != int(content_length):
-                raise RuntimeError("incomplete NOAA water-level download")
-            payload = json.loads(raw)
+    def _fetch(self, resource: str, base: Path, mode: str) -> dict[str, Any]:
+        return prepare_resource(
+            directory=base / resource,
+            url=self._url(resource),
+            mode=mode,
+            expected=dict(self.checksums).get(resource),
+            opener=urlopen,
+            validate=lambda payload: _validate_resource(
+                payload, resource, self.station_id
+            ),
+            metadata={"station_id": self.station_id, "resource": resource},
+        )
+
+    def _read_context(
+        self, base: Path
+    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+        payloads = {}
+        for resource in _RESOURCES:
+            payload = json.loads((base / resource / "source.json").read_bytes())
             _validate_resource(payload, resource, self.station_id)
-            staged.write_bytes(raw)
-            digest = file_checksum(staged)
-            if expected and digest != expected:
-                raise RuntimeError("NOAA snapshot does not match expected SHA-256")
-            result: dict[str, Any] = {
-                "url": url,
-                "station_id": self.station_id,
-                "resource": resource,
-                "sha256": digest,
-                "retrieved_at": datetime.now(UTC).isoformat(),
-                "etag": etag,
-                "last_modified": modified,
-                "attribution": (
-                    "NOAA National Ocean Service, Center for Operational "
-                    "Oceanographic Products and Services"
-                ),
-                "source_documentation": "https://api.tidesandcurrents.noaa.gov/dpapi/prod/",
-                "terms_url": "https://oceanservice.noaa.gov/about/faq.html",
-            }
-            staged.replace(path)
-            write_manifest(directory, result)
-            return result
-
-    def _payload(self, resource: str) -> dict[str, Any]:
-        self._fetch(resource)
-        payload = json.loads((self._directory(resource) / "source.json").read_bytes())
-        _validate_resource(payload, resource, self.station_id)
-        return cast(dict[str, Any], payload)
-
-    def prefetch(self) -> dict[str, dict[str, Any]]:
-        return {resource: self._fetch(resource) for resource in _RESOURCES}
-
-    def _context(self) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
-        station = self._payload("station")["ExtremeWaterLevels"][0]
-        levels = self._payload("levels")
-        annual = self._payload("annuals")
+            payloads[resource] = payload
+        station = payloads["station"]["ExtremeWaterLevels"][0]
+        levels, annual = payloads["levels"], payloads["annuals"]
         if levels["datum"].upper() != annual["datum"].upper():
             raise ValueError("NOAA annual and exceedance datum labels differ")
         info = {
@@ -198,6 +166,51 @@ class NOAAExtremeWaterLevelPlan:
             "annual_notice": annual.get("notice"),
         }
         return info, levels, annual
+
+    def _prepare(self) -> tuple[dict[str, dict[str, Any]], Path]:
+        root = self._root()
+        current = self._current()
+        complete = all(
+            (current / resource / "source.json").exists() for resource in _RESOURCES
+        )
+        if self.mode != "refresh" and (complete or self.mode == "offline"):
+            manifests = {
+                resource: self._fetch(resource, current, "offline")
+                for resource in _RESOURCES
+            }
+            self._read_context(current)
+            return manifests, current
+        if (
+            self.mode == "reuse"
+            and not complete
+            and (
+                read_manifest(root) is not None
+                or any((current / resource).exists() for resource in _RESOURCES)
+            )
+        ):
+            raise RuntimeError("incomplete NOAA cache; refresh explicitly")
+        root.mkdir(parents=True, exist_ok=True)
+        snapshots = root / "snapshots"
+        snapshots.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=snapshots) as scratch:
+            staged = Path(scratch) / "snapshot"
+            manifests = {
+                resource: self._fetch(resource, staged, "refresh")
+                for resource in _RESOURCES
+            }
+            self._read_context(staged)
+            identifier = uuid.uuid4().hex
+            destination = snapshots / identifier
+            staged.replace(destination)
+            write_manifest(root, {"snapshot": identifier})
+        return manifests, destination
+
+    def prefetch(self) -> dict[str, dict[str, Any]]:
+        return self._prepare()[0]
+
+    def _context(self) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+        _, base = self._prepare()
+        return self._read_context(base)
 
     def source_info(self) -> dict[str, Any]:
         """Return station, datum and NOAA's detrending context."""

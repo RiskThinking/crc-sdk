@@ -190,3 +190,24 @@ def test_unavailable_and_malformed_axis_are_rejected(
     install_fake(monkeypatch, sources)
     with pytest.raises(ValueError, match="exceedance"):
         NOAAExtremeWaterLevelPlan.for_station("8638610").cache(tmp_path).prefetch()
+
+
+@pytest.mark.parametrize("failure", ["datum", "later_response"])
+def test_failed_group_refresh_preserves_original_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    sources = payloads()
+    install_fake(monkeypatch, sources)
+    plan = NOAAExtremeWaterLevelPlan.for_station("8638610").cache(tmp_path)
+    original = plan.prefetch()
+    checksums = {key: value["sha256"] for key, value in original.items()}
+    sources["station"]["ExtremeWaterLevels"][0]["epoch"] = "2000-2018"  # type: ignore[index]
+    if failure == "datum":
+        sources["annuals"]["datum"] = "NAVD"
+    else:
+        sources["annuals"]["stationId"] = "0000000"
+    with pytest.raises(ValueError):
+        plan.cache(tmp_path, mode="refresh").prefetch()
+    offline = plan.cache(tmp_path, mode="offline", sha256=checksums)
+    assert offline.source_levels().to_pylist()[0]["datum_epoch"] == "1983-2001"
+    assert offline.annual_extremes().to_pylist()[0]["datum_epoch"] == "1983-2001"
