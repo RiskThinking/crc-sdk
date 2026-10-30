@@ -55,6 +55,7 @@ from .jrc import (
     JRCPortfolioEvaluation,
     JRCSourcePlan,
 )
+from .noaa_sea_level import NOAASeaLevelPlan
 from .noaa_water_levels import NOAAExtremeWaterLevelPlan
 from .portfolio import (
     PORTFOLIO_METADATA_KEY,
@@ -108,6 +109,7 @@ __all__ = [
     "HazardDataset",
     "HYDATDailyPlan",
     "NOAAExtremeWaterLevelPlan",
+    "NOAASeaLevelPlan",
     "IBTrACSPlan",
     "ISDPlan",
     "USGSStreamflowPlan",
