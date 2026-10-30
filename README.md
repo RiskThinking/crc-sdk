@@ -1248,3 +1248,37 @@ commercial-use guidance and citation on its [IBTrACS page](https://www.ncei.noaa
 The [notebook](https://github.com/RiskThinking/crc-docs/blob/main/notebooks/ibtracs_tracks.ipynb)
 and [pipeline](https://github.com/RiskThinking/crc-docs/blob/main/pipelines/ibtracs_pipeline.py)
 show an event inspection.
+
+## USGS daily streamflow
+
+Inspect daily mean streamflow at a specific USGS monitoring location:
+
+```python
+from crc_sdk.workflows import USGSStreamflowPlan
+
+plan = (
+    USGSStreamflowPlan.for_station("USGS-01491000")
+    .between("2020-01-01", "2021-12-31")
+    .cache("cache")
+)
+print(plan.explain())
+source = plan.prefetch()
+for batch in plan.batches():
+    print(batch.num_rows)
+```
+
+Requests use the USGS daily-values API, parameter 00060 and statistic 00003.
+The returned daily mean discharge retains source units, observation and series
+identifiers, approval status and qualifiers. It is not inundation depth or
+an instantaneous peak flow. The source is mutable and paginated requests are
+not transactional; preserve the cache and manifest for replay. The SHA-256
+covers canonicalized feature JSON lines, not the original HTTP response bytes.
+Specify `mode="offline"` and `sha256=source["sha256"]` to verify a saved
+snapshot. `refresh` deliberately fetches a new snapshot.
+
+Credit: U.S. Geological Survey, [Water Data for the Nation](https://doi.org/10.5066/F7P55KJN);
+see its [citation guidance](https://waterdata.usgs.gov/citation/) and
+[data disclaimer](https://water.usgs.gov/data/disclaimer.html). The
+[notebook](https://github.com/RiskThinking/crc-docs/blob/main/notebooks/usgs_streamflow.ipynb)
+and [pipeline](https://github.com/RiskThinking/crc-docs/blob/main/pipelines/usgs_streamflow_pipeline.py)
+show a daily-series inspection.
