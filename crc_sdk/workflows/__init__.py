@@ -45,6 +45,7 @@ from .era5 import (
     ERA5YearPlan,
 )
 from .ghcnh import GHCNhPlan
+from .hydat import HYDATDailyPlan
 from .ibtracs import IBTrACSPlan
 from .isd import ISDPlan
 from .jrc import (
@@ -104,6 +105,7 @@ __all__ = [
     "EDOSourcePlan",
     "EDOYearPlan",
     "HazardDataset",
+    "HYDATDailyPlan",
     "IBTrACSPlan",
     "ISDPlan",
     "USGSStreamflowPlan",
