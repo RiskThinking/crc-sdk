@@ -6,6 +6,7 @@ from ._remote import MaterializationResult, PrefetchResult
 from .agriculture import AgriculturalLayer
 from .blocks import BlockExtremaPolicy
 from .byo import BYOPlan
+from .chirps import CHIRPSMonthlyPlan
 from .cmip6 import (
     CMIP6AreaPlan,
     CMIP6CanonicalizationPlan,
@@ -28,6 +29,7 @@ from .distributions import (
     warn_if_extrapolated,
     warn_if_outside_window,
 )
+from .eccc_daily import ECCCDailyPlan
 from .eccc_idf import ECCCIDFPlan
 from .edo import (
     EDOAreaPlan,
@@ -43,6 +45,8 @@ from .era5 import (
     ERA5YearPlan,
 )
 from .ghcnh import GHCNhPlan
+from .hydat import HYDATDailyPlan
+from .ibtracs import IBTrACSPlan
 from .isd import ISDPlan
 from .jrc import (
     JRCAreaPlan,
@@ -51,6 +55,8 @@ from .jrc import (
     JRCPortfolioEvaluation,
     JRCSourcePlan,
 )
+from .noaa_sea_level import NOAASeaLevelPlan
+from .noaa_water_levels import NOAAExtremeWaterLevelPlan
 from .portfolio import (
     PORTFOLIO_METADATA_KEY,
     AssetPortfolio,
@@ -70,8 +76,10 @@ from .tiling import (
     stream_curve_quantiles_to_parquet,
     tile_bounds,
 )
+from .usgs import USGSStreamflowPlan
 
 __all__ = [
+    "CHIRPSMonthlyPlan",
     "CMIP6AreaPlan",
     "CMIP6CanonicalizationPlan",
     "CMIP6SourcePlan",
@@ -91,6 +99,7 @@ __all__ = [
     "CellColumn",
     "CURVE_COLUMNS",
     "ExecutionOptions",
+    "ECCCDailyPlan",
     "ECCCIDFPlan",
     "EDOAreaPlan",
     "EDOCanonicalizationPlan",
@@ -98,7 +107,12 @@ __all__ = [
     "EDOSourcePlan",
     "EDOYearPlan",
     "HazardDataset",
+    "HYDATDailyPlan",
+    "NOAAExtremeWaterLevelPlan",
+    "NOAASeaLevelPlan",
+    "IBTrACSPlan",
     "ISDPlan",
+    "USGSStreamflowPlan",
     "GHCNhPlan",
     "HazardSelection",
     "ImpactContextColumns",

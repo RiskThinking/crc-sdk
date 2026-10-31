@@ -14,11 +14,16 @@ jobs:
     name: Python ${{ matrix.python }}
     runs-on: ubuntu-latest
     # Newer interpreters remain visible while native dependencies catch up.
-    continue-on-error: ${{ matrix.python == '3.14' || matrix.python == '3.15' }}
+    continue-on-error: ${{ matrix.python == '3.14' }}
     strategy:
       fail-fast: false
       matrix:
-        python: ['3.11', '3.12', '3.13', '3.14', '3.15']
+        python:
+          - '3.11'
+          - '3.12'
+          - '3.13'
+          - '3.14'
+          # - '3.15'  # Restore when h5py supports Python 3.15.
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.2.0

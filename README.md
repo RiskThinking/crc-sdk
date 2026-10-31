@@ -60,10 +60,11 @@ uv run ruff check .
 ```
 
 CI checks that the lockfile is current, runs the test suite with the locked
-dependencies on Python 3.11 through 3.15, exercises the minimum supported
+dependencies on Python 3.11 through 3.14, exercises the minimum supported
 crc-framework version, and verifies a clean installation of the built wheel.
-Python 3.14 and 3.15 checks are non-blocking while native dependency
-compatibility is being addressed; Python 3.11 through 3.13 gate releases.
+Python 3.14 is non-blocking while native dependency compatibility is being
+addressed; Python 3.11 through 3.13 gate releases. Python 3.15 is temporarily
+omitted while h5py support is pending.
 The release workflow runs these checks before publishing.
 
 
@@ -598,6 +599,40 @@ See `docs/spikes/cmip6.md` for access details and caveats: a climate model is a
 model world, so these are change signals rather than design values; one member
 of one model is one realisation, not an ensemble; and a ~1 degree cell damps
 orographic and convective extremes further than reanalysis does.
+
+### NASA NEX-GDDP-CMIP6 projections
+
+NEX is a bias-adjusted, statistically downscaled CMIP6 product at 0.25°;
+it is not the native-grid CMIP6 store or an ensemble summary. Stream annual
+extremes for a single model and member using the same four CMIP6 recipes:
+
+```python
+from crc_sdk.workflows import HazardDataset
+
+plan = (HazardDataset.nex_gddp_cmip6(
+    "rx1day", model="ACCESS-CM2", scenario="historical", version="1.0"
+).for_area((-79.5, 43.5, -79.25, 43.75)).years(2014))
+for batch in plan.annual_extremes():
+    print(batch)  # Arrow batches, one bounded spatial strip at a time
+```
+
+Install `crc-sdk[netcdf]` for NetCDF support. Calls are lazy until batches
+are consumed. Select the source model, member, grid and file revision; a
+missing revision fails rather than silently falling back. The supported file
+revisions are 1.0, 1.1 and 1.2; coverage varies by model and year. The raw
+annual files are large and range reads can be slow. Batches carry the original
+file URL and retrieval time, but do not provide a checksum or transactional
+source snapshot. This interface exposes annual samples, not fitted canonical
+curves or portfolio evaluation.
+
+The [NASA AWS registry](https://registry.opendata.aws/nex-gddp-cmip6/) states
+that the archive is now CC0, while older files can retain original CMIP6 model
+licence metadata, including CC BY-SA. Both are retained and non-CC0 original
+metadata produces a warning; `strict_licence=True` refuses it. Review the
+current archive and original model terms before redistribution. Cite NASA and
+the source model, and keep the original licence and provenance with outputs.
+Bias adjustment does not remove model or downscaling uncertainty, and the grid
+resolution is not independent local detail or a design-rainfall estimate.
 
 ### Bringing your own data
 
@@ -1221,3 +1256,244 @@ Source provenance carries the Open Government Licence – Canada and ECCC credit
 The [paired notebook](https://github.com/RiskThinking/crc-docs/blob/main/notebooks/eccc_rainfall_idf.ipynb)
 and [pipeline](https://github.com/RiskThinking/crc-docs/blob/main/pipelines/eccc_idf_pipeline.py)
 compare published rates, fitted values and release changes.
+
+## IBTrACS tropical cyclone tracks
+
+Inspect NOAA best-track observations without constructing a hazard curve:
+
+```python
+from pathlib import Path
+from crc_sdk.workflows import IBTrACSPlan
+
+plan = IBTrACSPlan("NA", Path("cache")).for_storms(["2024279N21265"])
+print(plan.explain())  # no network access
+provenance = plan.prefetch()
+for batch in plan.batches():
+    print(batch.num_rows)
+```
+
+NOAA updates v04r01 files in place. Save the cached source and manifest; specify
+`expected_sha256` and `mode="offline"` to replay the same bytes. `refresh`
+explicitly replaces the cached snapshot. Each source CSV is downloaded in full;
+selection is applied while reading bounded batches. Values retain the source
+columns and units, with blank fields represented as null strings. Track points
+are not asset wind estimates or return-period curves. Basin files may overlap;
+agency wind definitions and data quality differ. NOAA describes data access,
+commercial-use guidance and citation on its [IBTrACS page](https://www.ncei.noaa.gov/products/international-best-track-archive).
+The [notebook](https://github.com/RiskThinking/crc-docs/blob/main/notebooks/ibtracs_tracks.ipynb)
+and [pipeline](https://github.com/RiskThinking/crc-docs/blob/main/pipelines/ibtracs_pipeline.py)
+show an event inspection.
+
+## USGS daily streamflow
+
+Inspect daily mean streamflow at a specific USGS monitoring location:
+
+```python
+from crc_sdk.workflows import USGSStreamflowPlan
+
+plan = (
+    USGSStreamflowPlan.for_station("USGS-01491000")
+    .between("2020-01-01", "2021-12-31")
+    .cache("cache")
+)
+print(plan.explain())
+source = plan.prefetch()
+for batch in plan.batches():
+    print(batch.num_rows)
+```
+
+Requests use the USGS daily-values API, parameter 00060 and statistic 00003.
+The returned daily mean discharge retains source units, observation and series
+identifiers, approval status and qualifiers. It is not inundation depth or
+an instantaneous peak flow. The source is mutable and paginated requests are
+not transactional; preserve the cache and manifest for replay. The SHA-256
+covers canonicalized feature JSON lines, not the original HTTP response bytes.
+Specify `mode="offline"` and `sha256=source["sha256"]` to verify a saved
+snapshot. `refresh` deliberately fetches a new snapshot.
+
+Credit: U.S. Geological Survey, [Water Data for the Nation](https://doi.org/10.5066/F7P55KJN);
+see its [citation guidance](https://waterdata.usgs.gov/citation/) and
+[data disclaimer](https://water.usgs.gov/data/disclaimer.html). The
+[notebook](https://github.com/RiskThinking/crc-docs/blob/main/notebooks/usgs_streamflow.ipynb)
+and [pipeline](https://github.com/RiskThinking/crc-docs/blob/main/pipelines/usgs_streamflow_pipeline.py)
+show a daily-series inspection.
+
+## CHIRPS v3 monthly precipitation
+
+Read final monthly gridded precipitation from the Climate Hazards Center:
+
+```python
+from crc_sdk.workflows import CHIRPSMonthlyPlan
+
+plan = (
+    CHIRPSMonthlyPlan.monthly(2020, 1)
+    .for_area((36.75, -1.35, 36.85, -1.25))
+    .cache("cache")
+)
+print(plan.explain())
+source = plan.prefetch()
+for batch in plan.batches():
+    print(batch.num_rows)
+```
+
+Each output row represents a source pixel centre and a monthly precipitation
+total in millimetres. The scan excludes the source's `-9999` ocean/no-data
+sentinel, including when it is absent from the COG metadata; zero is valid.
+Bounds select a raster window. No spatial averaging, interpolation, daily
+disaggregation or extreme-rainfall fitting is implied.
+
+The default `stream` mode reads the requested window over HTTP and cannot
+verify a full-file checksum. `cache(...)` downloads the complete monthly COG
+in bounded chunks and records its SHA-256, source URL and retrieval metadata.
+Use `mode="offline"` and `sha256=source["sha256"]` to verify and replay a
+retained snapshot. The source may be revised; a version label does not pin its
+bytes. CHIRPS v3 covers 60°S–60°N from 1981; a grid estimate is not design
+rainfall or flood depth.
+
+Source: Climate Hazards Center, UC Santa Barbara, [CHIRPS3 Data Repository](https://doi.org/10.15780/G2JQ0P),
+CC BY 4.0. See the [notebook](https://github.com/RiskThinking/crc-docs/blob/main/notebooks/chirps_monthly.ipynb)
+and [pipeline](https://github.com/RiskThinking/crc-docs/blob/main/pipelines/chirps_monthly_pipeline.py).
+
+## ECCC GeoMet daily climate observations
+
+Inspect selected Canadian daily station observations with their source flags:
+
+```python
+from crc_sdk.workflows import ECCCDailyPlan
+
+plan = (
+    ECCCDailyPlan.for_station("6158731")
+    .years(2020, 2020)
+    .cache("cache")
+)
+print(plan.explain())
+sources = plan.prefetch()
+for batch in plan.batches():
+    print(batch.num_rows)
+```
+
+The selector is the seven-character ECCC climate ID, not the separate
+Historical Climate Data web station ID. GeoMet contains a selected subset of
+stations. Output includes the source's daily measurements and flags; nulls and
+trace flags are retained, without applying a quality or completeness policy.
+The source local-date label is not an assertion that all stations share one UTC
+observation window. A station record is not an interpolated area or an AHCCD
+homogenized series, and daily precipitation is not subdaily design rainfall.
+
+Each year is fetched in bounded pages and retained as checksummed canonical
+feature records. Manifests include raw HTTP page checksums and request URLs.
+Pages are not an upstream transactional snapshot, and the service can revise
+data. For replay, keep the cache and pass `mode="offline"` with a mapping of
+years to the recorded `sha256` values.
+
+Data source: Environment and Climate Change Canada. The [GeoMet daily
+collection](https://open.canada.ca/data/en/dataset/5f963c2d-d4ed-5a79-8a31-c9c582ca5098)
+is offered under the Open Government Licence – Canada and the [ECCC data
+services licence](https://eccc-msc.github.io/open-data/licence/readme_en/).
+The [notebook](https://github.com/RiskThinking/crc-docs/blob/main/notebooks/eccc_daily_observations.ipynb)
+and [pipeline](https://github.com/RiskThinking/crc-docs/blob/main/pipelines/eccc_daily_pipeline.py)
+show an observation and flag audit.
+
+## HYDAT daily mean hydrometric observations
+
+Inspect historical Canadian gauge observations from ECCC GeoMet:
+
+```python
+from crc_sdk.workflows import HYDATDailyPlan
+
+plan = (
+    HYDATDailyPlan.for_station("02HA014")
+    .years(2020, 2020)
+    .cache("cache")
+)
+print(plan.explain())
+sources = plan.prefetch()
+for batch in plan.batches():
+    print(batch.num_rows)
+```
+
+Output retains daily mean discharge in m³/s, gauge level in metres, missing
+values and the source's English and French data symbols. The level datum is
+not supplied by this daily endpoint and is recorded as unspecified. Gauge
+level is not asset flood depth or necessarily elevation above sea level; daily
+mean flow is not instantaneous peak flow. No quality or completeness policy
+is inferred. See [Water Survey data symbols](https://wateroffice.ec.gc.ca/contactus/faq_e.html)
+and [datum guidance](https://wateroffice.ec.gc.ca/report/datum_faq_e.html).
+
+Each year is fetched in bounded pages and stored as checksummed canonical
+feature records; manifests retain page URLs and raw HTTP response checksums.
+Pages are not an upstream transactional snapshot and records can be revised.
+Keep the cache and pass `mode="offline"` with recorded year-to-`sha256`
+values to replay captured records.
+
+Data source: Environment and Climate Change Canada, [Historical Hydrometric
+Data](https://open.canada.ca/data/en/dataset/1ee9e14d-0814-5201-a3be-705809d8ee0e),
+Open Government Licence – Canada; see the [ECCC data services licence](https://eccc-msc.github.io/open-data/licence/readme_en/).
+The [notebook](https://github.com/RiskThinking/crc-docs/blob/main/notebooks/hydat_daily_observations.ipynb)
+and [pipeline](https://github.com/RiskThinking/crc-docs/blob/main/pipelines/hydat_daily_pipeline.py)
+show an observation audit.
+
+## NOAA coastal extreme water levels
+
+Inspect NOAA CO-OPS published annual high-water exceedance estimates:
+
+```python
+from crc_sdk.workflows import NOAAExtremeWaterLevelPlan
+
+plan = NOAAExtremeWaterLevelPlan.for_station("8638610").cache("cache")
+sources = plan.prefetch()
+pinned = plan.cache(
+    "cache", mode="offline",
+    sha256={name: metadata["sha256"] for name, metadata in sources.items()},
+)
+info = pinned.source_info()
+levels = pinned.source_levels()
+annual = pinned.annual_extremes()
+```
+
+The levels are published station-point annual exceedance probabilities and
+heights in metres relative to NOAA's stated datum and epoch. The reported
+90% confidence limits describe uncertainty in those levels; they are not
+additional probability knots. NOAA's rounded probability and return-period
+labels are preserved independently. The annual series is detrended; its
+reference notice is retained on each row and it cannot be shifted to another
+datum as if it were an ordinary measured water level. This source is neither
+asset inundation depth nor a future sea-level projection.
+
+The station metadata, exceedance levels and detrended annual series are
+fetched separately and checksummed as raw responses; they are not an atomic
+upstream release. Retain all three snapshots for replay. No canonical hazard
+curve or spatial interpolation is inferred. Source: NOAA National Ocean
+Service, CO-OPS. See [NOAA's product documentation](https://api.tidesandcurrents.noaa.gov/dpapi/prod/),
+[notebook](https://github.com/RiskThinking/crc-docs/blob/main/notebooks/noaa_extreme_water_levels.ipynb)
+and [pipeline](https://github.com/RiskThinking/crc-docs/blob/main/pipelines/noaa_extreme_water_levels_pipeline.py).
+
+## NOAA 2022 sea-level scenarios
+
+Inspect 2022 U.S. interagency relative sea-level scenarios at a NOAA station:
+
+```python
+from crc_sdk.workflows import NOAASeaLevelPlan
+
+plan = NOAASeaLevelPlan.for_station("8638610").scenario("all").cache("cache")
+source = plan.prefetch()
+pinned = plan.cache("cache", mode="offline", sha256=source["sha256"])
+projections = pinned.projections()
+```
+
+NOAA CO-OPS serves this report's station projections in centimetres relative
+to a **2005 baseline**. That differs from some published tools' year-2000
+baseline. The adapter preserves NOAA's scenario names and interval bounds;
+it does not map them to emissions pathways or annual exceedance probabilities.
+Relative sea-level change is not an asset flood depth. Combining these
+projections with historical water-level estimates requires an explicit,
+scientifically justified datum and baseline adjustment; no transformation is
+applied.
+
+The response is cached with its SHA-256 and source provenance. The adapter
+requires the 2022 report, U.S. station support and the known one-page response;
+it rejects an unexpectedly paginated response rather than returning partial
+data. Source: NOAA National Ocean Service, CO-OPS. See NOAA's [2022 application
+guide](https://cdn.oceanservice.noaa.gov/oceanserviceprod/hazards/sealevelrise/noaa-nos-techrpt02-global-regional-SLR-scenarios-US-application-guide.pdf),
+the [notebook](https://github.com/RiskThinking/crc-docs/blob/main/notebooks/noaa_sea_level_scenarios.ipynb)
+and [pipeline](https://github.com/RiskThinking/crc-docs/blob/main/pipelines/noaa_sea_level_pipeline.py).

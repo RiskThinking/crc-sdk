@@ -37,6 +37,7 @@ if TYPE_CHECKING:
     from .ghcnh import GHCNhPlan
     from .isd import ISDPlan
     from .jrc import JRCSourcePlan
+    from .nex import NEXSourcePlan
 
 PORTFOLIO_METADATA_KEY = "crc.hazard.evaluation"
 _PORTFOLIO_RESERVED_COLUMNS = frozenset(
@@ -537,6 +538,25 @@ class HazardDataset:
             archive=archive.lower(),
             requested_version=version,
             strict_licence=strict_licence,
+        )
+
+    @classmethod
+    def nex_gddp_cmip6(
+        cls,
+        recipe: str,
+        *,
+        model: str,
+        scenario: str,
+        member: str = "r1i1p1f1",
+        grid_label: str = "gn",
+        version: str = "1.0",
+        strict_licence: bool = False,
+    ) -> NEXSourcePlan:
+        """Plan streamed, bias-adjusted NEX annual extremes for one model member."""
+        from .nex import NEXSourcePlan
+
+        return NEXSourcePlan(
+            recipe.lower(), model, scenario, member, grid_label, version, strict_licence
         )
 
     def metadata(self) -> HazardDatasetMetadata:
