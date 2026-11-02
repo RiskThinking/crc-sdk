@@ -57,7 +57,9 @@ jobs:
           fail_on_unmatched_files: true
           draft: false
           prerelease: ${{ steps.prerelease.outputs.is_prerelease }}
-          files: dist/*
+          files: |
+            dist/*.whl
+            dist/*.tar.gz
 
       - name: Publish package distributions to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
