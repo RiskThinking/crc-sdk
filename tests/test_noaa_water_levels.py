@@ -4,6 +4,7 @@ import io
 import json
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
+from urllib.request import Request
 
 import pytest
 
@@ -60,8 +61,9 @@ def install_fake(
 ) -> list[str]:
     requests: list[str] = []
 
-    def fetch(url: str, **kwargs: object) -> Response:
-        query = parse_qs(urlsplit(url).query)
+    def fetch(url: Request, **kwargs: object) -> Response:
+        assert url.get_header("User-agent") == "crc-sdk"
+        query = parse_qs(urlsplit(url.full_url).query)
         resource = (
             "levels"
             if "details" in query

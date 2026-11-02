@@ -13,7 +13,7 @@ from urllib.request import urlopen
 
 import pyarrow as pa  # type: ignore[import-untyped]
 
-from ._remote import file_checksum, read_manifest, write_manifest
+from ._remote import file_checksum, http_request, read_manifest, write_manifest
 
 _ROOT = "https://www.ncei.noaa.gov/data/international-best-track-archive-for-climate-stewardship-ibtracs/v04r01/access/csv"
 _SUBSETS = {
@@ -107,7 +107,7 @@ class IBTrACSPlan:
         try:
             with (
                 os.fdopen(fd, "wb") as target,
-                urlopen(self.url, timeout=120) as response,
+                urlopen(http_request(self.url), timeout=120) as response,
             ):
                 while chunk := response.read(1024 * 1024):
                     target.write(chunk)

@@ -17,7 +17,7 @@ from urllib.request import urlopen
 
 import pyarrow as pa  # type: ignore[import-untyped]
 
-from ._remote import file_checksum, read_manifest, write_manifest
+from ._remote import file_checksum, http_request, read_manifest, write_manifest
 
 _ENDPOINT = "https://api.waterdata.usgs.gov/ogcapi/v1/collections/daily/items"
 _SCHEMA = pa.schema(
@@ -149,7 +149,7 @@ class USGSStreamflowPlan:
                         raise RuntimeError("repeated USGS pagination URL")
                     seen.add(next_url)
                     page_urls.append(next_url)
-                    with urlopen(next_url, timeout=60) as response:
+                    with urlopen(http_request(next_url), timeout=60) as response:
                         raw = response.read(16 * 1024 * 1024 + 1)
                     if len(raw) > 16 * 1024 * 1024:
                         raise ValueError("USGS response exceeds the page byte limit")

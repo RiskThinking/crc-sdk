@@ -4,6 +4,7 @@ import io
 import json
 from pathlib import Path
 from typing import cast
+from urllib.request import Request
 
 import pytest
 
@@ -54,8 +55,9 @@ def test_paginated_snapshot_and_offline_replay(
     ]
     calls: list[str] = []
 
-    def fetch(url: str, **kwargs: object) -> io.BytesIO:
-        calls.append(url)
+    def fetch(url: Request, **kwargs: object) -> io.BytesIO:
+        assert url.get_header("User-agent") == "crc-sdk"
+        calls.append(url.full_url)
         return io.BytesIO(json.dumps(pages[len(calls) - 1]).encode())
 
     monkeypatch.setattr("crc_sdk.workflows.usgs.urlopen", fetch)
