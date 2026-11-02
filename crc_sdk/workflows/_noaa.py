@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from ._remote import file_checksum, read_manifest, write_manifest
+from ._remote import file_checksum, http_request, read_manifest, write_manifest
 
 
 def prepare_resource(
@@ -39,7 +39,7 @@ def prepare_resource(
     directory.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=directory) as scratch:
         staged = Path(scratch) / "source.json"
-        with opener(url, timeout=120) as response:
+        with opener(http_request(url), timeout=120) as response:
             raw = response.read(4 * 1024 * 1024 + 1)
             etag = response.headers.get("ETag")
             modified = response.headers.get("Last-Modified")

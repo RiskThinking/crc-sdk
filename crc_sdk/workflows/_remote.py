@@ -8,6 +8,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal, Protocol, cast
+from urllib.request import Request
 
 from .distributions import return_periods_to_probabilities
 from .portfolio import (
@@ -57,6 +58,11 @@ def validate_bounds(bounds: Sequence[float]) -> Bounds:
     if not (-180 <= min_lon < max_lon <= 180 and -90 <= min_lat < max_lat <= 90):
         raise ValueError("area bounds must be ordered WGS84 longitude/latitude values")
     return cast(Bounds, normalized)
+
+
+def http_request(url: str) -> Request:
+    """Identify SDK requests to public data services."""
+    return Request(url, headers={"User-Agent": "crc-sdk"})
 
 
 def file_checksum(path: Path) -> str:

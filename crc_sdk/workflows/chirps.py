@@ -17,6 +17,7 @@ from crc_sdk.connectors.duckdb.geotiff import GeoTiffRaster
 from ._remote import (
     Bounds,
     file_checksum,
+    http_request,
     read_manifest,
     validate_bounds,
     write_manifest,
@@ -124,7 +125,10 @@ class CHIRPSMonthlyPlan:
         directory.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=directory) as scratch:
             staged = Path(scratch) / "source.cog"
-            with urlopen(self.url, timeout=120) as source, staged.open("wb") as target:
+            with (
+                urlopen(http_request(self.url), timeout=120) as source,
+                staged.open("wb") as target,
+            ):
                 while chunk := source.read(1024 * 1024):
                     target.write(chunk)
                 headers = source.headers

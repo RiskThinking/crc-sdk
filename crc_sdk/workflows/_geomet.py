@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlsplit
 
-from ._remote import file_checksum, read_manifest, write_manifest
+from ._remote import file_checksum, http_request, read_manifest, write_manifest
 
 
 def prepare_snapshot(
@@ -62,7 +62,7 @@ def prepare_snapshot(
                     raise RuntimeError(f"repeated {label} pagination URL")
                 seen.add(next_url)
                 page_urls.append(next_url)
-                with opener(next_url, timeout=120) as source:
+                with opener(http_request(next_url), timeout=120) as source:
                     raw = source.read(16 * 1024 * 1024 + 1)
                 if len(raw) > 16 * 1024 * 1024:
                     raise ValueError(f"{label} response exceeds page byte limit")
