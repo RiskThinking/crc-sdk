@@ -289,6 +289,17 @@ def test_catalogue_caches_the_daily_subset(
     )
 
 
+def test_ensure_local_rejects_a_cache_for_another_table(
+    archive: CMIP6Archive, tmp_path: Path
+) -> None:
+    local = tmp_path / "cache" / "catalogue.parquet"
+    CMIP6Catalogue(archive).ensure_local(local)
+    # The cached file holds only daily rows; reusing it for Amon is wrong.
+    with pytest.raises(ValueError, match="caches table_id"):
+        CMIP6Catalogue(archive).ensure_local(local, table_id="Amon")
+    assert CMIP6Catalogue(archive).ensure_local(local) == local
+
+
 # ---------------------------------------------------------------------------
 # Reading
 # ---------------------------------------------------------------------------
@@ -382,7 +393,11 @@ def test_txx_reads_the_temperature_recipe(
 
 
 def _build_year_with_gap(
-    path: Path, missing_day: int, *, wet_day_depth: float = 20.0
+    path: Path,
+    missing_day: int,
+    *,
+    wet_day_depth: float = 20.0,
+    fill_value: float | None = None,
 ) -> CMIP6Provider:
     """One noleap year whose time axis and data both skip ``missing_day``."""
     days = np.array([day for day in range(365) if day != missing_day])
@@ -401,8 +416,13 @@ def _build_year_with_gap(
     precip = np.zeros((365, LAT.size, LON.size), dtype=np.float32)
     precip[WET_DAY] = wet_day_depth / 86400.0
     precip[200:205] = 3.0 / 86400.0
+    extra: dict[str, Any] = {}
+    if fill_value is not None:
+        # xarray-style: the sentinel lives only in .zarray's fill_value.
+        precip[300, 0, 0] = fill_value
+        extra["fill_value"] = fill_value
     array = group.create_array(
-        "pr", data=precip[days], chunks=(days.size, LAT.size, LON.size)
+        "pr", data=precip[days], chunks=(days.size, LAT.size, LON.size), **extra
     )
     array.attrs["_ARRAY_DIMENSIONS"] = ["time", "lat", "lon"]
     array.attrs["units"] = "kg m-2 s-1"
@@ -428,6 +448,16 @@ def test_a_missing_day_is_missing_rather_than_filled(tmp_path: Path) -> None:
     reader = provider.reader(cmip6_recipe("rx1day"), AREA, [2015])
     values = reader.reduce_block(2015, slice(0, 3), slice(0, 3))
     assert np.allclose(values, 3.0, atol=1e-4)  # only the flat spell remains
+
+
+def test_zarr_array_fill_value_is_masked(tmp_path: Path) -> None:
+    provider = _build_year_with_gap(
+        tmp_path / "fill.zarr", missing_day=364, wet_day_depth=0.0, fill_value=1e20
+    )
+    reader = provider.reader(cmip6_recipe("rx1day"), AREA, [2015])
+    values = reader.reduce_block(2015, slice(0, 3), slice(0, 3))
+    # Unmasked, the 1e20 sentinel became an 8.64e24 mm/day "extreme".
+    assert np.allclose(values, 3.0, atol=1e-4)
 
 
 def test_days_are_placed_by_calendar_date_not_by_position(tmp_path: Path) -> None:

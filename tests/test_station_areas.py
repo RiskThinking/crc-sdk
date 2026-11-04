@@ -217,3 +217,26 @@ def test_refresh_updates_discovery_without_changing_pinned_ids(
     assert refreshed.selection_catalogue_sha256 == "def"
     assert pinned.selected_stations == ("USW00000001", STATION)
     assert pinned.selection_catalogue_sha256 == "abc"
+
+
+@pytest.mark.parametrize("sentinel", ["-999.0", "-0999.9", "+9999.0"])
+def test_isd_history_elevation_sentinels_are_missing(
+    sentinel: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # isd-history.csv marks unknown elevation -999.0/-999.9 (hundreds of
+    # stations), not only 9999.
+    raw = (
+        b"USAF,WBAN,STATION NAME,LAT,LON,ELEV(M),BEGIN,END\n"
+        b"007018,00001,Unknown,41.96,-87.93," + sentinel.encode() + b",1990,2025\n"
+        b"007018,00002,Dead Sea,31.5,35.5,-0415.0,19900101,20250824\n"
+    )
+
+    class Response(io.BytesIO):
+        headers = {"Content-Length": str(len(raw))}
+
+    monkeypatch.setattr(
+        "crc_sdk.providers.station_catalogues.urlopen",
+        lambda *args, **kwargs: Response(raw),
+    )
+    table, _ = fetch_catalogue("isd", "https://example.test", r"[0-9]{11}")
+    assert table.column("elevation").to_pylist() == [None, -415.0]

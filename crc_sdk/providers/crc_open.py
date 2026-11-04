@@ -16,6 +16,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from crc_sdk.types import ProbabilitySemantics
 
+from ._http import http_request
+
 DEFAULT_RELEASE = "ssp585-global-2026-10-20-v1"
 PUBLIC_SOURCE = "https://data.riskthinking.ai/crc-open"
 FIXTURE_RELEASE = "ssp585-fixture-2026-10-08-v2"
@@ -25,7 +27,7 @@ DOCS_FIXTURES = (
 
 
 def _http_request(location: str) -> Request:
-    return Request(location, headers={"User-Agent": "crc-sdk"})
+    return http_request(location)
 
 
 class CRCOpenWarning(UserWarning):

@@ -231,3 +231,90 @@ def test_conditional_reads_and_projection_fingerprint(
     assert "raw_sha256" not in info
     assert len(info["projected_columns"]) == 8
     assert len(info["projection_sha256"]) == 64
+
+
+def test_missing_projected_column_is_a_clear_error(tmp_path: Path) -> None:
+    table = pq.read_table(io.BytesIO(parquet_bytes())).drop_columns(
+        ["temperature_Source_Code"]
+    )
+    output = io.BytesIO()
+    pq.write_table(table, output)
+    output.seek(0)
+    with pytest.raises(ValueError, match="temperature_Source_Code"):
+        reduce_daily(
+            output,
+            STATION,
+            2020,
+            GHCNhCompleteness(),
+            temporary_directory=str(tmp_path),
+        )
+
+
+@pytest.mark.parametrize("status", [412, 503])
+def test_fsspec_range_read_errors_are_retried(
+    status: int, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import aiohttp  # type: ignore[import-untyped]
+
+    raw = parquet_bytes()
+
+    class Head(io.BytesIO):
+        headers = {"ETag": '"etag"', "Content-Length": str(len(raw))}
+
+    attempts: list[int] = []
+
+    def open_remote(url: str, *args: Any, **kwargs: Any) -> Any:
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise aiohttp.ClientResponseError(
+                request_info=None,  # type: ignore[arg-type]
+                history=(),
+                status=status,
+            )
+        if len(attempts) == 2:
+            raise aiohttp.ClientConnectionError("connection reset")
+        return io.BytesIO(raw)
+
+    monkeypatch.setattr("crc_sdk.providers.ghcnh.urlopen", lambda *a, **kw: Head())
+    monkeypatch.setattr("crc_sdk.providers.ghcnh.fsspec.open", open_remote)
+    monkeypatch.setattr("crc_sdk.providers.ghcnh.time.sleep", lambda _: None)
+    table, _ = fetch_daily(
+        STATION,
+        2020,
+        GHCNhCompleteness(),
+        temporary_directory=str(tmp_path),
+        memory_limit="256MB",
+    )
+    assert table.num_rows == 1
+    assert len(attempts) == 3
+
+
+def test_permanent_fsspec_errors_are_not_retried(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import aiohttp  # type: ignore[import-untyped]
+
+    class Head(io.BytesIO):
+        headers = {"ETag": '"etag"', "Content-Length": "1"}
+
+    attempts: list[int] = []
+
+    def open_remote(url: str, *args: Any, **kwargs: Any) -> Any:
+        attempts.append(1)
+        raise aiohttp.ClientResponseError(
+            request_info=None,  # type: ignore[arg-type]
+            history=(),
+            status=403,
+        )
+
+    monkeypatch.setattr("crc_sdk.providers.ghcnh.urlopen", lambda *a, **kw: Head())
+    monkeypatch.setattr("crc_sdk.providers.ghcnh.fsspec.open", open_remote)
+    with pytest.raises(aiohttp.ClientResponseError):
+        fetch_daily(
+            STATION,
+            2020,
+            GHCNhCompleteness(),
+            temporary_directory=str(tmp_path),
+            memory_limit="256MB",
+        )
+    assert len(attempts) == 1

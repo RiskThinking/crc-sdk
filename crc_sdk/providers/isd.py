@@ -13,6 +13,7 @@ from urllib.request import urlopen
 import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.csv as csv  # type: ignore[import-untyped]
 
+from ._http import http_request
 from .stations import DigestReader, aggregate_daily, empty_daily
 
 ISD_VERSION = "isd-2025-08-24"
@@ -113,7 +114,7 @@ def _fetch_daily(
 ) -> tuple[Any, dict[str, Any]]:
     url = f"{ISD_URL}/{year}/{station}.csv"
     try:
-        response = urlopen(url, timeout=120)
+        response = urlopen(http_request(url), timeout=120)
     except HTTPError as error:
         if error.code != 404:
             raise

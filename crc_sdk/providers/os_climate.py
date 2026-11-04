@@ -9,10 +9,10 @@ from types import MappingProxyType
 from typing import Any, Optional, Union
 from urllib.request import urlopen
 
-import s3fs  # type: ignore[import-untyped]
-
 from crc_sdk.connectors.duckdb import DuckDBConnection, default_work_dir
 from crc_sdk.connectors.duckdb.zarr import RasterMetadata, ZarrRaster
+
+from ._http import HTTP_TIMEOUT, http_request
 
 DEFAULT_INVENTORY_URL = (
     "https://raw.githubusercontent.com/os-climate/hazard/main/"
@@ -107,7 +107,7 @@ class OSClimateInventory:
 
     @classmethod
     def from_url(cls, url: str = DEFAULT_INVENTORY_URL) -> "OSClimateInventory":
-        with urlopen(url) as response:
+        with urlopen(http_request(url), timeout=HTTP_TIMEOUT) as response:
             return cls.from_dict(json.load(response))
 
     @classmethod
@@ -242,6 +242,8 @@ class OSClimateProvider:
             )
         else:
             if self._filesystem is None:
+                import s3fs  # type: ignore[import-untyped]
+
                 self._filesystem = s3fs.S3FileSystem(**options)
             store = s3fs.S3Map(
                 root=root,

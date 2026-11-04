@@ -28,6 +28,8 @@ from crc_sdk.connectors.duckdb import DuckDBConnection, NetCDFRaster, default_wo
 from crc_sdk.connectors.duckdb.netcdf import EDOAnnualMinimaCurveSource
 from crc_sdk.connectors.duckdb.zarr import Bounds, RasterMetadata
 
+from ._http import HTTP_TIMEOUT, http_request
+
 
 def _at_least_two(start: int, stop: int, size: int) -> tuple[int, int]:
     if stop - start >= 2:
@@ -108,8 +110,19 @@ class EDOProvider:
             work_dir or default_work_dir(), extensions=()
         )
         self.work_dir = work_dir
+        # Filenames `complete_years` actually saw in the release listing; a
+        # complete year may end on dekad 1221 or 1231 depending on release.
+        self._listed_files: dict[int, str] = {}
 
     def year_url(self, year: int) -> str:
+        """The URL of a complete year's file.
+
+        Uses the filename seen by :meth:`complete_years` when that listing
+        has been read, else the dataset's filename template.
+        """
+        listed = self._listed_files.get(int(year))
+        if listed is not None:
+            return f"{self.dataset.base_url}/{listed}"
         return self.dataset.year_url(year)
 
     def resolve_version(self, requested: str) -> str:
@@ -121,7 +134,7 @@ class EDOProvider:
                 )
             return requested
         collection_url = self.dataset.base_url.rsplit("/", 1)[0] + "/"
-        with urlopen(collection_url) as response:
+        with urlopen(http_request(collection_url), timeout=HTTP_TIMEOUT) as response:
             listing = response.read().decode("utf-8", errors="replace")
         versions: set[str] = {
             match.replace("-", ".")
@@ -139,19 +152,23 @@ class EDOProvider:
 
     def complete_years(self) -> tuple[int, ...]:
         """Discover complete calendar-year resources in the configured release."""
-        with urlopen(self.dataset.base_url + "/") as response:
+        with urlopen(
+            http_request(self.dataset.base_url + "/"), timeout=HTTP_TIMEOUT
+        ) as response:
             listing = response.read().decode("utf-8", errors="replace")
-        years = {
-            int(year)
-            for year in re.findall(
-                r"sminx_m_eul_([0-9]{4})0101_\1(?:1221|1231)_t\.nc", listing
-            )
-        }
-        if not years:
+        files: dict[int, str] = {}
+        for match in re.finditer(
+            r"sminx_m_eul_([0-9]{4})0101_\1(?:1221|1231)_t\.nc", listing
+        ):
+            # Prefer the later end dekad when a release lists both.
+            year = int(match.group(1))
+            files[year] = max(files.get(year, ""), match.group(0))
+        if not files:
             raise RuntimeError(
                 f"no complete EDO years found at {self.dataset.base_url}"
             )
-        return tuple(sorted(years))
+        self._listed_files = files
+        return tuple(sorted(files))
 
     def open_years(
         self,
@@ -165,7 +182,7 @@ class EDOProvider:
         own its lifecycle, same as `GeoTiffRaster.open()`/`JRCProvider.open_tile()`.
         """
         return self.open_resources(
-            {year: self.dataset.year_url(year) for year in years},
+            {year: self.year_url(year) for year in years},
             cache_dir=cache_dir,
         )
 
@@ -222,7 +239,7 @@ class EDOProvider:
         target.parent.mkdir(parents=True, exist_ok=True)
         temporary = target.with_suffix(".tmp.nc")
         with NetCDFRaster.open(
-            self.dataset.year_url(year),
+            self.year_url(year),
             variable=self.dataset.variable,
             connection=self.connection,
             work_dir=self.work_dir,

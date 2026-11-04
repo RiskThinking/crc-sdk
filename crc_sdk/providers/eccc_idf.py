@@ -12,7 +12,9 @@ import zipfile
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from typing import Any, cast
-from urllib.request import Request, urlopen
+from urllib.request import urlopen
+
+from ._http import http_request
 
 ROOT = "https://collaboration.cmc.ec.gc.ca/cmc/climate/Engineer_Climate/IDF"
 LICENCE = "OGL-Canada-2.0"
@@ -56,7 +58,7 @@ class _RangeReader(io.RawIOBase):
         super().__init__()
         self.url = url
         self.position = 0
-        with urlopen(Request(url, method="HEAD"), timeout=60) as response:
+        with urlopen(http_request(url, method="HEAD"), timeout=60) as response:
             self.size = int(response.headers["Content-Length"])
             self.etag = response.headers.get("ETag")
             self.last_modified = response.headers.get("Last-Modified")
@@ -88,7 +90,7 @@ class _RangeReader(io.RawIOBase):
             headers["If-Match"] = self.etag
         elif self.last_modified:
             headers["If-Unmodified-Since"] = self.last_modified
-        with urlopen(Request(self.url, headers=headers), timeout=60) as response:
+        with urlopen(http_request(self.url, headers=headers), timeout=60) as response:
             expected = f"bytes {self.position}-{end - 1}/{self.size}"
             if (
                 response.status != 206

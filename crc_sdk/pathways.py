@@ -76,14 +76,30 @@ def register_pathway(
     """Register a private pathway (or extra aliases of an existing one).
 
     A label already owned by a different canonical id raises ``ValueError``;
-    re-registering the same canonical id only adds aliases.
+    re-registering the same canonical id (matched, like every label,
+    ignoring case and whitespace) only adds aliases. A ``framework_id`` that
+    contradicts the pathway's existing one raises ``ValueError``; one given
+    for a pathway without a framework id applies to all of its labels.
     """
     if not canonical_id.strip():
         raise ValueError("canonical_id must be non-empty")
-    existing = _REGISTRY.get(_key(canonical_id))
-    if existing is not None and framework_id is None:
-        framework_id = existing[1]
-    _add(canonical_id.strip(), framework_id, aliases)
+    canonical = canonical_id.strip()
+    existing = _REGISTRY.get(_key(canonical))
+    if existing is not None:
+        # Keep the registered spelling: "SSP585" extends "ssp585".
+        canonical = existing[0]
+        if framework_id is None:
+            framework_id = existing[1]
+        elif existing[1] is not None and existing[1] != framework_id:
+            raise ValueError(
+                f"{canonical!r} already has framework id {existing[1]}, "
+                f"not {framework_id}"
+            )
+    _add(canonical, framework_id, aliases)
+    if existing is not None and framework_id != existing[1]:
+        for key, (owner, _) in list(_REGISTRY.items()):
+            if owner == canonical:
+                _REGISTRY[key] = (canonical, framework_id)
 
 
 # crc-framework spellings are the canonical ids, so `historic` is canonical

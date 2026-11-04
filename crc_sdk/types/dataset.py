@@ -1,5 +1,6 @@
 """Dataset-level metadata models."""
 
+import math
 from collections.abc import Mapping
 from datetime import datetime
 from typing import Literal, Optional, Union
@@ -249,12 +250,18 @@ class HazardDatasetMetadata(BaseModel):
                 raise ValueError(f"{', '.join(added)} require schema 1.3")
         if self.return_period_support is not None:
             lower, upper = self.return_period_support
+            # NaN fails every comparison, and JSON cannot round-trip NaN/inf,
+            # so non-finite bounds must be rejected explicitly.
+            if not (math.isfinite(lower) and math.isfinite(upper)):
+                raise ValueError("return_period_support must be finite")
             if lower <= 1.0 or upper <= lower:
                 raise ValueError(
                     "return_period_support must be increasing and greater than one"
                 )
         if self.source_probability_support is not None:
             lower, upper = self.source_probability_support
+            if not (math.isfinite(lower) and math.isfinite(upper)):
+                raise ValueError("source_probability_support must be finite")
             if not 0.0 <= lower < upper <= 1.0:
                 raise ValueError(
                     "source_probability_support must be increasing within [0, 1]"

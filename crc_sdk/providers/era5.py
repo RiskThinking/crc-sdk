@@ -376,7 +376,24 @@ class ERA5BlockReader:
             or store.land_sea_mask not in self._provider.group
         ):
             raise ValueError(f"store {store.name!r} has no land-sea mask")
-        mask = self._read(store.land_sea_mask, 0, 1, self._rows, self._cols)[0]
+        # A time-varying mask (ARCO) is NaN before the record starts, so read
+        # it at the first valid time step rather than index 0 (1900 in ARCO).
+        index = 0
+        dims = self._provider.group[store.land_sea_mask].attrs.get(
+            "_ARRAY_DIMENSIONS", ()
+        )
+        start = self._provider.group.attrs.get("valid_time_start")
+        if store.time_name in dims and start is not None:
+            first = np.datetime64(str(start)[:19].replace(" ", "T"), "s")
+            index = int(np.searchsorted(self._provider.times, first))
+        mask = self._read(
+            store.land_sea_mask, index, index + 1, self._rows, self._cols
+        )[0]
+        if not np.isfinite(mask).any():
+            raise ValueError(
+                f"store {store.name!r} land-sea mask has no finite values for the "
+                "requested area"
+            )
         return np.asarray(mask >= LAND_THRESHOLD)
 
     def reduce_block(
