@@ -6,7 +6,7 @@ import hashlib
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -417,7 +417,7 @@ class EDOCanonicalizationPlan:
             "dataset": provider.dataset.name,
             "requested_version": source.requested_version,
             "resolved_version": version,
-            "resolved_at": datetime.now(timezone.utc).isoformat(),
+            "resolved_at": datetime.now(UTC).isoformat(),
             "bounds": self.years.area.bounds,
             "requested_years": (
                 self.years.selected_years

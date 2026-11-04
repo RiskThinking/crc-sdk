@@ -14,7 +14,7 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Literal, Protocol, Union
+from typing import Any, Literal, Protocol
 
 import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
@@ -45,7 +45,7 @@ from ._remote import (
 from .distributions import return_periods_to_probabilities
 from .portfolio import AssetPortfolio, HazardDataset
 
-BYOPolicy = Union[CDFCurveFitPolicy, CurveFitIngestPolicy]
+BYOPolicy = CDFCurveFitPolicy | CurveFitIngestPolicy
 
 _BATCH_ROWS = 65_536
 _PARQUET_SUFFIXES = (".parquet", ".pq")

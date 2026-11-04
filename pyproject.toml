@@ -83,3 +83,9 @@ line-length = 88
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
+# Public enums keep `str, Enum`: StrEnum changes str() and format() output.
+ignore = ["UP042"]
+
+[tool.ruff.format]
+# Docs keep compact multi-argument examples to save reader tokens.
+exclude = ["*.md"]

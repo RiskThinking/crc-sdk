@@ -109,9 +109,7 @@ def test_contract_sort_output_defaults_off(tmp_path: Path) -> None:
         resolution=5,
         include_coverage=False,
     )
-    rows = con.execute(
-        f"SELECT hex_id FROM '{lookup}' ORDER BY hex_id"
-    ).fetchall()
+    rows = con.execute(f"SELECT hex_id FROM '{lookup}' ORDER BY hex_id").fetchall()
     assert rows == [("h1",), ("h2",)]
 
 
@@ -129,9 +127,7 @@ def test_contract_sort_output_can_be_enabled(tmp_path: Path) -> None:
         )
         """
     )
-    con.execute(
-        "INSERT INTO coverage VALUES ('h1', 'LUX', 'a1', 'C', 'a2', 'T', 1.0)"
-    )
+    con.execute("INSERT INTO coverage VALUES ('h1', 'LUX', 'a1', 'C', 'a2', 'T', 1.0)")
     con.execute(f"COPY coverage TO '{exploded}' (FORMAT PARQUET)")
     write_lookup_contract(
         con,

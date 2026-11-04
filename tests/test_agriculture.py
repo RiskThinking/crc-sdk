@@ -110,9 +110,7 @@ def test_usda_explicit_background_class_is_retained(
     )
 
     codes = sorted(
-        code.as_py()
-        for batch in scan._batches()
-        for code in batch.column("crop_code")
+        code.as_py() for batch in scan._batches() for code in batch.column("crop_code")
     )
 
     assert codes == expected

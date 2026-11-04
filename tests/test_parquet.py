@@ -206,7 +206,7 @@ def test_unordered_stream_writer_is_batch_bounded_and_preserves_input_order(
 
 
 def test_unordered_stream_writer_accepts_uncompressed(tmp_path: Path) -> None:
-    """"uncompressed" is a valid compression choice on the ordered (DuckDB)
+    """ "uncompressed" is a valid compression choice on the ordered (DuckDB)
     path; pyarrow's ParquetWriter spells the same codec "none" and rejects
     "uncompressed" outright, so the unordered path must translate it."""
     table = _table().slice(0, 1)
@@ -393,6 +393,7 @@ def test_writers_do_not_revalidate_validated_batches(
     batch = validate_hazard_table(_many_rows(10), metadata=metadata)
     calls: list[int] = []
     real = parquet._validate_curves
+
     def counting(rows: Any) -> None:
         calls.append(len(rows))
         real(rows)

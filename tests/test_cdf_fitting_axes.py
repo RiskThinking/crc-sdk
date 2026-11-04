@@ -219,9 +219,7 @@ def test_censored_policy_keeps_dry_wet_and_failed_rows_distinct() -> None:
     assert result.summary.censored_rows == 1
     assert result.summary.skipped_rows == 1
     assert (
-        result.summary.family_failure_reasons["genextreme"][
-            "missing_censor_support"
-        ]
+        result.summary.family_failure_reasons["genextreme"]["missing_censor_support"]
         == 1
     )
 

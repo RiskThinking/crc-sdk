@@ -10,7 +10,7 @@ import warnings
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 from urllib.error import HTTPError
@@ -306,7 +306,7 @@ class CRCOpenPlan:
                     source=self.source,
                     release=self.release,
                     catalog_sha256=checksum,
-                    retrieved_at=datetime.now(timezone.utc).isoformat(),
+                    retrieved_at=datetime.now(UTC).isoformat(),
                     licence=catalog.licence,
                     attribution=catalog.attribution,
                     resources=manifest.get("resources", []) if manifest else [],
@@ -597,7 +597,7 @@ class CRCOpenPlan:
                         ),
                         "licence": catalog.licence,
                         "attribution": catalog.attribution,
-                        "retrieved_at": datetime.now(timezone.utc).isoformat(),
+                        "retrieved_at": datetime.now(UTC).isoformat(),
                         "checksum": checksum,
                     }
                 )

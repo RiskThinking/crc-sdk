@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from string import Formatter
 from types import MappingProxyType
-from typing import Any, Optional, Union
+from typing import Any
 from urllib.request import urlopen
 
 from crc_sdk.connectors.duckdb import DuckDBConnection, default_work_dir
@@ -45,7 +45,7 @@ class OSClimateResource:
         *,
         scenario: str,
         year: int,
-        parameters: Optional[Mapping[str, str]] = None,
+        parameters: Mapping[str, str] | None = None,
     ) -> "OSClimateSelection":
         """Validate dimensions and resolve the concrete Zarr array path."""
         years = self.scenarios.get(scenario)
@@ -146,11 +146,11 @@ class OSClimateInventory:
     def find(
         self,
         *,
-        hazard_type: Optional[str] = None,
-        indicator_id: Optional[str] = None,
-        model_gcm: Optional[str] = None,
-        source: Optional[str] = None,
-        path: Optional[str] = None,
+        hazard_type: str | None = None,
+        indicator_id: str | None = None,
+        model_gcm: str | None = None,
+        source: str | None = None,
+        path: str | None = None,
     ) -> tuple[OSClimateResource, ...]:
         """Return resources matching exact inventory fields."""
         return tuple(
@@ -163,7 +163,7 @@ class OSClimateInventory:
             and (path is None or resource.path == path)
         )
 
-    def select(self, **filters: Optional[str]) -> OSClimateResource:
+    def select(self, **filters: str | None) -> OSClimateResource:
         """Return one unambiguous resource."""
         matches = self.find(**filters)
         if len(matches) == 1:
@@ -185,14 +185,14 @@ class OSClimateProvider:
 
     def __init__(
         self,
-        inventory: Optional[OSClimateInventory] = None,
+        inventory: OSClimateInventory | None = None,
         *,
         inventory_url: str = DEFAULT_INVENTORY_URL,
         bucket: str = "os-climate-physical-risk",
         root: str = "hazard-indicators/hazard.zarr",
-        storage_options: Optional[Mapping[str, Any]] = None,
-        connection: Optional[DuckDBConnection] = None,
-        work_dir: Optional[Union[str, Path]] = None,
+        storage_options: Mapping[str, Any] | None = None,
+        connection: DuckDBConnection | None = None,
+        work_dir: str | Path | None = None,
     ) -> None:
         self._inventory = inventory
         self.inventory_url = inventory_url
@@ -212,10 +212,10 @@ class OSClimateProvider:
             self._inventory = OSClimateInventory.from_url(self.inventory_url)
         return self._inventory
 
-    def find(self, **filters: Optional[str]) -> tuple[OSClimateResource, ...]:
+    def find(self, **filters: str | None) -> tuple[OSClimateResource, ...]:
         return self.inventory.find(**filters)
 
-    def select(self, **filters: Optional[str]) -> OSClimateResource:
+    def select(self, **filters: str | None) -> OSClimateResource:
         return self.inventory.select(**filters)
 
     def open(self, selection: OSClimateSelection) -> ZarrRaster:
@@ -270,7 +270,7 @@ class OSClimateProvider:
         selection: OSClimateSelection,
         policy: Any,
         *,
-        bounds: Optional[tuple[float, float, float, float]] = None,
+        bounds: tuple[float, float, float, float] | None = None,
     ) -> Any:
         """Open a selection and lazily adapt it to canonical hazard batches."""
         from crc_sdk.connectors.adapters import canonicalize_os_climate

@@ -8,7 +8,7 @@ import re
 import tempfile
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import quote
@@ -252,7 +252,7 @@ class ECCCIDFPlan:
                     )
                 entry = {
                     **remote,
-                    "retrieved_at": datetime.now(timezone.utc).isoformat(),
+                    "retrieved_at": datetime.now(UTC).isoformat(),
                     "version": self.version,
                     "province": self.province,
                     "station": station,

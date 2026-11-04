@@ -223,10 +223,14 @@ class CurveFitIngestPolicy:
             or self.maximum_return_value is not None
         ) and not self.validation_return_periods:
             raise ValueError("return-value bounds require validation_return_periods")
-        if self.fit_method in (
-            "quantile_least_squares",
-            "censored_quantile",
-        ) and self.require_sample_support:
+        if (
+            self.fit_method
+            in (
+                "quantile_least_squares",
+                "censored_quantile",
+            )
+            and self.require_sample_support
+        ):
             raise ValueError("sample support checks require a sample fit method")
         if self.fallback_family is not None:
             if (
@@ -360,9 +364,7 @@ def _fit_provenance(
         else "probability_labelled",
         platform=platform_tag(),
         censor_location=(
-            policy.censor_location
-            if policy.fit_method == "censored_quantile"
-            else None
+            policy.censor_location if policy.fit_method == "censored_quantile" else None
         ),
         residual_scale_floor_ratio=(
             policy.residual_scale_floor_ratio
@@ -600,9 +602,7 @@ def _canonical_batches(
                 "pathway": source.metadata.scenario,
                 "outcome": outcome,
                 "curve_type": base.family if base is not None else None,
-                "normalized_rmse": getattr(
-                    observed_quality, "normalized_rmse", None
-                ),
+                "normalized_rmse": getattr(observed_quality, "normalized_rmse", None),
                 "maximum_absolute_residual": getattr(
                     observed_quality, "maximum_absolute_residual", None
                 ),
@@ -610,12 +610,8 @@ def _canonical_batches(
                     quality, "negative_log_likelihood", None
                 ),
                 "residual_scale": getattr(quality, "residual_scale", None),
-                "residual_scale_floor": getattr(
-                    quality, "residual_scale_floor", None
-                ),
-                "censored_point_count": getattr(
-                    quality, "censored_point_count", None
-                ),
+                "residual_scale_floor": getattr(quality, "residual_scale_floor", None),
+                "censored_point_count": getattr(quality, "censored_point_count", None),
                 "uncensored_point_count": getattr(
                     quality, "uncensored_point_count", None
                 ),

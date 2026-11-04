@@ -10,7 +10,7 @@ from concurrent.futures import ProcessPoolExecutor
 from decimal import Decimal
 from functools import partial
 from pathlib import Path
-from typing import Any, Literal, Union, cast
+from typing import Any, Literal, cast
 from uuid import uuid4
 
 import pyarrow as pa  # type: ignore[import-untyped]
@@ -44,12 +44,12 @@ _REQUIRED_CURVE_COLUMNS = tuple(
     name for name in CURVE_COLUMNS if name not in _OPTIONAL_CURVE_COLUMNS
 )
 
-CurveDistribution = Union[
-    FittedDistribution,
-    HurdleDistribution,
-    PointMassDistribution,
-    TabulatedDistribution,
-]
+CurveDistribution = (
+    FittedDistribution
+    | HurdleDistribution
+    | PointMassDistribution
+    | TabulatedDistribution
+)
 _MP_CONTEXT = multiprocessing.get_context("spawn")
 
 

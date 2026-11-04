@@ -631,9 +631,7 @@ def test_connector_censored_quantile_fit_preserves_sparse_flood_transition() -> 
 
     periods = [2, 5, 10, 25, 50, 100, 250, 500, 1000]
     depths = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.03, 0.06, 0.10]
-    tabulated = TabulatedDistribution.from_return_periods(
-        periods, depths, tail="upper"
-    )
+    tabulated = TabulatedDistribution.from_return_periods(periods, depths, tail="upper")
     distribution, base, diagnostics = _fit_curve(
         tabulated,
         _policy(

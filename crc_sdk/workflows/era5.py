@@ -14,7 +14,7 @@ import tempfile
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -368,7 +368,7 @@ class ERA5CanonicalizationPlan:
         # record does not change as the store grows. Its release stays on the
         # entry as provenance.
         todo = [year for year in years if year not in cached]
-        retrieved = datetime.now(timezone.utc).isoformat()
+        retrieved = datetime.now(UTC).isoformat()
 
         def fetch(year: int) -> dict[str, Any]:
             destination = (

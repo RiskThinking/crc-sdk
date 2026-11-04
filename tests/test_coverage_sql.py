@@ -1,5 +1,6 @@
-import duckdb
 from pathlib import Path
+
+import duckdb
 
 from crc_sdk.connectors.duckdb import ensure_extensions, sql_quote
 from crc_sdk.geometry import (
@@ -103,7 +104,9 @@ def test_single_candidate_interior_hex_gets_full_coverage() -> None:
     )
     con.execute(
         "CREATE TEMPORARY TABLE partial_hexes AS "
-        f"{build_edge_hexes_sql('candidates', 'admins', 'hex_geoms', hex_counts_relation='hex_counts')}"
+        + build_edge_hexes_sql(
+            "candidates", "admins", "hex_geoms", hex_counts_relation="hex_counts"
+        )
     )
     assert con.execute("SELECT COUNT(*) FROM partial_hexes").fetchone() == (0,)
     sql = build_coverage_sql(
@@ -151,7 +154,9 @@ def test_single_candidate_edge_hex_gets_partial_coverage() -> None:
     )
     con.execute(
         "CREATE TEMPORARY TABLE partial_hexes AS "
-        f"{build_edge_hexes_sql('candidates', 'admins', 'hex_geoms', hex_counts_relation='hex_counts')}"
+        + build_edge_hexes_sql(
+            "candidates", "admins", "hex_geoms", hex_counts_relation="hex_counts"
+        )
     )
     assert con.execute("SELECT COUNT(*) FROM partial_hexes").fetchone() == (1,)
     sql = build_coverage_sql(
@@ -189,11 +194,15 @@ def test_materialize_edge_hexes_batches_without_full_hex_geoms() -> None:
         SELECT * FROM (VALUES
             (
                 'edge',
-                ST_GeomFromText('POLYGON((0.5 0.5, 1.5 0.5, 1.5 1.5, 0.5 1.5, 0.5 0.5))')
+                ST_GeomFromText(
+                    'POLYGON((0.5 0.5, 1.5 0.5, 1.5 1.5, 0.5 1.5, 0.5 0.5))'
+                )
             ),
             (
                 'inside',
-                ST_GeomFromText('POLYGON((0.25 0.25, 0.75 0.25, 0.75 0.75, 0.25 0.75, 0.25 0.25))')
+                ST_GeomFromText(
+                    'POLYGON((0.25 0.25, 0.75 0.25, 0.75 0.75, 0.25 0.75, 0.25 0.25))'
+                )
             )
         ) AS t(hex_id, geom)
         """
@@ -410,9 +419,7 @@ def test_hierarchical_coverage_leaves_no_hex_geom_tables(tmp_path: Path) -> None
     )
     remaining = {
         row[0]
-        for row in con.execute(
-            "SELECT table_name FROM duckdb_tables()"
-        ).fetchall()
+        for row in con.execute("SELECT table_name FROM duckdb_tables()").fetchall()
     }
     assert "_crc_hex_geoms" not in remaining
     assert "hex_geoms" not in remaining
