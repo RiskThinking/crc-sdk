@@ -98,6 +98,55 @@ def _fill_value(variable: Any, override: float | None) -> float | None:
     return float(value)
 
 
+def _attr_values(variable: Any, name: str) -> tuple[Any, ...]:
+    attrs = getattr(variable, "attrs", None)
+    raw = attrs.get(name) if attrs is not None else None
+    if raw is None:
+        return ()
+    return tuple(np.asarray(raw).reshape(-1).tolist())
+
+
+def _attr_scalar(variable: Any, name: str) -> float | None:
+    values = _attr_values(variable, name)
+    return float(values[0]) if values else None
+
+
+class _CFDecoding:
+    """CF packed-data decoding h5netcdf (unlike netCDF4/xarray) never applies.
+
+    Sentinels (``_FillValue``/``missing_value``, or an explicit override) are
+    matched against the *raw* stored values first, then ``scale_factor`` and
+    ``add_offset`` unpack what remains -- the CF order, so a packed sentinel
+    never survives as a plausible-looking scaled number.
+    """
+
+    def __init__(self, variable: Any, override: float | None) -> None:
+        sentinels = (
+            (override,)
+            if override is not None
+            else _attr_values(variable, "_FillValue")
+            + _attr_values(variable, "missing_value")
+        )
+        self.sentinels = tuple(dict.fromkeys(sentinels))
+        self.scale = _attr_scalar(variable, "scale_factor")
+        self.offset = _attr_scalar(variable, "add_offset")
+
+    def __call__(self, raw: Any) -> np.ndarray[Any, Any]:
+        """Raw stored values -> float64 physical values, NaN where missing."""
+        stored = np.asarray(raw)
+        invalid = np.zeros(stored.shape, dtype=bool)
+        for sentinel in self.sentinels:
+            invalid |= stored == sentinel
+        values = stored.astype(np.float64)
+        if self.scale is not None:
+            values *= self.scale
+        if self.offset is not None:
+            values += self.offset
+        if invalid.any():
+            values[invalid] = np.nan
+        return values
+
+
 class NetCDFRaster:
     """A remote or local NetCDF variable time-slice with lazy DuckDB scan helpers.
 
@@ -150,7 +199,10 @@ class NetCDFRaster:
         self._lon = lon_coords
         self._lat_step = float(lat_coords[1] - lat_coords[0])
         self._lon_step = float(lon_coords[1] - lon_coords[0])
+        # Raw-unit sentinel kept for introspection; reads mask it (plus any
+        # `missing_value`) and unpack CF scale/offset via `_decode`.
         self.nodata = _fill_value(variable_obj, fill_value)
+        self._decode = _CFDecoding(variable_obj, fill_value)
 
         # An explicit connection means the caller is already in control; only
         # build (and resource-tune) one when they didn't supply their own.
@@ -319,9 +371,8 @@ class NetCDFRaster:
 
         for row_off in range(row_start, row_stop, strip_rows):
             row_end = min(row_off + strip_rows, row_stop)
-            band = np.asarray(
-                self._variable[self.time_index, row_off:row_end, col_start:col_stop],
-                dtype=np.float64,
+            band = self._decode(
+                self._variable[self.time_index, row_off:row_end, col_start:col_stop]
             )
             yield row_off, row_end, band
 
@@ -336,6 +387,8 @@ class NetCDFScan:
 
     def relation(self, *, connection: DuckDBConnection | None = None) -> Any:
         """Create a fresh lazy DuckDB relation for one query execution."""
+        # Validate bounds eagerly, as `GeoTiffScan.relation` does.
+        self.raster._row_col_window(self.bounds)
         schema = pa.schema(
             [
                 ("longitude", pa.float64()),
@@ -358,8 +411,6 @@ class NetCDFScan:
             row_start, row_stop, col_start, col_stop, self.strip_bytes
         ):
             valid = np.isfinite(band)
-            if raster.nodata is not None:
-                valid &= band != raster.nodata
             if not valid.any():
                 continue
             local_row, local_col = np.where(valid)
@@ -440,8 +491,6 @@ class NetCDFH3Scan:
             row_start, row_stop, col_start, col_stop, self.strip_bytes
         ):
             valid = np.isfinite(band)
-            if raster.nodata is not None:
-                valid &= band != raster.nodata
             if self.mask is not None:
                 valid &= self.mask(band)
             if not valid.any():
@@ -582,14 +631,8 @@ class NetCDFBlockReader:
         self, label: int, rows: slice, columns: slice
     ) -> np.ndarray[Any, Any]:
         raster = self.rasters[label]
-        block = np.asarray(
-            raster._variable[:, rows, columns],
-            dtype=np.float64,
-        )
-        finite = np.isfinite(block)
-        if raster.nodata is not None:
-            finite &= block != raster.nodata
-        return reduce_block_samples(np.where(finite, block, np.nan), self.spec)
+        block = raster._decode(raster._variable[:, rows, columns])
+        return reduce_block_samples(block, self.spec)
 
     def close(self) -> None:
         for raster in self.rasters.values():

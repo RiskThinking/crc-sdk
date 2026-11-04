@@ -281,3 +281,84 @@ def test_trim_cache_dir_skips_recently_accessed(tmp_path: Path) -> None:
     trim_cache_dir(cache_dir, max_bytes=0, safe_seconds=300)
 
     assert only_file.exists()
+
+
+def test_pixel_window_keeps_partially_covered_edge_pixels(
+    tmp_path: Path, sample_array: np.ndarray
+) -> None:
+    path = _write_geotiff(tmp_path / "sample.tif", sample_array)
+    raster = GeoTiffRaster.open(path, work_dir=tmp_path / "work")
+    try:
+        # Bounds cover columns/rows 0.5..2.95: three pixels on each axis are
+        # touched, the last only partially.
+        assert raster._pixel_window((0.005, 0.04 - 0.0295, 0.0295, 0.035)) == (
+            0,
+            0,
+            3,
+            3,
+        )
+        # Exact pixel edges add no extra pixel.
+        assert raster._pixel_window((0.01, 0.01, 0.03, 0.03)) == (1, 1, 3, 3)
+        # Bounds inside one pixel select that pixel instead of raising.
+        assert raster._pixel_window((0.012, 0.022, 0.013, 0.023)) == (1, 1, 2, 2)
+        assert raster._pixel_window((0.015, 0.025, 0.015, 0.025)) == (1, 1, 2, 2)
+        rows = raster.scan((0.012, 0.022, 0.013, 0.023)).relation().fetchall()
+        assert [value for _, _, value in rows] == [2.0]
+        with pytest.raises(ValueError, match="do not intersect"):
+            raster._pixel_window((-0.05, 0.01, -0.05, 0.02))
+    finally:
+        raster.close()
+
+
+def test_write_crop_keeps_the_scan_window(
+    tmp_path: Path, sample_array: np.ndarray
+) -> None:
+    from crc_sdk.connectors.duckdb.geotiff import RasterBoundsError
+
+    raster = GeoTiffRaster.open(
+        _write_geotiff(tmp_path / "sample.tif", sample_array), work_dir=tmp_path / "w"
+    )
+    try:
+        # Partially covered edge pixels survive the crop, as in a scan.
+        crop = raster.write_crop(
+            (0.005, 0.04 - 0.0295, 0.0295, 0.035), tmp_path / "a.tif"
+        )
+        with rasterio.open(crop) as cropped:
+            assert cropped.read(1).tolist() == sample_array[:3, :3].tolist()
+            assert cropped.transform == _TRANSFORM
+        # Bounds inside one pixel crop that pixel instead of raising.
+        crop = raster.write_crop((0.012, 0.022, 0.013, 0.023), tmp_path / "b.tif")
+        with rasterio.open(crop) as cropped:
+            assert cropped.read(1).tolist() == [[2.0]]
+        with pytest.raises(RasterBoundsError):
+            raster.write_crop((-0.05, 0.01, -0.05, 0.02), tmp_path / "c.tif")
+    finally:
+        raster.close()
+
+
+def test_rasters_close_in_any_order(tmp_path: Path, sample_array: np.ndarray) -> None:
+    first = GeoTiffRaster.open(
+        _write_geotiff(tmp_path / "a.tif", sample_array), work_dir=tmp_path / "w"
+    )
+    second = GeoTiffRaster.open(
+        _write_geotiff(tmp_path / "b.tif", sample_array), work_dir=tmp_path / "w"
+    )
+    # A GDAL environment held open per raster made out-of-order closes raise
+    # rasterio's EnvError; reads still see the raster's GDAL options.
+    first.close()
+    assert second.scan().relation().count("*").fetchone() == (16,)
+    second.close()
+    assert rasterio.env.local._env is None
+
+
+def test_scan_rejects_disjoint_bounds_before_duckdb(
+    tmp_path: Path, sample_array: np.ndarray
+) -> None:
+    path = _write_geotiff(tmp_path / "sample.tif", sample_array)
+    raster = GeoTiffRaster.open(path, work_dir=tmp_path / "work")
+    try:
+        with pytest.raises(ValueError, match="do not intersect"):
+            raster.scan((5.0, 5.0, 6.0, 6.0)).relation()
+    finally:
+        raster.close()
+

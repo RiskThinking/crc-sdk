@@ -420,6 +420,8 @@ class ZarrScan:
 
     def relation(self, *, connection: Optional[DuckDBConnection] = None) -> Any:
         """Create a fresh lazy DuckDB relation for one query execution."""
+        # Validate bounds eagerly, as `GeoTiffScan.relation` does.
+        self.raster._pixel_window(self.bounds)
         schema = pa.schema(
             [
                 ("longitude", pa.float64()),

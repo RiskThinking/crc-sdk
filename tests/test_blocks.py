@@ -668,3 +668,63 @@ def test_quantile_provenance_records_original_source_kind(
         "samples" if values_are_samples else "probability_labelled"
     )
     assert metadata.fitting.initialization is None
+
+
+class _TailedSource:
+    """Minimal curve source: one tail, a skip sink, no curves."""
+
+    axis_name = "return period (empirical)"
+    values_are_samples = True
+
+    def __init__(self, tail: Literal["upper", "lower"]) -> None:
+        self.tail = tail
+        self.metadata = RasterMetadata("Heat", "txx", "historical", 2000, "degC", "x")
+        self.skip_sink: Any = None
+
+    def iter_curves(self, bounds: Any = None) -> Any:
+        if self.skip_sink is not None:
+            self.skip_sink(0, 0, "no_data", "nothing here")
+        return iter(())
+
+
+def _tail_policy(tail: Literal["upper", "lower"], **extra: Any) -> CurveFitIngestPolicy:
+    return CurveFitIngestPolicy(
+        h3_resolution=5,
+        family="genextreme",
+        producer="tests",
+        creation_version="1",
+        tail=tail,
+        fit_method="sample_lmoments",
+        **extra,
+    )
+
+
+def test_source_and_policy_tails_must_match() -> None:
+    stream = canonicalize_curve_source(
+        _TailedSource("lower"), _tail_policy("upper"), provider="tests"
+    )
+    with pytest.raises(ValueError, match="lower-tail curves"):
+        stream.read_all()
+    matching = canonicalize_curve_source(
+        _TailedSource("lower"), _tail_policy("lower"), provider="tests"
+    )
+    assert matching.read_all().num_rows == 0
+
+
+def test_diagnostics_skip_sink_is_restored_after_the_stream(tmp_path: Path) -> None:
+    source = _TailedSource("upper")
+    own_sink_calls: list[str] = []
+
+    def own_sink(row: int, column: int, reason: str, message: str) -> None:
+        own_sink_calls.append(reason)
+
+    source.skip_sink = own_sink
+    policy = _tail_policy("upper", diagnostics=tmp_path / "diagnostics.parquet")
+    canonicalize_curve_source(source, policy, provider="tests").read_all()
+
+    assert source.skip_sink is own_sink
+    assert pq.read_table(tmp_path / "diagnostics.parquet").num_rows == 1
+    canonicalize_curve_source(
+        source, _tail_policy("upper"), provider="tests"
+    ).read_all()
+    assert own_sink_calls == ["no_data"]

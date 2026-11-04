@@ -204,3 +204,52 @@ def test_open_requires_netcdf_extra(
     monkeypatch.setattr(builtins, "__import__", _fake_import)
     with pytest.raises(ImportError, match="crc-sdk\\[netcdf\\]"):
         NetCDFRaster.open(tmp_path / "missing.nc", variable="sminx")
+
+
+def test_cf_packed_values_are_masked_raw_then_unpacked(tmp_path: Path) -> None:
+    # int16-packed SMI: physical = raw * 0.001 + 0.5; -32768 is _FillValue and
+    # -999 a separate missing_value, both matched on the *raw* stored values.
+    from crc_sdk.connectors.blocks import BlockSpec, BlockStatistic
+    from crc_sdk.connectors.duckdb.netcdf import NetCDFBlockReader
+
+    raw = np.array(
+        [
+            [[100, 200, 300, 400], [-32768, -999, 0, 1], [2, 3, 4, 5], [6, 7, 8, 9]],
+            [[50, 250, 350, 450], [10, -999, 0, 1], [2, 3, 4, 5], [6, 7, 8, 9]],
+        ],
+        dtype=np.int16,
+    )
+    path = tmp_path / "packed.nc"
+    with h5netcdf.File(path, "w") as f:
+        f.dimensions = {"time": 2, "lat": len(_LAT), "lon": len(_LON)}
+        f.create_variable("lat", ("lat",), dtype=np.float64, data=_LAT)
+        f.create_variable("lon", ("lon",), dtype=np.float64, data=_LON)
+        variable = f.create_variable(
+            "sminx",
+            ("time", "lat", "lon"),
+            dtype=np.int16,
+            data=raw,
+            fillvalue=np.int16(-32768),
+        )
+        variable.attrs["scale_factor"] = 0.001
+        variable.attrs["add_offset"] = 0.5
+        variable.attrs["missing_value"] = np.int16(-999)
+
+    raster = NetCDFRaster.open(path, variable="sminx", work_dir=tmp_path / "work")
+    try:
+        rows = raster.scan().relation().order("latitude DESC, longitude").fetchall()
+        values = [value for _, _, value in rows]
+        assert len(values) == 14  # 16 pixels minus the fill and missing ones
+        assert values[:4] == pytest.approx([0.6, 0.7, 0.8, 0.9])
+        assert values[4:6] == pytest.approx([0.5, 0.501])
+
+        reader = NetCDFBlockReader(
+            {2020: raster}, spec=BlockSpec(statistic=BlockStatistic.minimum())
+        )
+        minimum = reader.reduce_block(2020, slice(0, 4), slice(0, 4))
+        assert minimum[0, :2] == pytest.approx([0.55, 0.7])
+        # Fill at t=0 leaves t=1's 10 -> 0.51; missing at both steps -> NaN.
+        assert minimum[1, 0] == pytest.approx(0.51)
+        assert np.isnan(minimum[1, 1])
+    finally:
+        raster.close()
