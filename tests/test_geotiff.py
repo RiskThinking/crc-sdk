@@ -187,7 +187,7 @@ def test_scan_h3_explicit_resolution_respects_max_subsample_cap(
         seen_counts.append(count)
         return _real_subsample_offsets(count)
 
-    monkeypatch.setattr("crc_sdk.connectors.duckdb.geotiff.subsample_offsets", spy)
+    monkeypatch.setattr("crc_sdk.connectors.duckdb._pixel_scan.subsample_offsets", spy)
     try:
         # H3 resolution 15 on this fixture's ~1113m pixels would need
         # thousands of subsample points per axis to guarantee coverage;

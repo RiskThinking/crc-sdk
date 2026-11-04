@@ -18,7 +18,7 @@ _LON = np.array([10.0, 11.0], dtype=np.float64)
 # Two rows, two columns: row 0/column 0 is flat/unfittable (the same annual
 # minimum every year, like a pixel whose soil moisture never really
 # varies), row 0/column 1 has six years of annual minima with one clear
-# severe (low) year -- enough years (>=4) for `_annual_minima_curve` to
+# severe (low) year -- enough years (>=4) for `plotting_position_curve` to
 # assign Gringorten plotting positions and fit. Row 1 just duplicates row 0
 # so the grid has the minimum two rows `NetCDFRaster` needs to infer a
 # `lat` step; the tests below don't look at it.
