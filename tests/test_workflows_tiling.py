@@ -836,3 +836,45 @@ def test_stream_curve_quantiles_to_parquet_empty_source_writes_valid_file(
     table = pq.read_table(output)
     assert table.num_rows == 0
     assert table.column_names == ["cell_index", "province", "depth_m"]
+
+
+def test_drop_shared_edge_duplicates_matches_the_per_row_rule() -> None:
+    import shapely  # type: ignore[import-untyped]
+    from shapely import wkb
+
+    from crc_sdk.workflows.tiling import _drop_shared_edge_duplicates, _owns_row
+
+    step = 0.25
+    boxes = [
+        shapely.box(x, y, x + step, y + step)
+        for x in [-0.125 + step * i for i in range(18)]
+        for y in [-0.125 + step * j for j in range(10)]
+    ]
+    geometries: list[bytes | None] = [shapely.to_wkb(box) for box in boxes]
+    geometries[::7] = [None] * len(geometries[::7])
+    table = pa.table(
+        {
+            "row": list(range(len(geometries))),
+            "source_geometry": pa.array(geometries, pa.binary()),
+        }
+    )
+    aoi = (0.0, 0.0, 4.0, 2.0)
+    for tile in [(0.0, 0.0, 2.0, 2.0), (2.0, 0.0, 4.0, 2.0), aoi]:
+        expected = [
+            row
+            for row, geometry in enumerate(geometries)
+            if _owns_row(wkb, geometry, tile, aoi)
+        ]
+        kept = _drop_shared_edge_duplicates(table, tile, aoi)
+        assert kept["row"].to_pylist() == expected
+
+    empty = pa.table(
+        {
+            "row": [0],
+            "source_geometry": pa.array(
+                [shapely.to_wkb(shapely.Polygon())], pa.binary()
+            ),
+        }
+    )
+    with pytest.raises(IndexError):
+        _drop_shared_edge_duplicates(empty, aoi, aoi)

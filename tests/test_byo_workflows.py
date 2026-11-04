@@ -418,3 +418,26 @@ def test_directory_source_identity_tracks_its_contents(tmp_path: Path) -> None:
     array = zarr.open_array(str(store), mode="r+")
     array[0, 0, 0] = 9.0
     assert plan._automatic_output() != before
+
+
+def test_table_identity_is_the_digest_of_the_arrow_ipc_stream() -> None:
+    import hashlib
+
+    from crc_sdk.workflows.byo import _table_identity
+
+    table = pa.table(
+        {
+            "cell_index": pa.array(range(70_000), pa.uint64()),
+            "value": [float(i) / 3 for i in range(70_000)],
+            "label": [None if i % 5 else f"r{i}" for i in range(70_000)],
+        }
+    )
+    sink = pa.BufferOutputStream()
+    with pa.ipc.new_stream(sink, table.schema) as writer:
+        writer.write_table(table)
+    # Cache keys depend on this digest: it must not change across releases.
+    assert (
+        _table_identity(table)
+        == hashlib.sha256(sink.getvalue().to_pybytes()).hexdigest()
+    )
+    assert _table_identity(table) != _table_identity(table.slice(1))

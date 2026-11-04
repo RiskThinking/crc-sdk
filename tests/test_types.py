@@ -191,3 +191,54 @@ def test_non_finite_support_bounds_are_rejected(support: dict[str, Any]) -> None
             creation_version="1.0",
             **support,
         )
+
+
+def test_curve_parameters_build_the_distribution_once_per_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import copy
+    import pickle
+
+    from crc_sdk.types import CurveParameters
+
+    builds: list[str] = []
+    real = CurveParameters._build_distribution
+
+    def counting(self: CurveParameters) -> Any:
+        builds.append(self.curve_kind)
+        return real(self)
+
+    monkeypatch.setattr(CurveParameters, "_build_distribution", counting)
+    fields = {
+        "curve_kind": "hurdle",
+        "curve_type": "genextreme",
+        "curve_shape": 0.1,
+        "curve_location": 1.0,
+        "curve_scale": 2.0,
+        "curve_atom_probability": 0.5,
+        "curve_atom_location": 0.0,
+    }
+    parameters = CurveParameters.model_validate(fields)
+    first = parameters.to_distribution()
+    assert builds == ["hurdle"]
+    # Later calls still return a fresh object, never a shared one.
+    second = parameters.to_distribution()
+    assert second is not first
+    assert builds == ["hurdle", "hurdle"]
+    assert first.quantiles((0.9,)) == second.quantiles((0.9,))
+
+    # The hand-off is invisible to equality, hashing, dumps, pickling, copies.
+    other = CurveParameters.model_validate(fields)
+    assert parameters == other and hash(parameters) == hash(other)
+    assert parameters.model_dump() == {
+        **fields,
+        "curve_probabilities": None,
+        "curve_values": None,
+    }
+    assert pickle.loads(pickle.dumps(other)) == other
+    assert copy.deepcopy(other) == other
+    moved = other.model_copy(update={"curve_location": 5.0})
+    assert moved.to_distribution().quantiles((0.9,)) != first.quantiles((0.9,))
+    assert moved.to_distribution().quantiles((0.9,)) == CurveParameters.model_validate(
+        {**fields, "curve_location": 5.0}
+    ).to_distribution().quantiles((0.9,))

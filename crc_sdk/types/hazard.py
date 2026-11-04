@@ -12,6 +12,13 @@ from crc_framework.distributions import (
 )
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+_CurveDistribution = (
+    FittedDistribution
+    | HurdleDistribution
+    | PointMassDistribution
+    | TabulatedDistribution
+)
+
 
 class NoDataCurveError(ValueError):
     """Raised when distribution reconstruction is requested for a no-data row."""
@@ -19,6 +26,12 @@ class NoDataCurveError(ValueError):
 
 class CurveParameters(BaseModel):
     """Parameters for a distribution family supported by the core."""
+
+    # The distribution built while validating, handed to the first
+    # ``to_distribution()`` call so the common validate-then-evaluate path
+    # constructs it once. A slot, not a field or private attribute, so it never
+    # takes part in equality, hashing, serialization, pickling, or copies.
+    __slots__ = ("_validated_distribution",)
 
     model_config = ConfigDict(frozen=True)
 
@@ -90,7 +103,7 @@ class CurveParameters(BaseModel):
                 raise ValueError("tabulated curves must not define scalar parameters")
             if self.curve_probabilities is None or self.curve_values is None:
                 raise ValueError("tabulated curves require probability and value knots")
-            self.to_distribution()
+            self._remember_distribution()
             return self
         if self.curve_probabilities is not None or self.curve_values is not None:
             raise ValueError("non-tabulated curves must not define tabulated knots")
@@ -110,7 +123,7 @@ class CurveParameters(BaseModel):
                 raise ValueError(
                     "point-mass curves require probability one at curve_location"
                 )
-            self.to_distribution()
+            self._remember_distribution()
             return self
         if self.curve_type == "point_mass":
             raise ValueError("curve_type='point_mass' requires curve_kind='point_mass'")
@@ -135,18 +148,32 @@ class CurveParameters(BaseModel):
             self.curve_atom_probability is None or self.curve_atom_location is None
         ):
             raise ValueError("hurdle curves require atom probability and atom location")
-        self.to_distribution()
+        self._remember_distribution()
         return self
 
-    def to_distribution(
-        self,
-    ) -> (
-        FittedDistribution
-        | HurdleDistribution
-        | PointMassDistribution
-        | TabulatedDistribution
-    ):
-        """Reconstruct the framework distribution represented by these fields."""
+    def _remember_distribution(self) -> None:
+        # Building the distribution is the framework-side validation; keep it
+        # for one hand-off (a list, so concurrent callers pop it at most once).
+        object.__setattr__(
+            self, "_validated_distribution", [self._build_distribution()]
+        )
+
+    def to_distribution(self) -> _CurveDistribution:
+        """Reconstruct the framework distribution represented by these fields.
+
+        Every call returns a new distribution object.
+        """
+        handoff: list[_CurveDistribution] | None = getattr(
+            self, "_validated_distribution", None
+        )
+        if handoff:
+            try:
+                return handoff.pop()
+            except IndexError:
+                pass
+        return self._build_distribution()
+
+    def _build_distribution(self) -> _CurveDistribution:
         if self.curve_kind == "no_data":
             raise NoDataCurveError(f"curve has no data: {self.curve_type}")
         if self.curve_kind == "tabulated":
