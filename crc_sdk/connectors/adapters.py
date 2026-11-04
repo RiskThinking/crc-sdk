@@ -544,6 +544,14 @@ def _canonical_batches(
 
     hazard_schema = hazard_arrow_schema(metadata)
     hazard_rows: list[dict[str, Any]] = []
+    source_tail = getattr(source, "tail", None)
+    if source_tail is not None and source_tail != policy.tail:
+        # Plotting positions ordered for one tail, fitted as the other, give
+        # silently inverted return levels.
+        raise ValueError(
+            f"{source.metadata.path} builds {source_tail}-tail curves but the "
+            f"ingest policy fits tail={policy.tail!r}; use matching tails"
+        )
     if "return period" not in source.axis_name.lower():
         raise ValueError(
             f"{source.metadata.path} has axis {source.axis_name!r}, not return periods"
@@ -637,7 +645,9 @@ def _canonical_batches(
             **details,
         )
 
-    if writer is not None and hasattr(source, "skip_sink"):
+    sink_installed = writer is not None and hasattr(source, "skip_sink")
+    previous_sink = getattr(source, "skip_sink", None)
+    if sink_installed:
         # Cells a source drops before yielding a curve (no valid blocks, too
         # few of them) are traced too, not only the ones that fail to fit.
         source.skip_sink = lambda row, column, reason, message: record_cell(
@@ -796,6 +806,11 @@ def _canonical_batches(
         if writer is not None:
             writer.abort()
         raise
+    finally:
+        if sink_installed:
+            # Restore the source's own sink: a later stream over the same
+            # source must not feed this (finished) diagnostics writer.
+            source.skip_sink = previous_sink
 
 
 def canonicalize_curve_source(

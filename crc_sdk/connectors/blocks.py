@@ -448,6 +448,9 @@ def reduce_days(
 ) -> np.ndarray[Any, Any]:
     """Reduce a ``(days, rows, cols)`` series (NaN = invalid) to ``(rows, cols)``."""
     expected = daily.shape[0]
+    if expected == 0:
+        # No days in the block: every pixel is missing, not an error.
+        return np.full(daily.shape[1:], np.nan)
     valid_count = np.isfinite(daily).sum(axis=0)
     complete = valid_count >= max(1.0, math.ceil(min_valid_fraction * expected - 1e-9))
     with warnings.catch_warnings():

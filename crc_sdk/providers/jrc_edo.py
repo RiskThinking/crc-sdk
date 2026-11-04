@@ -230,16 +230,12 @@ class EDOProvider:
             row_start, row_stop, col_start, col_stop = raster._row_col_window(bounds)
             row_start, row_stop = _at_least_two(row_start, row_stop, len(raster._lat))
             col_start, col_stop = _at_least_two(col_start, col_stop, len(raster._lon))
-            block = np.asarray(
-                raster._variable[:, row_start:row_stop, col_start:col_stop],
-                dtype=np.float64,
+            block = raster._decode(
+                raster._variable[:, row_start:row_stop, col_start:col_stop]
             )
-            finite = np.isfinite(block)
-            if raster.nodata is not None:
-                finite &= block != raster.nodata
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", category=RuntimeWarning)
-                minimum = np.nanmin(np.where(finite, block, np.nan), axis=0)
+                minimum = np.nanmin(block, axis=0)
             latitudes = raster._lat[row_start:row_stop]
             longitudes = raster._lon[col_start:col_stop]
 

@@ -118,3 +118,40 @@ def test_pipeline_rejects_non_source() -> None:
         assert "relation" in str(error)
     else:
         raise AssertionError("expected a TypeError")
+
+
+def test_connect_closes_the_connection_when_setup_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import duckdb
+
+    opened: list[Any] = []
+    real_connect = duckdb.connect
+
+    def connect(*args: Any, **kwargs: Any) -> Any:
+        opened.append(real_connect(*args, **kwargs))
+        return opened[-1]
+
+    monkeypatch.setattr(duckdb, "connect", connect)
+    config = DuckDBConnection(setup_sql=("SELECT 1", "NOT VALID SQL"))
+    with pytest.raises(duckdb.ParserException):
+        config.connect()
+    assert len(opened) == 1
+    with pytest.raises(duckdb.ConnectionException):
+        opened[0].execute("SELECT 1")
+
+
+def test_reduce_days_over_an_empty_block_is_all_missing() -> None:
+    import numpy as np
+
+    from crc_sdk.connectors.blocks import BlockStatistic, reduce_days
+
+    empty = np.empty((0, 2, 3))
+    for statistic in (
+        BlockStatistic.maximum(),
+        BlockStatistic.minimum(),
+        BlockStatistic.k_day_sum(5),
+    ):
+        result = reduce_days(empty, statistic, 0.9)
+        assert result.shape == (2, 3)
+        assert np.isnan(result).all()

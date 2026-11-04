@@ -227,10 +227,16 @@ class DuckDBConnection:
             read_only=self.read_only,
             config={**_BASE_CONFIG, **self.config},
         )
-        if self.extensions:
-            ensure_extensions(con, *self.extensions)
-        for statement in self.setup_sql:
-            con.execute(statement)
+        try:
+            if self.extensions:
+                ensure_extensions(con, *self.extensions)
+            for statement in self.setup_sql:
+                con.execute(statement)
+        except BaseException:
+            # A failed extension load or setup statement must not leak the
+            # connection (and its database file lock).
+            con.close()
+            raise
         return con
 
     @classmethod

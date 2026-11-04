@@ -184,10 +184,14 @@ class GeoTiffRaster:
         assumed_crs: str | None = None,
         connection: DuckDBConnection | None = None,
         work_dir: str | Path | None = None,
-        _env: Any | None = None,
+        _env: Mapping[str, Any] | None = None,
     ) -> None:
         self._dataset = dataset
-        self._env = _env
+        # GDAL config options (credentials, cache size) re-entered around
+        # every read: VSI reads are lazy, so they need them too, but holding
+        # one `rasterio.Env` open for the raster's lifetime pushes onto a
+        # process-global stack that breaks when rasters close out of order.
+        self._env_options: dict[str, Any] = dict(_env or {})
         self.band = band
         # An explicit connection means the caller is already in control; only
         # build (and resource-tune) one when they didn't supply their own.
@@ -234,13 +238,8 @@ class GeoTiffRaster:
         adc_path = _default_gcs_credentials()
         if adc_path is not None:
             env_options["GOOGLE_APPLICATION_CREDENTIALS"] = adc_path
-        env = rasterio.Env(**env_options)
-        env.__enter__()
-        try:
+        with rasterio.Env(**env_options):
             dataset = rasterio.open(open_path)
-        except Exception:
-            env.__exit__(None, None, None)
-            raise
         try:
             return cls(
                 dataset,
@@ -248,17 +247,25 @@ class GeoTiffRaster:
                 assumed_crs=assumed_crs,
                 connection=connection,
                 work_dir=work_dir,
-                _env=env,
+                _env=env_options,
             )
         except Exception:
             dataset.close()
-            env.__exit__(None, None, None)
             raise
 
     def close(self) -> None:
         self._dataset.close()
-        if self._env is not None:
-            self._env.__exit__(None, None, None)
+
+    def _gdal_env(self) -> Any:
+        _require_raster_extra()
+        import rasterio
+
+        return rasterio.Env(**self._env_options)
+
+    def _read(self, window: Any) -> np.ndarray:
+        """Read this raster's band for `window` under its GDAL options."""
+        with self._gdal_env():
+            return self._dataset.read(self.band, window=window)
 
     def __enter__(self) -> GeoTiffRaster:
         return self
@@ -289,20 +296,17 @@ class GeoTiffRaster:
         """Write a native-CRS window to a local GeoTIFF."""
         _require_raster_extra()
         import rasterio
-        from rasterio.errors import WindowError
-        from rasterio.windows import Window, from_bounds
+        from rasterio.windows import Window
 
-        window = from_bounds(*bounds, transform=self._dataset.transform)
+        # Same touched-pixel window as scans, so a cached crop holds every
+        # pixel a stream scan of the same bounds would read.
         try:
-            window = (
-                window.round_offsets()
-                .round_lengths()
-                .intersection(Window(0, 0, self._dataset.width, self._dataset.height))
-            )
-        except WindowError as error:
+            col_start, row_start, col_stop, row_stop = self._pixel_window(bounds)
+        except ValueError as error:
             raise RasterBoundsError("bounds do not intersect the raster") from error
-        if window.width < 1 or window.height < 1:
-            raise RasterBoundsError("bounds do not intersect the raster")
+        window = Window(
+            col_start, row_start, col_stop - col_start, row_stop - row_start
+        )
         profile = self._dataset.profile.copy()
         profile.update(
             width=int(window.width),
@@ -314,8 +318,10 @@ class GeoTiffRaster:
         profile.pop("blockxsize", None)
         profile.pop("blockysize", None)
         target = Path(destination)
+        with self._gdal_env():
+            data = self._dataset.read(window=window)
         with rasterio.open(target, "w", **profile) as output:
-            output.write(self._dataset.read(window=window))
+            output.write(data)
         return target
 
     @property
@@ -454,11 +460,23 @@ class GeoTiffRaster:
         window = from_bounds(
             min_x, min_y, max_x, max_y, transform=self._dataset.transform
         )
-        window = window.round_offsets().round_lengths()
-        col_start = max(0, int(window.col_off))
-        row_start = max(0, int(window.row_off))
-        col_stop = min(self._dataset.width, int(window.col_off + window.width))
-        row_stop = min(self._dataset.height, int(window.row_off + window.height))
+        # Every pixel the bounds touch, like `ZarrRaster._pixel_window`:
+        # rounding offset and length separately dropped partially covered
+        # edge pixels and rejected bounds inside a single pixel. The epsilon
+        # keeps float noise on an exact pixel edge from adding a pixel.
+        # Degenerate (point or line) bounds select the pixel they fall in.
+        epsilon = 1e-9
+        col_start = math.floor(window.col_off + epsilon)
+        row_start = math.floor(window.row_off + epsilon)
+        col_stop = max(
+            col_start + 1, math.ceil(window.col_off + window.width - epsilon)
+        )
+        row_stop = max(
+            row_start + 1, math.ceil(window.row_off + window.height - epsilon)
+        )
+        col_start, row_start = max(0, col_start), max(0, row_start)
+        col_stop = min(self._dataset.width, col_stop)
+        row_stop = min(self._dataset.height, row_stop)
         if col_start >= col_stop or row_start >= row_stop:
             raise ValueError("bounds do not intersect the raster")
         return col_start, row_start, col_stop, row_stop
@@ -486,7 +504,7 @@ class GeoTiffRaster:
         for row_off in range(row_start, row_stop, strip_rows):
             win_h = min(strip_rows, row_stop - row_off)
             window = Window(col_start, row_off, width, win_h)
-            yield window, dataset.read(self.band, window=window)
+            yield window, self._read(window)
 
 
 @dataclass(frozen=True)
@@ -499,6 +517,9 @@ class GeoTiffScan:
 
     def relation(self, *, connection: DuckDBConnection | None = None) -> Any:
         """Create a fresh lazy DuckDB relation for one query execution."""
+        # Validate bounds now: raised inside the batch generator, a plain
+        # ValueError would surface as an opaque DuckDB InvalidInputException.
+        self.raster._pixel_window(self.bounds)
         schema = pa.schema(
             [
                 ("longitude", pa.float64()),
@@ -757,21 +778,13 @@ class JRCReturnPeriodRaster:
                     work_dir=work_dir,
                 )
         except Exception:
-            # Reverse of open order: each GeoTiffRaster.open() pushes its own
-            # rasterio.Env onto a global, LIFO-nested stack -- closing out of
-            # order raises rasterio.errors.EnvError instead of cleanly
-            # unwinding it.
             for raster in reversed(list(rasters.values())):
                 raster.close()
             raise
         return cls(rasters, metadata, strip_bytes=strip_bytes)
 
     def close(self) -> None:
-        """Close every underlying `GeoTiffRaster`, most-recently-opened first.
-
-        Reverse of open order, for the same LIFO `rasterio.Env`-stack reason
-        as the cleanup path in `open()`.
-        """
+        """Close every underlying `GeoTiffRaster`, most-recently-opened first."""
         for raster in reversed(list(self._rasters.values())):
             raster.close()
 
@@ -830,9 +843,7 @@ class JRCReturnPeriodRaster:
             window = Window(col_start, row_off, width, win_h)
             stack = np.empty((n_periods, win_h, width), dtype=np.float64)
             for index, raster in enumerate(ordered):
-                band = raster._dataset.read(raster.band, window=window).astype(
-                    np.float64, copy=False
-                )
+                band = raster._read(window).astype(np.float64, copy=False)
                 finite = np.isfinite(band)
                 if raster.nodata is not None:
                     finite &= band != raster.nodata

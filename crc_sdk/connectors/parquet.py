@@ -5,6 +5,7 @@ from __future__ import annotations
 import multiprocessing
 import os
 import tempfile
+import weakref
 from collections.abc import Iterable, Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
@@ -94,6 +95,44 @@ _CURVE_COLUMNS = (
 )
 
 
+# Below this many rows, spawning a process pool (~0.7 s of interpreter
+# start-up and imports per call) costs more than validating serially
+# (~3 us/row), so `chunk_rows` alone never triggers a pool for a typical
+# 65,536-row canonical batch.
+_POOL_MIN_ROWS = 400_000
+
+# Tables `validate_hazard_table` has returned, by id: (weak reference, the
+# metadata they were validated and cast for, whether keys were checked
+# unique). Arrow tables are immutable, so a still-live table under the same id
+# needs no second pass when a writer receives it again -- the canonical
+# adapters already validate every batch they yield.
+_VALIDATED: dict[int, tuple[weakref.ref[Any], HazardDatasetMetadata | None, bool]] = {}
+
+
+def _remember_validated(
+    table: Any, metadata: HazardDatasetMetadata | None, unique: bool
+) -> None:
+    key = id(table)
+    try:
+        reference = weakref.ref(table, lambda _: _VALIDATED.pop(key, None))
+    except TypeError:
+        return
+    _VALIDATED[key] = (reference, metadata, unique)
+
+
+def _already_validated(
+    value: Any, metadata: HazardDatasetMetadata | None, unique: bool
+) -> bool:
+    entry = _VALIDATED.get(id(value))
+    if entry is None or entry[0]() is not value:
+        return False
+    validated_for = entry[1]
+    same_metadata = validated_for is metadata or (
+        validated_for is not None and metadata is not None and validated_for == metadata
+    )
+    return same_metadata and (entry[2] or not unique)
+
+
 def _validate_curves(records: Sequence[Mapping[str, Any]]) -> None:
     for row in records:
         CurveParameters(
@@ -124,10 +163,14 @@ def validate_hazard_table(
     and duplicate-key checks are pure Arrow/vectorized — no Python loop.
     Reconstructing each row's ``CurveParameters`` is the one check that
     cannot be vectorized (Pydantic validation plus a per-row Rust call, same
-    as curve evaluation elsewhere in the SDK), so it's chunked across a
-    process pool for tables above ``chunk_rows``; smaller tables validate
-    in-process with no pool overhead.
+    as curve evaluation elsewhere in the SDK), so large tables (above both
+    ``chunk_rows`` and a few hundred thousand rows, where the pool's start-up
+    cost pays off) are chunked across a process pool; smaller tables validate
+    in-process with no pool overhead. A table this function already returned
+    for the same schema version is returned as is.
     """
+    if _already_validated(value, metadata, require_unique_keys):
+        return value
     table = _as_table(value)
     expected = hazard_arrow_schema(metadata)
     fields = (
@@ -178,7 +221,7 @@ def validate_hazard_table(
     records = curve_table.to_pylist()
     workers = max_workers or detected_cpu_count()
     if records:
-        if workers <= 1 or len(records) <= chunk_rows:
+        if workers <= 1 or len(records) <= max(chunk_rows, _POOL_MIN_ROWS):
             _validate_curves(records)
         else:
             chunks = [
@@ -197,6 +240,7 @@ def validate_hazard_table(
         distinct = table.select(key_columns).group_by(key_columns).aggregate([])
         if distinct.num_rows != table.num_rows:
             raise ValueError(f"duplicate canonical row key {HAZARD_ROW_KEY!r}")
+    _remember_validated(table, metadata, require_unique_keys)
     return table
 
 
@@ -273,7 +317,10 @@ def write_hazard_dataset(
     target = str(destination)
     relation_name = f"_crc_hazard_{uuid4().hex}"
     duckdb_connection, owned = _duckdb_connection(
-        connection, work_dir=Path(destination).parent
+        connection,
+        # A remote destination has no local parent to spill into; Path() of
+        # "gs://bucket/x" would create a literal ./gs:/bucket directory.
+        work_dir=Path(destination).parent if "://" not in target else None,
     )
     metadata_json = metadata.to_json_bytes().decode("utf-8")
     copy_sql = (
@@ -341,6 +388,13 @@ def write_hazard_stream(
         if work_dir is not None
         else (Path(destination).parent if "://" not in target else default_work_dir())
     )
+
+    if not overwrite:
+        # DuckDB's COPY overwrites a single-file target even with
+        # OVERWRITE_OR_IGNORE false, so refuse before consuming the stream.
+        filesystem, target_path = fsspec.core.url_to_fs(target)
+        if filesystem.exists(target_path):
+            raise FileExistsError(f"output already exists: {target}")
 
     if not ordered:
         return _write_hazard_stream_unordered(

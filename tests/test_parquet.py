@@ -301,11 +301,13 @@ def _many_rows(count: int) -> pa.Table:
     return pa.Table.from_pylist(rows, schema=hazard_arrow_schema())
 
 
-def test_validation_parallel_matches_sequential_above_chunk_threshold() -> None:
-    table = _many_rows(50)
+def test_validation_parallel_matches_sequential_above_chunk_threshold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("crc_sdk.connectors.parquet._POOL_MIN_ROWS", 0)
 
-    sequential = validate_hazard_table(table, max_workers=1)
-    parallel = validate_hazard_table(table, max_workers=2, chunk_rows=10)
+    sequential = validate_hazard_table(_many_rows(50), max_workers=1)
+    parallel = validate_hazard_table(_many_rows(50), max_workers=2, chunk_rows=10)
 
     assert sequential.equals(parallel)
     assert sequential.num_rows == 50
@@ -346,6 +348,7 @@ def test_validate_hazard_table_pool_uses_detected_cpu_count_and_spawn(
 
     monkeypatch.setattr("crc_sdk.connectors.parquet.detected_cpu_count", lambda: 4)
     monkeypatch.setattr("crc_sdk.connectors.parquet.ProcessPoolExecutor", _FakeExecutor)
+    monkeypatch.setattr("crc_sdk.connectors.parquet._POOL_MIN_ROWS", 0)
 
     table = _many_rows(50)
     validate_hazard_table(table, chunk_rows=10)  # max_workers unset -> stub exercised
@@ -366,3 +369,93 @@ def test_write_hazard_dataset_default_connection_is_resource_tuned(
     # under work_dir/duckdb-temp; its presence confirms the tuned path ran
     # rather than a bare duckdb.connect().
     assert (tmp_path / "duckdb-temp").is_dir()
+
+
+def test_typical_batches_validate_without_a_process_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Spawning a pool costs ~0.7 s; a 65,536-row canonical batch validates
+    # serially in a fraction of that, so it must not start one.
+    monkeypatch.setattr(
+        "crc_sdk.connectors.parquet.ProcessPoolExecutor",
+        lambda *a, **k: pytest.fail("no pool expected for a typical batch"),
+    )
+    validated = validate_hazard_table(_many_rows(65_536), max_workers=8)
+    assert validated.num_rows == 65_536
+
+
+def test_writers_do_not_revalidate_validated_batches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from crc_sdk.connectors import parquet
+
+    metadata = _metadata()
+    batch = validate_hazard_table(_many_rows(10), metadata=metadata)
+    calls: list[int] = []
+    real = parquet._validate_curves
+    monkeypatch.setattr(
+        parquet, "_validate_curves", lambda rows: calls.append(len(rows)) or real(rows)
+    )
+    for ordered in (True, False):
+        write_hazard_stream(
+            CanonicalHazardStream(
+                metadata=metadata, batches=iter([CanonicalHazardBatch(batch)])
+            ),
+            tmp_path / f"out-{ordered}.parquet",
+            ordered=ordered,
+        )
+    assert calls == []
+    # An unvalidated table, or different metadata, is still validated.
+    validate_hazard_table(_many_rows(10), metadata=metadata)
+    validate_hazard_table(
+        batch, metadata=_metadata().model_copy(update={"h3_resolution": 8})
+    )
+    assert calls == [10, 10]
+
+
+def test_ordered_stream_write_refuses_to_overwrite(tmp_path: Path) -> None:
+    destination = tmp_path / "existing.parquet"
+    destination.write_bytes(b"keep me")
+
+    def stream() -> CanonicalHazardStream:
+        return CanonicalHazardStream(
+            metadata=_metadata(),
+            batches=iter([CanonicalHazardBatch(_many_rows(3))]),
+        )
+
+    for ordered in (True, False):
+        with pytest.raises(FileExistsError):
+            write_hazard_stream(stream(), destination, ordered=ordered)
+    assert destination.read_bytes() == b"keep me"
+    write_hazard_stream(stream(), destination, overwrite=True)
+    assert read_hazard_dataset(destination).num_rows == 3
+
+
+def test_remote_destination_never_creates_local_scheme_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import fsspec
+
+    memory = fsspec.filesystem("memory")
+    memory.mkdir("/bucket")
+    monkeypatch.chdir(tmp_path)
+
+    class _Connection:
+        def register(self, *args: Any) -> None:
+            return None
+
+        def unregister(self, *args: Any) -> None:
+            return None
+
+        def execute(self, sql: str) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "crc_sdk.connectors.parquet.DuckDBConnection.connect",
+        lambda self: _Connection(),
+    )
+    write_hazard_dataset(_many_rows(3), "memory://bucket/x.parquet", _metadata())
+    assert list(tmp_path.iterdir()) == []
