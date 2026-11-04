@@ -121,6 +121,22 @@ def _needs_reprojection(source_crs: str | None) -> bool:
     return source_crs.upper().replace(" ", "") not in _WGS84_ALIASES
 
 
+_FLOAT_TYPES = {"DOUBLE", "FLOAT", "REAL", "FLOAT4", "FLOAT8"}
+
+
+def _finite_json_value(quoted: str, column_type: str) -> str:
+    """NaN and infinities as JSON null: ``to_json`` emits bare ``NaN``."""
+    normalized = column_type.upper().strip()
+    if normalized in _FLOAT_TYPES:
+        return f"CASE WHEN isfinite({quoted}) THEN {quoted} END"
+    if normalized.endswith("[]") and normalized[:-2] in _FLOAT_TYPES:
+        return (
+            f"list_transform({quoted}, "
+            "_crc_x -> CASE WHEN isfinite(_crc_x) THEN _crc_x END)"
+        )
+    return quoted
+
+
 def build_layer_query(con: Any, layer_source: LayerSource) -> str:
     """Build one layer's ``SELECT feature FROM ...`` sub-query.
 
@@ -175,7 +191,9 @@ def build_layer_query(con: Any, layer_source: LayerSource) -> str:
         property_columns = [name for name in property_columns if name in allowed]
     if property_columns:
         pairs = ", ".join(
-            f"{_quote_ident(name)} := {_quote_ident(name)}" for name in property_columns
+            f"{_quote_ident(name)} := "
+            f"{_finite_json_value(_quote_ident(name), column_types[name])}"
+            for name in property_columns
         )
         properties_expr = f"to_json(struct_pack({pairs}))"
     else:

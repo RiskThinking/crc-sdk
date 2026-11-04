@@ -201,3 +201,21 @@ def test_nearest_power_of_two_floors_at_one() -> None:
     assert nearest_power_of_two(0) == 1
     assert nearest_power_of_two(0.5) == 1
     assert nearest_power_of_two(-5) == 1
+
+
+def test_tiling_budget_scratch_floor_never_exceeds_free_disk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fix_free_disk(monkeypatch, _GIB // 2)  # a nearly full disk
+    budget = TilingBudget.detect(tmp_path)
+    assert budget.safe_scratch_bytes == _GIB // 2
+    with pytest.raises(ValueError):
+        check_tiling_budget(_GIB, 10, budget, temp_to_input_factor=1.0)
+
+
+@pytest.mark.parametrize("fraction", [-0.1, 1.5])
+def test_tiling_budget_rejects_out_of_range_scratch_fraction(
+    tmp_path: Path, fraction: float
+) -> None:
+    with pytest.raises(ValueError, match="scratch_fraction"):
+        TilingBudget.detect(tmp_path, scratch_fraction=fraction)

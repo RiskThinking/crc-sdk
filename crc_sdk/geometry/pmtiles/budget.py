@@ -126,7 +126,13 @@ class TilingBudget:
                 "CRC_TIPPECANOE_SCRATCH_FRACTION", _DEFAULT_SCRATCH_FRACTION
             )
         )
-        safe_scratch = max(_MIN_SAFE_SCRATCH_BYTES, int(free_disk_bytes * fraction))
+        if not 0.0 <= fraction <= 1.0:
+            raise ValueError("scratch_fraction must be between 0 and 1")
+        # The floor keeps small disks usable, but never beyond what is free.
+        safe_scratch = min(
+            free_disk_bytes,
+            max(_MIN_SAFE_SCRATCH_BYTES, int(free_disk_bytes * fraction)),
+        )
         threads = tippecanoe_threads or _env_int("CRC_TIPPECANOE_THREADS", cpus, cpus)
         db_threads = duckdb_threads or _env_int("CRC_DUCKDB_THREADS", cpus, cpus)
         return cls(

@@ -153,8 +153,21 @@ class TippecanoeProcess:
         if self._process.poll() is not None:
             raise RuntimeError("tippecanoe exited before all input was written")
         assert self._process.stdin is not None
-        self._process.stdin.write(data)
+        try:
+            self._process.stdin.write(data)
+        except BrokenPipeError as error:
+            # tippecanoe exited mid-write: report its exit, not the pipe.
+            raise self._exited_early() from error
         self._activity.touch()
+
+    def _exited_early(self) -> RuntimeError:
+        try:
+            code = self._process.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            return RuntimeError("tippecanoe stopped reading its input")
+        return RuntimeError(
+            f"tippecanoe exited with code {code} before all input was written"
+        )
 
     def finish(self) -> None:
         """Close stdin and wait for tippecanoe to exit, raising on failure."""
@@ -162,7 +175,10 @@ class TippecanoeProcess:
             return
         self._closed = True
         assert self._process.stdin is not None
-        self._process.stdin.close()
+        try:
+            self._process.stdin.close()
+        except BrokenPipeError:
+            pass  # flushing the tail failed; the exit code below says why
         try:
             _wait_with_idle_timeout(
                 self._process, self._activity, self._options, "tippecanoe"
@@ -178,12 +194,17 @@ class TippecanoeProcess:
 
     def abort(self) -> None:
         """Kill the process immediately, e.g. after an upstream failure."""
-        if not self._closed:
-            self._closed = True
-            if self._process.stdin is not None:
-                self._process.stdin.close()
-        self._process.kill()
-        self._stderr_thread.join(timeout=30)
+        try:
+            if not self._closed:
+                self._closed = True
+                if self._process.stdin is not None:
+                    self._process.stdin.close()
+        except OSError:
+            pass  # a broken pipe must not skip the kill below
+        finally:
+            self._process.kill()
+            self._process.wait()
+            self._stderr_thread.join(timeout=30)
 
     def __enter__(self) -> TippecanoeProcess:
         return self

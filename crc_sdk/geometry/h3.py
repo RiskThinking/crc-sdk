@@ -146,10 +146,8 @@ class H3Indexer:
             preserve_geom=keep_geom,
         )
         if mode == PolyfillMode.EXACT_INTERSECTION:
-            boundary = (
-                f"ST_GeomFromText(h3_cell_to_boundary_wkt(h3_string_to_h3({h3_col})))"
-                if as_string
-                else f"ST_GeomFromText(h3_cell_to_boundary_wkt({h3_col}))"
+            boundary = cell_boundary_sql(
+                f"h3_string_to_h3({h3_col})" if as_string else h3_col
             )
             return f"""
                 WITH indexed AS ({base_sql})
@@ -263,10 +261,58 @@ def intersecting_cells(
 
 
 def cell_polygon(cell_index: int) -> Any:
-    """Return a WGS84 Shapely polygon for an integer H3 cell."""
+    """Return a WGS84 Shapely polygon for an integer H3 cell.
+
+    A cell crossing the antimeridian is returned as a two-part MultiPolygon
+    split at +/-180 degrees, not as a polygon wrapping the other way around
+    the globe.
+    """
     h3, Polygon, _ = _libraries()
     boundary = h3.cell_to_boundary(h3.int_to_str(cell_index))
-    return Polygon([(longitude, latitude) for latitude, longitude in boundary])
+    points = [(longitude, latitude) for latitude, longitude in boundary]
+    longitudes = [longitude for longitude, _ in points]
+    if max(longitudes) - min(longitudes) <= 180.0:
+        return Polygon(points)
+    from shapely.affinity import translate  # type: ignore[import-untyped]
+    from shapely.geometry import MultiPolygon, box  # type: ignore[import-untyped]
+
+    shifted = Polygon([(lng + 360.0 if lng < 0.0 else lng, lat) for lng, lat in points])
+    east = shifted.intersection(box(-180.0, -90.0, 180.0, 90.0))
+    west = translate(shifted.intersection(box(180.0, -90.0, 540.0, 90.0)), -360.0)
+    parts = [
+        part
+        for piece in (east, west)
+        for part in getattr(piece, "geoms", [piece])
+        if isinstance(part, Polygon) and not part.is_empty
+    ]
+    return MultiPolygon(parts)
+
+
+def antimeridian_safe_sql(geometry: str) -> str:
+    """DuckDB SQL splitting a cell polygon that crosses the antimeridian.
+
+    H3 boundaries are emitted in [-180, 180]; a crossing cell's ring then
+    spans almost 360 degrees and covers the opposite side of the globe.
+    Such a polygon is unwrapped and split at +/-180 degrees.
+    """
+    shifted = (
+        "ST_MakePolygon(ST_MakeLine(list_transform("
+        f"ST_Dump(ST_Points({geometry})), _crc_p -> ST_Point("
+        "CASE WHEN ST_X(_crc_p.geom) < 0 THEN ST_X(_crc_p.geom) + 360 "
+        "ELSE ST_X(_crc_p.geom) END, ST_Y(_crc_p.geom)))))"
+    )
+    return (
+        f"CASE WHEN ST_XMax({geometry}) - ST_XMin({geometry}) > 180 THEN ST_Union("
+        f"ST_Intersection({shifted}, ST_MakeEnvelope(-180, -90, 180, 90)), "
+        f"ST_Translate(ST_Intersection({shifted}, "
+        "ST_MakeEnvelope(180, -90, 540, 90)), -360, 0)) "
+        f"ELSE {geometry} END"
+    )
+
+
+def cell_boundary_sql(cell: str) -> str:
+    """DuckDB SQL for an H3 cell's WGS84 polygon (``cell`` is a UBIGINT)."""
+    return antimeridian_safe_sql(f"ST_GeomFromText(h3_cell_to_boundary_wkt({cell}))")
 
 
 def estimate_resolutions(

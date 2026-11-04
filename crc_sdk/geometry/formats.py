@@ -76,14 +76,19 @@ class FormatAdapter:
 
         elif fmt in (GeoFormat.WKT, GeoFormat.WKB):
             from_clause = f"read_csv_auto({quoted_path}) AS _src"
-            geom_fn = "ST_GeomFromText" if fmt == GeoFormat.WKT else "ST_GeomFromWKB"
-
+            raw = f"_src.{geometry_column}"
             select_cols = [f"_src.* EXCLUDE({geometry_column})"]
-            if preserve_source_geom:
-                select_cols.append(f"_src.{geometry_column} AS {source_geom_col_name}")
-            select_cols.append(
-                f"{geom_fn}(_src.{geometry_column}) AS {geometry_column}"
-            )
+            if fmt == GeoFormat.WKT:
+                if preserve_source_geom:
+                    select_cols.append(f"{raw} AS {source_geom_col_name}")
+                geometry = f"ST_GeomFromText({raw})"
+            else:
+                # CSV carries WKB as hex text; ST_GeomFromWKB needs bytes.
+                text = f"CAST({raw} AS VARCHAR)"
+                if preserve_source_geom:
+                    select_cols.append(f"unhex({text}) AS {source_geom_col_name}")
+                geometry = f"ST_GeomFromHEXWKB({text})"
+            select_cols.append(f"{geometry} AS {geometry_column}")
 
             return f"(SELECT {', '.join(select_cols)} FROM {from_clause})"
 

@@ -271,3 +271,54 @@ def test_parent_pruning_covers_descendants_outside_parent_polygon() -> None:
     assert not cell_polygon(parent).intersects(area)
     assert parent not in intersecting_cells(area, 0)
     assert parent in intersecting_cells(area, 0, cover_children=True)
+
+
+def test_wkb_csv_reads_hex_encoded_geometry(tmp_path: Path) -> None:
+    import shapely  # type: ignore[import-untyped]
+    from shapely.geometry import Point  # type: ignore[import-untyped]
+
+    from crc_sdk.geometry.formats import FormatAdapter, GeoFormat
+
+    path = tmp_path / "points.csv"
+    path.write_text("id,geometry\n1," + shapely.to_wkb(Point(1, 2), hex=True) + "\n")
+    con = duckdb.connect()
+    relation = FormatAdapter.build_read_relation(con, str(path), GeoFormat.WKB)
+    text, source = con.execute(
+        f"SELECT ST_AsText(geometry), source_geometry FROM {relation}"
+    ).fetchone()
+    assert text == "POINT (1 2)"
+    assert shapely.from_wkb(bytes(source)).equals(Point(1, 2))
+
+
+@pytest.mark.parametrize("longitude", [179.999, -179.999])
+def test_cell_polygon_splits_cells_crossing_the_antimeridian(longitude: float) -> None:
+    import h3  # type: ignore[import-untyped]
+    from shapely.geometry import box  # type: ignore[import-untyped]
+
+    from crc_sdk.geometry import cell_polygon, materialize_cell_geometries_sql
+
+    cell = h3.str_to_int(h3.latlng_to_cell(0.0, longitude, 5))
+    polygon = cell_polygon(cell)
+    assert polygon.geom_type == "MultiPolygon"
+    min_lon, _, max_lon, _ = polygon.bounds
+    assert -180.0 <= min_lon and max_lon <= 180.0
+    assert polygon.area < 0.05  # a res-5 cell, not a band around the globe
+    assert not polygon.intersects(box(-10.0, -1.0, 10.0, 1.0))
+    assert polygon.intersects(box(179.95, -0.01, 180.0, 0.01))
+    assert polygon.intersects(box(-180.0, 0.05, -179.97, 0.1))
+    # Cells away from the antimeridian keep their plain polygon.
+    assert cell_polygon(h3.str_to_int(h3.latlng_to_cell(0.0, 10.0, 5))).geom_type == (
+        "Polygon"
+    )
+
+    from crc_sdk.connectors.duckdb import ensure_extensions
+
+    con = duckdb.connect()
+    ensure_extensions(con, "spatial", "h3")
+    con.execute(f"CREATE TABLE c AS SELECT '{h3.int_to_str(cell)}' AS hex_id")
+    area, west, east = con.execute(
+        "SELECT ST_Area(geom), ST_XMin(geom), ST_XMax(geom) FROM ("
+        f"{materialize_cell_geometries_sql('c')})"
+    ).fetchone()
+    assert area == pytest.approx(polygon.area, rel=1e-4)  # WKT has 6 decimals
+    assert (west, east) == (-180.0, 180.0)
