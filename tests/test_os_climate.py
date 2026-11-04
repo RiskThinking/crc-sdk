@@ -223,7 +223,7 @@ def test_os_climate_uses_zarr_3_fsspec_store(
     )
     monkeypatch.setitem(sys.modules, "zarr", fake_zarr)
     monkeypatch.setattr(
-        "crc_sdk.providers.os_climate.s3fs.S3FileSystem",
+        "s3fs.S3FileSystem",
         lambda **_: pytest.fail("Zarr 3 must not construct a Zarr 2 S3Map"),
     )
     inventory = OSClimateInventory.from_dict(

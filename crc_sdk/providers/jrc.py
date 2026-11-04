@@ -19,6 +19,8 @@ from crc_sdk.connectors.duckdb import DuckDBConnection, default_work_dir
 from crc_sdk.connectors.duckdb.geotiff import JRCReturnPeriodRaster
 from crc_sdk.connectors.duckdb.zarr import Bounds, RasterMetadata
 
+from ._http import HTTP_TIMEOUT, http_request
+
 
 @dataclass(frozen=True)
 class JRCRasterResource:
@@ -155,7 +157,9 @@ class JRCProvider:
                     f"the current JRC URL; configured release: {self.dataset.version}"
                 )
             return requested
-        with urlopen(self.dataset.readme_url) as response:
+        with urlopen(
+            http_request(self.dataset.readme_url), timeout=HTTP_TIMEOUT
+        ) as response:
             readme = response.read().decode("utf-8", errors="replace")
         match = re.search(r"Dataset version\s+([0-9]+(?:\.[0-9]+)+)", readme)
         if match is None:
@@ -175,7 +179,9 @@ class JRCProvider:
         if self.dataset.layout != "tiled" or self.dataset.tile_index_url is None:
             raise ValueError(f"{self.dataset.name} does not publish a tile index")
         if self._tile_index is None:
-            with urlopen(self.dataset.tile_index_url) as response:
+            with urlopen(
+                http_request(self.dataset.tile_index_url), timeout=HTTP_TIMEOUT
+            ) as response:
                 document = json.load(response)
             self._tile_index = tuple(document["features"])
         return self._tile_index
@@ -208,7 +214,13 @@ class JRCProvider:
         *,
         return_periods: Sequence[int] | None = None,
     ) -> tuple[JRCRasterResource, ...]:
-        periods = tuple(return_periods or self.dataset.available_return_periods)
+        # None means every published period; an explicit empty selection is
+        # an error, not "all".
+        periods = tuple(
+            self.dataset.available_return_periods
+            if return_periods is None
+            else return_periods
+        )
         if not periods:
             raise ValueError("at least one source return period is required")
         for period in periods:
@@ -278,7 +290,13 @@ class JRCProvider:
         return_periods: Sequence[int] | None = None,
         cache_dir: str | Path | None = None,
     ) -> JRCReturnPeriodRaster:
-        periods = tuple(return_periods or self.dataset.available_return_periods)
+        # None means every published period; an explicit empty selection is
+        # an error, not "all".
+        periods = tuple(
+            self.dataset.available_return_periods
+            if return_periods is None
+            else return_periods
+        )
         resource = JRCRasterResource(
             source_id=tile_id,
             urls={period: self.dataset.tile_url(tile_id, period) for period in periods},

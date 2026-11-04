@@ -192,3 +192,23 @@ def test_provider_discovers_only_complete_year_files(tmp_path: Path) -> None:
     with patch("crc_sdk.providers.jrc_edo.urlopen") as mock_urlopen:
         mock_urlopen.return_value.__enter__.return_value.read.return_value = listing
         assert provider.complete_years() == (2024, 2025)
+
+
+def test_year_url_uses_the_listed_end_dekad(tmp_path: Path) -> None:
+    # A complete year may end on dekad 1231 rather than the template's 1221;
+    # the URL must name the file the listing actually holds.
+    provider = EDOProvider(SMI, work_dir=tmp_path)
+    listing = b"""
+        <a href="sminx_m_eul_20230101_20231231_t.nc">2023</a>
+        <a href="sminx_m_eul_20240101_20241221_t.nc">2024</a>
+    """
+    with patch("crc_sdk.providers.jrc_edo.urlopen") as mock_urlopen:
+        mock_urlopen.return_value.__enter__.return_value.read.return_value = listing
+        assert provider.complete_years() == (2023, 2024)
+    request = mock_urlopen.call_args.args[0]
+    assert request.get_header("User-agent") == "crc-sdk"
+    assert mock_urlopen.call_args.kwargs["timeout"] > 0
+    assert provider.year_url(2023).endswith("/sminx_m_eul_20230101_20231231_t.nc")
+    assert provider.year_url(2024).endswith("/sminx_m_eul_20240101_20241221_t.nc")
+    # Years the listing did not cover fall back to the dataset template.
+    assert provider.year_url(2020) == SMI.year_url(2020)

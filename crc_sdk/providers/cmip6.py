@@ -412,6 +412,12 @@ class CMIP6Catalogue:
         remote = not self.source.startswith(("/", ".")) and "://" in self.source
         return DuckDBConnection(extensions=("httpfs",) if remote else ()).connect()
 
+    @staticmethod
+    def _connect_local() -> Any:
+        from crc_sdk.connectors.duckdb import DuckDBConnection
+
+        return DuckDBConnection().connect()
+
     def ensure_local(self, destination: str | Path, *, table_id: str = "day") -> Path:
         """Cache the catalogue's ``table_id`` rows locally, once.
 
@@ -423,6 +429,24 @@ class CMIP6Catalogue:
 
         target = Path(destination)
         if target.is_file():
+            # A cache built for another table_id would silently answer every
+            # search with the wrong frequency.
+            con = self._connect_local()
+            try:
+                cached = {
+                    row[0]
+                    for row in con.execute(
+                        "SELECT DISTINCT table_id FROM read_parquet(?)",
+                        [str(target)],
+                    ).fetchall()
+                }
+            finally:
+                con.close()
+            if cached and cached != {table_id}:
+                raise ValueError(
+                    f"{target} caches table_id {sorted(cached)}, not "
+                    f"{table_id!r}; use a separate destination per table_id"
+                )
             self.local = target
             return target
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -733,7 +757,7 @@ class CMIP6BlockReader:
         self._cols = window.columns
         self._lat: np.ndarray[Any, Any] = window.lat
         self._lon: np.ndarray[Any, Any] = window.lon
-        self._fill = _fill_value(self._array)
+        self._fills = _fill_values(self._array)
 
     @property
     def lat(self) -> np.ndarray[Any, Any]:
@@ -797,8 +821,8 @@ class CMIP6BlockReader:
         )
         if t1 > t0:
             samples = self._read(t0, t1, window_rows, window_cols)
-            if self._fill is not None:
-                samples = np.where(samples == self._fill, np.nan, samples)
+            if self._fills:
+                samples = np.where(np.isin(samples, self._fills), np.nan, samples)
             # Place by ordinal, not by position: a gap in the record must stay
             # a gap rather than pulling every later day one slot earlier.
             series[self._ordinals[t0:t1] - start] = samples
@@ -806,12 +830,43 @@ class CMIP6BlockReader:
         return reduce_days(series, spec.statistic, spec.min_valid_fraction)
 
 
+def _fill_values(array: Any) -> tuple[float, ...]:
+    """Every missing-data sentinel of a CMIP6 Zarr array, as read values.
+
+    xarray-written Zarr v2 stores keep ``_FillValue`` in the array metadata
+    (``.zarray`` ``fill_value``, typically 1e20), not in the attributes, so
+    that is honoured too -- unless it is zero, Zarr's default for arrays
+    written without one, which would otherwise mask every dry day. Sentinels
+    are cast to the array's dtype first: a float64 ``1e20`` attribute does not
+    equal the float32 ``1e20`` actually stored.
+    """
+    candidates = [
+        (array.attrs.get(key), True) for key in ("_FillValue", "missing_value")
+    ]
+    candidates.append((getattr(array, "fill_value", None), False))
+    dtype = getattr(array, "dtype", None)
+    fills: list[float] = []
+    for raw, explicit in candidates:
+        if raw is None:
+            continue
+        for value in np.asarray(raw).reshape(-1):
+            try:
+                stored = np.asarray(value).astype(dtype) if dtype is not None else value
+                number = float(stored)
+            except (TypeError, ValueError):
+                continue
+            if not np.isfinite(number) or number in fills:
+                continue
+            if number == 0.0 and not explicit:
+                continue
+            fills.append(number)
+    return tuple(fills)
+
+
 def _fill_value(array: Any) -> float | None:
-    for key in ("_FillValue", "missing_value"):
-        value = array.attrs.get(key)
-        if value is not None:
-            return float(value)
-    return None
+    """The first of :func:`_fill_values`, or ``None``."""
+    fills = _fill_values(array)
+    return fills[0] if fills else None
 
 
 class CMIP6Provider:

@@ -149,6 +149,45 @@ def test_txx_reads_across_the_seam_with_land_mask(
     assert np.isnan(values[0]).all() and np.isnan(values[2]).all()  # sea masked
 
 
+def _time_varying_mask(store: ERA5Store, *, finite_from: int | None) -> None:
+    """Replace the mask with an ARCO-style (time, lon, lat) mask that is NaN
+    before ``finite_from`` (a time index), and declare that start."""
+    group = zarr.open_group(store.url, mode="a", zarr_format=2)
+    hours = _hours()
+    mask = np.full((len(hours), len(LON), len(LAT)), np.nan, dtype=np.float32)
+    if finite_from is not None:
+        mask[finite_from:, :, 1] = 1.0
+        mask[finite_from:, :, 0] = 0.0
+        mask[finite_from:, :, 2] = 0.0
+        group.attrs["valid_time_start"] = str(hours[finite_from]) + ":00:00"
+    del group["land_sea_mask"]
+    land = group.create_array(
+        "land_sea_mask", data=mask, chunks=(24 * 30, len(LON), len(LAT))
+    )
+    land.attrs["_ARRAY_DIMENSIONS"] = ["time", "longitude", "latitude"]
+
+
+def test_time_varying_land_mask_is_read_at_the_record_start(
+    store: ERA5Store,
+) -> None:
+    # ARCO's mask has a time axis that is NaN before the record starts; index 0
+    # (1900 there) masked every cell. Read it at valid_time_start instead.
+    _time_varying_mask(store, finite_from=48)
+    reader = ERA5Provider(store).reader(
+        era5_recipe("txx"), (-50.0, -2.0, 50.0, 2.0), [2003], land_only=True
+    )
+    assert reader._mask is not None
+    assert reader._mask.tolist() == [[False] * 3, [True] * 3, [False] * 3]
+
+
+def test_land_mask_without_finite_values_raises(store: ERA5Store) -> None:
+    _time_varying_mask(store, finite_from=None)
+    with pytest.raises(ValueError, match="no finite values"):
+        ERA5Provider(store).reader(
+            era5_recipe("txx"), (-50.0, -2.0, 50.0, 2.0), [2003], land_only=True
+        )
+
+
 def test_rx1day_assigns_interval_end_stamps_to_the_ended_day(
     store: ERA5Store, tmp_path: Path
 ) -> None:

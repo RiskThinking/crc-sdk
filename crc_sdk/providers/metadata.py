@@ -1,1 +1,0 @@
-"""Provider metadata discovery helpers."""

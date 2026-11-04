@@ -2,20 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from http.client import IncompleteRead
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import urlopen
 
 import fsspec  # type: ignore[import-untyped]
 import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
 
+from ._http import http_request
 from .stations import aggregate_daily, empty_daily
 
 VERSION = "ghcnh-v1"
@@ -29,7 +31,7 @@ ATTRIBUTION = (
 STATION_PATTERN = r"[A-Z]{2}[A-Z0-9-]{9}"
 STATION_DESCRIPTION = "eleven-character GHCN station IDs"
 FIRST_YEAR = 1768
-LAST_YEAR = datetime.now(timezone.utc).year - 1
+LAST_YEAR = datetime.now(UTC).year - 1
 COLUMNS = (
     "STATION",
     "DATE",
@@ -81,6 +83,11 @@ def reduce_daily(
 ) -> tuple[Any, str]:
     """Project eight columns and stream bounded Arrow batches into DuckDB."""
     parquet = pq.ParquetFile(source)
+    missing = [name for name in COLUMNS if name not in parquet.schema_arrow.names]
+    if missing:
+        raise ValueError(
+            f"GHCNh file for {station} {year} lacks required columns {missing}"
+        )
     schema = pa.schema([parquet.schema_arrow.field(name) for name in COLUMNS])
     digest = hashlib.sha256()
 
@@ -135,7 +142,7 @@ def _fetch_daily(
 ) -> tuple[Any, dict[str, Any]]:
     url = f"{URL}/{year}/parquet/GHCNh_{station}_{year}.parquet"
     try:
-        with urlopen(Request(url, method="HEAD"), timeout=120) as response:
+        with urlopen(http_request(url, method="HEAD"), timeout=120) as response:
             etag = response.headers.get("ETag")
             modified = response.headers.get("Last-Modified")
             size = int(response.headers["Content-Length"])
@@ -177,6 +184,25 @@ def _fetch_daily(
     }
 
 
+_RETRY_STATUSES = (412, 429, 500, 502, 503, 504)
+
+
+def _transient_remote_error(error: BaseException) -> bool:
+    """Whether an fsspec/aiohttp range-read failure is worth retrying.
+
+    The conditional (If-Match) range reads go through fsspec's aiohttp
+    backend, which raises its own errors rather than urllib's. A 412 means
+    the object changed after the HEAD; the retry re-reads its new ETag.
+    """
+    try:
+        import aiohttp  # type: ignore[import-untyped]
+    except ImportError:  # pragma: no cover - fsspec[http] installs it
+        return False
+    if isinstance(error, aiohttp.ClientResponseError):
+        return error.status in _RETRY_STATUSES
+    return isinstance(error, (aiohttp.ClientError, asyncio.TimeoutError))
+
+
 def fetch_daily(
     station: str,
     year: int,
@@ -196,10 +222,14 @@ def fetch_daily(
                 memory_limit=memory_limit,
             )
         except HTTPError as error:
-            if error.code not in (429, 500, 502, 503, 504) or attempt == 2:
+            if error.code not in _RETRY_STATUSES or attempt == 2:
                 raise
         except (URLError, TimeoutError, ConnectionError, IncompleteRead):
+            # fsspec's FSTimeoutError is a TimeoutError.
             if attempt == 2:
+                raise
+        except Exception as error:
+            if not _transient_remote_error(error) or attempt == 2:
                 raise
         time.sleep(0.5 * 2**attempt)
     raise AssertionError("unreachable")

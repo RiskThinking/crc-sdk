@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -89,7 +90,7 @@ def test_tiles_for_resolves_intersecting_tiles_only(tmp_path: Path) -> None:
         tiles = provider.tiles_for((-79.65, 43.58, -79.15, 43.85))
 
     assert tiles == ("ID54_N50_W80",)
-    mock_urlopen.assert_called_once_with(GLOFAS.tile_index_url)
+    _assert_one_identified_request(mock_urlopen, GLOFAS.tile_index_url)
 
 
 def test_tile_index_is_fetched_once_and_cached(tmp_path: Path) -> None:
@@ -127,10 +128,27 @@ def test_latest_version_is_read_from_release_readme(tmp_path: Path) -> None:
         )
         assert provider.resolve_version("latest") == "3.1.1"
 
-    mock_urlopen.assert_called_once_with(EFAS.readme_url)
+    _assert_one_identified_request(mock_urlopen, EFAS.readme_url)
+
+
+def _assert_one_identified_request(mock_urlopen: Any, url: str) -> None:
+    """One request to ``url``, with a timeout and the SDK User-Agent."""
+    mock_urlopen.assert_called_once()
+    (request,), options = mock_urlopen.call_args
+    assert request.full_url == url
+    assert request.get_header("User-agent") == "crc-sdk"
+    assert options["timeout"] > 0
 
 
 def test_provider_default_connection_is_resource_tuned(tmp_path: Path) -> None:
     provider = JRCProvider(GLOFAS, work_dir=tmp_path)
     assert provider.connection.config.get("threads")
     assert (tmp_path / "duckdb-temp").is_dir()
+
+
+def test_empty_return_period_selection_is_rejected(tmp_path: Path) -> None:
+    provider = JRCProvider(EFAS, work_dir=tmp_path)
+    with pytest.raises(ValueError, match="at least one source return period"):
+        provider.resources_for((7.0, 49.0, 8.0, 50.0), return_periods=())
+    every = provider.resources_for((7.0, 49.0, 8.0, 50.0))
+    assert set(every[0].urls) == set(EFAS.available_return_periods)

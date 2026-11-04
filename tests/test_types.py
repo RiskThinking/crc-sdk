@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Any, Optional
 
 import pytest
 from crc_framework import FittedDistribution, HurdleDistribution, TabulatedDistribution
@@ -167,3 +167,27 @@ def test_dataset_metadata_round_trip() -> None:
         HazardDatasetMetadata.from_parquet_metadata(metadata.to_parquet_metadata())
         == metadata
     )
+
+
+@pytest.mark.parametrize(
+    "support",
+    [
+        {"return_period_support": (float("nan"), float("nan"))},
+        {"return_period_support": (2.0, float("inf"))},
+        {"return_period_support": (float("nan"), 100.0)},
+        {"source_probability_support": (0.0, float("nan"))},
+    ],
+)
+def test_non_finite_support_bounds_are_rejected(support: dict[str, Any]) -> None:
+    # NaN passed the ordering checks and inf cannot be written as JSON, so
+    # such metadata was accepted but unreadable once written.
+    with pytest.raises(ValidationError, match="must be finite"):
+        HazardDatasetMetadata(
+            h3_resolution=5,
+            value_unit="m",
+            value_semantics="flood depth",
+            producer="test",
+            source=SourceProvenance(provider="test", dataset="flood"),
+            creation_version="1.0",
+            **support,
+        )

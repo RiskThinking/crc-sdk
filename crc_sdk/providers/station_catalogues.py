@@ -11,7 +11,21 @@ import duckdb
 import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.csv as csv  # type: ignore[import-untyped]
 
+from ._http import http_request
 from .stations import DigestReader
+
+
+def _elevation(expression: str) -> str:
+    """SQL nulling station-elevation sentinels.
+
+    NOAA catalogues mark unknown elevation as -999, -999.0 or -999.9 (ISD
+    history, GHCNh) or +9999 (ISD); no station lies below the Dead Sea shore
+    (about -430 m) or above 9000 m.
+    """
+    return (
+        f"CASE WHEN {expression} <= -999 OR {expression} >= 9999 "
+        f"THEN NULL ELSE {expression} END"
+    )
 
 
 def fetch_catalogue(
@@ -29,28 +43,30 @@ def fetch_catalogue(
             "BEGIN",
             "END",
         )
-        projection = """
+        elevation = _elevation('try_cast("ELEV(M)" AS DOUBLE)')
+        projection = f"""
             SELECT USAF || WBAN AS station, "STATION NAME" AS name,
                    try_cast(LAT AS DOUBLE) AS latitude,
                    try_cast(LON AS DOUBLE) AS longitude,
-                   nullif(try_cast("ELEV(M)" AS DOUBLE), 9999) AS elevation,
+                   {elevation} AS elevation,
                    try_cast(substr("BEGIN", 1, 4) AS INTEGER) AS start_year,
                    try_cast(substr("END", 1, 4) AS INTEGER) AS end_year
             FROM catalogue
         """
     elif provider == "ghcnh":
         columns = ("GHCN_ID", "NAME", "LATITUDE", "LONGITUDE", "ELEVATION")
-        projection = """
+        elevation = _elevation("try_cast(ELEVATION AS DOUBLE)")
+        projection = f"""
             SELECT GHCN_ID AS station, NAME AS name,
                    try_cast(LATITUDE AS DOUBLE) AS latitude,
                    try_cast(LONGITUDE AS DOUBLE) AS longitude,
-                   nullif(try_cast(ELEVATION AS DOUBLE), -999.9) AS elevation,
+                   {elevation} AS elevation,
                    NULL::INTEGER AS start_year, NULL::INTEGER AS end_year
             FROM catalogue
         """
     else:
         raise ValueError("station provider must be isd or ghcnh")
-    with urlopen(url, timeout=120) as response:
+    with urlopen(http_request(url), timeout=120) as response:
         digest = DigestReader(response)
         with io.BufferedReader(digest) as buffered:
             reader = csv.open_csv(

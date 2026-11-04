@@ -77,3 +77,29 @@ def test_register_private_pathway_and_conflicts() -> None:
     finally:
         for key in [k for k, v in pathways._REGISTRY.items() if v[0] == "Private-X"]:
             del pathways._REGISTRY[key]
+
+
+def test_reregistering_matches_case_and_keeps_framework_ids_consistent() -> None:
+    snapshot = dict(pathways._REGISTRY)
+    try:
+        # A differently-cased canonical id extends the existing pathway.
+        register_pathway("SSP585", aliases=("ssp5-8.5-private",))
+        resolved = resolve_pathway("ssp5-8.5-private", strict=True)
+        assert resolved.canonical_id == "ssp585"
+        assert resolved.framework_id == resolve_pathway("ssp585").framework_id
+
+        # A contradicting framework id raises rather than splitting the
+        # pathway's labels across two ids.
+        historic_id = resolve_pathway("historic").framework_id
+        with pytest.raises(ValueError, match="already has framework id"):
+            register_pathway("historic", framework_id=99, aliases=("hist",))
+        assert resolve_pathway("historical").framework_id == historic_id
+        assert "hist" not in {key for key in pathways._REGISTRY}
+
+        # Giving an id to a pathway that had none applies to every label.
+        register_pathway("ssp534", framework_id=98)
+        assert resolve_pathway("ssp534-over").framework_id == 98
+        assert resolve_pathway("ssp534").framework_id == 98
+    finally:
+        pathways._REGISTRY.clear()
+        pathways._REGISTRY.update(snapshot)
