@@ -274,7 +274,7 @@ def cell_polygon(cell_index: int) -> Any:
     if max(longitudes) - min(longitudes) <= 180.0:
         return Polygon(points)
     from shapely.affinity import translate  # type: ignore[import-untyped]
-    from shapely.geometry import MultiPolygon, box  # type: ignore[import-untyped]
+    from shapely.geometry import MultiPolygon, box
 
     shifted = Polygon([(lng + 360.0 if lng < 0.0 else lng, lat) for lng, lat in points])
     east = shifted.intersection(box(-180.0, -90.0, 180.0, 90.0))

@@ -232,19 +232,37 @@ def write_lookup_contract(
             )
         buckets = max(1, int(buckets))
 
-        part_files: list[Path] = []
-        for bucket in range(buckets):
-            part_path = parts_dir / f"part_{bucket:04d}.parquet"
-            bucket_filter = (
-                "" if buckets == 1 else f"WHERE hash(hex_id) % {buckets} = {bucket}"
+        bucket_sources: list[str] = [source]
+        if buckets > 1:
+            # One partitioned pass instead of rescanning the source per bucket.
+            buckets_dir = stage_dir / "buckets"
+            con.execute(
+                f"""
+                COPY (
+                    SELECT *, hash(hex_id) % {buckets} AS _crc_bucket
+                    FROM read_parquet({source})
+                ) TO {sql_quote(buckets_dir)}
+                (FORMAT PARQUET, COMPRESSION ZSTD, PARTITION_BY (_crc_bucket))
+                """
             )
+            bucket_sources = [
+                sql_quote(directory / "*.parquet")
+                for directory in (
+                    buckets_dir / f"_crc_bucket={bucket}" for bucket in range(buckets)
+                )
+                if directory.is_dir()
+            ]
+
+        part_files: list[Path] = []
+        for bucket, bucket_source in enumerate(bucket_sources):
+            part_path = parts_dir / f"part_{bucket:04d}.parquet"
             con.execute(
                 f"""
                 COPY (
                     WITH source AS (
-                        SELECT *
-                        FROM read_parquet({source})
-                        {bucket_filter}
+                        SELECT hex_id, adm0_iso, adm1_id, adm1_name,
+                               adm2_id, adm2_name, pct
+                        FROM read_parquet({bucket_source}, hive_partitioning=false)
                     ), paths AS (
                         SELECT *,
                                row_number() OVER (

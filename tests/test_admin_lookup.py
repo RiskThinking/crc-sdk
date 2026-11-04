@@ -204,3 +204,41 @@ def test_nested_lookup_can_be_partitioned_without_exploded_rows(tmp_path: Path) 
     assert con.execute(
         f"SELECT count(*) FROM read_parquet('{output}/**/*.parquet')"
     ).fetchone() == (2,)
+
+
+def test_contract_buckets_match_a_single_pass(tmp_path: Path) -> None:
+    con = duckdb.connect()
+    _stub_h3(con)
+    exploded = tmp_path / "exploded.parquet"
+    con.execute(
+        f"""
+        COPY (
+            SELECT 'h' || i AS hex_id, 'LUX' AS adm0_iso, 'a' || (i % 3) AS adm1_id,
+                   'C' AS adm1_name, 't' || (i % 5) AS adm2_id, 'T' AS adm2_name,
+                   CASE WHEN i % 2 = 0 THEN 1.0 ELSE 0.5 END AS pct
+            FROM range(40) t(i)
+            UNION ALL
+            SELECT 'h' || i, 'BEL', 'b1', 'P', 'b2', 'X', 0.5
+            FROM range(40) t(i) WHERE i % 2 = 1
+        ) TO '{exploded}' (FORMAT PARQUET)
+        """
+    )
+    results = []
+    for buckets in (1, 7):
+        lookup = tmp_path / f"lookup{buckets}.parquet"
+        write_lookup_contract(
+            con,
+            exploded,
+            lookup,
+            resolution=7,
+            include_coverage=True,
+            buckets=buckets,
+            work_dir=tmp_path / "work",
+        )
+        results.append(
+            con.execute(
+                f"SELECT * FROM read_parquet('{lookup}') ORDER BY hex_id"
+            ).fetchall()
+        )
+    assert len(results[0]) == 40
+    assert results[0] == results[1]

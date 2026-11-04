@@ -275,7 +275,7 @@ def test_parent_pruning_covers_descendants_outside_parent_polygon() -> None:
 
 def test_wkb_csv_reads_hex_encoded_geometry(tmp_path: Path) -> None:
     import shapely  # type: ignore[import-untyped]
-    from shapely.geometry import Point  # type: ignore[import-untyped]
+    from shapely.geometry import Point
 
     from crc_sdk.geometry.formats import FormatAdapter, GeoFormat
 
@@ -283,17 +283,19 @@ def test_wkb_csv_reads_hex_encoded_geometry(tmp_path: Path) -> None:
     path.write_text("id,geometry\n1," + shapely.to_wkb(Point(1, 2), hex=True) + "\n")
     con = duckdb.connect()
     relation = FormatAdapter.build_read_relation(con, str(path), GeoFormat.WKB)
-    text, source = con.execute(
+    row = con.execute(
         f"SELECT ST_AsText(geometry), source_geometry FROM {relation}"
     ).fetchone()
+    assert row is not None
+    text, source = row
     assert text == "POINT (1 2)"
     assert shapely.from_wkb(bytes(source)).equals(Point(1, 2))
 
 
 @pytest.mark.parametrize("longitude", [179.999, -179.999])
 def test_cell_polygon_splits_cells_crossing_the_antimeridian(longitude: float) -> None:
-    import h3  # type: ignore[import-untyped]
-    from shapely.geometry import box  # type: ignore[import-untyped]
+    import h3
+    from shapely.geometry import box
 
     from crc_sdk.geometry import cell_polygon, materialize_cell_geometries_sql
 
@@ -316,9 +318,11 @@ def test_cell_polygon_splits_cells_crossing_the_antimeridian(longitude: float) -
     con = duckdb.connect()
     ensure_extensions(con, "spatial", "h3")
     con.execute(f"CREATE TABLE c AS SELECT '{h3.int_to_str(cell)}' AS hex_id")
-    area, west, east = con.execute(
+    row = con.execute(
         "SELECT ST_Area(geom), ST_XMin(geom), ST_XMax(geom) FROM ("
         f"{materialize_cell_geometries_sql('c')})"
     ).fetchone()
+    assert row is not None
+    area, west, east = row
     assert area == pytest.approx(polygon.area, rel=1e-4)  # WKT has 6 decimals
     assert (west, east) == (-180.0, 180.0)

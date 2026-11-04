@@ -9,9 +9,12 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 from urllib.request import urlopen
 
 import pyarrow as pa  # type: ignore[import-untyped]
+import pyarrow.compute as pc  # type: ignore[import-untyped]
+import pyarrow.csv as pacsv  # type: ignore[import-untyped]
 
 from ._remote import file_checksum, http_request, read_manifest, write_manifest
 
@@ -157,28 +160,79 @@ class IBTrACSPlan:
             raise ValueError("batch_size must be positive")
         self.prefetch()
         path = self.cache_dir / "ibtracs" / "v04r01" / self.subset / "source.csv"
-        ids = set(self.storm_ids) if self.storm_ids is not None else None
-        with path.open(newline="", encoding="utf-8-sig") as source:
-            reader = csv.reader(source)
-            columns = next(reader)
-            next(reader)
-            schema = pa.schema([(column, pa.string()) for column in columns])
-            sid_index, year_index = columns.index("SID"), columns.index("SEASON")
-            rows: list[dict[str, str | None]] = []
-            for line in reader:
-                if len(line) != len(columns):
-                    raise ValueError(f"malformed IBTrACS CSV row {reader.line_num}")
-                if ids is not None and line[sid_index].strip() not in ids:
-                    continue
-                if self.year_range is not None:
-                    year = int(line[year_index].strip())
-                    if not self.year_range[0] <= year <= self.year_range[1]:
-                        continue
-                rows.append(
-                    dict(zip(columns, (value.strip() or None for value in line)))
+        with path.open("rb") as source:
+            header = source.readline().decode("utf-8-sig")
+        columns = next(csv.reader([header]))
+        schema = pa.schema([(column, pa.string()) for column in columns])
+        pending: list[pa.RecordBatch] = []
+        pending_rows = 0
+        for batch in self._filtered_batches(path, columns, schema):
+            pending.append(batch)
+            pending_rows += batch.num_rows
+            while pending_rows >= batch_size:
+                table = pa.Table.from_batches(pending, schema=schema)
+                yield from table.slice(0, batch_size).combine_chunks().to_batches()
+                rest = table.slice(batch_size)
+                pending = rest.combine_chunks().to_batches() if rest.num_rows else []
+                pending_rows = rest.num_rows
+        if pending_rows:
+            table = pa.Table.from_batches(pending, schema=schema).combine_chunks()
+            yield from table.to_batches()
+
+    def _filtered_batches(
+        self, path: Path, columns: list[str], schema: Any
+    ) -> Iterator[pa.RecordBatch]:
+        """Stripped, null-for-empty string batches after the storm/year filters."""
+        reader = pacsv.open_csv(
+            path,
+            read_options=pacsv.ReadOptions(
+                column_names=columns, skip_rows=2, block_size=1 << 24
+            ),
+            parse_options=pacsv.ParseOptions(
+                newlines_in_values=True, ignore_empty_lines=False
+            ),
+            convert_options=pacsv.ConvertOptions(
+                column_types={column: pa.string() for column in columns},
+                strings_can_be_null=False,
+                quoted_strings_can_be_null=False,
+            ),
+        )
+        ids = (
+            pa.array(sorted(set(self.storm_ids)), type=pa.string())
+            if self.storm_ids is not None
+            else None
+        )
+        while True:
+            try:
+                batch = reader.read_next_batch()
+            except StopIteration:
+                return
+            except pa.ArrowInvalid as error:
+                raise ValueError(f"malformed IBTrACS CSV: {error}") from error
+            stripped = pa.RecordBatch.from_arrays(
+                [pc.utf8_trim_whitespace(column) for column in batch.columns],
+                schema=schema,
+            )
+            if ids is not None:
+                stripped = stripped.filter(
+                    pc.is_in(stripped.column("SID"), value_set=ids)
                 )
-                if len(rows) == batch_size:
-                    yield pa.RecordBatch.from_pylist(rows, schema=schema)
-                    rows.clear()
-            if rows:
-                yield pa.RecordBatch.from_pylist(rows, schema=schema)
+            if self.year_range is not None:
+                # Years are parsed only on rows the storm filter kept.
+                year = pc.cast(stripped.column("SEASON"), pa.int64())
+                stripped = stripped.filter(
+                    pc.and_(
+                        pc.greater_equal(year, self.year_range[0]),
+                        pc.less_equal(year, self.year_range[1]),
+                    )
+                )
+            if stripped.num_rows:
+                yield pa.RecordBatch.from_arrays(
+                    [
+                        pc.if_else(
+                            pc.equal(column, ""), pa.scalar(None, pa.string()), column
+                        )
+                        for column in stripped.columns
+                    ],
+                    schema=schema,
+                )

@@ -68,12 +68,13 @@ def materialize_cell_geometries_sql(
         """
 
     cached = sql_quote(cache_parquet)
+    cached_geometry = antimeridian_safe_sql("ST_GeomFromText(c.hex_wkt)")
     return f"""
         WITH needed AS (
             SELECT DISTINCT {hex_col} FROM {candidates_relation}
         ),
         from_cache AS (
-            SELECT n.{hex_col}, {antimeridian_safe_sql("ST_GeomFromText(c.hex_wkt)")} AS geom
+            SELECT n.{hex_col}, {cached_geometry} AS geom
             FROM needed AS n
             JOIN read_parquet({cached}) AS c USING ({hex_col})
         ),

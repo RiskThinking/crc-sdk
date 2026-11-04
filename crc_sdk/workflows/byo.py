@@ -138,8 +138,8 @@ def _file_identity(path: str) -> list[Any]:
         status = target.stat()
         return [str(target.resolve()), status.st_size, status.st_mtime_ns]
     if target.is_dir():
-        files = (item for item in target.rglob("*") if item.is_file())
-        return [str(target.resolve()), _tree_fingerprint(target, files)]
+        tree = [item for item in target.rglob("*") if item.is_file()]
+        return [str(target.resolve()), _tree_fingerprint(target, tree)]
     if any(character in path for character in "*?["):
         parent = Path(path.split("*")[0].split("?")[0].split("[")[0])
         root = parent if parent.is_dir() else parent.parent
