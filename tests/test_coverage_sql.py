@@ -470,12 +470,8 @@ def test_coverage_leaves_callers_tables_and_no_persistent_objects(
 
     con = duckdb.connect(str(tmp_path / "user.duckdb"))
     ensure_extensions(con, "spatial", "h3")
-    cell = con.execute(
-        "SELECT h3_h3_to_string(h3_latlng_to_cell(49.6, 6.1, 4))"
-    ).fetchone()[0]
-    wkt = con.execute(
-        f"SELECT h3_cell_to_boundary_wkt(h3_string_to_h3('{cell}'))"
-    ).fetchone()[0]
+    cell = _scalar(con, "SELECT h3_h3_to_string(h3_latlng_to_cell(49.6, 6.1, 4))")
+    wkt = _scalar(con, f"SELECT h3_cell_to_boundary_wkt(h3_string_to_h3('{cell}'))")
     con.execute(
         f"""
         CREATE TABLE admins AS
@@ -510,8 +506,14 @@ def test_coverage_leaves_callers_tables_and_no_persistent_objects(
     tables = set(con.execute("SELECT table_name FROM duckdb_tables()").fetchall())
     assert tables == before  # candidates was replaced by the test, not dropped
     for name in ("hex_counts", "needed_hexes", "partial_hexes"):
-        assert con.execute(f"SELECT keep FROM main.{name}").fetchone() == (42,)
+        assert _scalar(con, f"SELECT keep FROM main.{name}") == 42
     assert not con.execute(
         "SELECT view_name FROM duckdb_views() WHERE NOT internal AND NOT temporary"
     ).fetchall()
     assert not list((tmp_path / "work").iterdir())
+
+
+def _scalar(con: duckdb.DuckDBPyConnection, sql: str) -> object:
+    row = con.execute(sql).fetchone()
+    assert row is not None
+    return row[0]

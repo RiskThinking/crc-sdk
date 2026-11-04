@@ -984,6 +984,6 @@ def test_remote_plan_validates_impact_and_selection_eagerly(tmp_path: Path) -> N
     with pytest.raises(TypeError, match="single string"):
         request.select(hazard_names="flood")
     with pytest.raises(TypeError, match="integer years"):
-        request.select(horizons=["2050"])
+        request.select(horizons=["2050"])  # type: ignore[list-item]
     assert request.select(horizons=[2050]).selection.horizons == (2050,)
     assert not (tmp_path / "cache").exists()

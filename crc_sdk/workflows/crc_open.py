@@ -485,6 +485,11 @@ class CRCOpenPlan:
             sources.append((path, entry))
         assert metadata is not None
         area = _box(self.bounds) if self.bounds is not None else None
+        if area is not None:
+            import shapely  # type: ignore[import-untyped]
+
+            shapely.prepare(area)
+        in_area: dict[int, bool] = {}
         selected_rows = 0
         errors: list[Exception] = []
 
@@ -542,11 +547,11 @@ class CRCOpenPlan:
                                 ),
                             )
                         if area is not None:
-                            matching = [
-                                cell
-                                for cell in cells
-                                if cell_polygon(cell).intersects(area)
-                            ]
+                            # Cells recur across horizons and batches: test
+                            # each cell polygon against the area once.
+                            for cell in cells - in_area.keys():
+                                in_area[cell] = area.intersects(cell_polygon(cell))
+                            matching = [cell for cell in cells if in_area[cell]]
                             mask = pc.and_(
                                 mask,
                                 pc.is_in(
