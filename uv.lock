@@ -655,7 +655,7 @@ wheels = [
 
 [[package]]
 name = "crc-sdk"
-version = "0.11.0"
+version = "0.11.1"
 source = { editable = "." }
 dependencies = [
     { name = "crc-framework" },
@@ -702,7 +702,7 @@ zarr = [
 
 [package.metadata]
 requires-dist = [
-    { name = "crc-framework", specifier = ">=0.6,<0.7" },
+    { name = "crc-framework", specifier = ">=0.6.0,<0.7" },
     { name = "duckdb", specifier = ">=1,<2" },
     { name = "fsspec", specifier = ">=2024" },
     { name = "gcsfs", specifier = ">=2024" },
