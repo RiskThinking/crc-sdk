@@ -112,8 +112,12 @@ requesting more than one worker for them raises.
 
 ## Reproducible impact definitions
 
-An `ImpactExpression` is a persisted, hashable definition, separate from the
-workflow binding above:
+An `ImpactExpression` is a persisted, hashable definition. Pass it, or its
+`framework_expression`, to `.impact(...)` like any other function; portfolio
+metadata then records its `definition_hash`. Expressions carry their own
+registry context, so `context=` asset columns are rejected for them.
+
+Build and persist one like this:
 
 ```python
 from crc_sdk.impacts import (
