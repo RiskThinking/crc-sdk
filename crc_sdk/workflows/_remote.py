@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
-from collections.abc import Callable, Mapping, Sequence
+import sys
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal, Protocol, cast
@@ -155,6 +158,62 @@ def write_manifest(cache_dir: Path, manifest: Mapping[str, Any]) -> None:
         temporary.unlink(missing_ok=True)
 
 
+@contextmanager
+def manifest_lock(cache_dir: Path) -> Iterator[None]:
+    """Hold an exclusive cross-process lock on ``cache_dir``'s manifest.
+
+    Wrap every read-modify-write of a shared ``manifest.json`` in this so two
+    processes filling one cache directory cannot drop each other's entries.
+    It is an OS file lock (``flock``/``msvcrt.locking``) on a sibling
+    ``.manifest.lock`` file, released automatically if a holder dies. On a
+    filesystem without lock support it degrades to the previous unlocked
+    behaviour rather than failing.
+    """
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    with (cache_dir / ".manifest.lock").open("a+b") as handle:
+        locked = _lock_file(handle)
+        try:
+            yield
+        finally:
+            if locked:
+                _unlock_file(handle)
+
+
+if sys.platform == "win32":
+    import msvcrt
+
+    def _lock_file(handle: Any) -> bool:
+        while True:
+            handle.seek(0)
+            try:
+                # Blocks ~10 s, then raises EDEADLK while still contended.
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                return True
+            except OSError as error:
+                if error.errno not in (errno.EDEADLK, errno.EACCES):
+                    return False
+
+    def _unlock_file(handle: Any) -> None:
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+
+else:
+    import fcntl
+
+    def _lock_file(handle: Any) -> bool:
+        while True:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                return True
+            except InterruptedError:
+                continue
+            except OSError:
+                return False
+
+    def _unlock_file(handle: Any) -> None:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def plan_manifest_key(provider: str, identity: Sequence[Any]) -> str:
     """Key of one plan's record inside a cache directory's shared manifest."""
     digest = hashlib.sha256(
@@ -187,11 +246,12 @@ def write_plan_manifest(cache_dir: Path, key: str, record: Mapping[str, Any]) ->
     The latest record is mirrored at the top level, the single-plan layout
     earlier releases read and wrote.
     """
-    manifest = read_manifest(cache_dir) or {}
-    plans = manifest.get("plans")
-    merged = dict(plans) if isinstance(plans, Mapping) else {}
-    merged[key] = dict(record)
-    write_manifest(cache_dir, {**manifest, **record, "plans": merged})
+    with manifest_lock(cache_dir):
+        manifest = read_manifest(cache_dir) or {}
+        plans = manifest.get("plans")
+        merged = dict(plans) if isinstance(plans, Mapping) else {}
+        merged[key] = dict(record)
+        write_manifest(cache_dir, {**manifest, **record, "plans": merged})
 
 
 def merge_manifest_entries(
@@ -200,11 +260,12 @@ def merge_manifest_entries(
     **fields: Any,
 ) -> None:
     """Add keyed entries to the shared manifest, keeping everyone else's."""
-    manifest = read_manifest(cache_dir) or {}
-    stored = manifest.get("entries")
-    merged = dict(stored) if isinstance(stored, Mapping) else {}
-    merged.update(entries)
-    write_manifest(cache_dir, {**manifest, **fields, "entries": merged})
+    with manifest_lock(cache_dir):
+        manifest = read_manifest(cache_dir) or {}
+        stored = manifest.get("entries")
+        merged = dict(stored) if isinstance(stored, Mapping) else {}
+        merged.update(entries)
+        write_manifest(cache_dir, {**manifest, **fields, "entries": merged})
 
 
 def is_complete_output(path: Path) -> bool:

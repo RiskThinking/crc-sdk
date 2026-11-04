@@ -462,3 +462,111 @@ def test_remote_destination_never_creates_local_scheme_directories(
     )
     write_hazard_dataset(_many_rows(3), "memory://bucket/x.parquet", _metadata())
     assert list(tmp_path.iterdir()) == []
+
+
+class _FailingCopyConnection:
+    """A real DuckDB connection whose COPY writes, then fails mid-publish."""
+
+    def __init__(self) -> None:
+        self._connection = duckdb.connect()
+        self.copied_to: list[str] = []
+
+    def register(self, *args: Any) -> Any:
+        return self._connection.register(*args)
+
+    def unregister(self, *args: Any) -> Any:
+        return self._connection.unregister(*args)
+
+    def close(self) -> None:
+        self._connection.close()
+
+    def execute(self, sql: str) -> Any:
+        result = self._connection.execute(sql)
+        if sql.startswith("COPY"):
+            # The bytes are on disk; fail before the writer can finish.
+            self.copied_to.append(sql)
+            raise duckdb.IOException("injected failure after COPY")
+        return result
+
+
+@pytest.mark.parametrize("writer", ["dataset", "stream"])
+def test_failed_local_write_keeps_previous_file_and_leaves_no_partial(
+    tmp_path: Path, writer: str
+) -> None:
+    destination = tmp_path / "existing.parquet"
+    write_hazard_dataset(_many_rows(3), destination, _metadata())
+    previous = destination.read_bytes()
+    before = sorted(tmp_path.iterdir())
+    connection = _FailingCopyConnection()
+
+    with pytest.raises(duckdb.IOException, match="injected failure"):
+        if writer == "dataset":
+            write_hazard_dataset(
+                _many_rows(5), destination, _metadata(), connection=connection
+            )
+        else:
+            write_hazard_stream(
+                CanonicalHazardStream(
+                    metadata=_metadata(),
+                    batches=iter([CanonicalHazardBatch(_many_rows(5))]),
+                ),
+                destination,
+                connection=connection,
+                overwrite=True,
+            )
+
+    assert connection.copied_to, "the injected failure must happen after COPY"
+    assert str(destination) not in connection.copied_to[0]
+    assert destination.read_bytes() == previous
+    assert sorted(tmp_path.iterdir()) == before
+    connection.close()
+
+
+@pytest.mark.parametrize("ordered", [True, False])
+def test_stream_failing_mid_iteration_publishes_nothing(
+    tmp_path: Path, ordered: bool
+) -> None:
+    destination = tmp_path / "existing.parquet"
+    destination.write_bytes(b"keep me")
+
+    def batches() -> Any:
+        yield CanonicalHazardBatch(_many_rows(3))
+        raise RuntimeError("upstream source failed")
+
+    # DuckDB re-raises a reader error as its own exception type (ordered).
+    with pytest.raises(Exception, match="upstream source failed"):
+        write_hazard_stream(
+            CanonicalHazardStream(metadata=_metadata(), batches=batches()),
+            destination,
+            connection=duckdb.connect(),
+            work_dir=tmp_path / "work",
+            overwrite=True,
+            ordered=ordered,
+        )
+
+    assert destination.read_bytes() == b"keep me"
+    leftovers = sorted(p for p in tmp_path.rglob("*") if p.is_file())
+    assert leftovers == [destination]
+
+
+def test_successful_local_write_replaces_atomically(tmp_path: Path) -> None:
+    destination = tmp_path / "out.parquet"
+    destination.write_bytes(b"old")
+    connection = duckdb.connect()
+    write_hazard_stream(
+        CanonicalHazardStream(
+            metadata=_metadata(), batches=iter([CanonicalHazardBatch(_many_rows(4))])
+        ),
+        destination,
+        connection=connection,
+        overwrite=True,
+    )
+    write_hazard_dataset(
+        _many_rows(2), tmp_path / "other.parquet", _metadata(), connection=connection
+    )
+    assert read_hazard_dataset(destination).num_rows == 4
+    assert read_hazard_dataset(tmp_path / "other.parquet").num_rows == 2
+    assert sorted(p.name for p in tmp_path.iterdir()) == [
+        "other.parquet",
+        "out.parquet",
+    ]

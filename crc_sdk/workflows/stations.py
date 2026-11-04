@@ -39,6 +39,7 @@ from ._remote import (
     PrefetchResult,
     ProgressCallback,
     file_checksum,
+    manifest_lock,
     merge_manifest_entries,
     read_manifest,
     validate_bounds,
@@ -153,10 +154,11 @@ class StationObservationPlan:
             "local": path.relative_to(directory).as_posix(),
             "retrieved_at": datetime.now(UTC).isoformat(),
         }
-        current = read_manifest(directory) or {}
-        catalogues = dict(current.get("catalogues", {}))
-        catalogues[self.provider] = entry
-        write_manifest(directory, {**current, "catalogues": catalogues})
+        with manifest_lock(directory):
+            current = read_manifest(directory) or {}
+            catalogues = dict(current.get("catalogues", {}))
+            catalogues[self.provider] = entry
+            write_manifest(directory, {**current, "catalogues": catalogues})
         return table, entry
 
     def _station_selection(self, directory: Path) -> tuple[Any, dict[str, Any]]:

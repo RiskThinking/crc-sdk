@@ -6,8 +6,9 @@ import multiprocessing
 import os
 import tempfile
 import weakref
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -258,6 +259,46 @@ def _sql_identifier(value: str) -> str:
     return '"' + value.replace('"', '""') + '"'
 
 
+def _is_local_filesystem(filesystem: Any) -> bool:
+    protocol = filesystem.protocol
+    protocols = protocol if isinstance(protocol, tuple) else (protocol,)
+    return "file" in protocols or "local" in protocols
+
+
+def _local_target_path(target: str) -> Path | None:
+    """Return ``target`` as a local path, or ``None`` for a remote URL."""
+    if "://" not in target:
+        return Path(target)
+    filesystem, path = fsspec.core.url_to_fs(target)
+    return Path(path) if _is_local_filesystem(filesystem) else None
+
+
+@contextmanager
+def _atomic_local_target(target: str) -> Iterator[str]:
+    """Yield the path a writer should produce ``target`` through.
+
+    A local ``target`` is written to a hidden sibling file and published with
+    :func:`os.replace` only once the writer returns, so a failed or
+    interrupted write leaves any previous file intact and no partial file
+    behind. Staging beside the target keeps the rename on one filesystem.
+
+    A remote ``target`` (``gs://``, ``s3://``, ...) is yielded unchanged:
+    object stores have no rename, and their single-object uploads only become
+    visible once complete, so there is no partial object to protect against.
+    """
+    local = _local_target_path(target)
+    if local is None:
+        yield target
+        return
+    staged = local.with_name(f".{local.name}.{uuid4().hex}.tmp")
+    try:
+        yield str(staged)
+        os.replace(staged, local)
+    except BaseException:
+        staged.unlink(missing_ok=True)
+        raise
+
+
 def _duckdb_connection(
     connection: Any | None, *, work_dir: Path | None = None
 ) -> tuple[Any, bool]:
@@ -289,6 +330,10 @@ def write_hazard_dataset(
     chunk_rows: int = 20_000,
 ) -> str | Path:
     """Write one self-describing Parquet file through DuckDB.
+
+    A local ``destination`` is written to a hidden sibling file and renamed
+    into place, so a failed write never leaves a partial file and never
+    clobbers an existing one.
 
     ``max_workers``/``chunk_rows`` pass straight through to
     :func:`validate_hazard_table`'s curve-reconstruction pass. A caller
@@ -323,16 +368,16 @@ def write_hazard_dataset(
         work_dir=Path(destination).parent if "://" not in target else None,
     )
     metadata_json = metadata.to_json_bytes().decode("utf-8")
-    copy_sql = (
-        f"COPY {_sql_identifier(relation_name)} TO {_sql_string(target)} "
-        f"(FORMAT PARQUET, COMPRESSION {normalized_compression.upper()}, "
-        f"KV_METADATA "
-        f"{{{_sql_string(PARQUET_METADATA_KEY)}: "
-        f"{_sql_string(metadata_json)}}})"
-    )
     try:
         duckdb_connection.register(relation_name, table)
-        duckdb_connection.execute(copy_sql)
+        with _atomic_local_target(target) as written:
+            duckdb_connection.execute(
+                f"COPY {_sql_identifier(relation_name)} TO {_sql_string(written)} "
+                f"(FORMAT PARQUET, COMPRESSION {normalized_compression.upper()}, "
+                f"KV_METADATA "
+                f"{{{_sql_string(PARQUET_METADATA_KEY)}: "
+                f"{_sql_string(metadata_json)}}})"
+            )
     finally:
         try:
             duckdb_connection.unregister(relation_name)
@@ -364,6 +409,8 @@ def write_hazard_stream(
     rejects duplicates before the object is atomically published. This keeps
     canonical payload memory batch-bounded at the cost of physical global row
     ordering. Logical schema, row keys, and percentile evaluation are unchanged.
+    Either way a local ``destination`` only appears (or is replaced) once the
+    whole file is written; a failure leaves any previous file intact.
     """
     normalized_compression = compression.lower()
     supported_compression = {
@@ -429,14 +476,6 @@ def write_hazard_stream(
     metadata_json = metadata.to_json_bytes().decode("utf-8")
     order = ", ".join(_sql_identifier(name) for name in HAZARD_SORT_ORDER)
     row_key = ", ".join(_sql_identifier(name) for name in HAZARD_ROW_KEY)
-    copy_sql = (
-        f"COPY (SELECT * FROM {_sql_identifier(staged_name)} ORDER BY {order}) "
-        f"TO {_sql_string(target)} "
-        f"(FORMAT PARQUET, COMPRESSION {normalized_compression.upper()}, "
-        f"OVERWRITE_OR_IGNORE {str(overwrite).lower()}, KV_METADATA "
-        f"{{{_sql_string(PARQUET_METADATA_KEY)}: "
-        f"{_sql_string(metadata_json)}}})"
-    )
     try:
         duckdb_connection.register(relation_name, reader)
         duckdb_connection.execute(
@@ -449,7 +488,15 @@ def write_hazard_stream(
         ).fetchone()
         if duplicate is not None:
             raise ValueError(f"duplicate canonical row key {HAZARD_ROW_KEY!r}")
-        duckdb_connection.execute(copy_sql)
+        with _atomic_local_target(target) as written:
+            duckdb_connection.execute(
+                f"COPY (SELECT * FROM {_sql_identifier(staged_name)} "
+                f"ORDER BY {order}) TO {_sql_string(written)} "
+                f"(FORMAT PARQUET, COMPRESSION {normalized_compression.upper()}, "
+                f"OVERWRITE_OR_IGNORE {str(overwrite).lower()}, KV_METADATA "
+                f"{{{_sql_string(PARQUET_METADATA_KEY)}: "
+                f"{_sql_string(metadata_json)}}})"
+            )
     finally:
         try:
             duckdb_connection.unregister(relation_name)
@@ -515,9 +562,7 @@ def _write_hazard_stream_unordered(
                 raise ValueError(f"duplicate canonical row key {HAZARD_ROW_KEY!r}")
             parent = str(Path(target_path).parent)
             filesystem.makedirs(parent, exist_ok=True)
-            if filesystem.protocol in ("file", "local") or (
-                isinstance(filesystem.protocol, tuple) and "file" in filesystem.protocol
-            ):
+            if _is_local_filesystem(filesystem):
                 os.replace(staged, target_path)
             else:
                 filesystem.put(str(staged), target_path)
