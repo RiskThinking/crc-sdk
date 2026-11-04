@@ -6,7 +6,7 @@ import pytest
 
 import crc_sdk.geometry.pmtiles._build as crc_sdk_build
 from crc_sdk.geometry.pmtiles import POINTS, POLYGONS, PMTilesBuild
-from crc_sdk.geometry.pmtiles.budget import TilingBudget
+from crc_sdk.geometry.pmtiles.budget import TilingBudget, check_tiling_budget
 
 pytestmark = pytest.mark.skipif(
     shutil.which("tippecanoe") is None,
@@ -251,7 +251,7 @@ def test_with_resources_forwards_temp_to_input_factor_to_budget_check(
     output = tmp_path / "out.pmtiles"
 
     captured: dict[str, object] = {}
-    real_check = crc_sdk_build.check_tiling_budget
+    real_check = check_tiling_budget
 
     def _capturing_check(*args: object, **kwargs: object) -> None:
         captured["temp_to_input_factor"] = kwargs.get("temp_to_input_factor")

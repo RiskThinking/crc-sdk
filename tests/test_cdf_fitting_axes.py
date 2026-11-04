@@ -570,7 +570,7 @@ def test_override_keyed_by_canonical_name_applies_to_aliases() -> None:
 
 
 def test_integer_sample_lists_are_accepted() -> None:
-    samples = [[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]]
+    samples: list[list[float]] = [[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]]
     table = _table(samples, quantile_name="samples", quantile_type=pa.list_(pa.int64()))
     result = fit_cdf_quantile_batches(
         table,

@@ -1,5 +1,7 @@
+from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import numpy as np
 import pyarrow as pa  # type: ignore[import-untyped]
@@ -111,7 +113,7 @@ def test_configured_source_id_column_is_required() -> None:
     )
     result = fit_cdf_quantile_batches(
         source,
-        np.linspace(0.0, 1.0, 6),
+        np.linspace(0.0, 1.0, 6).tolist(),
         _policy(),
         columns=CDFColumnSchema(source_id="missing_source_id"),
     )
@@ -152,7 +154,7 @@ def test_unconverged_fit_is_rejected(
     )
     result = fit_cdf_quantile_batches(
         source,
-        np.linspace(0.0, 1.0, 6),
+        np.linspace(0.0, 1.0, 6).tolist(),
         _policy(),
     )
 
@@ -185,7 +187,7 @@ def test_full_support_point_mass_precedes_scientific_eligibility(
         }
     )
 
-    result = fit_cdf_quantile_batches(source, probabilities, policy)
+    result = fit_cdf_quantile_batches(source, probabilities.tolist(), policy)
     table = result.stream.read_all()
 
     assert table["curve_kind"].to_pylist() == ["point_mass"]
@@ -217,7 +219,7 @@ def test_interior_constant_with_different_endpoint_is_not_point_mass() -> None:
         }
     )
 
-    result = fit_cdf_quantile_batches(source, probabilities, policy)
+    result = fit_cdf_quantile_batches(source, probabilities.tolist(), policy)
     table = result.stream.read_all()
 
     assert table["curve_kind"].to_pylist() == ["no_data"]
@@ -240,7 +242,7 @@ def test_secondary_family_is_used_after_primary_failure(
         }
     )
 
-    def fake_fit(*args, family: str, **kwargs):
+    def fake_fit(*args: Any, family: str, **kwargs: Any) -> SimpleNamespace:
         if family == "gumbel_r":
             raise ValueError("gumbel_r fitting did not converge after 2000 iterations")
         return SimpleNamespace(
@@ -260,7 +262,7 @@ def test_secondary_family_is_used_after_primary_failure(
         **{**_policy().__dict__, "fallback_families": ("genextreme",)}
     )
 
-    result = fit_cdf_quantile_batches(source, np.linspace(0.0, 1.0, 6), policy)
+    result = fit_cdf_quantile_batches(source, np.linspace(0.0, 1.0, 6).tolist(), policy)
     table = result.stream.read_all()
 
     assert table["curve_type"].to_pylist() == ["genextreme"]
@@ -297,7 +299,7 @@ def test_all_family_failure_uses_compact_tabulated_fallback(
         }
     )
 
-    result = fit_cdf_quantile_batches(source, probabilities, policy)
+    result = fit_cdf_quantile_batches(source, probabilities.tolist(), policy)
     table = result.stream.read_all()
 
     assert table["curve_kind"].to_pylist() == ["tabulated"]
@@ -335,7 +337,7 @@ def test_all_family_failure_skip_is_independent_of_on_fit_failure(
         }
     )
 
-    result = fit_cdf_quantile_batches(source, probabilities, policy)
+    result = fit_cdf_quantile_batches(source, probabilities.tolist(), policy)
 
     assert result.stream.read_all().num_rows == 0
     assert result.summary.source_rows == 1
@@ -389,7 +391,7 @@ def test_abandoned_prefetch_closes_without_joining_a_blocked_worker() -> None:
 
     release = threading.Event()
 
-    def source():  # type: ignore[no-untyped-def]
+    def source() -> Iterator[int]:
         yield 1
         release.wait(10)
         yield 2

@@ -5,6 +5,7 @@ from typing import Any
 import duckdb
 import pytest
 
+from crc_sdk.connectors.duckdb.connection import fetch_one_row
 from crc_sdk.geometry.pmtiles._geojson_sql import (
     LayerSource,
     build_combined_query,
@@ -206,7 +207,7 @@ def test_build_layer_query_projects_only_the_given_property_columns(
             property_columns=("id", "col_b"),
         ),
     )
-    (feature_json,) = con.execute(query).fetchone()
+    (feature_json,) = fetch_one_row(con, query)
     properties = _parse_feature(feature_json)["properties"]
     assert properties == {"id": 1, "col_b": 20}
 
@@ -235,7 +236,7 @@ def test_build_layer_query_property_columns_silently_skips_missing_names(
             property_columns=("id", "col_a", "col_does_not_exist"),
         ),
     )
-    (feature_json,) = con.execute(query).fetchone()
+    (feature_json,) = fetch_one_row(con, query)
     properties = _parse_feature(feature_json)["properties"]
     assert properties == {"id": 1, "col_a": 10}
 
@@ -252,7 +253,7 @@ def test_build_layer_query_property_columns_none_keeps_default_behavior(
     query = build_layer_query(
         con, LayerSource(source=str(path), layer="p", minzoom=0, maxzoom=1)
     )
-    (feature_json,) = con.execute(query).fetchone()
+    (feature_json,) = fetch_one_row(con, query)
     properties = _parse_feature(feature_json)["properties"]
     assert properties == {"id": 1, "col_a": 10}
 

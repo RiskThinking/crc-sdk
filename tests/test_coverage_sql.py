@@ -3,6 +3,7 @@ from pathlib import Path
 import duckdb
 
 from crc_sdk.connectors.duckdb import ensure_extensions, sql_quote
+from crc_sdk.connectors.duckdb.connection import fetch_one_row
 from crc_sdk.geometry import (
     build_border_hexes_sql,
     build_coverage_sql,
@@ -116,7 +117,7 @@ def test_single_candidate_interior_hex_gets_full_coverage() -> None:
         border_hexes_relation="partial_hexes",
         hex_counts_relation="hex_counts",
     )
-    pct = con.execute(f"SELECT pct FROM ({sql})").fetchone()[0]
+    pct = fetch_one_row(con, f"SELECT pct FROM ({sql})")[0]
     assert pct == 1.0
 
 
@@ -166,7 +167,7 @@ def test_single_candidate_edge_hex_gets_partial_coverage() -> None:
         border_hexes_relation="partial_hexes",
         hex_counts_relation="hex_counts",
     )
-    pct = con.execute(f"SELECT pct FROM ({sql})").fetchone()[0]
+    pct = fetch_one_row(con, f"SELECT pct FROM ({sql})")[0]
     assert 0.0 < pct < 1.0
 
 
@@ -247,15 +248,15 @@ def test_hierarchical_coverage_interior_parent_skips_child_geoms(
 
     con = duckdb.connect()
     ensure_extensions(con, "spatial", "h3")
-    cell = con.execute(
-        "SELECT h3_h3_to_string(h3_latlng_to_cell(49.6, 6.1, 6))"
-    ).fetchone()[0]
-    parent = con.execute(
-        f"SELECT h3_h3_to_string(h3_cell_to_parent(h3_string_to_h3('{cell}'), 4))"
-    ).fetchone()[0]
-    parent_wkt = con.execute(
-        f"SELECT h3_cell_to_boundary_wkt(h3_string_to_h3('{parent}'))"
-    ).fetchone()[0]
+    cell = fetch_one_row(
+        con, "SELECT h3_h3_to_string(h3_latlng_to_cell(49.6, 6.1, 6))"
+    )[0]
+    parent = fetch_one_row(
+        con, f"SELECT h3_h3_to_string(h3_cell_to_parent(h3_string_to_h3('{cell}'), 4))"
+    )[0]
+    parent_wkt = fetch_one_row(
+        con, f"SELECT h3_cell_to_boundary_wkt(h3_string_to_h3('{parent}'))"
+    )[0]
     con.execute(
         f"""
         CREATE TABLE admins AS
@@ -282,9 +283,9 @@ def test_hierarchical_coverage_interior_parent_skips_child_geoms(
         parent_resolution=4,
     )
     assert stats["coverage_rows"] == 1
-    assert stats["interior_parents"] >= 1
+    assert int(stats["interior_parents"]) >= 1
     assert stats["needed_hexes"] == 0
-    pct = con.execute(f"SELECT pct FROM read_parquet('{out}')").fetchone()[0]
+    pct = fetch_one_row(con, f"SELECT pct FROM read_parquet('{out}')")[0]
     assert pct == 1.0
 
 
@@ -295,15 +296,15 @@ def test_write_exploded_coverage_dispatches_hierarchical(
 
     con = duckdb.connect()
     ensure_extensions(con, "spatial", "h3")
-    cell = con.execute(
-        "SELECT h3_h3_to_string(h3_latlng_to_cell(49.6, 6.1, 6))"
-    ).fetchone()[0]
-    parent = con.execute(
-        f"SELECT h3_h3_to_string(h3_cell_to_parent(h3_string_to_h3('{cell}'), 4))"
-    ).fetchone()[0]
-    parent_wkt = con.execute(
-        f"SELECT h3_cell_to_boundary_wkt(h3_string_to_h3('{parent}'))"
-    ).fetchone()[0]
+    cell = fetch_one_row(
+        con, "SELECT h3_h3_to_string(h3_latlng_to_cell(49.6, 6.1, 6))"
+    )[0]
+    parent = fetch_one_row(
+        con, f"SELECT h3_h3_to_string(h3_cell_to_parent(h3_string_to_h3('{cell}'), 4))"
+    )[0]
+    parent_wkt = fetch_one_row(
+        con, f"SELECT h3_cell_to_boundary_wkt(h3_string_to_h3('{parent}'))"
+    )[0]
     con.execute(
         f"""
         CREATE TABLE admins AS
@@ -342,12 +343,12 @@ def test_hierarchical_coverage_keeps_contained_children_of_boundary_parent(
 
     con = duckdb.connect()
     ensure_extensions(con, "spatial", "h3")
-    cell = con.execute(
-        "SELECT h3_h3_to_string(h3_latlng_to_cell(49.6, 6.1, 6))"
-    ).fetchone()[0]
-    cell_wkt = con.execute(
-        f"SELECT h3_cell_to_boundary_wkt(h3_string_to_h3('{cell}'))"
-    ).fetchone()[0]
+    cell = fetch_one_row(
+        con, "SELECT h3_h3_to_string(h3_latlng_to_cell(49.6, 6.1, 6))"
+    )[0]
+    cell_wkt = fetch_one_row(
+        con, f"SELECT h3_cell_to_boundary_wkt(h3_string_to_h3('{cell}'))"
+    )[0]
     # Snug buffer around the child only: contains the child, not its r4 parent.
     con.execute(
         f"""
@@ -374,7 +375,7 @@ def test_hierarchical_coverage_keeps_contained_children_of_boundary_parent(
         resolution=6,
         parent_resolution=4,
     )
-    assert stats["boundary_parents"] >= 1
+    assert int(stats["boundary_parents"]) >= 1
     assert stats["interior_parents"] == 0
     assert stats["needed_hexes"] == 0
     assert stats["coverage_rows"] == 1
@@ -388,9 +389,9 @@ def test_hierarchical_coverage_leaves_no_hex_geom_tables(tmp_path: Path) -> None
 
     con = duckdb.connect()
     ensure_extensions(con, "spatial", "h3")
-    cell = con.execute(
-        "SELECT h3_h3_to_string(h3_latlng_to_cell(49.6, 6.1, 6))"
-    ).fetchone()[0]
+    cell = fetch_one_row(
+        con, "SELECT h3_h3_to_string(h3_latlng_to_cell(49.6, 6.1, 6))"
+    )[0]
     con.execute(
         """
         CREATE TABLE admins AS
@@ -433,9 +434,9 @@ def test_hierarchical_coverage_boundary_parent_gets_partial_pct(
 
     con = duckdb.connect()
     ensure_extensions(con, "spatial", "h3")
-    cell = con.execute(
-        "SELECT h3_h3_to_string(h3_latlng_to_cell(49.6, 6.1, 6))"
-    ).fetchone()[0]
+    cell = fetch_one_row(
+        con, "SELECT h3_h3_to_string(h3_latlng_to_cell(49.6, 6.1, 6))"
+    )[0]
     # Tiny polygon that intersects the cell but does not contain its parent.
     con.execute(
         """
@@ -465,8 +466,8 @@ def test_hierarchical_coverage_boundary_parent_gets_partial_pct(
         parent_resolution=4,
     )
     assert stats["coverage_rows"] == 1
-    assert stats["boundary_parents"] >= 1
-    pct = con.execute(f"SELECT pct FROM read_parquet('{out}')").fetchone()[0]
+    assert int(stats["boundary_parents"]) >= 1
+    pct = fetch_one_row(con, f"SELECT pct FROM read_parquet('{out}')")[0]
     assert 0.0 <= pct <= 1.0
 
 

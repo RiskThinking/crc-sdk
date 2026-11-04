@@ -221,7 +221,7 @@ class OSClimateProvider:
     def open(self, selection: OSClimateSelection) -> ZarrRaster:
         """Open metadata only; chunks remain remote until a scan executes."""
         try:
-            import zarr  # type: ignore[import-untyped]
+            import zarr
         except ImportError as error:
             raise ImportError(
                 "OS-Climate access requires `pip install crc-sdk[zarr]`"

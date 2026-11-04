@@ -296,7 +296,7 @@ class GeoTiffRaster:
         """Write a native-CRS window to a local GeoTIFF."""
         _require_raster_extra()
         import rasterio
-        from rasterio.windows import Window
+        from rasterio.windows import Window  # type: ignore[import-untyped]
 
         # Same touched-pixel window as scans, so a cached crop holds every
         # pixel a stream scan of the same bounds would read.
@@ -452,7 +452,7 @@ class GeoTiffRaster:
 
     def _pixel_window(self, bounds: Bounds) -> tuple[int, int, int, int]:
         _require_raster_extra()
-        from rasterio.windows import from_bounds  # type: ignore[import-untyped]
+        from rasterio.windows import from_bounds
 
         min_x, min_y, max_x, max_y = bounds
         if min_x > max_x or min_y > max_y:

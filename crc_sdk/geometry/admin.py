@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from crc_sdk.connectors.duckdb.connection import (
+    fetch_one_row,
     partitioned_write_open_files_hint,
     sql_quote,
 )
@@ -130,7 +131,7 @@ def enrich_adm2_with_adm1(
     )
     con.execute(f"DROP TABLE IF EXISTS {output_table}")
     con.execute(f"CREATE TABLE {output_table} AS {join_sql}")
-    count = int(con.execute(f"SELECT COUNT(*) FROM {output_table}").fetchone()[0])
+    count = int(fetch_one_row(con, f"SELECT COUNT(*) FROM {output_table}")[0])
     con.execute("DROP TABLE IF EXISTS _crc_adm1_src")
     con.execute("DROP TABLE IF EXISTS _crc_adm2_src")
     return count
@@ -225,7 +226,7 @@ def write_lookup_contract(
         )
         source = sql_quote(source_path)
         row_count = int(
-            con.execute(f"SELECT COUNT(*) FROM read_parquet({source})").fetchone()[0]
+            fetch_one_row(con, f"SELECT COUNT(*) FROM read_parquet({source})")[0]
         )
         if buckets is None:
             # ~400k exploded rows/bucket keeps list/window aggs under 9GiB.
@@ -386,11 +387,12 @@ def write_partitioned_lookup(
     projection = (
         "*" if parent in columns else f"*, {parent_expression}::VARCHAR AS {parent}"
     )
-    partition_count = con.execute(
+    partition_count = fetch_one_row(
+        con,
         f"SELECT count(DISTINCT {parent_expression}) FROM read_parquet({input_sql})"
         if parent not in columns
-        else f"SELECT count(DISTINCT {parent}) FROM read_parquet({input_sql})"
-    ).fetchone()[0]
+        else f"SELECT count(DISTINCT {parent}) FROM read_parquet({input_sql})",
+    )[0]
     # See partitioned_write_open_files_hint: a fixed low cap serializes this
     # write via file-handle churn once distinct partition values exceed it --
     # real for this function, since even the default partition_resolution=0

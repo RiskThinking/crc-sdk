@@ -124,6 +124,7 @@ def test_builder_is_lazy_and_explain_does_not_resolve_source(
 
     details = plan.explain(format="json")
 
+    assert isinstance(details, dict)
     assert details["resolved_version"] is None
     assert details["source_periods"] == (2, 5, 10, 100, 1000)
     assert not (tmp_path / "cache" / "manifest.json").exists()
