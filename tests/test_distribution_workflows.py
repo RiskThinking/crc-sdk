@@ -229,7 +229,8 @@ def test_curve_quantiles_evaluates_all_probabilities_per_row() -> None:
         )
         for index in range(2)
     ]
-    assert values == pytest.approx(expected)
+    for row, expected_row in zip(values, expected, strict=True):
+        assert row == pytest.approx(expected_row)
 
 
 def test_curve_quantiles_evaluate_a_hurdle_atom_deep_in_the_base_tail() -> None:
