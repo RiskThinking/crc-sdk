@@ -314,3 +314,28 @@ def test_build_combined_query_requires_at_least_one_layer() -> None:
     con = _connection()
     with pytest.raises(ValueError):
         build_combined_query(con, [])
+
+
+def test_build_layer_query_writes_non_finite_numbers_as_null(tmp_path: Path) -> None:
+    con = _connection()
+    path = tmp_path / "values.parquet"
+    con.execute(
+        f"""
+        COPY (
+            SELECT *, ST_Point(0.1, 0.1) AS geometry FROM (VALUES
+                ('nan'::DOUBLE, 'inf'::FLOAT, [1.0, '-inf'::DOUBLE], 1.5::DOUBLE),
+                (2.0::DOUBLE, 3.0::FLOAT, [2.0::DOUBLE], 'nan'::DOUBLE)
+            ) AS t(depth, ratio, series, other)
+        ) TO '{path}' (FORMAT PARQUET)
+        """
+    )
+    query = build_layer_query(
+        con, LayerSource(source=str(path), layer="v", minzoom=0, maxzoom=4)
+    )
+    properties = [
+        _parse_feature(raw)["properties"] for (raw,) in con.execute(query).fetchall()
+    ]
+    assert {"depth": None, "ratio": None, "series": [1.0, None], "other": 1.5} in (
+        properties
+    )
+    assert {"depth": 2.0, "ratio": 3.0, "series": [2.0], "other": None} in properties

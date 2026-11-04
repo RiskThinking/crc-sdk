@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -64,8 +65,10 @@ def build_pmtiles_archive(build: PMTilesBuild, output: str) -> PMTilesResult:
         ).connect()
     )
 
-    scratch_dir = work_root / "pmtiles-scratch"
-    scratch_dir.mkdir(parents=True, exist_ok=True)
+    # One scratch directory per build: concurrent builds sharing a work root
+    # must not share tippecanoe temp files or the staged archive.
+    work_root.mkdir(parents=True, exist_ok=True)
+    scratch_dir = Path(tempfile.mkdtemp(prefix="pmtiles-scratch-", dir=work_root))
 
     try:
         budget = TilingBudget.detect(

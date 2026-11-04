@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import logging
 import shutil
+import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
+from uuid import uuid4
 
 from crc_sdk.connectors.duckdb.connection import sql_quote
+
+from .h3 import antimeridian_safe_sql, cell_boundary_sql
 
 if TYPE_CHECKING:
     from duckdb import DuckDBPyConnection
@@ -56,7 +60,7 @@ def materialize_cell_geometries_sql(
     cache_parquet: str | Path | None = None,
 ) -> str:
     """SQL yielding (hex_id, geom) for distinct candidate cells."""
-    boundary = f"ST_GeomFromText(h3_cell_to_boundary_wkt(h3_string_to_h3({hex_col})))"
+    boundary = cell_boundary_sql(f"h3_string_to_h3({hex_col})")
     if cache_parquet is None:
         return f"""
             SELECT {hex_col}, {boundary} AS geom
@@ -69,7 +73,7 @@ def materialize_cell_geometries_sql(
             SELECT DISTINCT {hex_col} FROM {candidates_relation}
         ),
         from_cache AS (
-            SELECT n.{hex_col}, ST_GeomFromText(c.hex_wkt) AS geom
+            SELECT n.{hex_col}, {antimeridian_safe_sql("ST_GeomFromText(c.hex_wkt)")} AS geom
             FROM needed AS n
             JOIN read_parquet({cached}) AS c USING ({hex_col})
         ),
@@ -174,6 +178,14 @@ def _hex_counts_prefix(
     )
 
 
+def _cached_or_boundary_sql(alias: str, hex_col: str) -> str:
+    """A cached boundary WKT when present, else the cell's computed boundary."""
+    return antimeridian_safe_sql(
+        "COALESCE(ST_GeomFromText(c.hex_wkt), ST_GeomFromText("
+        f"h3_cell_to_boundary_wkt(h3_string_to_h3({alias}.{hex_col}))))"
+    )
+
+
 def recommend_parent_resolution(resolution: int) -> int | None:
     """Parent resolution for hierarchical exact coverage, or None to skip.
 
@@ -186,13 +198,18 @@ def recommend_parent_resolution(resolution: int) -> int | None:
 
 
 def _drop_relation(con: DuckDBPyConnection, relation: str) -> None:
-    """Drop a table or view by name (DuckDB rejects cross-type IF EXISTS)."""
+    """Drop a private temporary table or view by name.
+
+    Qualified with the ``temp`` catalog so a missing staging relation never
+    resolves to (and drops) a caller's persistent table of the same name.
+    DuckDB rejects cross-type ``IF EXISTS``, hence both attempts.
+    """
     try:
-        con.execute(f"DROP VIEW {relation}")
+        con.execute(f"DROP VIEW IF EXISTS temp.{relation}")
     except Exception:
         pass
     try:
-        con.execute(f"DROP TABLE IF EXISTS {relation}")
+        con.execute(f"DROP TABLE IF EXISTS temp.{relation}")
     except Exception:
         pass
 
@@ -225,12 +242,7 @@ def _materialize_needed_hex_geoms(
             f"""
             INSERT INTO {_HEX_GEOMS_TABLE}
             SELECT n.{hex_col},
-                   COALESCE(
-                       ST_GeomFromText(c.hex_wkt),
-                       ST_GeomFromText(
-                           h3_cell_to_boundary_wkt(h3_string_to_h3(n.{hex_col}))
-                       )
-                   ) AS geom
+                   {_cached_or_boundary_sql("n", hex_col)} AS geom
             FROM {needed_relation} AS n
             LEFT JOIN read_parquet({sql_quote(hex_geoms_parquet)}) AS c
               USING ({hex_col})
@@ -242,9 +254,7 @@ def _materialize_needed_hex_geoms(
             INSERT INTO {_HEX_GEOMS_TABLE}
             SELECT
                 {hex_col},
-                ST_GeomFromText(
-                    h3_cell_to_boundary_wkt(h3_string_to_h3({hex_col}))
-                ) AS geom
+                {cell_boundary_sql(f"h3_string_to_h3({hex_col})")} AS geom
             FROM {needed_relation}
             """
         )
@@ -254,11 +264,11 @@ def _spill_relation_to_parquet_view(
     con: DuckDBPyConnection,
     relation: str,
     parquet_path: Path,
-) -> None:
-    """Persist ``relation`` to Parquet and replace it with a streaming view.
+) -> str:
+    """Persist ``relation`` to Parquet behind a private streaming view.
 
-    Frees DuckDB buffer-pool pressure from large candidate tables before
-    GEOS-heavy stages. ``relation`` must be a table or view name.
+    GEOS-heavy stages then scan compressed Parquet instead of re-evaluating
+    the caller's relation, which is left untouched. Returns the view name.
     """
     parquet_path.parent.mkdir(parents=True, exist_ok=True)
     con.execute(
@@ -267,13 +277,14 @@ def _spill_relation_to_parquet_view(
         (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 122880)
         """
     )
-    _drop_relation(con, relation)
+    view = f"_crc_candidates_{uuid4().hex}"
     con.execute(
         f"""
-        CREATE VIEW {relation} AS
+        CREATE TEMPORARY VIEW {view} AS
         SELECT * FROM read_parquet({sql_quote(parquet_path)})
         """
     )
+    return view
 
 
 def write_exploded_coverage(
@@ -310,9 +321,9 @@ def write_exploded_coverage(
     out = Path(output_parquet)
     out.parent.mkdir(parents=True, exist_ok=True)
     stage_root = Path(work_dir) if work_dir is not None else out.parent
-    stage_dir = stage_root / f".{out.stem}_exploded_tmp"
-    stage_dir.mkdir(parents=True, exist_ok=True)
-    spilled = False
+    stage_root.mkdir(parents=True, exist_ok=True)
+    stage_dir = Path(tempfile.mkdtemp(prefix=f".{out.stem}_exploded_", dir=stage_root))
+    spilled: str | None = None
     parent_res = (
         parent_resolution
         if parent_resolution is not None
@@ -321,12 +332,12 @@ def write_exploded_coverage(
     try:
         if spill_candidates:
             logger.info("exploded: spill candidates to parquet view")
-            _spill_relation_to_parquet_view(
+            spilled = _spill_relation_to_parquet_view(
                 con,
                 candidates_relation,
                 stage_dir / "candidates.parquet",
             )
-            spilled = True
+            candidates_relation = spilled
         if parent_res is not None:
             return write_hierarchical_coverage(
                 con,
@@ -365,8 +376,8 @@ def write_exploded_coverage(
             adm2_name_col=adm2_name_col,
         )
     finally:
-        if spilled:
-            _drop_relation(con, candidates_relation)
+        if spilled is not None:
+            _drop_relation(con, spilled)
         shutil.rmtree(stage_dir, ignore_errors=True)
 
 
@@ -391,10 +402,10 @@ def _write_flat_exploded_coverage(
     """Batched edge detection + coverage for resolutions without hierarchy."""
     try:
         logger.info("exploded: flat hex_counts")
-        con.execute("DROP TABLE IF EXISTS hex_counts")
+        _drop_relation(con, "_crc_hex_counts")
         con.execute(
             f"""
-            CREATE TEMPORARY TABLE hex_counts AS
+            CREATE TEMPORARY TABLE _crc_hex_counts AS
             SELECT {hex_col}, COUNT(*) AS cnt
             FROM {candidates_relation}
             GROUP BY {hex_col}
@@ -406,7 +417,7 @@ def _write_flat_exploded_coverage(
                 COUNT(*) FILTER (WHERE cnt = 1),
                 COUNT(*) FILTER (WHERE cnt > 1),
                 COALESCE(SUM(cnt) FILTER (WHERE cnt > 1), 0)
-            FROM hex_counts
+            FROM _crc_hex_counts
             """
         ).fetchone()
         single_count = int(stats[0])
@@ -418,29 +429,29 @@ def _write_flat_exploded_coverage(
             con,
             candidates_relation,
             polygons_relation,
-            hex_counts_relation="hex_counts",
-            output_table="partial_hexes",
+            hex_counts_relation="_crc_hex_counts",
+            output_table="_crc_partial_hexes",
             hex_geoms_parquet=hex_geoms_parquet,
             batch_rows=edge_batch_rows,
             hex_col=hex_col,
             poly_id_col=poly_id_col,
             polygon_id_col=polygon_id_col,
         )
-        con.execute("DROP TABLE IF EXISTS needed_hexes")
+        _drop_relation(con, "_crc_needed_hexes")
         con.execute(
             f"""
-            CREATE TEMPORARY TABLE needed_hexes AS
-            SELECT {hex_col} FROM hex_counts WHERE cnt > 1
+            CREATE TEMPORARY TABLE _crc_needed_hexes AS
+            SELECT {hex_col} FROM _crc_hex_counts WHERE cnt > 1
             UNION
-            SELECT {hex_col} FROM partial_hexes
+            SELECT {hex_col} FROM _crc_partial_hexes
             """
         )
         needed_count = int(
-            con.execute("SELECT COUNT(*) FROM needed_hexes").fetchone()[0]
+            con.execute("SELECT COUNT(*) FROM _crc_needed_hexes").fetchone()[0]
         )
         _materialize_needed_hex_geoms(
             con,
-            "needed_hexes",
+            "_crc_needed_hexes",
             hex_geoms_parquet=hex_geoms_parquet,
             populate=bool(needed_count),
             hex_col=hex_col,
@@ -450,8 +461,8 @@ def _write_flat_exploded_coverage(
             polygons_relation,
             _HEX_GEOMS_TABLE,
             optimize_single_cell=True,
-            border_hexes_relation="partial_hexes",
-            hex_counts_relation="hex_counts",
+            border_hexes_relation="_crc_partial_hexes",
+            hex_counts_relation="_crc_hex_counts",
             hex_col=hex_col,
             poly_id_col=poly_id_col,
             polygon_id_col=polygon_id_col,
@@ -480,7 +491,12 @@ def _write_flat_exploded_coverage(
             ).fetchone()[0]
         )
     finally:
-        for table in ("needed_hexes", "partial_hexes", "hex_counts", _HEX_GEOMS_TABLE):
+        for table in (
+            "_crc_needed_hexes",
+            "_crc_partial_hexes",
+            "_crc_hex_counts",
+            _HEX_GEOMS_TABLE,
+        ):
             _drop_relation(con, table)
     return {
         "mode": "flat",
@@ -538,18 +554,18 @@ def write_hierarchical_coverage(
     intersection_pct = _clipped_intersection_pct()
     out = Path(output_parquet)
     stage_root = Path(work_dir) if work_dir is not None else out.parent
-    stage_dir = stage_root / f".{out.stem}_hier_tmp"
-    stage_dir.mkdir(parents=True, exist_ok=True)
+    stage_root.mkdir(parents=True, exist_ok=True)
+    stage_dir = Path(tempfile.mkdtemp(prefix=f".{out.stem}_hier_", dir=stage_root))
     interior_path = stage_dir / "interior.parquet"
     contained_path = stage_dir / "boundary_contained.parquet"
     exact_path = stage_dir / "exact.parquet"
 
     try:
         logger.info("hierarchical: hex_counts")
-        con.execute("DROP TABLE IF EXISTS hex_counts")
+        _drop_relation(con, "_crc_hex_counts")
         con.execute(
             f"""
-            CREATE TEMPORARY TABLE hex_counts AS
+            CREATE TEMPORARY TABLE _crc_hex_counts AS
             SELECT {hex_col}, COUNT(*) AS cnt
             FROM {candidates_relation}
             GROUP BY {hex_col}
@@ -561,7 +577,7 @@ def write_hierarchical_coverage(
                 COUNT(*) FILTER (WHERE cnt = 1),
                 COUNT(*) FILTER (WHERE cnt > 1),
                 COALESCE(SUM(cnt) FILTER (WHERE cnt > 1), 0)
-            FROM hex_counts
+            FROM _crc_hex_counts
             """
         ).fetchone()
         single_count = int(stats[0])
@@ -584,22 +600,22 @@ def write_hierarchical_coverage(
                     c.{poly_id_col},
                     {parent_of.format(col=f"c.{hex_col}")} AS parent_id
                 FROM {candidates_relation} AS c
-                JOIN hex_counts AS hc USING ({hex_col})
+                JOIN _crc_hex_counts AS hc USING ({hex_col})
                 WHERE hc.cnt = 1
             ) TO {sql_quote(singles_path)}
             (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 122880)
             """
         )
-        con.execute("DROP TABLE IF EXISTS _crc_single_cells")
+        _drop_relation(con, "_crc_single_cells")
         con.execute(
             f"""
-            CREATE VIEW _crc_single_cells AS
+            CREATE TEMPORARY VIEW _crc_single_cells AS
             SELECT * FROM read_parquet({sql_quote(singles_path)})
             """
         )
 
         logger.info("hierarchical: parent touch + geoms + classify")
-        con.execute("DROP TABLE IF EXISTS _crc_parent_touch")
+        _drop_relation(con, "_crc_parent_touch")
         con.execute(
             f"""
             CREATE TEMPORARY TABLE _crc_parent_touch AS
@@ -611,15 +627,13 @@ def write_hierarchical_coverage(
             con.execute("SELECT COUNT(*) FROM _crc_parent_touch").fetchone()[0]
         )
 
-        con.execute("DROP TABLE IF EXISTS _crc_parent_geoms")
+        _drop_relation(con, "_crc_parent_geoms")
         con.execute(
-            """
+            f"""
             CREATE TEMPORARY TABLE _crc_parent_geoms AS
             SELECT
                 parent_id,
-                ST_GeomFromText(
-                    h3_cell_to_boundary_wkt(h3_string_to_h3(parent_id))
-                ) AS geom
+                {cell_boundary_sql("h3_string_to_h3(parent_id)")} AS geom
             FROM (SELECT DISTINCT parent_id FROM _crc_parent_touch)
             """
         )
@@ -627,7 +641,7 @@ def write_hierarchical_coverage(
             con.execute("SELECT COUNT(*) FROM _crc_parent_geoms").fetchone()[0]
         )
 
-        con.execute("DROP TABLE IF EXISTS _crc_parent_class")
+        _drop_relation(con, "_crc_parent_class")
         con.execute(
             f"""
             CREATE TEMPORARY TABLE _crc_parent_class AS
@@ -641,8 +655,8 @@ def write_hierarchical_coverage(
               ON t.{poly_id_col} = a.{polygon_id_col}
             """
         )
-        con.execute("DROP TABLE IF EXISTS _crc_parent_geoms")
-        con.execute("DROP TABLE IF EXISTS _crc_parent_touch")
+        _drop_relation(con, "_crc_parent_geoms")
+        _drop_relation(con, "_crc_parent_touch")
         class_stats = con.execute(
             """
             SELECT
@@ -682,7 +696,7 @@ def write_hierarchical_coverage(
         )
 
         logger.info("hierarchical: boundary children edge batch classify")
-        con.execute("DROP TABLE IF EXISTS _crc_boundary_children")
+        _drop_relation(con, "_crc_boundary_children")
         con.execute(
             f"""
             CREATE TEMPORARY TABLE _crc_boundary_children AS
@@ -701,7 +715,7 @@ def write_hierarchical_coverage(
             con,
             candidates_relation,
             polygons_relation,
-            hex_counts_relation="hex_counts",
+            hex_counts_relation="_crc_hex_counts",
             output_table="_crc_edge_singles",
             hex_geoms_parquet=hex_geoms_parquet,
             batch_rows=edge_batch_rows,
@@ -736,19 +750,19 @@ def write_hierarchical_coverage(
             (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 122880)
             """
         )
-        con.execute("DROP TABLE IF EXISTS _crc_boundary_children")
+        _drop_relation(con, "_crc_boundary_children")
 
-        con.execute("DROP TABLE IF EXISTS needed_hexes")
+        _drop_relation(con, "_crc_needed_hexes")
         con.execute(
             f"""
-            CREATE TEMPORARY TABLE needed_hexes AS
+            CREATE TEMPORARY TABLE _crc_needed_hexes AS
             SELECT {hex_col} FROM _crc_edge_singles
             UNION
-            SELECT {hex_col} FROM hex_counts WHERE cnt > 1
+            SELECT {hex_col} FROM _crc_hex_counts WHERE cnt > 1
             """
         )
         needed_count = int(
-            con.execute("SELECT COUNT(*) FROM needed_hexes").fetchone()[0]
+            con.execute("SELECT COUNT(*) FROM _crc_needed_hexes").fetchone()[0]
         )
         logger.info("hierarchical: needed_hexes=%s", needed_count)
 
@@ -773,7 +787,7 @@ def write_hierarchical_coverage(
         else:
             _materialize_needed_hex_geoms(
                 con,
-                "needed_hexes",
+                "_crc_needed_hexes",
                 hex_geoms_parquet=hex_geoms_parquet,
                 populate=True,
                 hex_col=hex_col,
@@ -796,7 +810,7 @@ def write_hierarchical_coverage(
                         {attrs},
                         {intersection_pct}
                     FROM {candidates_relation} AS c
-                    JOIN hex_counts AS hc USING ({hex_col})
+                    JOIN _crc_hex_counts AS hc USING ({hex_col})
                     JOIN {polygons_relation} AS a
                       ON c.{poly_id_col} = a.{polygon_id_col}
                     JOIN {_HEX_GEOMS_TABLE} AS h USING ({hex_col})
@@ -838,8 +852,8 @@ def write_hierarchical_coverage(
             "_crc_parent_geoms",
             "_crc_edge_singles",
             "_crc_boundary_children",
-            "needed_hexes",
-            "hex_counts",
+            "_crc_needed_hexes",
+            "_crc_hex_counts",
             _HEX_GEOMS_TABLE,
         ):
             _drop_relation(con, table)
@@ -938,9 +952,11 @@ def materialize_edge_hexes(
     (e.g. boundary-parent children only); otherwise ``hex_counts`` ``cnt = 1``
     rows are used.
     """
-    con.execute(f"DROP TABLE IF EXISTS {output_table}")
+    # The output is a temporary table: never drop a caller's persistent one.
+    target = output_table if "." in output_table else f"temp.{output_table}"
+    con.execute(f"DROP TABLE IF EXISTS {target}")
     con.execute(f"CREATE TEMPORARY TABLE {output_table} ({hex_col} VARCHAR)")
-    con.execute("DROP TABLE IF EXISTS _crc_single_hex_ids")
+    _drop_relation(con, "_crc_single_hex_ids")
     if single_hexes_relation is not None:
         con.execute(
             f"""
@@ -964,7 +980,7 @@ def materialize_edge_hexes(
         con.execute("SELECT COUNT(*) FROM _crc_single_hex_ids").fetchone()[0]
     )
     if total_singles == 0:
-        con.execute("DROP TABLE IF EXISTS _crc_single_hex_ids")
+        _drop_relation(con, "_crc_single_hex_ids")
         return 0
 
     batch_rows = max(1, int(batch_rows))
@@ -975,7 +991,7 @@ def materialize_edge_hexes(
     )
     last_hex: str | None = None
     while True:
-        con.execute("DROP TABLE IF EXISTS _crc_edge_batch")
+        _drop_relation(con, "_crc_edge_batch")
         if last_hex is None:
             con.execute(
                 f"""
@@ -1003,7 +1019,7 @@ def materialize_edge_hexes(
         if batch_count == 0:
             break
 
-        con.execute("DROP TABLE IF EXISTS _crc_edge_batch_geoms")
+        _drop_relation(con, "_crc_edge_batch_geoms")
         if hex_geoms_relation is not None:
             con.execute(
                 f"""
@@ -1019,12 +1035,7 @@ def materialize_edge_hexes(
                 CREATE TEMPORARY TABLE _crc_edge_batch_geoms AS
                 SELECT
                     b.{hex_col},
-                    COALESCE(
-                        ST_GeomFromText(c.hex_wkt),
-                        ST_GeomFromText(
-                            h3_cell_to_boundary_wkt(h3_string_to_h3(b.{hex_col}))
-                        )
-                    ) AS geom
+                    {_cached_or_boundary_sql("b", hex_col)} AS geom
                 FROM _crc_edge_batch AS b
                 LEFT JOIN read_parquet({sql_quote(parquet_path)}) AS c
                   USING ({hex_col})
@@ -1036,9 +1047,7 @@ def materialize_edge_hexes(
                 CREATE TEMPORARY TABLE _crc_edge_batch_geoms AS
                 SELECT
                     b.{hex_col},
-                    ST_GeomFromText(
-                        h3_cell_to_boundary_wkt(h3_string_to_h3(b.{hex_col}))
-                    ) AS geom
+                    {cell_boundary_sql(f"h3_string_to_h3(b.{hex_col})")} AS geom
                 FROM _crc_edge_batch AS b
                 """
             )
@@ -1058,9 +1067,9 @@ def materialize_edge_hexes(
         if batch_count < batch_rows:
             break
 
-    con.execute("DROP TABLE IF EXISTS _crc_edge_batch_geoms")
-    con.execute("DROP TABLE IF EXISTS _crc_edge_batch")
-    con.execute("DROP TABLE IF EXISTS _crc_single_hex_ids")
+    _drop_relation(con, "_crc_edge_batch_geoms")
+    _drop_relation(con, "_crc_edge_batch")
+    _drop_relation(con, "_crc_single_hex_ids")
     return int(con.execute(f"SELECT COUNT(*) FROM {output_table}").fetchone()[0])
 
 

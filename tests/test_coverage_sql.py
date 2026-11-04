@@ -461,3 +461,57 @@ def test_hierarchical_coverage_boundary_parent_gets_partial_pct(
     assert stats["boundary_parents"] >= 1
     pct = con.execute(f"SELECT pct FROM read_parquet('{out}')").fetchone()[0]
     assert 0.0 <= pct <= 1.0
+
+
+def test_coverage_leaves_callers_tables_and_no_persistent_objects(
+    tmp_path: Path,
+) -> None:
+    from crc_sdk.geometry import write_exploded_coverage
+
+    con = duckdb.connect(str(tmp_path / "user.duckdb"))
+    ensure_extensions(con, "spatial", "h3")
+    cell = con.execute(
+        "SELECT h3_h3_to_string(h3_latlng_to_cell(49.6, 6.1, 4))"
+    ).fetchone()[0]
+    wkt = con.execute(
+        f"SELECT h3_cell_to_boundary_wkt(h3_string_to_h3('{cell}'))"
+    ).fetchone()[0]
+    con.execute(
+        f"""
+        CREATE TABLE admins AS
+        SELECT 1::BIGINT AS adm2_rid, 'LUX' AS adm0_iso, 'a1' AS adm1_id,
+               'Canton' AS adm1_name, 'a2' AS adm2_id, 'Commune' AS adm2_name,
+               ST_Buffer(ST_GeomFromText({sql_quote(wkt)}), 1.0) AS geom
+        """
+    )
+    con.execute(
+        f"CREATE TABLE candidates AS SELECT '{cell}' AS hex_id, 1::BIGINT AS poly_rid"
+    )
+    # The caller's own tables happen to share the old staging names.
+    for name in ("hex_counts", "needed_hexes", "partial_hexes"):
+        con.execute(f"CREATE TABLE {name} AS SELECT 42 AS keep")
+    before = set(con.execute("SELECT table_name FROM duckdb_tables()").fetchall())
+
+    for resolution in (4, 7):  # flat, then hierarchical
+        write_exploded_coverage(
+            con,
+            "candidates",
+            "admins",
+            tmp_path / f"cov{resolution}.parquet",
+            resolution=resolution,
+            work_dir=tmp_path / "work",
+        )
+        if resolution == 4:
+            con.execute(
+                "CREATE OR REPLACE TABLE candidates AS SELECT h3_h3_to_string("
+                "h3_latlng_to_cell(49.6, 6.1, 7)) AS hex_id, 1::BIGINT AS poly_rid"
+            )
+
+    tables = set(con.execute("SELECT table_name FROM duckdb_tables()").fetchall())
+    assert tables == before  # candidates was replaced by the test, not dropped
+    for name in ("hex_counts", "needed_hexes", "partial_hexes"):
+        assert con.execute(f"SELECT keep FROM main.{name}").fetchone() == (42,)
+    assert not con.execute(
+        "SELECT view_name FROM duckdb_views() WHERE NOT internal AND NOT temporary"
+    ).fetchall()
+    assert not list((tmp_path / "work").iterdir())
