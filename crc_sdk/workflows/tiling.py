@@ -118,19 +118,40 @@ def _owns_row(
 def _drop_shared_edge_duplicates(
     table: pa.Table, tile: Bounds, aoi_bounds: Bounds
 ) -> pa.Table:
-    """Keep only rows whose source pixel centroid this tile owns."""
+    """Keep only rows whose source pixel centroid this tile owns.
+
+    Vectorized form of :func:`_owns_row` over the whole column (same GEOS
+    centroids, same comparisons as :func:`_tile_owns_point`).
+    """
     try:
-        from shapely import wkb  # type: ignore[import-untyped]
+        import shapely  # type: ignore[import-untyped]
+        from shapely import wkb
     except ImportError as error:
         raise ImportError(
             "Tile-edge deduplication requires `pip install crc-sdk[geometry]`"
         ) from error
 
-    owned = [
-        _owns_row(wkb, geometry, tile, aoi_bounds)
-        for geometry in table.column("source_geometry").to_pylist()
-    ]
-    return table.filter(pa.array(owned))
+    geometries = shapely.from_wkb(
+        table.column("source_geometry").to_numpy(zero_copy_only=False)
+    )
+    missing = shapely.is_missing(geometries)
+    empty = ~missing & shapely.is_empty(geometries)
+    if empty.any():
+        # An empty geometry has no centroid coordinates; fail exactly as the
+        # per-row check does.
+        _owns_row(wkb, wkb.dumps(geometries[empty.argmax()]), tile, aoi_bounds)
+    centroids = shapely.centroid(geometries)
+    longitude = shapely.get_x(centroids)
+    latitude = shapely.get_y(centroids)
+    tile_min_lon, tile_min_lat, tile_max_lon, tile_max_lat = tile
+    aoi_min_lon, aoi_min_lat, aoi_max_lon, aoi_max_lat = aoi_bounds
+    longitude_ok = ((longitude >= tile_min_lon) | (tile_min_lon <= aoi_min_lon)) & (
+        (longitude < tile_max_lon) | (tile_max_lon >= aoi_max_lon)
+    )
+    latitude_ok = ((latitude >= tile_min_lat) | (tile_min_lat <= aoi_min_lat)) & (
+        (latitude < tile_max_lat) | (tile_max_lat >= aoi_max_lat)
+    )
+    return table.filter(pa.array(missing | (longitude_ok & latitude_ok)))
 
 
 def _canonicalize_tile(

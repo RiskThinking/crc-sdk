@@ -107,11 +107,31 @@ def _parquet_batches(path: str) -> Iterator[pa.RecordBatch]:
     yield from pq.ParquetFile(path).iter_batches(batch_size=_BATCH_ROWS)
 
 
+class _HashingSink:
+    """A write-only file object that hashes what it is given, keeping nothing."""
+
+    def __init__(self) -> None:
+        self.digest = hashlib.sha256()
+        self.closed = False
+
+    def write(self, data: Any) -> int:
+        self.digest.update(data)
+        return len(data)
+
+    def flush(self) -> None:
+        return None
+
+    def close(self) -> None:
+        self.closed = True
+
+
 def _table_identity(table: pa.Table) -> str:
-    sink = pa.BufferOutputStream()
-    with pa.ipc.new_stream(sink, table.schema) as writer:
+    # The SHA-256 of the table's Arrow IPC stream, hashed as it is written
+    # rather than after buffering (and copying) the whole serialized table.
+    sink = _HashingSink()
+    with pa.ipc.new_stream(pa.PythonFile(sink, mode="w"), table.schema) as writer:
         writer.write_table(table)
-    return hashlib.sha256(sink.getvalue().to_pybytes()).hexdigest()
+    return sink.digest.hexdigest()
 
 
 def _tree_fingerprint(root: Path, files: Iterable[Path]) -> str:
