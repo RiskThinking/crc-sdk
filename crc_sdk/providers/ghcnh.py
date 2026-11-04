@@ -195,7 +195,7 @@ def _transient_remote_error(error: BaseException) -> bool:
     the object changed after the HEAD; the retry re-reads its new ETag.
     """
     try:
-        import aiohttp  # type: ignore[import-untyped]
+        import aiohttp
     except ImportError:  # pragma: no cover - fsspec[http] installs it
         return False
     if isinstance(error, aiohttp.ClientResponseError):

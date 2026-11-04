@@ -72,8 +72,11 @@ class ZarrRaster:
         self._session: Any = None  # keeps an Icechunk session alive
         # An explicit connection means the caller is already in control; only
         # build (and resource-tune) one when they didn't supply their own.
+        # No extensions: scans and point reads only ingest Arrow and project
+        # plain columns, so loading spatial/httpfs/h3 on every connect() was
+        # pure overhead (same reasoning as GeoTiffRaster).
         self.connection = connection or DuckDBConnection.for_analytics(
-            work_dir or default_work_dir()
+            work_dir or default_work_dir(), extensions=()
         )
         self._axis_name, self._axis_values = self._read_axis()
         self._transform = self._read_transform()

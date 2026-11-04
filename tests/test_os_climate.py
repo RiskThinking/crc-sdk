@@ -437,6 +437,8 @@ def test_zarr_raster_default_connection_is_resource_tuned(tmp_path: Path) -> Non
     )
     assert raster.connection.config.get("threads")
     assert (tmp_path / "duckdb-temp").is_dir()
+    # Scans only ingest Arrow; the default connection loads no extensions.
+    assert tuple(raster.connection.extensions) == ()
 
 
 def test_zarr_raster_explicit_connection_is_not_overridden() -> None:

@@ -254,7 +254,7 @@ def test_missing_projected_column_is_a_clear_error(tmp_path: Path) -> None:
 def test_fsspec_range_read_errors_are_retried(
     status: int, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import aiohttp  # type: ignore[import-untyped]
+    import aiohttp
 
     raw = parquet_bytes()
 
@@ -292,7 +292,7 @@ def test_fsspec_range_read_errors_are_retried(
 def test_permanent_fsspec_errors_are_not_retried(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import aiohttp  # type: ignore[import-untyped]
+    import aiohttp
 
     class Head(io.BytesIO):
         headers = {"ETag": '"etag"', "Content-Length": "1"}
