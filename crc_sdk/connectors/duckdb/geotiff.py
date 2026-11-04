@@ -8,24 +8,14 @@ import math
 import os
 import time
 from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
 import fsspec  # type: ignore[import-untyped]
 import numpy as np
-import pyarrow as pa  # type: ignore[import-untyped]
 
-from crc_sdk.geometry.h3 import (
-    max_pixel_spacing_m,
-    pixel_grid_resolution,
-    reduce_h3_values,
-    sample_grid_to_h3,
-    subsample_offsets,
-)
-
+from ._pixel_scan import H3PixelScan, PixelScan, check_strip_bytes, h3_scan_resolution
 from .connection import DuckDBConnection, default_work_dir
-from .stream import ArrowBatchSource, DuckDBPipeline
 from .zarr import Bounds, Point, RasterCurve, RasterMetadata
 
 logger = logging.getLogger(__name__)
@@ -34,8 +24,6 @@ logger = logging.getLogger(__name__)
 # size while keeping the GDAL read count low.
 STRIP_BYTES = 256 * 1024**2
 GDAL_CACHE_MB = 128
-# Cap subsample points materialized per broadcast to bound worker RAM.
-CHUNK_POINTS = 262_144
 
 
 class RasterBoundsError(ValueError):
@@ -369,8 +357,7 @@ class GeoTiffRaster:
         self, bounds: Bounds | None = None, *, strip_bytes: int = STRIP_BYTES
     ) -> GeoTiffScan:
         """Describe a reusable, out-of-core scan of raw pixel rows."""
-        if strip_bytes < 1:
-            raise ValueError("strip_bytes must be positive")
+        check_strip_bytes(strip_bytes)
         return GeoTiffScan(self, bounds or self.bounds, strip_bytes)
 
     def scan_h3(
@@ -396,22 +383,15 @@ class GeoTiffRaster:
         guaranteeing every cell gets a sample (that guarantee only holds
         when the resolution was itself picked to respect this cap).
         """
-        if strip_bytes < 1:
-            raise ValueError("strip_bytes must be positive")
-        if max_subsample <= 0:
-            raise ValueError("max_subsample must be positive")
-        if h3_resolution is not None and not 0 <= h3_resolution <= 15:
-            raise ValueError("H3 resolution must be between 0 and 15")
-        resolution = h3_resolution
-        if resolution is None:
-            pixel_w, pixel_h = self.pixel_size_meters
-            resolution = pixel_grid_resolution(
-                max(pixel_w, pixel_h), max_subsample=max_subsample
-            )
         return GeoTiffH3Scan(
             self,
             bounds or self.bounds,
-            h3_resolution=resolution,
+            h3_resolution=h3_scan_resolution(
+                self,
+                h3_resolution,
+                max_subsample=max_subsample,
+                strip_bytes=strip_bytes,
+            ),
             max_subsample=max_subsample,
             mask=mask,
             reduce=reduce,
@@ -481,10 +461,27 @@ class GeoTiffRaster:
             raise ValueError("bounds do not intersect the raster")
         return col_start, row_start, col_stop, row_stop
 
+    def _validate_bounds(self, bounds: Bounds) -> None:
+        self._pixel_window(bounds)
+
+    def _valid_pixels(self, band: np.ndarray) -> np.ndarray:
+        valid = np.isfinite(band)
+        if self.nodata is not None:
+            valid &= band != self.nodata
+        return valid
+
+    def _pixel_lonlat(
+        self, rows: np.ndarray, columns: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """WGS84 `(longitude, latitude)` of pixel centres at fractional indices."""
+        xs, ys = _pixel_to_crs(self._dataset.transform, columns + 0.5, rows + 0.5)
+        lats, lons = _to_wgs84(self.crs, xs, ys)
+        return lons, lats
+
     def _strips(
         self, bounds: Bounds, strip_bytes: int
-    ) -> Iterator[tuple[Any, np.ndarray]]:
-        """Yield (window, band_array) pairs in wide, block-aligned strips.
+    ) -> Iterator[tuple[int, int, np.ndarray]]:
+        """Yield (row_off, col_off, band) triples in wide, block-aligned strips.
 
         Few wide block-aligned strips beat thousands of per-block GDAL
         reads; `strip_bytes` bounds the decompressed strip size regardless
@@ -504,210 +501,26 @@ class GeoTiffRaster:
         for row_off in range(row_start, row_stop, strip_rows):
             win_h = min(strip_rows, row_stop - row_off)
             window = Window(col_start, row_off, width, win_h)
-            yield window, self._read(window)
+            yield row_off, col_start, self._read(window)
 
 
-@dataclass(frozen=True)
-class GeoTiffScan:
+class GeoTiffScan(PixelScan["GeoTiffRaster"]):
     """Reusable description of a one-pass GeoTIFF-to-DuckDB pixel scan."""
 
-    raster: GeoTiffRaster
-    bounds: Bounds
-    strip_bytes: int
 
-    def relation(self, *, connection: DuckDBConnection | None = None) -> Any:
-        """Create a fresh lazy DuckDB relation for one query execution."""
-        # Validate bounds now: raised inside the batch generator, a plain
-        # ValueError would surface as an opaque DuckDB InvalidInputException.
-        self.raster._pixel_window(self.bounds)
-        schema = pa.schema(
-            [
-                ("longitude", pa.float64()),
-                ("latitude", pa.float64()),
-                ("value", pa.float32()),
-            ]
-        )
-        return ArrowBatchSource(schema, self._batches).relation(
-            connection=connection or self.raster.connection
-        )
-
-    def pipeline(self, *, connection: DuckDBConnection | None = None) -> DuckDBPipeline:
-        """Compose this bounded scan with lazy DuckDB relational operations."""
-        return DuckDBPipeline(self, connection=connection)
-
-    def _batches(self) -> Iterator[Any]:
-        raster = self.raster
-        for window, band in raster._strips(self.bounds, self.strip_bytes):
-            valid = np.isfinite(band)
-            if raster.nodata is not None:
-                valid &= band != raster.nodata
-            if not valid.any():
-                continue
-            row_idx, col_idx = np.where(valid)
-            values = band[row_idx, col_idx].astype(np.float32, copy=False)
-            columns = col_idx.astype(np.float64) + window.col_off + 0.5
-            rows = row_idx.astype(np.float64) + window.row_off + 0.5
-            xs, ys = _pixel_to_crs(raster._dataset.transform, columns, rows)
-            lats, lons = _to_wgs84(raster.crs, xs, ys)
-            yield pa.record_batch(
-                {
-                    "longitude": pa.array(lons),
-                    "latitude": pa.array(lats),
-                    "value": pa.array(values),
-                }
-            )
-
-
-@dataclass(frozen=True)
-class GeoTiffH3Scan:
+class GeoTiffH3Scan(H3PixelScan["GeoTiffRaster"]):
     """Reusable description of a one-pass GeoTIFF-to-H3-cell scan."""
-
-    raster: GeoTiffRaster
-    bounds: Bounds
-    h3_resolution: int
-    max_subsample: float
-    mask: Callable[[np.ndarray], np.ndarray] | None
-    reduce: Literal["max", "min"]
-    strip_bytes: int
-
-    def relation(self, *, connection: DuckDBConnection | None = None) -> Any:
-        """Create a fresh DuckDB relation, pre-reduced to one row per cell.
-
-        Batches are already reduced within each strip; only pixels whose H3
-        cell straddles a strip boundary can still repeat across batches, so
-        the cross-strip merge is a small, cheap `reduce_h3_values` call --
-        not routed through a DuckDB `GROUP BY`, which at this row count
-        (bounded by exposed cell count, typically far below the source
-        raster's pixel count) is pure per-query overhead next to a direct
-        vectorized reduce.
-        """
-        cell_parts = []
-        value_parts = []
-        for batch in self._batches():
-            cell_parts.append(batch.column("cell").to_numpy(zero_copy_only=False))
-            value_parts.append(batch.column("value").to_numpy(zero_copy_only=False))
-
-        if cell_parts:
-            cells, values = reduce_h3_values(
-                np.concatenate(cell_parts),
-                np.concatenate(value_parts),
-                reduce=self.reduce,
-            )
-        else:
-            cells = np.array([], dtype=np.uint64)
-            values = np.array([], dtype=np.float32)
-
-        table = pa.table(
-            {
-                "cell": pa.array(cells, type=pa.uint64()),
-                "value": pa.array(values.astype(np.float32), type=pa.float32()),
-            }
-        )
-        active = (connection or self.raster.connection).connect()
-        return active.from_arrow(table)
-
-    def pipeline(self, *, connection: DuckDBConnection | None = None) -> DuckDBPipeline:
-        """Compose this reduced H3 scan with lazy DuckDB relational operations."""
-        return DuckDBPipeline(self, connection=connection)
-
-    def _batches(self) -> Iterator[Any]:
-        raster = self.raster
-        pixel_w, pixel_h = raster.pixel_size_meters
-        spacing = max_pixel_spacing_m(self.h3_resolution)
-        # max_subsample caps points per pixel axis regardless of how the
-        # resolution was chosen -- with an auto-picked resolution this is a
-        # no-op (pixel_grid_resolution already keeps the ratio within the
-        # cap), but an explicit fine h3_resolution on a coarse raster would
-        # otherwise demand an arbitrarily large per-pixel sample grid.
-        max_axis_points = max(1, math.ceil(self.max_subsample))
-        columns = max(1, min(math.ceil(pixel_w / spacing), max_axis_points))
-        rows = max(1, min(math.ceil(pixel_h / spacing), max_axis_points))
-        column_offsets = subsample_offsets(columns)
-        row_offsets = subsample_offsets(rows)
-        n_sub = columns * rows
-        pixel_chunk = max(1, CHUNK_POINTS // n_sub)
-
-        for window, band in raster._strips(self.bounds, self.strip_bytes):
-            valid = np.isfinite(band)
-            if raster.nodata is not None:
-                valid &= band != raster.nodata
-            if self.mask is not None:
-                valid &= self.mask(band)
-            if not valid.any():
-                continue
-
-            row_idx, col_idx = np.where(valid)
-            values = band[row_idx, col_idx].astype(np.float64, copy=False)
-            strip_rows = row_idx + window.row_off
-            strip_columns = col_idx + window.col_off
-
-            # Each chunk is already reduced to one value per cell (via
-            # _sample_chunk); yielding it straight through instead of
-            # accumulating and re-reducing once per strip avoids a redundant
-            # extra sort+dedupe pass -- relation() does the one merge that's
-            # actually needed, across every chunk of the whole scan.
-            for start in range(0, len(values), pixel_chunk):
-                chunk = slice(start, start + pixel_chunk)
-                cells, chunk_values = self._sample_chunk(
-                    strip_rows[chunk],
-                    strip_columns[chunk],
-                    values[chunk],
-                    row_offsets,
-                    column_offsets,
-                )
-                yield pa.record_batch(
-                    {
-                        "cell": pa.array(cells, type=pa.uint64()),
-                        "value": pa.array(
-                            chunk_values.astype(np.float32), type=pa.float32()
-                        ),
-                    }
-                )
-
-    def _sample_chunk(
-        self,
-        pixel_rows: np.ndarray,
-        pixel_columns: np.ndarray,
-        values: np.ndarray,
-        row_offsets: np.ndarray,
-        column_offsets: np.ndarray,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        pixel_rows_f = pixel_rows.astype(np.float64)[:, None, None]
-        pixel_columns_f = pixel_columns.astype(np.float64)[:, None, None]
-        row_grid = pixel_rows_f + row_offsets[None, :, None]
-        column_grid = pixel_columns_f + column_offsets[None, None, :]
-        row_grid, column_grid = np.broadcast_arrays(row_grid, column_grid)
-        rows = row_grid.ravel() + 0.5
-        columns = column_grid.ravel() + 0.5
-
-        xs, ys = _pixel_to_crs(self.raster._dataset.transform, columns, rows)
-        lats, lons = _to_wgs84(self.raster.crs, xs, ys)
-        n_sub = len(row_offsets) * len(column_offsets)
-        return sample_grid_to_h3(
-            lons,
-            lats,
-            np.repeat(values, n_sub),
-            resolution=self.h3_resolution,
-            reduce=self.reduce,
-        )
-
-
-def _pixel_boundary(
-    raster: GeoTiffRaster, row: int, column: int
-) -> tuple[Point, Point, Point, Point]:
-    """Pixel corner boundary in counter-clockwise WGS84 order.
-
-    Mirrors `ZarrRaster.pixel_boundary`'s corner convention exactly, so a
-    `RasterCurve.boundary` means the same thing regardless of which
-    `CurveSource` produced it.
-    """
-    return _pixel_boundaries(raster, np.array([row]), np.array([column]))[0]
 
 
 def _pixel_boundaries(
     raster: GeoTiffRaster, rows: np.ndarray, columns: np.ndarray
 ) -> list[tuple[Point, Point, Point, Point]]:
-    """`_pixel_boundary` for many pixels with one CRS transform call."""
+    """Pixel corner boundaries in counter-clockwise WGS84 order.
+
+    Mirrors `ZarrRaster.pixel_boundary`'s corner convention exactly, so a
+    `RasterCurve.boundary` means the same thing regardless of which
+    `CurveSource` produced it. One CRS transform call covers every pixel.
+    """
     rows_f = np.asarray(rows, dtype=np.float64)[:, None]
     columns_f = np.asarray(columns, dtype=np.float64)[:, None]
     corner_columns = columns_f + np.array([0.0, 0.0, 1.0, 1.0])

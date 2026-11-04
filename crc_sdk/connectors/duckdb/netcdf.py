@@ -20,13 +20,11 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
 import fsspec  # type: ignore[import-untyped]
 import numpy as np
-import pyarrow as pa  # type: ignore[import-untyped]
 
 from crc_sdk.connectors.blocks import (
     STRIP_BYTES,
@@ -36,23 +34,13 @@ from crc_sdk.connectors.blocks import (
     _index_range,
     _strip_row_count,
     pixel_boundary,
-    plotting_position_curve,
     reduce_block_samples,
 )
-from crc_sdk.geometry.h3 import (
-    max_pixel_spacing_m,
-    pixel_grid_resolution,
-    reduce_h3_values,
-    sample_grid_to_h3,
-    subsample_offsets,
-)
 
+from ._pixel_scan import H3PixelScan, PixelScan, check_strip_bytes, h3_scan_resolution
 from .connection import DuckDBConnection, default_work_dir
 from .geotiff import _materialize_local
-from .stream import ArrowBatchSource, DuckDBPipeline
 from .zarr import Bounds, Point, RasterMetadata
-
-CHUNK_POINTS = 262_144
 
 
 def _require_netcdf_extra() -> None:
@@ -292,8 +280,7 @@ class NetCDFRaster:
         self, bounds: Bounds | None = None, *, strip_bytes: int = STRIP_BYTES
     ) -> NetCDFScan:
         """Describe a reusable, out-of-core scan of raw pixel rows."""
-        if strip_bytes < 1:
-            raise ValueError("strip_bytes must be positive")
+        check_strip_bytes(strip_bytes)
         return NetCDFScan(self, bounds or self.bounds, strip_bytes)
 
     def scan_h3(
@@ -313,22 +300,15 @@ class NetCDFRaster:
         nodata/non-finite pixels are always excluded; `mask` is an optional
         additional predicate over a raw pixel-value window.
         """
-        if strip_bytes < 1:
-            raise ValueError("strip_bytes must be positive")
-        if max_subsample <= 0:
-            raise ValueError("max_subsample must be positive")
-        if h3_resolution is not None and not 0 <= h3_resolution <= 15:
-            raise ValueError("H3 resolution must be between 0 and 15")
-        resolution = h3_resolution
-        if resolution is None:
-            pixel_w, pixel_h = self.pixel_size_meters
-            resolution = pixel_grid_resolution(
-                max(pixel_w, pixel_h), max_subsample=max_subsample
-            )
         return NetCDFH3Scan(
             self,
             bounds or self.bounds,
-            h3_resolution=resolution,
+            h3_resolution=h3_scan_resolution(
+                self,
+                h3_resolution,
+                max_subsample=max_subsample,
+                strip_bytes=strip_bytes,
+            ),
             max_subsample=max_subsample,
             mask=mask,
             reduce=reduce,
@@ -349,20 +329,28 @@ class NetCDFRaster:
     def _cols_to_lon(self, cols: np.ndarray) -> np.ndarray:
         return np.asarray(self._lon[0] + cols * self._lon_step, dtype=np.float64)
 
-    def _row_bands(
-        self,
-        row_start: int,
-        row_stop: int,
-        col_start: int,
-        col_stop: int,
-        strip_bytes: int,
+    def _validate_bounds(self, bounds: Bounds) -> None:
+        self._row_col_window(bounds)
+
+    def _valid_pixels(self, band: np.ndarray) -> np.ndarray:
+        # `_decode` already masked fill values to NaN.
+        return np.isfinite(band)
+
+    def _pixel_lonlat(
+        self, rows: np.ndarray, columns: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        return self._cols_to_lon(columns), self._rows_to_lat(rows)
+
+    def _strips(
+        self, bounds: Bounds, strip_bytes: int
     ) -> Iterator[tuple[int, int, np.ndarray]]:
-        """Yield (row_off, row_end, band) triples in wide, chunk-aligned strips.
+        """Yield (row_off, col_off, band) triples in wide, chunk-aligned strips.
 
         Same bounded-memory strategy as `GeoTiffRaster._strips`, aligned to
         the variable's own internal HDF5 chunk shape when the backend
         exposes one.
         """
+        row_start, row_stop, col_start, col_stop = self._row_col_window(bounds)
         width = col_stop - col_start
         itemsize = np.dtype(self._variable.dtype).itemsize
         chunk_shape = getattr(self._variable, "chunks", None)
@@ -374,184 +362,22 @@ class NetCDFRaster:
             band = self._decode(
                 self._variable[self.time_index, row_off:row_end, col_start:col_stop]
             )
-            yield row_off, row_end, band
+            yield row_off, col_start, band
 
 
-@dataclass(frozen=True)
-class NetCDFScan:
+class NetCDFScan(PixelScan["NetCDFRaster"]):
     """Reusable description of a one-pass NetCDF-to-DuckDB pixel scan."""
 
-    raster: NetCDFRaster
-    bounds: Bounds
-    strip_bytes: int
 
-    def relation(self, *, connection: DuckDBConnection | None = None) -> Any:
-        """Create a fresh lazy DuckDB relation for one query execution."""
-        # Validate bounds eagerly, as `GeoTiffScan.relation` does.
-        self.raster._row_col_window(self.bounds)
-        schema = pa.schema(
-            [
-                ("longitude", pa.float64()),
-                ("latitude", pa.float64()),
-                ("value", pa.float32()),
-            ]
-        )
-        return ArrowBatchSource(schema, self._batches).relation(
-            connection=connection or self.raster.connection
-        )
-
-    def pipeline(self, *, connection: DuckDBConnection | None = None) -> DuckDBPipeline:
-        """Compose this bounded scan with lazy DuckDB relational operations."""
-        return DuckDBPipeline(self, connection=connection)
-
-    def _batches(self) -> Iterator[Any]:
-        raster = self.raster
-        row_start, row_stop, col_start, col_stop = raster._row_col_window(self.bounds)
-        for row_off, row_end, band in raster._row_bands(
-            row_start, row_stop, col_start, col_stop, self.strip_bytes
-        ):
-            valid = np.isfinite(band)
-            if not valid.any():
-                continue
-            local_row, local_col = np.where(valid)
-            values = band[local_row, local_col].astype(np.float32, copy=False)
-            lats = raster._rows_to_lat((local_row + row_off).astype(np.float64))
-            lons = raster._cols_to_lon((local_col + col_start).astype(np.float64))
-            yield pa.record_batch(
-                {
-                    "longitude": pa.array(lons),
-                    "latitude": pa.array(lats),
-                    "value": pa.array(values),
-                }
-            )
-
-
-@dataclass(frozen=True)
-class NetCDFH3Scan:
+class NetCDFH3Scan(H3PixelScan["NetCDFRaster"]):
     """Reusable description of a one-pass NetCDF-to-H3-cell scan."""
-
-    raster: NetCDFRaster
-    bounds: Bounds
-    h3_resolution: int
-    max_subsample: float
-    mask: Callable[[np.ndarray], np.ndarray] | None
-    reduce: Literal["max", "min"]
-    strip_bytes: int
-
-    def relation(self, *, connection: DuckDBConnection | None = None) -> Any:
-        """Create a fresh DuckDB relation, pre-reduced to one row per cell.
-
-        Same cross-strip merge strategy as `GeoTiffH3Scan.relation`: batches
-        are already reduced within each strip, so only pixels whose H3 cell
-        straddles a strip boundary can still repeat across batches.
-        """
-        cell_parts = []
-        value_parts = []
-        for batch in self._batches():
-            cell_parts.append(batch.column("cell").to_numpy(zero_copy_only=False))
-            value_parts.append(batch.column("value").to_numpy(zero_copy_only=False))
-
-        if cell_parts:
-            cells, values = reduce_h3_values(
-                np.concatenate(cell_parts),
-                np.concatenate(value_parts),
-                reduce=self.reduce,
-            )
-        else:
-            cells = np.array([], dtype=np.uint64)
-            values = np.array([], dtype=np.float32)
-
-        table = pa.table(
-            {
-                "cell": pa.array(cells, type=pa.uint64()),
-                "value": pa.array(values.astype(np.float32), type=pa.float32()),
-            }
-        )
-        active = (connection or self.raster.connection).connect()
-        return active.from_arrow(table)
-
-    def pipeline(self, *, connection: DuckDBConnection | None = None) -> DuckDBPipeline:
-        """Compose this reduced H3 scan with lazy DuckDB relational operations."""
-        return DuckDBPipeline(self, connection=connection)
-
-    def _batches(self) -> Iterator[Any]:
-        raster = self.raster
-        pixel_w, pixel_h = raster.pixel_size_meters
-        spacing = max_pixel_spacing_m(self.h3_resolution)
-        max_axis_points = max(1, math.ceil(self.max_subsample))
-        columns = max(1, min(math.ceil(pixel_w / spacing), max_axis_points))
-        rows = max(1, min(math.ceil(pixel_h / spacing), max_axis_points))
-        column_offsets = subsample_offsets(columns)
-        row_offsets = subsample_offsets(rows)
-        n_sub = columns * rows
-        pixel_chunk = max(1, CHUNK_POINTS // n_sub)
-
-        row_start, row_stop, col_start, col_stop = raster._row_col_window(self.bounds)
-        for row_off, row_end, band in raster._row_bands(
-            row_start, row_stop, col_start, col_stop, self.strip_bytes
-        ):
-            valid = np.isfinite(band)
-            if self.mask is not None:
-                valid &= self.mask(band)
-            if not valid.any():
-                continue
-
-            local_row, local_col = np.where(valid)
-            values = band[local_row, local_col].astype(np.float64, copy=False)
-            strip_rows = local_row + row_off
-            strip_columns = local_col + col_start
-
-            for start in range(0, len(values), pixel_chunk):
-                chunk = slice(start, start + pixel_chunk)
-                cells, chunk_values = self._sample_chunk(
-                    strip_rows[chunk],
-                    strip_columns[chunk],
-                    values[chunk],
-                    row_offsets,
-                    column_offsets,
-                )
-                yield pa.record_batch(
-                    {
-                        "cell": pa.array(cells, type=pa.uint64()),
-                        "value": pa.array(
-                            chunk_values.astype(np.float32), type=pa.float32()
-                        ),
-                    }
-                )
-
-    def _sample_chunk(
-        self,
-        pixel_rows: np.ndarray,
-        pixel_columns: np.ndarray,
-        values: np.ndarray,
-        row_offsets: np.ndarray,
-        column_offsets: np.ndarray,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        pixel_rows_f = pixel_rows.astype(np.float64)[:, None, None]
-        pixel_columns_f = pixel_columns.astype(np.float64)[:, None, None]
-        row_grid = pixel_rows_f + row_offsets[None, :, None]
-        column_grid = pixel_columns_f + column_offsets[None, None, :]
-        row_grid, column_grid = np.broadcast_arrays(row_grid, column_grid)
-        rows = row_grid.ravel()
-        columns = column_grid.ravel()
-
-        lats = self.raster._rows_to_lat(rows)
-        lons = self.raster._cols_to_lon(columns)
-        n_sub = len(row_offsets) * len(column_offsets)
-        return sample_grid_to_h3(
-            lons,
-            lats,
-            np.repeat(values, n_sub),
-            resolution=self.h3_resolution,
-            reduce=self.reduce,
-        )
 
 
 def _pixel_boundary(
     raster: NetCDFRaster, row: int, column: int
 ) -> tuple[Point, Point, Point, Point]:
     """Pixel corner boundary, in the same counter-clockwise convention as
-    `ZarrRaster.pixel_boundary`/`geotiff._pixel_boundary`.
+    `ZarrRaster.pixel_boundary`/`geotiff._pixel_boundaries`.
 
     See `crc_sdk.connectors.blocks.pixel_boundary` for why the corners are
     built from `abs(step)` in a fixed NW/SW/SE/NE order.
@@ -559,19 +385,6 @@ def _pixel_boundary(
     return pixel_boundary(
         raster._lat, raster._lon, raster._lat_step, raster._lon_step, row, column
     )
-
-
-def _annual_minima_curve(
-    annual_minima: np.ndarray[Any, Any],
-) -> tuple[np.ndarray[Any, Any], np.ndarray[Any, Any]]:
-    """One pixel's per-year minima -> (periods, values) ready to fit.
-
-    The lower-tail case of `crc_sdk.connectors.blocks.plotting_position_curve`:
-    each year's block minimum is one extreme-value sample, and rarer years are
-    *lower* SMI, the shape a ``tail="lower"`` fit expects. Kept as a named
-    helper for callers iterating an EDO source directly.
-    """
-    return plotting_position_curve(annual_minima, "lower")
 
 
 class NetCDFBlockReader:

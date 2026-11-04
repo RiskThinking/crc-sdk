@@ -10,15 +10,11 @@ from typing import Any, Literal
 import numpy as np
 import pyarrow as pa  # type: ignore[import-untyped]
 
-from .connection import DuckDBConnection, default_work_dir
+from .connection import DuckDBConnection, default_work_dir, sql_quote
 from .stream import ArrowBatchSource, DuckDBPipeline
 
 Bounds = tuple[float, float, float, float]
 Point = tuple[float, float]
-
-
-def _sql_string(value: str) -> str:
-    return "'" + value.replace("'", "''") + "'"
 
 
 @dataclass(frozen=True)
@@ -401,13 +397,13 @@ class ZarrRaster:
         expression = ", ".join(
             [
                 "*",
-                f"{_sql_string(values.hazard_type)} AS hazard_type",
-                f"{_sql_string(values.indicator_id)} AS indicator_id",
-                f"{_sql_string(values.scenario)} AS scenario",
+                f"{sql_quote(values.hazard_type)} AS hazard_type",
+                f"{sql_quote(values.indicator_id)} AS indicator_id",
+                f"{sql_quote(values.scenario)} AS scenario",
                 f"{values.year}::INTEGER AS year",
-                f"{_sql_string(values.units)} AS units",
-                f"{_sql_string(self.axis_name)} AS axis_name",
-                f"{_sql_string(values.path)} AS source_path",
+                f"{sql_quote(values.units)} AS units",
+                f"{sql_quote(self.axis_name)} AS axis_name",
+                f"{sql_quote(values.path)} AS source_path",
             ]
         )
         return relation.project(expression)
