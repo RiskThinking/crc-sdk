@@ -393,9 +393,11 @@ def test_writers_do_not_revalidate_validated_batches(
     batch = validate_hazard_table(_many_rows(10), metadata=metadata)
     calls: list[int] = []
     real = parquet._validate_curves
-    monkeypatch.setattr(
-        parquet, "_validate_curves", lambda rows: calls.append(len(rows)) or real(rows)
-    )
+    def counting(rows: Any) -> None:
+        calls.append(len(rows))
+        real(rows)
+
+    monkeypatch.setattr(parquet, "_validate_curves", counting)
     for ordered in (True, False):
         write_hazard_stream(
             CanonicalHazardStream(
@@ -434,7 +436,7 @@ def test_ordered_stream_write_refuses_to_overwrite(tmp_path: Path) -> None:
 def test_remote_destination_never_creates_local_scheme_directories(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import fsspec
+    import fsspec  # type: ignore[import-untyped]
 
     memory = fsspec.filesystem("memory")
     memory.mkdir("/bucket")

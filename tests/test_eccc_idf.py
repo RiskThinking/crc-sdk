@@ -326,3 +326,39 @@ def test_real_zip_range_access_without_network(
     assert len(ranges) > 1
     with pytest.raises(ValueError, match="no stations"):
         list(provider.fetch_stations(version, "ON", ["9999999"]))
+
+
+def test_range_reader_reads_ahead_instead_of_one_request_per_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    members = {
+        f"station_{i:03d}.txt": (f"{i},1.0,2.0\n" * 100).encode() for i in range(100)
+    }
+    data = zip_bytes(members)
+    requests: list[str] = []
+
+    class Response(io.BytesIO):
+        def __init__(
+            self, payload: bytes, headers: dict[str, str], status: int
+        ) -> None:
+            super().__init__(payload)
+            self.headers = headers
+            self.status = status
+
+    def urlopen(request: Any, **kwargs: Any) -> Any:
+        requests.append(request.get_method())
+        if request.get_method() == "HEAD":
+            return Response(b"", {"Content-Length": str(len(data))}, 200)
+        start, end = map(int, request.get_header("Range").split("=")[1].split("-"))
+        return Response(
+            data[start : end + 1],
+            {"Content-Range": f"bytes {start}-{end}/{len(data)}"},
+            206,
+        )
+
+    monkeypatch.setattr(provider, "urlopen", urlopen)
+    reader = provider._RangeReader("https://example.test/archive.zip")
+    with zipfile.ZipFile(reader) as archive:
+        assert {name: archive.read(name) for name in archive.namelist()} == members
+    # Previously ~3 requests per member (header, name, data).
+    assert len(requests) < 10

@@ -10,6 +10,7 @@ from typing import Any
 
 import numpy as np
 import pyarrow as pa  # type: ignore[import-untyped]
+import pyarrow.compute as pc  # type: ignore[import-untyped]
 
 from crc_sdk.connectors.duckdb import (
     ArrowBatchSource,
@@ -197,6 +198,12 @@ class USDACroplandScan:
         columns_per_batch = min(width, target_pixels)
         rows_per_batch = max(1, target_pixels // columns_per_batch)
         names = _class_names(crop.attrs)
+        # uint8 code -> name lookup, taken in one vectorized Arrow call per
+        # batch instead of one dict lookup per selected pixel.
+        name_table = pa.array(
+            [names.get(code, f"Class {code}") for code in range(256)],
+            type=pa.string(),
+        )
         allowed: Any = (
             np.asarray(request.crop_codes, dtype=np.uint8)
             if request.crop_codes is not None
@@ -245,17 +252,15 @@ class USDACroplandScan:
                 longitudes = np.tile(longitude_values, len(year_indices))[mask]
                 latitudes = np.tile(latitude_values, len(year_indices))[mask]
                 selected_year_values = np.repeat(requested_years, pixel_count)[mask]
-                selected_names = [
-                    names.get(int(code), f"Class {int(code)}") for code in selected
-                ]
+                selected_names = pc.take(name_table, pa.array(selected))
                 yield pa.record_batch(
                     [
                         pa.array(longitudes),
                         pa.array(latitudes),
                         pa.array(selected_year_values, type=pa.int16()),
                         pa.array(selected, type=pa.uint8()),
-                        pa.array(selected_names),
-                        pa.array([USDA_CDL_URI] * int(np.count_nonzero(mask))),
+                        selected_names,
+                        pa.repeat(USDA_CDL_URI, selected.size).cast(pa.string()),
                     ],
                     schema=self.schema,
                 )

@@ -90,6 +90,7 @@ def test_tiles_for_resolves_intersecting_tiles_only(tmp_path: Path) -> None:
         tiles = provider.tiles_for((-79.65, 43.58, -79.15, 43.85))
 
     assert tiles == ("ID54_N50_W80",)
+    assert GLOFAS.tile_index_url is not None
     _assert_one_identified_request(mock_urlopen, GLOFAS.tile_index_url)
 
 

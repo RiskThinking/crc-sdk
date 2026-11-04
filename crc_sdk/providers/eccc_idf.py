@@ -54,10 +54,17 @@ def archive_url(version: str, province: str) -> str:
 class _RangeReader(io.RawIOBase):
     """Seekable, validator-pinned HTTPS reads for ZIP central directories."""
 
+    #: Minimum bytes fetched per HTTP range request. zipfile issues many tiny
+    #: reads (30-byte local headers, names, 4 KiB data chunks); without a
+    #: read-ahead block every one of them was its own round trip.
+    BLOCK_BYTES = 1024 * 1024
+
     def __init__(self, url: str) -> None:
         super().__init__()
         self.url = url
         self.position = 0
+        self._block_start = 0
+        self._block = b""
         with urlopen(http_request(url, method="HEAD"), timeout=60) as response:
             self.size = int(response.headers["Content-Length"])
             self.etag = response.headers.get("ETag")
@@ -85,22 +92,33 @@ class _RangeReader(io.RawIOBase):
         end = self.size if size < 0 else min(self.position + size, self.size)
         if end <= self.position:
             return b""
-        headers = {"Range": f"bytes={self.position}-{end - 1}"}
+        block_end = self._block_start + len(self._block)
+        if not (self._block_start <= self.position and end <= block_end):
+            fetch_end = min(self.size, max(end, self.position + self.BLOCK_BYTES))
+            self._block = self._fetch(self.position, fetch_end)
+            self._block_start = self.position
+        offset = self.position - self._block_start
+        data = self._block[offset : offset + end - self.position]
+        self.position = end
+        return data
+
+    def _fetch(self, start: int, end: int) -> bytes:
+        """One validator-pinned range request for ``[start, end)``."""
+        headers = {"Range": f"bytes={start}-{end - 1}"}
         if self.etag:
             headers["If-Match"] = self.etag
         elif self.last_modified:
             headers["If-Unmodified-Since"] = self.last_modified
         with urlopen(http_request(self.url, headers=headers), timeout=60) as response:
-            expected = f"bytes {self.position}-{end - 1}/{self.size}"
+            expected = f"bytes {start}-{end - 1}/{self.size}"
             if (
                 response.status != 206
                 or response.headers.get("Content-Range") != expected
             ):
                 raise RuntimeError("ECCC archive requires HTTP byte-range support")
-            data = response.read(end - self.position + 1)
-        if len(data) != end - self.position:
+            data = response.read(end - start + 1)
+        if len(data) != end - start:
             raise RuntimeError("incomplete ECCC archive range")
-        self.position = end
         return cast(bytes, data)
 
 

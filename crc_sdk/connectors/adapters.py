@@ -650,8 +650,13 @@ def _canonical_batches(
     if sink_installed:
         # Cells a source drops before yielding a curve (no valid blocks, too
         # few of them) are traced too, not only the ones that fail to fit.
-        source.skip_sink = lambda row, column, reason, message: record_cell(
-            row, column, 0, "skipped", reason=reason, message=message
+        # `skip_sink` is an optional extension, not part of `CurveSource`.
+        setattr(  # noqa: B010
+            source,
+            "skip_sink",
+            lambda row, column, reason, message: record_cell(
+                row, column, 0, "skipped", reason=reason, message=message
+            ),
         )
 
     try:
@@ -810,7 +815,7 @@ def _canonical_batches(
         if sink_installed:
             # Restore the source's own sink: a later stream over the same
             # source must not feed this (finished) diagnostics writer.
-            source.skip_sink = previous_sink
+            setattr(source, "skip_sink", previous_sink)  # noqa: B010
 
 
 def canonicalize_curve_source(

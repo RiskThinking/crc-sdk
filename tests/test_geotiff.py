@@ -362,3 +362,38 @@ def test_scan_rejects_disjoint_bounds_before_duckdb(
     finally:
         raster.close()
 
+
+def test_batched_pixel_boundaries_match_single_pixel_boundaries(
+    tmp_path: Path, sample_array: np.ndarray
+) -> None:
+    import rasterio.warp  # type: ignore[import-untyped]
+
+    from crc_sdk.connectors.duckdb.geotiff import _pixel_boundaries
+
+    path = tmp_path / "projected.tif"
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        height=4,
+        width=4,
+        count=1,
+        dtype="float32",
+        crs="EPSG:3857",
+        transform=from_origin(1_000_000.0, 6_000_000.0, 1000.0, 1000.0),
+    ) as dst:
+        dst.write(sample_array, 1)
+    raster = GeoTiffRaster.open(path, work_dir=tmp_path / "work")
+    try:
+        rows, columns = np.array([0, 1, 3]), np.array([2, 0, 3])
+        batched = _pixel_boundaries(raster, rows, columns)
+        for (row, column), boundary in zip(zip(rows, columns), batched):
+            # Counter-clockwise from the pixel's top-left corner.
+            corner_columns = [column, column, column + 1, column + 1]
+            corner_rows = [row, row + 1, row + 1, row]
+            xs = [1_000_000.0 + 1000.0 * c for c in corner_columns]
+            ys = [6_000_000.0 - 1000.0 * r for r in corner_rows]
+            lons, lats = rasterio.warp.transform("EPSG:3857", "EPSG:4326", xs, ys)
+            assert np.allclose(boundary, list(zip(lons, lats)))
+    finally:
+        raster.close()

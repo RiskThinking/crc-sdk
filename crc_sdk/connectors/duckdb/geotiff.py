@@ -265,7 +265,7 @@ class GeoTiffRaster:
     def _read(self, window: Any) -> np.ndarray:
         """Read this raster's band for `window` under its GDAL options."""
         with self._gdal_env():
-            return self._dataset.read(self.band, window=window)
+            return np.asarray(self._dataset.read(self.band, window=window))
 
     def __enter__(self) -> GeoTiffRaster:
         return self
@@ -701,12 +701,31 @@ def _pixel_boundary(
     `RasterCurve.boundary` means the same thing regardless of which
     `CurveSource` produced it.
     """
-    columns = np.array([column, column, column + 1, column + 1], dtype=np.float64)
-    rows = np.array([row, row + 1, row + 1, row], dtype=np.float64)
-    xs, ys = _pixel_to_crs(raster._dataset.transform, columns, rows)
+    return _pixel_boundaries(raster, np.array([row]), np.array([column]))[0]
+
+
+def _pixel_boundaries(
+    raster: GeoTiffRaster, rows: np.ndarray, columns: np.ndarray
+) -> list[tuple[Point, Point, Point, Point]]:
+    """`_pixel_boundary` for many pixels with one CRS transform call."""
+    rows_f = np.asarray(rows, dtype=np.float64)[:, None]
+    columns_f = np.asarray(columns, dtype=np.float64)[:, None]
+    corner_columns = columns_f + np.array([0.0, 0.0, 1.0, 1.0])
+    corner_rows = rows_f + np.array([0.0, 1.0, 1.0, 0.0])
+    xs, ys = _pixel_to_crs(
+        raster._dataset.transform, corner_columns.ravel(), corner_rows.ravel()
+    )
     lats, lons = _to_wgs84(raster.crs, xs, ys)
-    points = list(zip(lons.tolist(), lats.tolist()))
-    return (points[0], points[1], points[2], points[3])
+    corners = np.stack([lons, lats], axis=-1).reshape(-1, 4, 2).tolist()
+    return [
+        (
+            (pixel[0][0], pixel[0][1]),
+            (pixel[1][0], pixel[1][1]),
+            (pixel[2][0], pixel[2][1]),
+            (pixel[3][0], pixel[3][1]),
+        )
+        for pixel in corners
+    ]
 
 
 class JRCReturnPeriodRaster:
@@ -853,15 +872,18 @@ class JRCReturnPeriodRaster:
             if not valid_any.any():
                 continue
             local_rows, local_columns = np.where(valid_any)
-            for local_row, local_column in zip(
-                local_rows.tolist(), local_columns.tolist()
+            # One vectorized reprojection for every pixel corner in the strip,
+            # not one PROJ call per pixel.
+            boundaries = _pixel_boundaries(
+                reference, local_rows + row_off, local_columns + col_start
+            )
+            for index, (local_row, local_column) in enumerate(
+                zip(local_rows.tolist(), local_columns.tolist())
             ):
-                source_row = row_off + local_row
-                source_column = col_start + local_column
                 yield RasterCurve(
-                    row=source_row,
-                    column=source_column,
-                    boundary=_pixel_boundary(reference, source_row, source_column),
+                    row=row_off + local_row,
+                    column=col_start + local_column,
+                    boundary=boundaries[index],
                     axis_values=self._axis_values.copy(),
                     values=stack[:, local_row, local_column].copy(),
                 )
