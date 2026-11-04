@@ -11,7 +11,9 @@ from typing import TYPE_CHECKING, Any
 
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
 from crc_framework import CallableImpact, ImpactFunction
+from crc_framework import ImpactExpression as FrameworkImpactExpression
 
+from crc_sdk.impacts.expression import ImpactExpression
 from crc_sdk.providers.crc_open import DEFAULT_RELEASE
 from crc_sdk.providers.local import LocalProvider
 from crc_sdk.types import HazardDatasetMetadata, SourceProvenance
@@ -208,6 +210,21 @@ class ImpactContextColumns:
 
 
 @dataclass(frozen=True)
+class _ExpressionImpact:
+    """Adapt a context-free impact expression to per-row workflow evaluation.
+
+    Expressions carry any registry context in their definition, so the
+    per-asset framework context is not used.
+    """
+
+    expression: ImpactExpression | FrameworkImpactExpression
+
+    def evaluate(self, values: Any, *, context: Any = None) -> Any:
+        del context
+        return self.expression.evaluate(values)
+
+
+@dataclass(frozen=True)
 class ImpactSpec:
     """Internal event-aligned impact evaluation configuration."""
 
@@ -219,7 +236,15 @@ class ImpactSpec:
 
     @property
     def function_type(self) -> str:
+        if isinstance(self.function, _ExpressionImpact):
+            return type(self.function.expression).__name__
         return type(self.function).__name__
+
+    @property
+    def definition_hash(self) -> str | None:
+        if isinstance(self.function, _ExpressionImpact):
+            return str(self.function.expression.definition_hash)
+        return None
 
     def is_picklable(self) -> bool:
         try:
@@ -638,7 +663,15 @@ def _impact_spec(
     ):
         if not isinstance(value, str) or not value.strip():
             raise ValueError(f"{field_name} must not be empty")
-    if isinstance(function, ImpactFunction):
+    impact_function: Any
+    if isinstance(function, (ImpactExpression, FrameworkImpactExpression)):
+        if context is not None and context.items():
+            raise ValueError(
+                "impact expressions carry their own context; "
+                "do not pass asset context columns"
+            )
+        impact_function = _ExpressionImpact(function)
+    elif isinstance(function, ImpactFunction):
         impact_function = function
     elif callable(function):
         impact_function = CallableImpact(function)
@@ -701,7 +734,13 @@ class PortfolioEvaluation:
         value_semantics: str,
         context: ImpactContextColumns | None = None,
     ) -> PortfolioEvaluation:
-        """Return a request applying an event-aligned impact function."""
+        """Return a request applying an event-aligned impact function.
+
+        ``function`` is a framework ``ImpactFunction``, an ``ImpactExpression``
+        (whose ``definition_hash`` is recorded in the output metadata), or a
+        vectorized callable. Expressions carry their own context, so
+        ``context`` must be omitted for them.
+        """
         return replace(
             self,
             impact_spec=_impact_spec(

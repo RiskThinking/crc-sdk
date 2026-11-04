@@ -21,6 +21,7 @@ from crc_sdk.connectors import (
     write_hazard_dataset,
 )
 from crc_sdk.geometry import point_to_cell
+from crc_sdk.impacts import ImpactCalibration, ImpactExpression
 from crc_sdk.providers import LocalProvider
 from crc_sdk.types import HazardDatasetMetadata, SourceProvenance
 from crc_sdk.workflows import (
@@ -631,6 +632,84 @@ def test_evaluate_portfolio_runs_picklable_impact_in_process_pool(
     )
 
     assert pq.read_table(output).num_rows == 2
+
+
+def _depth_damage_expression() -> ImpactExpression:
+    return ImpactExpression.tabulated(
+        [(0.0, 0.0), (1.0, 0.45), (4.0, 1.0)],
+        calibration=ImpactCalibration(
+            exposure_variable="flood_depth",
+            exposure_unit="m",
+            impact_metric="damage_ratio",
+            impact_unit="1",
+        ),
+    )
+
+
+@pytest.mark.parametrize("framework", [False, True])
+def test_evaluate_portfolio_applies_impact_expression(
+    tmp_path: Path, framework: bool
+) -> None:
+    cell_a = point_to_cell(LONGITUDE, LATITUDE, H3_RESOLUTION)
+    cell_b = point_to_cell(7.5, 51.0, H3_RESOLUTION)
+    provider = _provider(
+        tmp_path,
+        _row(cell_index=cell_a, source_id="a"),
+        _row(cell_index=cell_b, source_id="b"),
+    )
+    assets = pa.table(
+        {
+            "asset_id": ["asset-a", "asset-b"],
+            "cell_index": pa.array([cell_a, cell_b], type=pa.uint64()),
+        }
+    )
+    expression = _depth_damage_expression()
+    function: Any = expression.framework_expression if framework else expression
+    output = tmp_path / "expression-impact.parquet"
+
+    (
+        HazardDataset(provider)
+        .for_assets(assets)
+        .return_periods([25, 100])
+        .impact(
+            function,
+            name="depth_damage_ratio",
+            value_unit="fraction",
+            value_semantics="damage ratio",
+        )
+        .write_parquet(
+            output,
+            execution=ExecutionOptions(max_workers=2, chunk_rows=1),
+        )
+    )
+
+    probabilities = return_periods_to_probabilities([25, 100])
+    exposure = distribution_from_hazard_row(_row()).quantiles(probabilities)
+    expected = expression.evaluate(list(exposure))
+    for row in pq.read_table(output).to_pylist():
+        assert [row["value_rp25"], row["value_rp100"]] == pytest.approx(expected)
+    encoded = (pq.read_schema(output).metadata or {})[PORTFOLIO_METADATA_KEY.encode()]
+    assert json.loads(encoded)["impact"] == {
+        "context_columns": {},
+        "definition_hash": expression.definition_hash,
+        "name": "depth_damage_ratio",
+        "type": "ImpactExpression",
+    }
+
+
+def test_impact_expression_rejects_asset_context_columns(tmp_path: Path) -> None:
+    request = HazardDataset(_provider(tmp_path, _row())).for_assets(
+        pa.table({"asset_id": ["a"], "longitude": [LONGITUDE], "latitude": [LATITUDE]})
+    )
+
+    with pytest.raises(ValueError, match="context"):
+        request.impact(
+            _depth_damage_expression(),
+            name="depth_damage_ratio",
+            value_unit="fraction",
+            value_semantics="damage ratio",
+            context=ImpactContextColumns(country="country"),
+        )
 
 
 def test_evaluate_portfolio_validates_impact_context_columns(

@@ -176,6 +176,8 @@ def _portfolio_metadata(
                 },
             }
         )
+        if impact.definition_hash is not None:
+            payload["impact"]["definition_hash"] = impact.definition_hash
     return {
         PORTFOLIO_METADATA_KEY.encode("utf-8"): json.dumps(
             payload,
