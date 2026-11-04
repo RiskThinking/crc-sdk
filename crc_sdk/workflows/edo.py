@@ -18,22 +18,19 @@ from crc_sdk.connectors.jrc_edo import canonicalize_edo_drought
 from crc_sdk.connectors.parquet import write_hazard_stream
 from crc_sdk.providers.jrc_edo import EDOProvider, edo_dataset
 
+from ._plans import YearCanonicalizationPlan, automatic_output, cache_location
 from ._remote import (
     Bounds,
     CacheMode,
     MaterializationResult,
-    PrefetchResult,
     ProgressCallback,
-    RemotePortfolioEvaluation,
     file_checksum,
-    is_complete_output,
-    materialize_staged,
     plan_manifest_key,
     read_plan_manifest,
     validate_bounds,
     write_plan_manifest,
 )
-from .portfolio import AssetPortfolio, HazardDataset
+from .portfolio import HazardDataset
 
 YearSelection = tuple[int, ...] | Literal["all_complete"]
 
@@ -176,17 +173,7 @@ class EDOYearPlan:
         *,
         mode: CacheMode = "reuse",
     ) -> EDOYearPlan:
-        if mode not in ("reuse", "offline", "refresh", "stream"):
-            raise ValueError("cache mode must be reuse, offline, refresh, or stream")
-        if mode == "stream":
-            if directory is not None:
-                raise ValueError("stream cache mode requires directory=None")
-            path = None
-        else:
-            if directory is None:
-                raise ValueError(f"{mode} cache mode requires a directory")
-            path = Path(directory)
-        return replace(self, cache_dir=path, cache_mode=mode)
+        return replace(self, cache_dir=cache_location(directory, mode), cache_mode=mode)
 
     def canonicalize(
         self,
@@ -207,17 +194,11 @@ class EDOYearPlan:
 
 
 @dataclass(frozen=True)
-class EDOCanonicalizationPlan:
+class EDOCanonicalizationPlan(YearCanonicalizationPlan):
     years: EDOYearPlan
     policy: EDODroughtPolicy | CurveFitIngestPolicy
 
-    def cache(
-        self,
-        directory: str | Path | None,
-        *,
-        mode: CacheMode = "reuse",
-    ) -> EDOCanonicalizationPlan:
-        return replace(self, years=self.years.cache(directory, mode=mode))
+    _label = "EDO"
 
     def _manifest_key(self) -> str:
         years = self.years.selected_years
@@ -430,23 +411,6 @@ class EDOCanonicalizationPlan:
         write_plan_manifest(cache_dir, self._manifest_key(), manifest)
         return _PreparedYears(version, selected, resources, hits, misses)
 
-    def _validate_years(self, years: tuple[int, ...]) -> None:
-        if isinstance(self.policy, EDODroughtPolicy):
-            self.policy.validate_years(years)
-        elif len(years) < 4:
-            raise ValueError("EDO fitting requires at least four complete years")
-
-    def prefetch(self, *, progress: ProgressCallback | None = None) -> PrefetchResult:
-        if self.years.cache_mode == "stream":
-            raise ValueError("prefetch requires reuse, refresh, or offline cache mode")
-        prepared = self._prepare(progress)
-        return PrefetchResult(
-            source_version=prepared.version,
-            cache_hits=prepared.cache_hits,
-            cache_misses=prepared.cache_misses,
-            resources=len(prepared.resources),
-        )
-
     def materialize(
         self,
         output: str | Path,
@@ -491,12 +455,8 @@ class EDOCanonicalizationPlan:
         return HazardDataset.local(destination, materialization=result)
 
     def _automatic_output(self) -> Path:
-        if self.years.cache_dir is None:
-            raise ValueError(
-                "one-chain evaluation requires a persistent cache; call "
-                ".cache(path, mode='reuse') or materialize(...) explicitly"
-            )
-        identity = json.dumps(
+        return automatic_output(
+            self.years.cache_dir,
             [
                 self.years.area.source.dataset,
                 self.years.area.source.requested_version,
@@ -504,23 +464,4 @@ class EDOCanonicalizationPlan:
                 self.years.selected_years,
                 repr(self.policy),
             ],
-            separators=(",", ":"),
         )
-        digest = hashlib.sha256(identity.encode()).hexdigest()[:20]
-        return self.years.cache_dir / "canonical" / f"hazard-{digest}.parquet"
-
-    def ensure_materialized(
-        self,
-        *,
-        progress: ProgressCallback | None = None,
-    ) -> HazardDataset:
-        output = self._automatic_output()
-        if is_complete_output(output) and self.years.cache_mode != "refresh":
-            return HazardDataset.local(output)
-        return materialize_staged(self.materialize, output, progress=progress)
-
-    def for_assets(self, assets: Any | AssetPortfolio) -> RemotePortfolioEvaluation:
-        portfolio = (
-            assets if isinstance(assets, AssetPortfolio) else AssetPortfolio(assets)
-        )
-        return RemotePortfolioEvaluation(plan=self, portfolio=portfolio)

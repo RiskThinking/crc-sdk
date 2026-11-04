@@ -18,10 +18,11 @@ from urllib.request import urlopen
 import pyarrow as pa  # type: ignore[import-untyped]
 
 from ._remote import (
+    cached_snapshot,
+    check_expected_sha256,
     check_new_feature,
     file_checksum,
     http_request,
-    read_manifest,
     write_manifest,
 )
 
@@ -121,18 +122,15 @@ class USGSStreamflowPlan:
         url = self._url()
         directory = self._directory()
         path = directory / "observations.jsonl"
-        manifest = read_manifest(directory)
-        if self.mode != "refresh" and path.exists() != (manifest is not None):
-            raise RuntimeError("incomplete USGS cache; refresh it explicitly")
-        if self.mode != "refresh" and manifest is not None:
-            digest = file_checksum(path)
-            if manifest.get("url") != url or manifest.get("sha256") != digest:
-                raise RuntimeError("USGS cache checksum or request mismatch")
-            if self.expected_sha256 and digest != self.expected_sha256:
-                raise RuntimeError("USGS snapshot does not match expected SHA-256")
-            return manifest
-        if self.mode == "offline":
-            raise FileNotFoundError(f"USGS snapshot missing from {directory}")
+        cached = cached_snapshot(
+            path,
+            url=url,
+            mode=self.mode,
+            expected=self.expected_sha256,
+            label="USGS",
+        )
+        if cached is not None:
+            return cached
         directory.mkdir(parents=True, exist_ok=True)
         pages, count = 0, 0
         matched: int | None = None
@@ -198,8 +196,7 @@ class USGSStreamflowPlan:
             if matched is not None and count != matched:
                 raise RuntimeError("USGS pagination returned an incomplete snapshot")
             digest = file_checksum(staged)
-            if self.expected_sha256 and digest != self.expected_sha256:
-                raise RuntimeError("USGS snapshot does not match expected SHA-256")
+            check_expected_sha256(digest, self.expected_sha256, "USGS")
             result: dict[str, Any] = {
                 "url": url,
                 "sha256": digest,

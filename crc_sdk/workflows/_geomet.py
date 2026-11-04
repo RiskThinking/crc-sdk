@@ -4,18 +4,23 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import tempfile
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, ClassVar, Self, cast
 from urllib.parse import urljoin, urlsplit
 
+import pyarrow as pa  # type: ignore[import-untyped]
+
 from ._remote import (
+    cached_snapshot,
+    check_expected_sha256,
     check_new_feature,
     file_checksum,
     http_request,
-    read_manifest,
     write_manifest,
 )
 
@@ -33,18 +38,9 @@ def prepare_snapshot(
 ) -> dict[str, Any]:
     """Acquire a selected page sequence, or verify its retained feature bytes."""
     path = directory / "observations.jsonl"
-    manifest = read_manifest(directory)
-    if mode != "refresh" and path.exists() != (manifest is not None):
-        raise RuntimeError(f"incomplete {label} cache; refresh it explicitly")
-    if mode != "refresh" and manifest is not None:
-        digest = file_checksum(path)
-        if manifest.get("url") != url or manifest.get("sha256") != digest:
-            raise RuntimeError(f"{label} cache checksum or request mismatch")
-        if expected and digest != expected:
-            raise RuntimeError(f"{label} snapshot does not match expected SHA-256")
-        return manifest
-    if mode == "offline":
-        raise FileNotFoundError(f"{label} snapshot missing from {directory}")
+    cached = cached_snapshot(path, url=url, mode=mode, expected=expected, label=label)
+    if cached is not None:
+        return cached
     directory.mkdir(parents=True, exist_ok=True)
     expected_path = urlsplit(url).path
     seen: set[str] = set()
@@ -109,8 +105,7 @@ def prepare_snapshot(
         if matched is not None and count != matched:
             raise RuntimeError(f"{label} pagination returned an incomplete snapshot")
         digest = file_checksum(staged)
-        if expected and digest != expected:
-            raise RuntimeError(f"{label} snapshot does not match expected SHA-256")
+        check_expected_sha256(digest, expected, label)
         result: dict[str, Any] = {
             "url": url,
             **metadata,
@@ -127,3 +122,86 @@ def prepare_snapshot(
         staged.replace(path)
         write_manifest(directory, result)
     return result
+
+
+class GeoMetDailyPlan:
+    """Mixin for frozen per-station GeoMet plans cached one year at a time."""
+
+    _schema: ClassVar[Any]
+    selected_years: tuple[int, ...]
+    cache_dir: Path | None
+    mode: str
+    checksums: tuple[tuple[int, str], ...]
+
+    if TYPE_CHECKING:
+
+        def _directory(self, year: int) -> Path: ...
+
+        def _prepare_year(self, year: int) -> dict[str, Any]: ...
+
+        def _parse(self, feature: dict[str, Any], year: int) -> dict[str, Any]: ...
+
+    def _check_options(self) -> None:
+        if self.mode not in {"reuse", "offline", "refresh"}:
+            raise ValueError("mode must be reuse, offline or refresh")
+        if any(not re.fullmatch(r"[0-9a-f]{64}", sha) for _, sha in self.checksums):
+            raise ValueError("checksums must be lowercase SHA-256 digests")
+
+    def years(self, start: int, end: int) -> Self:
+        if (
+            isinstance(start, bool)
+            or isinstance(end, bool)
+            or not isinstance(start, int)
+            or not isinstance(end, int)
+            or start < 1800
+            or end > 9999
+            or start > end
+        ):
+            raise ValueError("years must be ordered calendar years from 1800 onward")
+        return cast(
+            Self, replace(cast(Any, self), selected_years=tuple(range(start, end + 1)))
+        )
+
+    def cache(
+        self,
+        directory: str | Path,
+        *,
+        mode: str = "reuse",
+        sha256: Mapping[int, str] | None = None,
+    ) -> Self:
+        return cast(
+            Self,
+            replace(
+                cast(Any, self),
+                cache_dir=Path(directory),
+                mode=mode,
+                checksums=tuple(sorted((sha256 or {}).items())),
+            ),
+        )
+
+    def _checked_years(self) -> tuple[int, ...]:
+        if not self.selected_years:
+            raise ValueError("years(start, end) must be configured")
+        if set(dict(self.checksums)) - set(self.selected_years):
+            raise ValueError("checksum years must belong to the selected years")
+        return self.selected_years
+
+    def prefetch(self) -> tuple[dict[str, Any], ...]:
+        return tuple(self._prepare_year(year) for year in self._checked_years())
+
+    def batches(self, *, batch_size: int = 4096) -> Iterator[pa.RecordBatch]:
+        """Stream typed daily observations without interpreting quality flags."""
+        if batch_size < 1:
+            raise ValueError("batch_size must be positive")
+        for year in self._checked_years():
+            self._prepare_year(year)
+            path = self._directory(year) / "observations.jsonl"
+            rows: list[dict[str, Any]] = []
+            with path.open(encoding="utf-8") as source:
+                for line in source:
+                    rows.append(self._parse(json.loads(line), year))
+                    if len(rows) == batch_size:
+                        yield pa.RecordBatch.from_pylist(rows, schema=self._schema)
+                        rows.clear()
+                if rows:
+                    yield pa.RecordBatch.from_pylist(rows, schema=self._schema)

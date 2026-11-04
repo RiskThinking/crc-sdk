@@ -23,11 +23,11 @@ from crc_sdk.impacts._types import thaw
 from crc_sdk.impacts.config import (
     ImpactCalibration,
     ImpactClamp,
-    ImpactContext,
     ImpactDefinition,
     ImpactProvenance,
     RegistryOverrides,
     TabulatedPoint,
+    _context_argument,
 )
 
 T = TypeVar("T")
@@ -39,16 +39,6 @@ class ImpactEvaluationResult(Generic[T]):
 
     value: T
     record: ImpactEvaluationRecord
-
-
-def _context_argument(value: Any) -> Any:
-    if isinstance(value, ImpactContext):
-        return dict(value.supplied())
-    if isinstance(value, TransformContext):
-        return dict(ImpactContext.from_transform_context(value).supplied())
-    if isinstance(value, Mapping):
-        return {key: item for key, item in value.items() if item is not None}
-    return value
 
 
 def _override_argument(value: Any) -> Any:

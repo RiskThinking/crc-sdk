@@ -189,7 +189,7 @@ class NOAAExtremeWaterLevelPlan:
                 or any((current / resource).exists() for resource in _RESOURCES)
             )
         ):
-            raise RuntimeError("incomplete NOAA cache; refresh explicitly")
+            raise RuntimeError("incomplete NOAA cache; refresh it explicitly")
         root.mkdir(parents=True, exist_ok=True)
         snapshots = root / "snapshots"
         snapshots.mkdir(exist_ok=True)

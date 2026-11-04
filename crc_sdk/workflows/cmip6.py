@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import tempfile
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
@@ -26,16 +25,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
-import numpy as np
-import pyarrow as pa  # type: ignore[import-untyped]
-
 from crc_sdk.connectors import CurveFitIngestPolicy
-from crc_sdk.connectors.adapters import CurveSourceInfo, canonicalize_curve_source
+from crc_sdk.connectors.adapters import CurveSourceInfo
 from crc_sdk.connectors.duckdb.zarr import RasterMetadata
 from crc_sdk.connectors.parquet import (
-    read_hazard_dataset,
     read_hazard_metadata,
-    write_hazard_stream,
 )
 from crc_sdk.pathways import resolve_pathway
 from crc_sdk.providers.cmip6 import (
@@ -52,41 +46,28 @@ from crc_sdk.providers.cmip6 import (
 )
 from crc_sdk.types import EnsembleDescriptor, TemporalWindow
 
+from ._plans import (
+    BlockExtremaPlan,
+    automatic_output,
+    block_extrema_policy,
+    cache_location,
+    normalize_years,
+)
 from ._remote import (
     Bounds,
     CacheMode,
-    MaterializationResult,
-    PrefetchResult,
     ProgressCallback,
-    RemotePortfolioEvaluation,
     file_checksum,
-    is_complete_output,
-    materialize_staged,
     merge_manifest_entries,
     read_manifest,
     validate_bounds,
 )
 from .blocks import BlockExtremaPolicy
-from .portfolio import AssetPortfolio, HazardDataset
 
 #: Years fetched concurrently; the stores are latency-bound, not CPU-bound.
 FETCH_WORKERS = 4
 #: Where a cache directory keeps its copy of the catalogue's daily subset.
 CATALOGUE_CACHE = "catalogue/pangeo-cmip6-day.parquet"
-
-
-def _normalize_years(start: int | Sequence[int], end: int | None) -> tuple[int, ...]:
-    if isinstance(start, int):
-        years = (start,) if end is None else tuple(range(start, end + 1))
-    else:
-        if end is not None:
-            raise ValueError("a year sequence does not accept an end year")
-        years = tuple(start)
-    if not years or any(isinstance(year, bool) or year < 1850 for year in years):
-        raise ValueError("years must contain valid calendar years")
-    if len(set(years)) != len(years):
-        raise ValueError("years must be unique")
-    return tuple(sorted(years))
 
 
 @dataclass(frozen=True)
@@ -148,7 +129,9 @@ class CMIP6AreaPlan:
     def years(
         self, start: int | Sequence[int], end: int | None = None
     ) -> CMIP6YearPlan:
-        return CMIP6YearPlan(area=self, selected_years=_normalize_years(start, end))
+        return CMIP6YearPlan(
+            area=self, selected_years=normalize_years(start, end, earliest=1850)
+        )
 
 
 @dataclass(frozen=True)
@@ -161,56 +144,28 @@ class CMIP6YearPlan:
     def cache(
         self, directory: str | Path | None, *, mode: CacheMode = "reuse"
     ) -> CMIP6YearPlan:
-        if mode not in ("reuse", "offline", "refresh", "stream"):
-            raise ValueError("cache mode must be reuse, offline, refresh, or stream")
-        if mode == "stream":
-            if directory is not None:
-                raise ValueError("stream cache mode requires directory=None")
-            path = None
-        else:
-            if directory is None:
-                raise ValueError(f"{mode} cache mode requires a directory")
-            path = Path(directory)
-        return replace(self, cache_dir=path, cache_mode=mode)
+        return replace(self, cache_dir=cache_location(directory, mode), cache_mode=mode)
 
     def canonicalize(
         self,
         *,
         policy: str | BlockExtremaPolicy | CurveFitIngestPolicy = "curated",
     ) -> CMIP6CanonicalizationPlan:
-        if policy == "curated":
-            normalized: BlockExtremaPolicy | CurveFitIngestPolicy = (
-                BlockExtremaPolicy.curated()
-            )
-        elif isinstance(policy, (BlockExtremaPolicy, CurveFitIngestPolicy)):
-            normalized = policy
-        else:
-            raise TypeError(
-                "policy must be 'curated', BlockExtremaPolicy, or CurveFitIngestPolicy"
-            )
-        if isinstance(normalized, BlockExtremaPolicy):
-            recipe = cmip6_recipe(self.area.source.recipe)
-            normalized = normalized.resolve(
-                family=recipe.default_family, fit_method=recipe.default_fit_method
-            )
-            # Validate resolved combinations before any annual data is fetched.
-            normalized.ingest_policy(
-                tail=recipe.tail,
-                value_semantics=recipe.value_semantics,
-                source_version=self.area.source.requested_version,
-            )
+        normalized = block_extrema_policy(
+            policy,
+            cmip6_recipe(self.area.source.recipe),
+            self.area.source.requested_version,
+        )
         return CMIP6CanonicalizationPlan(years=self, policy=normalized)
 
 
 @dataclass(frozen=True)
-class CMIP6CanonicalizationPlan:
+class CMIP6CanonicalizationPlan(BlockExtremaPlan):
     years: CMIP6YearPlan
     policy: BlockExtremaPolicy | CurveFitIngestPolicy
 
-    def cache(
-        self, directory: str | Path | None, *, mode: CacheMode = "reuse"
-    ) -> CMIP6CanonicalizationPlan:
-        return replace(self, years=self.years.cache(directory, mode=mode))
+    _label = "CMIP6"
+    _provider = "cmip6"
 
     # -- identity -----------------------------------------------------------
 
@@ -530,46 +485,6 @@ class CMIP6CanonicalizationPlan:
             checksum=digest,
         )
 
-    def _validate_years(self, years: tuple[int, ...]) -> None:
-        if isinstance(self.policy, BlockExtremaPolicy):
-            self.policy.validate_years(years)
-        elif len(years) < 4:
-            raise ValueError("CMIP6 fitting requires at least four complete years")
-
-    def prefetch(self, *, progress: ProgressCallback | None = None) -> PrefetchResult:
-        if self.years.cache_mode == "stream":
-            raise ValueError("prefetch requires reuse, refresh, or offline cache mode")
-        prepared = self._prepare(progress)
-        return PrefetchResult(
-            source_version=prepared.version,
-            cache_hits=prepared.cache_hits,
-            cache_misses=prepared.cache_misses,
-            resources=len(prepared.resources),
-        )
-
-    def annual_extremes(self, *, progress: ProgressCallback | None = None) -> Any:
-        """The per-year, per-cell extremes behind the curves, as an Arrow table.
-
-        Columns ``year``, ``latitude``, ``longitude`` and ``value`` (in the
-        recipe's unit), with years a cell has no valid value for left out.
-        The audit trail for any fitted curve: the sample the fit saw.
-        """
-        if self.years.cache_mode == "stream":
-            raise ValueError("annual_extremes requires a cache directory")
-        prepared = self._prepare(progress)
-        with self._source(prepared) as source:
-            stack, lat, lon = source.block_array(self.years.area.bounds)
-            labels = source.labels
-        year, row, column = np.nonzero(np.isfinite(stack))
-        return pa.table(
-            {
-                "year": pa.array(np.asarray(labels)[year], type=pa.int32()),
-                "latitude": pa.array(lat[row]),
-                "longitude": pa.array(lon[column]),
-                "value": pa.array(stack[year, row, column]),
-            }
-        )
-
     # -- canonicalization ---------------------------------------------------
 
     def _source(self, prepared: _PreparedYears) -> Any:
@@ -624,56 +539,10 @@ class CMIP6CanonicalizationPlan:
             recipe, dict(prepared.resources), metadata, info=info
         )
 
-    def materialize(
-        self, output: str | Path, *, progress: ProgressCallback | None = None
-    ) -> HazardDataset:
-        destination = Path(output)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix="crc-cmip6-") as scratch:
-            streaming = self.years.cache_dir is None
-            prepared = self._prepare(
-                progress, cache_dir=Path(scratch) if streaming else None
-            )
-            recipe = self._recipe
-            if isinstance(self.policy, BlockExtremaPolicy):
-                policy = self.policy.ingest_policy(
-                    tail=recipe.tail,
-                    value_semantics=recipe.value_semantics,
-                    source_version=prepared.version,
-                )
-            else:
-                policy = replace(
-                    self.policy,
-                    tail=recipe.tail,
-                    source_version=prepared.version,
-                    value_semantics=self.policy.value_semantics
-                    or recipe.value_semantics,
-                )
-            if progress:
-                progress("fit", {"years": prepared.years})
-            with self._source(prepared) as source:
-                stream = canonicalize_curve_source(
-                    source, policy, provider="cmip6", bounds=self.years.area.bounds
-                )
-                write_hazard_stream(stream, destination, overwrite=True)
-        rows = read_hazard_dataset(destination, columns=["cell_index"]).num_rows
-        result = MaterializationResult(
-            output=destination,
-            source_version=prepared.version,
-            source_cache_hits=prepared.cache_hits,
-            source_cache_misses=prepared.cache_misses,
-            canonical_rows=rows,
-        )
-        return HazardDataset.local(destination, materialization=result)
-
     def _automatic_output(self) -> Path:
-        if self.years.cache_dir is None:
-            raise ValueError(
-                "one-chain evaluation requires a persistent cache; call "
-                ".cache(path, mode='reuse') or materialize(...) explicitly"
-            )
         source = self.years.area.source
-        identity = json.dumps(
+        return automatic_output(
+            self.years.cache_dir,
             [
                 source.archive,
                 source.recipe,
@@ -686,33 +555,18 @@ class CMIP6CanonicalizationPlan:
                 self.years.selected_years,
                 repr(self.policy),
             ],
-            separators=(",", ":"),
         )
-        digest = hashlib.sha256(identity.encode()).hexdigest()[:20]
-        return self.years.cache_dir / "canonical" / f"hazard-{digest}.parquet"
 
-    def ensure_materialized(
-        self, *, progress: ProgressCallback | None = None
-    ) -> HazardDataset:
-        output = self._automatic_output()
-        if is_complete_output(output) and self.years.cache_mode != "refresh":
-            # Handing back an already-fitted file is a use of the source like
-            # any other, and the file records the licence it was built from.
-            source = self.years.area.source
-            metadata = read_hazard_metadata(output)
-            enforce_licence(
-                metadata.source.licence or CMIP6_LICENCE_UNKNOWN,
-                dataset=(
-                    f"{source.model} {source.scenario} {source.member} day "
-                    f"{self._recipe.variable}"
-                ),
-                strict=source.strict_licence,
-            )
-            return HazardDataset.local(output)
-        return materialize_staged(self.materialize, output, progress=progress)
-
-    def for_assets(self, assets: Any | AssetPortfolio) -> RemotePortfolioEvaluation:
-        portfolio = (
-            assets if isinstance(assets, AssetPortfolio) else AssetPortfolio(assets)
+    def _check_reuse(self, output: Path) -> None:
+        # Handing back an already-fitted file is a use of the source like
+        # any other, and the file records the licence it was built from.
+        source = self.years.area.source
+        metadata = read_hazard_metadata(output)
+        enforce_licence(
+            metadata.source.licence or CMIP6_LICENCE_UNKNOWN,
+            dataset=(
+                f"{source.model} {source.scenario} {source.member} day "
+                f"{self._recipe.variable}"
+            ),
+            strict=source.strict_licence,
         )
-        return RemotePortfolioEvaluation(plan=self, portfolio=portfolio)

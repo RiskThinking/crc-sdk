@@ -5,8 +5,7 @@ from __future__ import annotations
 import json
 import math
 import re
-from collections.abc import Iterator, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -15,7 +14,7 @@ from urllib.request import urlopen
 
 import pyarrow as pa  # type: ignore[import-untyped]
 
-from ._geomet import prepare_snapshot
+from ._geomet import GeoMetDailyPlan, prepare_snapshot
 
 _ENDPOINT = "https://api.weather.gc.ca/collections/climate-daily/items"
 _NUMERIC = (
@@ -52,7 +51,7 @@ _SCHEMA = pa.schema(
 
 
 @dataclass(frozen=True)
-class ECCCDailyPlan:
+class ECCCDailyPlan(GeoMetDailyPlan):
     """A lazy request for GeoMet daily observations and their source flags."""
 
     climate_id: str
@@ -61,44 +60,16 @@ class ECCCDailyPlan:
     mode: str = "reuse"
     checksums: tuple[tuple[int, str], ...] = ()
 
+    _schema = _SCHEMA
+
     def __post_init__(self) -> None:
         if not re.fullmatch(r"[A-Z0-9]{7}", self.climate_id):
             raise ValueError("climate_id must be a seven-character ECCC climate ID")
-        if self.mode not in {"reuse", "offline", "refresh"}:
-            raise ValueError("mode must be reuse, offline or refresh")
-        if any(not re.fullmatch(r"[0-9a-f]{64}", sha) for _, sha in self.checksums):
-            raise ValueError("checksums must be lowercase SHA-256 digests")
+        self._check_options()
 
     @classmethod
     def for_station(cls, climate_id: str) -> ECCCDailyPlan:
         return cls(climate_id)
-
-    def years(self, start: int, end: int) -> ECCCDailyPlan:
-        if (
-            isinstance(start, bool)
-            or isinstance(end, bool)
-            or not isinstance(start, int)
-            or not isinstance(end, int)
-            or start < 1800
-            or end > 9999
-            or start > end
-        ):
-            raise ValueError("years must be ordered calendar years from 1800 onward")
-        return replace(self, selected_years=tuple(range(start, end + 1)))
-
-    def cache(
-        self,
-        directory: str | Path,
-        *,
-        mode: str = "reuse",
-        sha256: Mapping[int, str] | None = None,
-    ) -> ECCCDailyPlan:
-        return replace(
-            self,
-            cache_dir=Path(directory),
-            mode=mode,
-            checksums=tuple(sorted((sha256 or {}).items())),
-        )
 
     def _url(self, year: int) -> str:
         return (
@@ -145,33 +116,8 @@ class ECCCDailyPlan:
             metadata={"climate_id": self.climate_id, "year": year},
         )
 
-    def prefetch(self) -> tuple[dict[str, Any], ...]:
-        if not self.selected_years:
-            raise ValueError("years(start, end) must be configured")
-        if set(dict(self.checksums)) - set(self.selected_years):
-            raise ValueError("checksum years must belong to the selected years")
-        return tuple(self._prepare_year(year) for year in self.selected_years)
-
-    def batches(self, *, batch_size: int = 4096) -> Iterator[pa.RecordBatch]:
-        """Stream typed daily observations without interpreting quality flags."""
-        if batch_size < 1:
-            raise ValueError("batch_size must be positive")
-        if not self.selected_years:
-            raise ValueError("years(start, end) must be configured")
-        if set(dict(self.checksums)) - set(self.selected_years):
-            raise ValueError("checksum years must belong to the selected years")
-        for year in self.selected_years:
-            self._prepare_year(year)
-            path = self._directory(year) / "observations.jsonl"
-            rows: list[dict[str, Any]] = []
-            with path.open(encoding="utf-8") as source:
-                for line in source:
-                    rows.append(_observation(json.loads(line), self.climate_id, year))
-                    if len(rows) == batch_size:
-                        yield pa.RecordBatch.from_pylist(rows, schema=_SCHEMA)
-                        rows.clear()
-                if rows:
-                    yield pa.RecordBatch.from_pylist(rows, schema=_SCHEMA)
+    def _parse(self, feature: dict[str, Any], year: int) -> dict[str, Any]:
+        return _observation(feature, self.climate_id, year)
 
 
 def _observation(feature: dict[str, Any], climate_id: str, year: int) -> dict[str, Any]:
