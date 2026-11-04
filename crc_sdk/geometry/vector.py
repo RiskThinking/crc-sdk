@@ -74,12 +74,26 @@ def polyfill_wkb(
     flat = pa.array(values, type=pa.uint64())
     if flatten:
         return flat
-    lengths = np.array([0 if row is None else len(row) for row in rows], dtype=np.int32)
-    offsets = np.concatenate([[0], np.cumsum(lengths, dtype=np.int64)]).astype(np.int32)
+    lengths = np.array([0 if row is None else len(row) for row in rows], dtype=np.int64)
     mask = pa.array([row is None for row in rows], type=pa.bool_())
     return pa.ListArray.from_arrays(
-        pa.array(offsets, type=pa.int32()), flat, mask=mask if mask.true_count else None
+        _list_offsets(lengths), flat, mask=mask if mask.true_count else None
     )
+
+
+_INT32_MAX = np.iinfo(np.int32).max
+
+
+def _list_offsets(lengths: np.ndarray) -> Any:
+    """``list<...>`` offsets for ``lengths``; refuse rather than wrap past int32."""
+    offsets = np.concatenate([[0], np.cumsum(lengths, dtype=np.int64)])
+    if offsets[-1] > _INT32_MAX:
+        raise OverflowError(
+            f"polyfill produced {int(offsets[-1])} cells, more than one "
+            f"list<uint64> array can hold ({_INT32_MAX}); polyfill fewer "
+            "geometries per call or pass flatten=True"
+        )
+    return pa.array(offsets.astype(np.int32), type=pa.int32())
 
 
 def _unique_cells(cells: list[int]) -> np.ndarray:
@@ -103,12 +117,14 @@ def _geometry_cells(geometry: Any, resolution: int, h3: Any, shapely: Any) -> li
     if kind in ("LineString", "LinearRing", "MultiLineString"):
         cells: list[int] = []
         for line in shapely.get_parts(geometry):
-            vertex_cells = [
-                h3.latlng_to_cell(lat, lng, resolution)
+            vertices = [
+                (h3.latlng_to_cell(lat, lng, resolution), (lng, lat))
                 for lng, lat in shapely.get_coordinates(line)
             ]
-            for start, end in pairwise(vertex_cells):
-                cells.extend(h3.grid_path_cells(start, end))
+            for (start_cell, start), (end_cell, end) in pairwise(vertices):
+                cells.extend(
+                    _segment_cells(start_cell, end_cell, start, end, resolution, h3)
+                )
         return cells
     if kind == "GeometryCollection":
         return [
@@ -117,6 +133,41 @@ def _geometry_cells(geometry: Any, resolution: int, h3: Any, shapely: Any) -> li
             for cell in _geometry_cells(part, resolution, h3, shapely)
         ]
     raise TypeError(f"unsupported geometry type {kind!r}")
+
+
+_MAX_SEGMENT_SPLITS = 32
+
+
+def _segment_cells(
+    start_cell: int,
+    end_cell: int,
+    start: tuple[float, float],
+    end: tuple[float, float],
+    resolution: int,
+    h3: Any,
+    depth: int = 0,
+) -> list[int]:
+    """Cells on the grid path between two vertices (``(lng, lat)`` pairs).
+
+    ``grid_path_cells`` has no answer for endpoints too far apart or on
+    either side of a pentagon's distortion; such a segment is split at its
+    coordinate midpoint until each piece has a path (or its end cells touch).
+    Segments ``grid_path_cells`` can trace are returned exactly as before.
+    """
+    from h3 import H3FailedError  # type: ignore[import-untyped]
+
+    try:
+        return list(h3.grid_path_cells(start_cell, end_cell))
+    except H3FailedError:
+        if start_cell == end_cell or h3.are_neighbor_cells(start_cell, end_cell):
+            return [start_cell, end_cell]
+        if depth >= _MAX_SEGMENT_SPLITS:
+            raise
+    middle = ((start[0] + end[0]) / 2.0, (start[1] + end[1]) / 2.0)
+    middle_cell = h3.latlng_to_cell(middle[1], middle[0], resolution)
+    return _segment_cells(
+        start_cell, middle_cell, start, middle, resolution, h3, depth + 1
+    ) + _segment_cells(middle_cell, end_cell, middle, end, resolution, h3, depth + 1)
 
 
 _AUTO_BATCH_THRESHOLD_ROWS = 500_000
