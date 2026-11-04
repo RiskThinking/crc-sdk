@@ -23,12 +23,12 @@ why a CMIP6 recipe cannot simply be an ERA5 store:
   five days a year and silently mislabels every block.
 * **A pathway is not "historical".** Each dataset carries its ``experiment_id``
   (``historical``, ``ssp245``, ``ssp585``, ...) into the canonical rows as the
-  pathway label, resolved through `crc_sdk.pathways` (ADR-0002).
+  pathway label, resolved through `crc_sdk.pathways`.
 
 Caveats worth carrying into any use of the results, beyond ERA5's: a climate
 model is a model world, so these are *change* signals rather than design
 values; one member of one model is one realisation, not an ensemble
-(ADR-0001 -- the spread between models is itself the signal); and a ~1 degree
+(the spread between models is itself the signal); and a ~1 degree
 grid cell smooths terrain, so orographic and convective extremes are damped.
 """
 
@@ -67,7 +67,7 @@ CMIP6_ATTRIBUTION = (
 #: What `source.licence` records when a store's licence text is not one of the
 #: labels below. "CC-BY-4.0" is the common case but it is *not* universal --
 #: NOAA-GFDL, for one, publishes share-alike -- so an unrecognised licence is
-#: recorded as unknown rather than assumed open (see docs/licence-policy.md).
+#: recorded as unknown rather than assumed open (see docs/data-licences.md).
 CMIP6_LICENCE_UNKNOWN = "unknown"
 #: Licence texts CMIP6 stores actually carry, longest-obligation first: the
 #: share-alike and non-commercial labels contain the plain-attribution wording
@@ -94,13 +94,13 @@ def enforce_licence(identifier: str, *, dataset: str, strict: bool = False) -> s
     store, so this is applied wherever a canonical dataset is produced or
     handed back -- including from a warm cache or an already-materialized
     file, which never reopen the store. ``strict=True`` refuses instead of
-    warning (docs/licence-policy.md).
+    warning (docs/data-licences.md).
     """
     if identifier in RESTRICTIVE_LICENCES:
         message = (
             f"{dataset} is published under {identifier}, whose terms go beyond "
             "attribution; canonical files derived from it inherit them "
-            "(see docs/licence-policy.md)"
+            "(see docs/data-licences.md)"
         )
     elif identifier == CMIP6_LICENCE_UNKNOWN:
         message = (
@@ -547,7 +547,7 @@ class CMIP6Catalogue:
 
 @dataclass(frozen=True)
 class CMIP6Recipe:
-    """One supported dataset -> hazard recipe (ADR-0004 names).
+    """One supported dataset -> hazard recipe (design decisions: hazard registry names).
 
     The ERA5 recipe of the same name computes the same statistic, so the two
     are comparable -- with the caveat that a model's day boundary is its own

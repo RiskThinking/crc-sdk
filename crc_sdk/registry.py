@@ -1,4 +1,4 @@
-"""Optional hazard registry (ADR-0004).
+"""Optional hazard registry (design decisions: hazard registry).
 
 The SDK core is hazard-agnostic. A registry lets a caller attach hazard
 knowledge -- units, tail direction, eligibility defaults -- without the fitter

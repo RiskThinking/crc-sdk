@@ -51,7 +51,7 @@ class SourceProvenance(BaseModel):
 
 
 class EnsembleDescriptor(BaseModel):
-    """Which models and members one canonical dataset represents (ADR-0001)."""
+    """Which models and members one canonical dataset represents."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -81,7 +81,7 @@ class EnsembleDescriptor(BaseModel):
 
 
 class TemporalWindow(BaseModel):
-    """The period one dataset's ``horizon`` stands for (ADR-0002).
+    """The period one dataset's ``horizon`` stands for.
 
     ``horizon`` is the centre year of an inclusive ``[start_year, end_year]``
     window; time-invariant datasets declare the ``reference_year`` carried in

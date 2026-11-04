@@ -513,7 +513,7 @@ class HazardDataset:
         (``historical``, ``ssp245``, ``ssp585``, ...) and becomes the dataset's
         pathway label; ``member`` is the variant label (``r1i1p1f1``).
 
-        One model, one member, one pathway per dataset (ADR-0001): the spread
+        One model, one member, one pathway per dataset: the spread
         across models is a comparison between canonical files, never a silent
         pooling inside one.
 

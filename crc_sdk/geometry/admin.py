@@ -435,7 +435,7 @@ class LookupCatalog:
         """SQL for distinct hexes touching an ADM0.
 
         Lookup files only expose a nested ``coverage`` list when they were
-        written with ``include_coverage=True`` (h3geo default for r<8). When
+        written with ``include_coverage=True`` (the usual choice for r<8). When
         that column is absent — r8+, or an explicit ``include_coverage=False``
         write — pass ``has_coverage=False`` (or rely on the r>=8 default) so
         the query uses the exploded artifact instead.
