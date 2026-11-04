@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -121,10 +122,15 @@ def _aggregate_jrc_cells(
     reader = con.execute(query).to_arrow_reader(50_000)
     schema = reader.schema.with_metadata(dict(parquet_metadata))
     rows = 0
-    with pq.ParquetWriter(output, schema, compression="zstd") as writer:
-        for batch in reader:
-            writer.write_batch(batch)
-            rows += batch.num_rows
+    staged = output.with_name(f".{output.name}.{uuid4().hex}.partial")
+    try:
+        with pq.ParquetWriter(staged, schema, compression="zstd") as writer:
+            for batch in reader:
+                writer.write_batch(batch)
+                rows += batch.num_rows
+        os.replace(staged, output)
+    finally:
+        staged.unlink(missing_ok=True)
     return rows
 
 

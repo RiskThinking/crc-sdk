@@ -346,3 +346,57 @@ def test_all_family_failure_skip_is_independent_of_on_fit_failure(
         "gumbel_r": {"optimizer_nonconvergence": 1},
         "genextreme": {"optimizer_nonconvergence": 1},
     }
+
+
+def _single_row(values: list[float]) -> pa.Table:
+    return pa.table(
+        {
+            "hex_id": pa.array([599024279241097215], type=pa.uint64()),
+            "index_name": ["hot_days"],
+            "year": pa.array([2025], type=pa.int32()),
+            "pathway": ["ssp245"],
+            "cdf_quantiles": pa.array([values], type=pa.large_list(pa.float64())),
+        }
+    )
+
+
+def test_constant_interior_between_differing_bounds_is_a_point_mass() -> None:
+    values = [0.0] + [5.0] * 9 + [10.0]
+    result = fit_cdf_quantile_batches(
+        _single_row(values), np.linspace(0.0, 1.0, 11).tolist(), _policy()
+    )
+    table = result.stream.read_all()
+    assert table["curve_kind"].to_pylist() == ["point_mass"]
+    assert curve_quantiles(table, [0.2, 0.8], max_workers=1) == [(5.0, 5.0)]
+
+
+def test_non_monotone_row_is_rejected_with_a_reason() -> None:
+    policy = CDFCurveFitPolicy(**{**_policy().__dict__, "on_fit_failure": "skip"})
+    result = fit_cdf_quantile_batches(
+        _single_row([0.0, 2.0, 1.0, 3.0, 4.0, 5.0]),
+        np.linspace(0.0, 1.0, 6).tolist(),
+        policy,
+    )
+    assert result.stream.read_all().num_rows == 0
+    assert result.summary.rejection_reasons["non_monotone_values"] == 1
+
+
+def test_abandoned_prefetch_closes_without_joining_a_blocked_worker() -> None:
+    import threading
+    import time
+
+    from crc_sdk.fitting.workflows import _prefetch_one
+
+    release = threading.Event()
+
+    def source():  # type: ignore[no-untyped-def]
+        yield 1
+        release.wait(10)
+        yield 2
+
+    prefetched = _prefetch_one(source())
+    assert next(prefetched) == 1
+    started = time.monotonic()
+    prefetched.close()
+    assert time.monotonic() - started < 2
+    release.set()

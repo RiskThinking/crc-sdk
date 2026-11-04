@@ -60,9 +60,11 @@ from ._remote import (
     ProgressCallback,
     RemotePortfolioEvaluation,
     file_checksum,
+    is_complete_output,
+    materialize_staged,
+    merge_manifest_entries,
     read_manifest,
     validate_bounds,
-    write_manifest,
 )
 from .blocks import BlockExtremaPolicy
 from .portfolio import AssetPortfolio, HazardDataset
@@ -464,16 +466,18 @@ class CMIP6CanonicalizationPlan:
             "attribution": attribution,
         }
         entries = [*cached.values(), *fetched]
-        manifest = read_manifest(cache_dir) or {}
-        stored = dict(manifest.get("entries", {}))
-        for entry in entries:
-            stored[self._key(dataset.dataset_id, int(entry["year"]))] = {
-                **identity,
-                **entry,
-                "recipe": self._recipe.name,
-                "bounds": self.years.area.bounds,
-            }
-        write_manifest(cache_dir, {"provider": "cmip6", "entries": stored})
+        merge_manifest_entries(
+            cache_dir,
+            {
+                self._key(dataset.dataset_id, int(entry["year"])): {
+                    **identity,
+                    **entry,
+                    "recipe": self._recipe.name,
+                    "bounds": self.years.area.bounds,
+                }
+                for entry in entries
+            },
+        )
         by_year = {int(entry["year"]): {**identity, **entry} for entry in entries}
         return self._from_entries(
             [by_year[year] for year in years],
@@ -691,7 +695,7 @@ class CMIP6CanonicalizationPlan:
         self, *, progress: ProgressCallback | None = None
     ) -> HazardDataset:
         output = self._automatic_output()
-        if output.is_file() and self.years.cache_mode != "refresh":
+        if is_complete_output(output) and self.years.cache_mode != "refresh":
             # Handing back an already-fitted file is a use of the source like
             # any other, and the file records the licence it was built from.
             source = self.years.area.source
@@ -705,7 +709,7 @@ class CMIP6CanonicalizationPlan:
                 strict=source.strict_licence,
             )
             return HazardDataset.local(output)
-        return self.materialize(output, progress=progress)
+        return materialize_staged(self.materialize, output, progress=progress)
 
     def for_assets(self, assets: Any | AssetPortfolio) -> RemotePortfolioEvaluation:
         portfolio = (

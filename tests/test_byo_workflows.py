@@ -365,3 +365,56 @@ def test_deferred_policy_applies_its_tail_to_return_periods(tmp_path: Path) -> N
     # Under the default upper tail the same periods give a decreasing axis.
     with pytest.raises(ValueError, match="strictly increasing"):
         parameters(upper, "upper.parquet")
+
+
+def test_ensure_materialized_replaces_a_truncated_cache_file(tmp_path: Path) -> None:
+    plan = HazardDataset.from_table(
+        _table(), policy=_cdf_policy(), probabilities=P11.tolist()
+    ).cache(tmp_path / "cache")
+    output = plan._automatic_output()
+    output.parent.mkdir(parents=True)
+    output.write_bytes(b"PAR1 truncated")  # an interrupted earlier write
+    dataset = plan.ensure_materialized()
+    assert dataset.provider.source == output
+    assert dataset.materialization is not None
+    assert dataset.materialization.output == output
+    _assert_canonical(dataset)
+    assert not [path for path in output.parent.iterdir() if "partial" in path.name]
+
+
+def test_ensure_materialized_leaves_nothing_when_a_fit_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan = HazardDataset.from_table(
+        _table(), policy=_cdf_policy(), probabilities=P11.tolist()
+    ).cache(tmp_path / "cache")
+
+    def failing(stream: Any, destination: Any, **kwargs: Any) -> None:
+        Path(destination).write_bytes(b"partial")
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("crc_sdk.workflows.byo.write_hazard_stream", failing)
+    with pytest.raises(RuntimeError, match="boom"):
+        plan.ensure_materialized()
+    canonical = tmp_path / "cache" / "canonical"
+    assert not [path for path in canonical.iterdir() if path.suffix == ".parquet"]
+
+
+def test_directory_source_identity_tracks_its_contents(tmp_path: Path) -> None:
+    store = tmp_path / "cube.zarr"
+    _write_zarr(store)
+    plan = HazardDataset.from_zarr(
+        store,
+        hazard_type="RiverineInundation",
+        indicator_id="flood_depth",
+        scenario="historical",
+        year=2020,
+        units="m",
+        policy=_ingest_policy(),
+    ).cache(tmp_path / "cache")
+    before = plan._automatic_output()
+    assert plan._automatic_output() == before
+    zarr = pytest.importorskip("zarr")
+    array = zarr.open_array(str(store), mode="r+")
+    array[0, 0, 0] = 9.0
+    assert plan._automatic_output() != before

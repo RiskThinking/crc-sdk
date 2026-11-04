@@ -17,7 +17,13 @@ from urllib.request import urlopen
 
 import pyarrow as pa  # type: ignore[import-untyped]
 
-from ._remote import file_checksum, http_request, read_manifest, write_manifest
+from ._remote import (
+    check_new_feature,
+    file_checksum,
+    http_request,
+    read_manifest,
+    write_manifest,
+)
 
 _ENDPOINT = "https://api.waterdata.usgs.gov/ogcapi/v1/collections/daily/items"
 _SCHEMA = pa.schema(
@@ -131,6 +137,7 @@ class USGSStreamflowPlan:
         pages, count = 0, 0
         matched: int | None = None
         seen: set[str] = set()
+        feature_ids: set[Any] = set()
         page_urls: list[str] = []
         page_sha256: list[str] = []
         next_url: str | None = url
@@ -173,6 +180,7 @@ class USGSStreamflowPlan:
                         raise ValueError("USGS page exceeds requested limit")
                     for feature in features:
                         _observation(feature, self.station, self.start, self.end)
+                        check_new_feature(feature, feature_ids, "USGS")
                         target.write(
                             json.dumps(feature, separators=(",", ":"), sort_keys=True)
                             + "\n"

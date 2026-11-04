@@ -4,11 +4,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal, Protocol, cast
 from urllib.request import Request
+from uuid import uuid4
+
+import pyarrow as pa  # type: ignore[import-untyped]
+import pyarrow.parquet as pq  # type: ignore[import-untyped]
 
 from .distributions import return_periods_to_probabilities
 from .portfolio import (
@@ -18,6 +23,8 @@ from .portfolio import (
     HazardSelection,
     ImpactContextColumns,
     PortfolioEvaluationResult,
+    _impact_spec,
+    _selection,
 )
 
 Bounds = tuple[float, float, float, float]
@@ -73,6 +80,24 @@ def file_checksum(path: Path) -> str:
     return digest.hexdigest()
 
 
+def check_new_feature(feature: Mapping[str, Any], seen: set[Any], label: str) -> None:
+    """Reject a feature repeated across pages (a shifted offset page).
+
+    A repeat paired with a skipped feature still matches ``numberMatched``,
+    so the count check alone cannot detect it.
+    """
+    identifier = feature.get("id")
+    if identifier is None:
+        return
+    key = json.dumps(identifier, sort_keys=True)
+    if key in seen:
+        raise RuntimeError(
+            f"{label} pagination repeated feature {identifier!r}; "
+            "the collection changed while paging"
+        )
+    seen.add(key)
+
+
 def read_manifest(cache_dir: Path) -> dict[str, Any] | None:
     path = cache_dir / "manifest.json"
     if not path.is_file():
@@ -86,9 +111,101 @@ def read_manifest(cache_dir: Path) -> dict[str, Any] | None:
 def write_manifest(cache_dir: Path, manifest: Mapping[str, Any]) -> None:
     cache_dir.mkdir(parents=True, exist_ok=True)
     path = cache_dir / "manifest.json"
-    temporary = path.with_suffix(".json.tmp")
-    temporary.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
-    temporary.replace(path)
+    # A unique staging name: concurrent writers never share a partial file.
+    temporary = path.with_name(f".manifest.{uuid4().hex}.json.tmp")
+    try:
+        temporary.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def plan_manifest_key(provider: str, identity: Sequence[Any]) -> str:
+    """Key of one plan's record inside a cache directory's shared manifest."""
+    digest = hashlib.sha256(
+        json.dumps(list(identity), separators=(",", ":"), default=str).encode()
+    ).hexdigest()[:20]
+    return f"{provider}:{digest}"
+
+
+def read_plan_manifest(cache_dir: Path, key: str) -> dict[str, Any] | None:
+    """One plan's record from a (possibly shared) cache manifest.
+
+    Plans sharing a cache directory keep their records under ``plans``; a
+    manifest written before that layout is returned whole, for the caller
+    to match against its request as before.
+    """
+    manifest = read_manifest(cache_dir)
+    if manifest is None:
+        return None
+    plans = manifest.get("plans")
+    if isinstance(plans, Mapping):
+        record = plans.get(key)
+        if isinstance(record, dict):
+            return record
+    return manifest
+
+
+def write_plan_manifest(cache_dir: Path, key: str, record: Mapping[str, Any]) -> None:
+    """Store one plan's record without dropping other plans' records.
+
+    The latest record is mirrored at the top level, the single-plan layout
+    earlier releases read and wrote.
+    """
+    manifest = read_manifest(cache_dir) or {}
+    plans = manifest.get("plans")
+    merged = dict(plans) if isinstance(plans, Mapping) else {}
+    merged[key] = dict(record)
+    write_manifest(cache_dir, {**manifest, **record, "plans": merged})
+
+
+def merge_manifest_entries(
+    cache_dir: Path,
+    entries: Mapping[str, Any],
+    **fields: Any,
+) -> None:
+    """Add keyed entries to the shared manifest, keeping everyone else's."""
+    manifest = read_manifest(cache_dir) or {}
+    stored = manifest.get("entries")
+    merged = dict(stored) if isinstance(stored, Mapping) else {}
+    merged.update(entries)
+    write_manifest(cache_dir, {**manifest, **fields, "entries": merged})
+
+
+def is_complete_output(path: Path) -> bool:
+    """A Parquet file whose footer reads: never a truncated earlier write."""
+    if not path.is_file():
+        return False
+    try:
+        pq.read_metadata(path)
+    except (OSError, ValueError, pa.ArrowException):
+        return False
+    return True
+
+
+def materialize_staged(
+    materialize: Callable[..., HazardDataset],
+    output: Path,
+    *,
+    progress: ProgressCallback | None = None,
+) -> HazardDataset:
+    """Run ``materialize`` into a staged file, then move it into place.
+
+    An interrupted fit never leaves a partial file at a cache path that a
+    later ``ensure_materialized`` would hand back as complete.
+    """
+    output.parent.mkdir(parents=True, exist_ok=True)
+    staged = output.with_name(f".{output.stem}.{uuid4().hex}.partial.parquet")
+    try:
+        dataset = materialize(staged, progress=progress)
+        os.replace(staged, output)
+    finally:
+        staged.unlink(missing_ok=True)
+    result = dataset.materialization
+    return HazardDataset.local(
+        output,
+        materialization=replace(result, output=output) if result else None,
+    )
 
 
 @dataclass(frozen=True)
@@ -109,15 +226,13 @@ class RemotePortfolioEvaluation:
         horizons: Sequence[int] | None = None,
         pathways: Sequence[str] | None = None,
     ) -> RemotePortfolioEvaluation:
-        current = self.selection
         return replace(
             self,
-            selection=HazardSelection(
-                hazard_names=tuple(hazard_names)
-                if hazard_names is not None
-                else current.hazard_names,
-                horizons=tuple(horizons) if horizons is not None else current.horizons,
-                pathways=tuple(pathways) if pathways is not None else current.pathways,
+            selection=_selection(
+                self.selection,
+                hazard_names=hazard_names,
+                horizons=horizons,
+                pathways=pathways,
             ),
         )
 
@@ -135,6 +250,14 @@ class RemotePortfolioEvaluation:
         value_semantics: str,
         context: ImpactContextColumns | None = None,
     ) -> RemotePortfolioEvaluation:
+        # Validate now, like a local request, not after a remote download.
+        _impact_spec(
+            function,
+            name=name,
+            value_unit=value_unit,
+            value_semantics=value_semantics,
+            context=context,
+        )
         return replace(
             self,
             impact_args=(function,),

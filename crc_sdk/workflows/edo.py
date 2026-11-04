@@ -26,9 +26,12 @@ from ._remote import (
     ProgressCallback,
     RemotePortfolioEvaluation,
     file_checksum,
-    read_manifest,
+    is_complete_output,
+    materialize_staged,
+    plan_manifest_key,
+    read_plan_manifest,
     validate_bounds,
-    write_manifest,
+    write_plan_manifest,
 )
 from .portfolio import AssetPortfolio, HazardDataset
 
@@ -216,12 +219,28 @@ class EDOCanonicalizationPlan:
     ) -> EDOCanonicalizationPlan:
         return replace(self, years=self.years.cache(directory, mode=mode))
 
+    def _manifest_key(self) -> str:
+        years = self.years.selected_years
+        return plan_manifest_key(
+            "jrc-edo",
+            [
+                self.years.area.source.dataset,
+                self.years.area.source.requested_version,
+                self.years.area.bounds,
+                years if years == "all_complete" else list(years),
+            ],
+        )
+
     def explain(
         self, *, format: Literal["text", "json"] = "text"
     ) -> str | dict[str, Any]:
         dataset = edo_dataset(self.years.area.source.dataset)
         cache_dir = self.years.cache_dir
-        manifest = read_manifest(cache_dir) if cache_dir is not None else None
+        manifest = (
+            read_plan_manifest(cache_dir, self._manifest_key())
+            if cache_dir is not None
+            else None
+        )
         matching = manifest is not None and _manifest_matches(
             manifest,
             dataset=dataset.name,
@@ -282,7 +301,11 @@ class EDOCanonicalizationPlan:
             edo_dataset(source.dataset),
             work_dir=cache_dir,
         )
-        manifest = read_manifest(cache_dir) if cache_dir is not None else None
+        manifest = (
+            read_plan_manifest(cache_dir, self._manifest_key())
+            if cache_dir is not None
+            else None
+        )
         matches = manifest is not None and _manifest_matches(
             manifest,
             dataset=provider.dataset.name,
@@ -404,7 +427,7 @@ class EDOCanonicalizationPlan:
             "resolved_years": selected,
             "resources": materialized,
         }
-        write_manifest(cache_dir, manifest)
+        write_plan_manifest(cache_dir, self._manifest_key(), manifest)
         return _PreparedYears(version, selected, resources, hits, misses)
 
     def _validate_years(self, years: tuple[int, ...]) -> None:
@@ -492,9 +515,9 @@ class EDOCanonicalizationPlan:
         progress: ProgressCallback | None = None,
     ) -> HazardDataset:
         output = self._automatic_output()
-        if output.is_file() and self.years.cache_mode != "refresh":
+        if is_complete_output(output) and self.years.cache_mode != "refresh":
             return HazardDataset.local(output)
-        return self.materialize(output, progress=progress)
+        return materialize_staged(self.materialize, output, progress=progress)
 
     def for_assets(self, assets: Any | AssetPortfolio) -> RemotePortfolioEvaluation:
         portfolio = (

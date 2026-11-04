@@ -44,9 +44,11 @@ from ._remote import (
     ProgressCallback,
     RemotePortfolioEvaluation,
     file_checksum,
+    is_complete_output,
+    materialize_staged,
+    merge_manifest_entries,
     read_manifest,
     validate_bounds,
-    write_manifest,
 )
 from .blocks import BlockExtremaPolicy
 from .portfolio import AssetPortfolio, HazardDataset
@@ -195,7 +197,28 @@ class ERA5CanonicalizationPlan:
     def _store(self) -> ERA5Store:
         return era5_store(self.years.area.source.store)
 
-    def _key(self, version: str, year: int) -> str:
+    def _key(self, year: int) -> str:
+        """Cache identity of one year's area extreme.
+
+        ARCO grows in place and data inside the final record never changes, so
+        the moving release string is provenance on the entry, not identity.
+        """
+        area = self.years.area
+        identity = json.dumps(
+            [
+                self._store.name,
+                self._recipe.name,
+                repr(self._recipe.spec),
+                year,
+                area.bounds,
+                area.land_only,
+            ],
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(identity.encode()).hexdigest()[:20]
+
+    def _legacy_key(self, version: str, year: int) -> str:
+        # Entries written by earlier releases also hashed the release string.
         area = self.years.area
         identity = json.dumps(
             [
@@ -222,14 +245,21 @@ class ERA5CanonicalizationPlan:
         entries = manifest.get("entries", {})
         found: dict[int, Mapping[str, Any]] = {}
         for year in self.years.selected_years:
+            current = self._key(year)
             candidates = [
                 entry
                 for key, entry in entries.items()
                 if entry.get("year") == year
-                and key == self._key(entry.get("resolved_version", ""), year)
+                and (
+                    key == current
+                    or key
+                    == self._legacy_key(str(entry.get("resolved_version", "")), year)
+                )
                 and requested in ("latest", entry.get("resolved_version"))
             ]
-            candidates.sort(key=lambda entry: entry["resolved_version"], reverse=True)
+            candidates.sort(
+                key=lambda entry: str(entry.get("resolved_version", "")), reverse=True
+            )
             for entry in candidates:
                 # Entries record paths relative to the cache directory, so a
                 # cache can be moved or shipped alongside a notebook.
@@ -334,19 +364,16 @@ class ERA5CanonicalizationPlan:
         version = provider.resolve_version(area.source.requested_version)
         provider.check_years(years, self._recipe)
         _ = provider.times  # decode once, before the worker threads start
-        # Entries cached under another release do not count for this one.
-        cached = {
-            year: entry
-            for year, entry in cached.items()
-            if entry.get("resolved_version") == version
-        }
+        # A year fetched under an earlier release is still valid: the final
+        # record does not change as the store grows. Its release stays on the
+        # entry as provenance.
         todo = [year for year in years if year not in cached]
         retrieved = datetime.now(timezone.utc).isoformat()
 
         def fetch(year: int) -> dict[str, Any]:
             destination = (
                 cache_dir / "annual-extremes" / f"{self._recipe.name}-{year}-"
-                f"{self._key(version, year)}.nc"
+                f"{self._key(year)}.nc"
             )
             if progress:
                 progress("fetch", {"year": year})
@@ -370,19 +397,18 @@ class ERA5CanonicalizationPlan:
             fetched = list(pool.map(fetch, todo))
 
         entries = [*cached.values(), *fetched]
-        manifest = read_manifest(cache_dir) or {}
-        stored = dict(manifest.get("entries", {}))
-        for entry in entries:
-            stored[self._key(version, int(entry["year"]))] = {
-                **entry,
-                "store": self._store.name,
-                "recipe": self._recipe.name,
-                "bounds": area.bounds,
-                "land_only": area.land_only,
-            }
-        write_manifest(
+        merge_manifest_entries(
             cache_dir,
-            {"provider": "era5", "entries": stored},
+            {
+                self._key(int(entry["year"])): {
+                    **entry,
+                    "store": self._store.name,
+                    "recipe": self._recipe.name,
+                    "bounds": area.bounds,
+                    "land_only": area.land_only,
+                }
+                for entry in entries
+            },
         )
         by_year = {int(entry["year"]): entry for entry in entries}
         return self._from_entries(
@@ -400,16 +426,14 @@ class ERA5CanonicalizationPlan:
         hits: int,
         misses: int,
     ) -> _PreparedYears:
-        versions = {entry["resolved_version"] for entry in entries}
-        if len(versions) != 1:
-            raise RuntimeError(
-                f"cached years span several releases: {sorted(versions)}"
-            )
+        # Years fetched under different releases share one stable final
+        # record; the newest release describes the combined sample.
+        versions = {str(entry["resolved_version"]) for entry in entries}
         digest = hashlib.sha256(
             "".join(str(entry["checksum"]) for entry in entries).encode()
         ).hexdigest()
         return _PreparedYears(
-            version=versions.pop(),
+            version=max(versions),
             years=tuple(int(entry["year"]) for entry in entries),
             resources={
                 int(entry["year"]): str(cache_dir / entry["local"]) for entry in entries
@@ -583,9 +607,9 @@ class ERA5CanonicalizationPlan:
         progress: ProgressCallback | None = None,
     ) -> HazardDataset:
         output = self._automatic_output()
-        if output.is_file() and self.years.cache_mode != "refresh":
+        if is_complete_output(output) and self.years.cache_mode != "refresh":
             return HazardDataset.local(output)
-        return self.materialize(output, progress=progress)
+        return materialize_staged(self.materialize, output, progress=progress)
 
     def for_assets(self, assets: Any | AssetPortfolio) -> RemotePortfolioEvaluation:
         portfolio = (

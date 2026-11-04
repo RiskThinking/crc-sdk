@@ -29,9 +29,12 @@ from ._remote import (
     ProgressCallback,
     RemotePortfolioEvaluation,
     file_checksum,
-    read_manifest,
+    is_complete_output,
+    materialize_staged,
+    plan_manifest_key,
+    read_plan_manifest,
     validate_bounds,
-    write_manifest,
+    write_plan_manifest,
 )
 from .portfolio import (
     AssetPortfolio,
@@ -240,13 +243,24 @@ class JRCCanonicalizationPlan:
     ) -> JRCCanonicalizationPlan:
         return replace(self, area=self.area.cache(directory, mode=mode))
 
+    def _manifest_key(self, periods: Sequence[int]) -> str:
+        return plan_manifest_key(
+            "jrc",
+            [
+                self.area.source.dataset,
+                self.area.source.requested_version,
+                self.area.bounds,
+                list(periods),
+            ],
+        )
+
     def explain(
         self, *, format: Literal["text", "json"] = "text"
     ) -> str | dict[str, Any]:
         dataset = jrc_dataset(self.area.source.dataset)
         periods = self.area.selected_periods or dataset.available_return_periods
         manifest = (
-            read_manifest(self.area.cache_dir)
+            read_plan_manifest(self.area.cache_dir, self._manifest_key(periods))
             if self.area.cache_dir is not None
             else None
         )
@@ -300,7 +314,12 @@ class JRCCanonicalizationPlan:
             self.area.selected_periods or provider.dataset.available_return_periods
         )
         cache_dir = self.area.cache_dir
-        manifest = read_manifest(cache_dir) if cache_dir is not None else None
+        manifest_key = self._manifest_key(periods)
+        manifest = (
+            read_plan_manifest(cache_dir, manifest_key)
+            if cache_dir is not None
+            else None
+        )
         matches = manifest is not None and _manifest_matches(
             manifest,
             dataset=provider.dataset.name,
@@ -437,7 +456,7 @@ class JRCCanonicalizationPlan:
             "source_periods": periods,
             "resources": materialized_entries,
         }
-        write_manifest(cache_dir, manifest)
+        write_plan_manifest(cache_dir, manifest_key, manifest)
         return _PreparedSources(
             version,
             _cached_resources(manifest),
@@ -553,9 +572,9 @@ class JRCCanonicalizationPlan:
         progress: ProgressCallback | None = None,
     ) -> HazardDataset:
         output = self._automatic_output()
-        if output.is_file() and self.area.cache_mode != "refresh":
+        if is_complete_output(output) and self.area.cache_mode != "refresh":
             return HazardDataset.local(output)
-        return self.materialize(output, progress=progress)
+        return materialize_staged(self.materialize, output, progress=progress)
 
     def for_assets(self, assets: Any | AssetPortfolio) -> RemotePortfolioEvaluation:
         portfolio = (

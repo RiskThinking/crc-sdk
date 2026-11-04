@@ -201,6 +201,7 @@ def run_tiled_canonicalization(
     to exactly one shard, so a plain glob read never double-counts, e.g.
     ``read_parquet(f"{output_dir}/*.parquet")``; ``cell_index`` values are
     stable across tiles, so downstream joins don't need to know about shards.
+    Existing ``tile_NNNN.parquet`` shards in ``output_dir`` are removed first.
 
     ``max_workers`` defaults to the host's detected CPU count (via
     :meth:`RuntimeResources.detect`, consistent with the rest of the SDK's
@@ -214,6 +215,10 @@ def run_tiled_canonicalization(
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     tiles = tile_bounds(bounds, tile_degrees)
+    # Shards from an earlier run (another AOI, tile size, or a tile that is
+    # now empty) would otherwise be picked up by a `*.parquet` glob read.
+    for stale in output.glob("tile_[0-9][0-9][0-9][0-9].parquet"):
+        stale.unlink()
     shard_paths = tuple(
         output / f"tile_{index:04d}.parquet" for index in range(len(tiles))
     )

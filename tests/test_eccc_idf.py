@@ -270,7 +270,11 @@ def test_area_mixed_records_point_geometry_fit_and_diagnostics(
     single.materialize(tmp_path / "single.parquet")
     window = read_hazard_metadata(tmp_path / "single.parquet").temporal_window
     assert window is not None and window.start_year == 1950 and window.end_year == 2017
-    assert single.ensure_materialized().provider is not None
+    first = Path(single.ensure_materialized().provider.source)
+    stamp = first.stat().st_mtime_ns
+    # A complete cached fit is reused rather than refitted on every call.
+    assert Path(single.ensure_materialized().provider.source) == first
+    assert first.stat().st_mtime_ns == stamp
 
 
 def zip_bytes(files: dict[str, bytes]) -> bytes:

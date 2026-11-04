@@ -24,6 +24,7 @@ from crc_sdk.workflows import (
     stream_curve_quantiles_to_parquet,
     tile_bounds,
 )
+from crc_sdk.workflows.distributions import stream_curve_quantiles_wide_to_parquet
 from crc_sdk.workflows.tiling import (
     _canonicalize_tile,
     _tile_owns_point,
@@ -203,6 +204,10 @@ def test_run_tiled_canonicalization_skips_empty_tiles(
         creation_version="1",
         hurdle=HurdleFitPolicy(atom_probability=0.5),
     )
+    # Shards from an earlier, larger run must not survive into this one.
+    (tmp_path / "tile_0001.parquet").write_bytes(b"stale")
+    (tmp_path / "tile_0007.parquet").write_bytes(b"stale")
+    (tmp_path / "notes.parquet").write_bytes(b"user file")
     shards = run_tiled_canonicalization(
         spec,
         policy,
@@ -212,6 +217,10 @@ def test_run_tiled_canonicalization_skips_empty_tiles(
         max_workers=1,
     )
     assert len(shards) == 1
+    assert sorted(path.name for path in tmp_path.glob("*.parquet")) == [
+        "notes.parquet",
+        shards[0].name,
+    ]
     table = read_hazard_dataset(shards[0])
     assert table.num_rows == 2
     assert set(table["cell_index"].to_pylist()) == {1, 2}
@@ -542,7 +551,8 @@ def test_curve_quantiles_at_uses_shared_row_adapter(
 
     curve_quantiles_at(table, 0.9, max_workers=1)
 
-    assert calls == 2
+    # Both rows share curve parameters: the adapter validates them once.
+    assert calls == 1
 
 
 def test_curve_quantiles_at_empty_table_returns_empty_list() -> None:
@@ -613,9 +623,29 @@ def test_curve_quantiles_at_pool_forces_spawn_context(
     table = pa.Table.from_pylist(
         [_row(index, "a") for index in range(3)], schema=hazard_arrow_schema()
     )
-    curve_quantiles_at(table, 0.9, chunk_rows=1)
+    curve_quantiles_at(table, 0.9, chunk_rows=1, max_workers=4)
     assert len(_fake_pool_calls) == 1
     assert _fake_pool_calls[0]["mp_context"].get_start_method() == "spawn"
+
+
+def test_curve_quantiles_at_runs_in_process_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Shipping rows to a worker costs more than evaluating a curve.
+    _fake_pool_calls.clear()
+    monkeypatch.setattr(
+        "crc_sdk.workflows.distributions.detected_cpu_count",
+        lambda: 4,
+    )
+    monkeypatch.setattr(
+        "crc_sdk.workflows.distributions.ProcessPoolExecutor",
+        _FakePoolExecutor,
+    )
+    table = pa.Table.from_pylist(
+        [_row(index, "a") for index in range(3)], schema=hazard_arrow_schema()
+    )
+    assert len(curve_quantiles_at(table, 0.9, chunk_rows=1)) == 3
+    assert not _fake_pool_calls
 
 
 _SOURCE_SCHEMA = pa.schema(
@@ -759,11 +789,32 @@ def test_stream_curve_quantiles_to_parquet_pool_uses_detected_cpu_count_and_spaw
         output,
         passthrough_columns=["cell_index", "province"],
         batch_rows=2,
+        chunk_rows=1,
+        # max_workers left unset: plain curve evaluation stays in-process.
+    )
+    assert written == 5
+    assert not _fake_pool_calls
+
+    class _Identity:
+        def evaluate(self, values: Any, *, context: Any) -> Any:
+            return values
+
+    impact = type("Impact", (), {"function": _Identity()})()
+    written = stream_curve_quantiles_wide_to_parquet(
+        con,
+        "SELECT * FROM source",
+        [0.9],
+        tmp_path / "impact.parquet",
+        passthrough_columns=["cell_index", "province"],
+        value_columns=["depth_m"],
+        impact=impact,
+        batch_rows=2,
+        chunk_rows=1,
         # max_workers left unset -> exercises the detected_cpu_count() stub.
     )
 
     assert written == 5
-    assert len(_fake_pool_calls) == 1
+    assert len(_fake_pool_calls) == 1  # one pool for the whole stream
     assert _fake_pool_calls[0]["max_workers"] == 4
     assert _fake_pool_calls[0]["mp_context"].get_start_method() == "spawn"
 

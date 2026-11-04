@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import shutil
 import tempfile
 import uuid
 from collections.abc import Mapping
@@ -203,6 +204,10 @@ class NOAAExtremeWaterLevelPlan:
             destination = snapshots / identifier
             staged.replace(destination)
             write_manifest(root, {"snapshot": identifier})
+        # Superseded snapshots are unreachable once the pointer moved.
+        for previous in snapshots.iterdir():
+            if previous != destination and re.fullmatch(r"[0-9a-f]{32}", previous.name):
+                shutil.rmtree(previous, ignore_errors=True)
         return manifests, destination
 
     def prefetch(self) -> dict[str, dict[str, Any]]:

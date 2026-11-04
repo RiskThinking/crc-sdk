@@ -338,3 +338,24 @@ def test_transient_retry_and_partial_cache_resume(
     monkeypatch.setattr("crc_sdk.providers.isd.fetch_daily", fake_fetch)
     result = plan.prefetch()
     assert result.cache_hits == 2 and result.cache_misses == 4
+
+
+def test_failed_annual_extremes_write_keeps_previous_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("crc_sdk.providers.isd.fetch_daily", fake_fetch)
+    plan = cached_plan(tmp_path)
+    path = tmp_path / "out" / "annual.parquet"
+    plan.write_annual_extremes(path)
+    previous = path.read_bytes()
+    original = type(plan)._annual
+
+    def failing(self: Any, directory: Path, entries: Any) -> Any:
+        yield from list(original(self, directory, entries))[:1]
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(type(plan), "_annual", failing)
+    with pytest.raises(RuntimeError, match="boom"):
+        plan.write_annual_extremes(path)
+    assert path.read_bytes() == previous
+    assert [entry.name for entry in path.parent.iterdir()] == ["annual.parquet"]

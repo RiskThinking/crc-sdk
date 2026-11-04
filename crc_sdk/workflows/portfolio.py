@@ -5,6 +5,7 @@ from __future__ import annotations
 import pickle
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from numbers import Integral
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Union
 
@@ -586,6 +587,74 @@ class HazardDataset:
         return PortfolioEvaluation(dataset=self, portfolio=portfolio)
 
 
+def _string_filter(name: str, values: Sequence[Any] | None) -> tuple[Any, ...] | None:
+    if values is None:
+        return None
+    if isinstance(values, (str, bytes)):
+        raise TypeError(f"{name} must be a sequence of values, not a single string")
+    return tuple(values)
+
+
+def _selection(
+    current: HazardSelection,
+    *,
+    hazard_names: Sequence[str] | None,
+    horizons: Sequence[int] | None,
+    pathways: Sequence[str] | None,
+) -> HazardSelection:
+    """Validate and merge hazard/scenario filters eagerly."""
+    names = _string_filter("hazard_names", hazard_names)
+    years = _string_filter("horizons", horizons)
+    scenarios = _string_filter("pathways", pathways)
+    for label, values, kind in (
+        ("hazard_names", names, str),
+        ("pathways", scenarios, str),
+    ):
+        if values is not None and not all(isinstance(v, kind) for v in values):
+            raise TypeError(f"{label} must contain strings")
+    if years is not None and not all(
+        isinstance(v, Integral) and not isinstance(v, bool) for v in years
+    ):
+        raise TypeError("horizons must contain integer years")
+    return HazardSelection(
+        hazard_names=names if names is not None else current.hazard_names,
+        horizons=years if years is not None else current.horizons,
+        pathways=scenarios if scenarios is not None else current.pathways,
+    )
+
+
+def _impact_spec(
+    function: Any,
+    *,
+    name: str,
+    value_unit: str,
+    value_semantics: str,
+    context: ImpactContextColumns | None,
+) -> ImpactSpec:
+    for field_name, value in (
+        ("impact name", name),
+        ("impact value_unit", value_unit),
+        ("impact value_semantics", value_semantics),
+    ):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{field_name} must not be empty")
+    if isinstance(function, ImpactFunction):
+        impact_function = function
+    elif callable(function):
+        impact_function = CallableImpact(function)
+    else:
+        raise TypeError("impact function must define evaluate(...) or be callable")
+    if context is not None and not isinstance(context, ImpactContextColumns):
+        raise TypeError("impact context must be ImpactContextColumns")
+    return ImpactSpec(
+        function=impact_function,
+        name=name,
+        value_unit=value_unit,
+        value_semantics=value_semantics,
+        context_columns=context or ImpactContextColumns(),
+    )
+
+
 @dataclass(frozen=True)
 class PortfolioEvaluation:
     """Immutable, composable portfolio evaluation request."""
@@ -604,21 +673,13 @@ class PortfolioEvaluation:
         pathways: Sequence[str] | None = None,
     ) -> PortfolioEvaluation:
         """Return a request with canonical hazard/scenario filters."""
-        current = self.selection
         return replace(
             self,
-            selection=HazardSelection(
-                hazard_names=(
-                    tuple(hazard_names)
-                    if hazard_names is not None
-                    else current.hazard_names
-                ),
-                horizons=(
-                    tuple(horizons) if horizons is not None else current.horizons
-                ),
-                pathways=(
-                    tuple(pathways) if pathways is not None else current.pathways
-                ),
+            selection=_selection(
+                self.selection,
+                hazard_names=hazard_names,
+                horizons=horizons,
+                pathways=pathways,
             ),
         )
 
@@ -641,29 +702,14 @@ class PortfolioEvaluation:
         context: ImpactContextColumns | None = None,
     ) -> PortfolioEvaluation:
         """Return a request applying an event-aligned impact function."""
-        for field_name, value in (
-            ("impact name", name),
-            ("impact value_unit", value_unit),
-            ("impact value_semantics", value_semantics),
-        ):
-            if not isinstance(value, str) or not value.strip():
-                raise ValueError(f"{field_name} must not be empty")
-        if isinstance(function, ImpactFunction):
-            impact_function = function
-        elif callable(function):
-            impact_function = CallableImpact(function)
-        else:
-            raise TypeError("impact function must define evaluate(...) or be callable")
-        if context is not None and not isinstance(context, ImpactContextColumns):
-            raise TypeError("impact context must be ImpactContextColumns")
         return replace(
             self,
-            impact_spec=ImpactSpec(
-                function=impact_function,
+            impact_spec=_impact_spec(
+                function,
                 name=name,
                 value_unit=value_unit,
                 value_semantics=value_semantics,
-                context_columns=context or ImpactContextColumns(),
+                context=context,
             ),
         )
 
