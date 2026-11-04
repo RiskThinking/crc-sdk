@@ -52,13 +52,16 @@ from crc_sdk.connectors.blocks import (
     BlockStatistic,
     DailyAggregation,
     UnitConversion,
-    _strip_row_count,
     contiguous_runs,
     reduce_days,
     select_grid_window,
 )
-from crc_sdk.connectors.duckdb.netcdf import NetCDFBlockReader, NetCDFRaster
 from crc_sdk.connectors.duckdb.zarr import Bounds, RasterMetadata
+from crc_sdk.providers._annual_extremes import (
+    open_annual_extremes,
+    require_h5netcdf,
+    write_annual_extreme,
+)
 
 CMIP6_ATTRIBUTION = (
     "CMIP6 model output prepared for the World Climate Research Programme's "
@@ -124,7 +127,6 @@ def normalize_licence(text: str) -> str:
     return CMIP6_LICENCE_UNKNOWN
 
 
-EXTREME_VARIABLE = "extreme"
 #: Longest block any supported `BlockDefinition` can span, in days.
 MAX_BLOCK_DAYS = 366
 
@@ -1023,50 +1025,22 @@ class CMIP6Provider:
         attributes: Mapping[str, str] | None = None,
     ) -> Path:
         """Persist one year's area annual extreme as a compact NetCDF file."""
-        try:
-            import h5netcdf  # type: ignore[import-untyped]
-        except ImportError as error:
-            raise ImportError(
-                "CMIP6 caching requires `pip install crc-sdk[netcdf]`"
-            ) from error
+        require_h5netcdf("CMIP6")
         self.check_years([year])
-        reader = self.reader(recipe, bounds, [year])
-        width = reader.lon.size
-        strip_rows = _strip_row_count(
-            strip_bytes, width, 8, 1, leading_axis=reader.leading_axis_samples
+        return write_annual_extreme(
+            self.reader(recipe, bounds, [year]),
+            year,
+            destination,
+            strip_bytes=strip_bytes,
+            attributes={
+                "units": recipe.unit,
+                "recipe": recipe.name,
+                "year": int(year),
+                "dataset_id": self.dataset.dataset_id,
+                "calendar": self.calendar.name,
+                **(attributes or {}),
+            },
         )
-        parts = [
-            reader.reduce_block(
-                year,
-                slice(start, min(start + strip_rows, reader.lat.size)),
-                slice(0, width),
-            )
-            for start in range(0, reader.lat.size, strip_rows)
-        ]
-        extreme = np.concatenate(parts, axis=0)
-
-        target = Path(destination)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        temporary = target.with_suffix(".tmp.nc")
-        with h5netcdf.File(temporary, "w") as output:
-            output.dimensions = {"time": 1, "lat": reader.lat.size, "lon": width}
-            output.create_variable("lat", ("lat",), dtype=np.float64, data=reader.lat)
-            output.create_variable("lon", ("lon",), dtype=np.float64, data=reader.lon)
-            variable = output.create_variable(
-                EXTREME_VARIABLE,
-                ("time", "lat", "lon"),
-                dtype=np.float32,
-                data=extreme[np.newaxis].astype(np.float32),
-            )
-            variable.attrs["units"] = recipe.unit
-            variable.attrs["recipe"] = recipe.name
-            variable.attrs["year"] = int(year)
-            variable.attrs["dataset_id"] = self.dataset.dataset_id
-            variable.attrs["calendar"] = self.calendar.name
-            for key, value in (attributes or {}).items():
-                variable.attrs[key] = value
-        temporary.replace(target)
-        return target
 
     def open_resources(
         self,
@@ -1079,27 +1053,9 @@ class CMIP6Provider:
         info: Any = None,
     ) -> BlockExtremaCurveSource:
         """Open cached annual-extreme files as one block-extrema curve source."""
-        if not resources:
-            raise ValueError("at least one year is required")
-        rasters: dict[int, NetCDFRaster] = {}
-        try:
-            for year, path in resources.items():
-                rasters[int(year)] = NetCDFRaster.open(path, variable=EXTREME_VARIABLE)
-        except Exception:
-            for raster in rasters.values():
-                raster.close()
-            raise
-        # A cached one-step file reduces to itself under any statistic.
-        # (Not `recipe.spec.statistic`: a rolling k-day statistic needs a daily
-        # series, which a cached annual-extreme file no longer has.)
-        identity = (
-            BlockStatistic.minimum()
-            if recipe.spec.tail == "lower"
-            else BlockStatistic.maximum()
-        )
-        return BlockExtremaCurveSource(
-            reader=NetCDFBlockReader(rasters, spec=BlockSpec(statistic=identity)),
-            metadata=metadata,
+        return open_annual_extremes(
+            resources,
+            metadata,
             tail=recipe.spec.tail,
             strip_bytes=strip_bytes,
             minimum_blocks=minimum_blocks,

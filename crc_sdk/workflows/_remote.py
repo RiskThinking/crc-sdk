@@ -80,6 +80,41 @@ def file_checksum(path: Path) -> str:
     return digest.hexdigest()
 
 
+def check_expected_sha256(digest: str, expected: str | None, label: str) -> None:
+    if expected and digest != expected:
+        raise RuntimeError(f"{label} snapshot does not match expected SHA-256")
+
+
+def cached_snapshot(
+    path: Path,
+    *,
+    url: str,
+    mode: str,
+    expected: str | None,
+    label: str,
+    url_role: str = "request",
+    noun: str = "snapshot",
+) -> dict[str, Any] | None:
+    """Verified manifest of the snapshot at ``path``, or None to fetch it.
+
+    Raises when the cache is incomplete, no longer matches ``url`` or
+    ``expected``, or is missing in offline mode.
+    """
+    directory = path.parent
+    manifest = read_manifest(directory)
+    if mode != "refresh" and path.exists() != (manifest is not None):
+        raise RuntimeError(f"incomplete {label} cache; refresh it explicitly")
+    if mode != "refresh" and manifest is not None:
+        digest = file_checksum(path)
+        if manifest.get("url") != url or manifest.get("sha256") != digest:
+            raise RuntimeError(f"{label} cache checksum or {url_role} mismatch")
+        check_expected_sha256(digest, expected, label)
+        return manifest
+    if mode == "offline":
+        raise FileNotFoundError(f"{label} {noun} missing from {directory}")
+    return None
+
+
 def check_new_feature(feature: Mapping[str, Any], seen: set[Any], label: str) -> None:
     """Reject a feature repeated across pages (a shifted offset page).
 

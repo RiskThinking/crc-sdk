@@ -27,8 +27,8 @@ from crc_sdk.providers.cmip6 import (
     cmip6_recipe,
     normalize_licence,
 )
+from crc_sdk.workflows._plans import normalize_years
 from crc_sdk.workflows._remote import Bounds, validate_bounds
-from crc_sdk.workflows.cmip6 import _normalize_years
 
 ARCHIVE = "https://nex-gddp-cmip6.s3.us-west-2.amazonaws.com/NEX-GDDP-CMIP6"
 LICENCE_URL = "https://registry.opendata.aws/nex-gddp-cmip6/"
@@ -106,7 +106,7 @@ class NEXAreaPlan:
     bounds: Bounds
 
     def years(self, start: int | Sequence[int], end: int | None = None) -> NEXYearPlan:
-        years = _normalize_years(start, end)
+        years = normalize_years(start, end, earliest=1850)
         lower, upper = (
             (1950, 2014) if self.source.scenario == "historical" else (2015, 2100)
         )

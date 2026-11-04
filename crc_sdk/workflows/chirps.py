@@ -16,9 +16,10 @@ from crc_sdk.connectors.duckdb.geotiff import GeoTiffRaster
 
 from ._remote import (
     Bounds,
+    cached_snapshot,
+    check_expected_sha256,
     file_checksum,
     http_request,
-    read_manifest,
     validate_bounds,
     write_manifest,
 )
@@ -110,18 +111,17 @@ class CHIRPSMonthlyPlan:
             raise ValueError("configure cache(directory) before prefetch")
         directory = self._directory()
         path = directory / "source.cog"
-        manifest = read_manifest(directory)
-        if self.mode != "refresh" and path.exists() != (manifest is not None):
-            raise RuntimeError("incomplete CHIRPS cache; refresh it explicitly")
-        if self.mode != "refresh" and manifest is not None:
-            digest = file_checksum(path)
-            if manifest.get("url") != self.url or manifest.get("sha256") != digest:
-                raise RuntimeError("CHIRPS cache checksum or source mismatch")
-            if self.expected_sha256 and digest != self.expected_sha256:
-                raise RuntimeError("CHIRPS snapshot does not match expected SHA-256")
-            return manifest
-        if self.mode == "offline":
-            raise FileNotFoundError(f"CHIRPS source missing from {directory}")
+        cached = cached_snapshot(
+            path,
+            url=self.url,
+            mode=self.mode,
+            expected=self.expected_sha256,
+            label="CHIRPS",
+            url_role="source",
+            noun="source",
+        )
+        if cached is not None:
+            return cached
         directory.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=directory) as scratch:
             staged = Path(scratch) / "source.cog"
@@ -138,8 +138,7 @@ class CHIRPSMonthlyPlan:
             if length is not None and staged.stat().st_size != int(length):
                 raise RuntimeError("incomplete CHIRPS download")
             digest = file_checksum(staged)
-            if self.expected_sha256 and digest != self.expected_sha256:
-                raise RuntimeError("CHIRPS snapshot does not match expected SHA-256")
+            check_expected_sha256(digest, self.expected_sha256, "CHIRPS")
             result: dict[str, Any] = {
                 "url": self.url,
                 "sha256": digest,

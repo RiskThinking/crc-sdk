@@ -9,7 +9,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from ._remote import file_checksum, http_request, read_manifest, write_manifest
+from ._remote import (
+    cached_snapshot,
+    check_expected_sha256,
+    file_checksum,
+    http_request,
+    write_manifest,
+)
 
 
 def prepare_resource(
@@ -24,18 +30,9 @@ def prepare_resource(
 ) -> dict[str, Any]:
     """Fetch, validate and retain one bounded, checksummed NOAA response."""
     path = directory / "source.json"
-    manifest = read_manifest(directory)
-    if mode != "refresh" and path.exists() != (manifest is not None):
-        raise RuntimeError("incomplete NOAA cache; refresh explicitly")
-    if mode != "refresh" and manifest is not None:
-        digest = file_checksum(path)
-        if manifest.get("url") != url or manifest.get("sha256") != digest:
-            raise RuntimeError("NOAA cache checksum or request mismatch")
-        if expected and digest != expected:
-            raise RuntimeError("NOAA snapshot does not match expected SHA-256")
-        return manifest
-    if mode == "offline":
-        raise FileNotFoundError(f"NOAA snapshot missing from {directory}")
+    cached = cached_snapshot(path, url=url, mode=mode, expected=expected, label="NOAA")
+    if cached is not None:
+        return cached
     directory.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=directory) as scratch:
         staged = Path(scratch) / "source.json"
@@ -52,8 +49,7 @@ def prepare_resource(
         validate(payload)
         staged.write_bytes(raw)
         digest = file_checksum(staged)
-        if expected and digest != expected:
-            raise RuntimeError("NOAA snapshot does not match expected SHA-256")
+        check_expected_sha256(digest, expected, "NOAA")
         result: dict[str, Any] = {
             "url": url,
             **metadata,

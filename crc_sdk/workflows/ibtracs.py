@@ -16,7 +16,13 @@ import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.compute as pc  # type: ignore[import-untyped]
 import pyarrow.csv as pacsv  # type: ignore[import-untyped]
 
-from ._remote import file_checksum, http_request, read_manifest, write_manifest
+from ._remote import (
+    cached_snapshot,
+    check_expected_sha256,
+    file_checksum,
+    http_request,
+    write_manifest,
+)
 
 _ROOT = "https://www.ncei.noaa.gov/data/international-best-track-archive-for-climate-stewardship-ibtracs/v04r01/access/csv"
 _SUBSETS = {
@@ -92,18 +98,16 @@ class IBTrACSPlan:
         """Acquire a snapshot or verify cached bytes; return source provenance."""
         directory = self.cache_dir / "ibtracs" / "v04r01" / self.subset
         path = directory / "source.csv"
-        manifest = read_manifest(directory)
-        if self.mode != "refresh" and path.exists() != (manifest is not None):
-            raise RuntimeError("incomplete IBTrACS cache; refresh it explicitly")
-        if self.mode != "refresh" and path.exists() and manifest is not None:
-            digest = file_checksum(path)
-            if manifest.get("url") != self.url or manifest.get("sha256") != digest:
-                raise RuntimeError("IBTrACS cache checksum or source mismatch")
-            if self.expected_sha256 and digest != self.expected_sha256:
-                raise RuntimeError("IBTrACS snapshot does not match expected SHA-256")
-            return manifest
-        if self.mode == "offline":
-            raise FileNotFoundError(f"IBTrACS snapshot missing from {directory}")
+        cached = cached_snapshot(
+            path,
+            url=self.url,
+            mode=self.mode,
+            expected=self.expected_sha256,
+            label="IBTrACS",
+            url_role="source",
+        )
+        if cached is not None:
+            return cached
         directory.mkdir(parents=True, exist_ok=True)
         fd, name = tempfile.mkstemp(dir=directory, prefix="download-", suffix=".tmp")
         temp = Path(name)
@@ -121,8 +125,7 @@ class IBTrACSPlan:
             ):
                 raise RuntimeError("incomplete IBTrACS download")
             digest = file_checksum(temp)
-            if self.expected_sha256 and digest != self.expected_sha256:
-                raise RuntimeError("IBTrACS snapshot does not match expected SHA-256")
+            check_expected_sha256(digest, self.expected_sha256, "IBTrACS")
             with temp.open(newline="", encoding="utf-8-sig") as source:
                 reader = csv.reader(source)
                 columns = next(reader)
