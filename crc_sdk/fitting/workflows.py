@@ -560,7 +560,7 @@ def _return_period_probabilities(
     convention: str,
     tail: str,
 ) -> np.ndarray[Any, Any]:
-    """Vectorized ADR-0003 conversion to canonical non-exceedance probabilities."""
+    """Vectorized conversion to canonical non-exceedance probabilities."""
     periods = np.asarray(labels, dtype=np.float64)
     if not np.all(np.isfinite(periods)) or np.any(periods <= 1.0):
         raise _RowRejected(

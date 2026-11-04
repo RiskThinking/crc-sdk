@@ -80,7 +80,6 @@ files = ["crc_sdk", "tests"]
 [tool.ruff]
 target-version = "py311"
 line-length = 88
-extend-exclude = ["tools"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]

@@ -85,8 +85,8 @@ class HorizonExtrapolationWarning(UserWarning):
     """A horizon was requested outside the dataset's fitted temporal window."""
 
 
-# ADR-0003: only these two kinds are not annual-exceedance-like. Absent
-# (``None``) means unspecified, and `estimate_confidence` is not refused.
+# Only these two kinds are not annual-exceedance-like. Absent (``None``)
+# means unspecified, and `estimate_confidence` is not refused.
 _NOT_RETURN_PERIOD_SEMANTICS = frozenset(
     {"within_period_percentile", "projection_uncertainty"}
 )
@@ -108,7 +108,7 @@ def check_return_period_semantics(
     strict: bool = False,
     stacklevel: int = 2,
 ) -> bool:
-    """Check that return-period evaluation is meaningful for a dataset (ADR-0003).
+    """Check that return-period evaluation is meaningful for a dataset.
 
     Accepts dataset metadata (anything with a ``probability_semantics``
     attribute, or a mapping with that key) or the semantics string itself.
@@ -226,7 +226,7 @@ def return_periods_to_probabilities(
 ) -> tuple[float, ...]:
     """Map unique return periods to the probability their curve was fitted at.
 
-    `convention` is the source's T-to-probability relation (ADR-0003):
+    `convention` is the source's T-to-probability relation:
     `one_minus_inverse` is `1 - 1/T` (the default) and `poisson` is
     `exp(-1/T)`, i.e. an annual exceedance probability of `1 - exp(-1/T)`.
     Both give non-exceedance probabilities for the upper tail; the lower tail

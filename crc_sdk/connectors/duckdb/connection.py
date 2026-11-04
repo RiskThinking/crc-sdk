@@ -71,7 +71,7 @@ def detected_cpu_count() -> int:
 
 
 # Empirically derived, not a documented DuckDB recommendation: a live
-# production ``COPY ... PARTITION_BY`` write (248 partitions, USA-scale
+# ``COPY ... PARTITION_BY`` write (248 partitions, USA-scale
 # building data) showed three regimes as this setting varied relative to the
 # actual partition count -- a fixed value far below it (16) throttled the
 # whole write to ~1/30th of available cores via constant file-handle

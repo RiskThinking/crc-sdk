@@ -155,7 +155,7 @@ class CurveFitIngestPolicy:
     censor_location: float = 0.0
     residual_scale_floor_ratio: float = 1.0e-3
     # Persist one row per source pixel (fitted, or skipped with its reason) to
-    # this Parquet path (ADR-0007).
+    # this Parquet path (design decisions: diagnostics sidecar).
     diagnostics: str | Path | None = None
     # GEV observed-support validation is specific to raw-sample fits.
     require_sample_support: bool = False
@@ -349,7 +349,8 @@ def _fit_provenance(
     source: CurveSource, policy: CurveFitIngestPolicy
 ) -> CurveFitProvenance:
     # Initialization describes optimizer seeding. Standalone L-moments is the
-    # complete estimator, so it has no optimizer or initialization (ADR-0006).
+    # complete estimator, so it has no optimizer or initialization
+    # (docs/design-decisions.md).
     # input_kind describes original source data, before plotting positions.
     return CurveFitProvenance(
         method=policy.fit_method,

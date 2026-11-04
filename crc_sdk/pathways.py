@@ -1,4 +1,4 @@
-"""Pathway label crosswalk (ADR-0002).
+"""Pathway label crosswalk (design decisions: temporal window and pathways).
 
 Pathway labels are the source's own: SSPs, warming-level bands,
 ``SV``/``RT3``/``Hot House``/``Paris``/``NDC``, and a baseline spelled

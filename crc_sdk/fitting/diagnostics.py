@@ -1,4 +1,4 @@
-"""Row-level fit diagnostics sidecar (ADR-0007)."""
+"""Row-level fit diagnostics sidecar (design decisions: diagnostics sidecar)."""
 
 from __future__ import annotations
 

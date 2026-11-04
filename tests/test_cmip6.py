@@ -627,7 +627,7 @@ def test_refresh_replaces_an_existing_output(
 
 
 # ---------------------------------------------------------------------------
-# Licences (docs/licence-policy.md)
+# Licences (docs/data-licences.md)
 # ---------------------------------------------------------------------------
 
 

@@ -116,7 +116,7 @@ class CMIP6SourcePlan:
     archive: str = "aws"
     requested_version: str = "latest"
     #: Refuse a source whose licence goes beyond attribution, rather than
-    #: warning and recording it (docs/licence-policy.md).
+    #: warning and recording it (docs/data-licences.md).
     strict_licence: bool = False
 
     def version(self, value: str) -> CMIP6SourcePlan:
@@ -573,7 +573,7 @@ class CMIP6CanonicalizationPlan:
         dataset = prepared.dataset
         first, last = prepared.years[0], prepared.years[-1]
         # The source's own pathway spelling is kept; resolving it only checks
-        # that the crosswalk knows it (ADR-0002).
+        # that the crosswalk knows it (design decisions: temporal window and pathways).
         pathway = resolve_pathway(dataset.experiment_id).label
         window = TemporalWindow(
             start_year=first,

@@ -1,7 +1,7 @@
 """ERA5 hourly reanalysis access for annual-extreme recipes.
 
 Reads public ARCO-style Zarr copies of ERA5 anonymously (no CDS account, no
-GRIB tooling; see ``docs/spikes/era5.md``), reduces one calendar year at a time
+GRIB tooling; see ``docs/sources/era5.md``), reduces one calendar year at a time
 to an *annual extreme per grid cell* for the requested area, and caches that
 small result -- never the hourly data.
 
@@ -118,9 +118,9 @@ def era5_store(name: str) -> ERA5Store:
 
 @dataclass(frozen=True)
 class ERA5Recipe:
-    """One supported dataset -> hazard recipe (ADR-0004 names).
+    """One supported dataset -> hazard recipe (design decisions: hazard registry names).
 
-    ``hazard_name`` matches the open registry / internal name only where the
+    ``hazard_name`` matches the public registry name only where the
     definition is the same; the daily boundary here is **UTC**.
     """
 
