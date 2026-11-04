@@ -1,8 +1,8 @@
 import duckdb
-import pyarrow as pa
+import pyarrow as pa  # type: ignore[import-untyped]
 import pytest
-from shapely.geometry import Polygon, box
-from shapely.wkb import dumps
+from shapely.geometry import Polygon, box  # type: ignore[import-untyped]
+from shapely.wkb import dumps  # type: ignore[import-untyped]
 
 import crc_sdk.geometry.vector as vector_module
 from crc_sdk.connectors.duckdb import ensure_extensions
@@ -31,7 +31,7 @@ def test_to_pyarrow_array_falls_back_to_pylist() -> None:
     calls: list[str] = []
 
     class _ListOnly:
-        def to_pylist(self):
+        def to_pylist(self) -> list[list[int]]:
             calls.append("to_pylist")
             return [[1, 2], [3]]
 

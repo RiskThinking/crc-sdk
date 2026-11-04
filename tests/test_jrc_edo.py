@@ -136,8 +136,10 @@ def test_lower_tail_reconstructs_more_severe_value_at_higher_return_period(
     common_values = curve_quantiles_at(table, common)
     rare_values = curve_quantiles_at(table, rare)
 
+    rare_value, common_value = rare_values[0], common_values[0]
+    assert rare_value is not None and common_value is not None
     # A rarer drought (higher return period) means a lower (more severe) SMI.
-    assert rare_values[0] < common_values[0]
+    assert rare_value < common_value
 
 
 def test_on_fit_failure_raise_aborts_on_constant_pixel(tmp_path: Path) -> None:

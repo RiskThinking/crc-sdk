@@ -1,15 +1,19 @@
 """NEX annual files reuse CMIP6 reductions without discarding provenance."""
 
+from pathlib import Path
+from typing import Any
+
 import numpy as np
 import pytest
 
 from crc_sdk.providers.cmip6 import RestrictiveLicenceWarning
+from crc_sdk.workflows.nex import NEXYearPlan
 from crc_sdk.workflows.portfolio import HazardDataset
 
 h5netcdf = pytest.importorskip("h5netcdf")
 
 
-def _plan(**kwargs):
+def _plan(**kwargs: Any) -> NEXYearPlan:
     return (
         HazardDataset.nex_gddp_cmip6(
             "rx1day", model="ACCESS-CM2", scenario="historical", **kwargs
@@ -20,7 +24,7 @@ def _plan(**kwargs):
 
 
 @pytest.fixture
-def source(tmp_path, monkeypatch):
+def source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     path = tmp_path / "year.nc"
     with h5netcdf.File(path, "w") as file:
         file.dimensions = {"time": 365, "lat": 2, "lon": 2}
@@ -48,7 +52,7 @@ def source(tmp_path, monkeypatch):
     return path
 
 
-def test_streamed_values_and_provenance(source):
+def test_streamed_values_and_provenance(source: Path) -> None:
     with pytest.warns(RestrictiveLicenceWarning, match="archive is now CC0"):
         batches = list(_plan().annual_extremes(strip_bytes=1000))
     rows = [row for batch in batches for row in batch.to_pylist()]
@@ -60,13 +64,13 @@ def test_streamed_values_and_provenance(source):
     assert len(batches) == 2
 
 
-def test_strict_licence_and_lazy_access(source):
+def test_strict_licence_and_lazy_access(source: Path) -> None:
     batches = _plan(strict_licence=True).annual_extremes()
     with pytest.raises(ValueError, match="original model licence"):
         next(batches)
 
 
-def test_source_validation(source):
+def test_source_validation(source: Path) -> None:
     with h5netcdf.File(source, "a") as file:
         file.attrs["version"] = "1.2"
     with pytest.raises(ValueError, match="version"):
@@ -77,7 +81,7 @@ def test_source_validation(source):
         ).years(2014)
 
 
-def test_grid_label_is_case_insensitive():
+def test_grid_label_is_case_insensitive() -> None:
     plan = HazardDataset.nex_gddp_cmip6(
         "rx1day", model="ACCESS-CM2", scenario="historical", grid_label="GN"
     )

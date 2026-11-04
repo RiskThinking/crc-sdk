@@ -1,6 +1,9 @@
 import os
 import tempfile
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 from crc_sdk.connectors.duckdb import connection as connection_module
 from crc_sdk.connectors.duckdb.connection import (
@@ -16,12 +19,14 @@ from crc_sdk.connectors.duckdb.connection import (
 )
 
 
-def test_env_int_falls_back_on_non_numeric(monkeypatch) -> None:
+def test_env_int_falls_back_on_non_numeric(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CRC_DUCKDB_THREADS", "eight")
     assert _env_int("CRC_DUCKDB_THREADS", default=4, maximum=16) == 4
 
 
-def test_detect_tolerates_invalid_thread_env(tmp_path: Path, monkeypatch) -> None:
+def test_detect_tolerates_invalid_thread_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv("CRC_DUCKDB_THREADS", "not-a-number")
     monkeypatch.delenv("CRC_DUCKDB_MEMORY", raising=False)
     resources = RuntimeResources.detect(tmp_path)
@@ -29,23 +34,25 @@ def test_detect_tolerates_invalid_thread_env(tmp_path: Path, monkeypatch) -> Non
     assert os.getenv("CRC_DUCKDB_THREADS") == "not-a-number"
 
 
-def test_bytes_per_thread_defaults_to_given_value(monkeypatch) -> None:
+def test_bytes_per_thread_defaults_to_given_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.delenv("CRC_DUCKDB_BYTES_PER_THREAD_GIB", raising=False)
     assert _bytes_per_thread(2.5) == int(2.5 * 1024**3)
 
 
-def test_bytes_per_thread_none_means_no_cap(monkeypatch) -> None:
+def test_bytes_per_thread_none_means_no_cap(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("CRC_DUCKDB_BYTES_PER_THREAD_GIB", raising=False)
     assert _bytes_per_thread(None) is None
 
 
-def test_bytes_per_thread_env_overrides_none(monkeypatch) -> None:
+def test_bytes_per_thread_env_overrides_none(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CRC_DUCKDB_BYTES_PER_THREAD_GIB", "1.0")
     assert _bytes_per_thread(None) == 1024**3
 
 
 def test_geo_profile_thread_budget_is_memory_derived(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("CRC_DUCKDB_THREADS", raising=False)
     monkeypatch.delenv("CRC_DUCKDB_MEMORY", raising=False)
@@ -57,7 +64,7 @@ def test_geo_profile_thread_budget_is_memory_derived(
 
 
 def test_detect_with_no_per_thread_cap_uses_full_cpu_count(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("CRC_DUCKDB_THREADS", raising=False)
     monkeypatch.delenv("CRC_DUCKDB_BYTES_PER_THREAD_GIB", raising=False)
@@ -66,7 +73,7 @@ def test_detect_with_no_per_thread_cap_uses_full_cpu_count(
 
 
 def test_for_analytics_uncaps_threads_without_spatial_extension(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("CRC_DUCKDB_THREADS", raising=False)
     monkeypatch.delenv("CRC_DUCKDB_BYTES_PER_THREAD_GIB", raising=False)
@@ -78,7 +85,7 @@ def test_for_analytics_uncaps_threads_without_spatial_extension(
 
 
 def test_default_work_dir_is_a_stable_location_under_system_temp(
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("CRC_DUCKDB_WORK_DIR", raising=False)
     expected = Path(tempfile.gettempdir()) / "crc-sdk"
@@ -87,19 +94,23 @@ def test_default_work_dir_is_a_stable_location_under_system_temp(
     assert default_work_dir() == expected
 
 
-def test_default_work_dir_honors_env_override(tmp_path: Path, monkeypatch) -> None:
+def test_default_work_dir_honors_env_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     override = tmp_path / "custom-work-dir"
     monkeypatch.setenv("CRC_DUCKDB_WORK_DIR", str(override))
     assert default_work_dir() == override
 
 
-def _patch_proc_self_cgroup(monkeypatch, content: str | None) -> None:
+def _patch_proc_self_cgroup(
+    monkeypatch: pytest.MonkeyPatch, content: str | None
+) -> None:
     """Intercept only ``Path("/proc/self/cgroup").read_text()``; anything
     else falls through to the real implementation so other cgroup/file
     reads in the same test aren't accidentally short-circuited."""
     original_read_text = Path.read_text
 
-    def fake_read_text(self, *args, **kwargs):
+    def fake_read_text(self: Path, *args: Any, **kwargs: Any) -> str:
         if self == Path("/proc/self/cgroup"):
             if content is None:
                 raise OSError("no such file")
@@ -109,13 +120,15 @@ def _patch_proc_self_cgroup(monkeypatch, content: str | None) -> None:
     monkeypatch.setattr(Path, "read_text", fake_read_text)
 
 
-def _patch_cgroup_control_files(monkeypatch, existing: set[str]) -> None:
+def _patch_cgroup_control_files(
+    monkeypatch: pytest.MonkeyPatch, existing: set[str]
+) -> None:
     """Simulate specific cgroup v2 control files existing, without touching
     the real filesystem for anything else (this dev machine has no real
     ``/sys/fs/cgroup`` tree at all, let alone a container-scoped one)."""
     original_exists = Path.exists
 
-    def fake_exists(self, *args, **kwargs):
+    def fake_exists(self: Path, *args: Any, **kwargs: Any) -> bool:
         if self in {Path(path) for path in existing}:
             return True
         return original_exists(self, *args, **kwargs)
@@ -123,7 +136,9 @@ def _patch_cgroup_control_files(monkeypatch, existing: set[str]) -> None:
     monkeypatch.setattr(Path, "exists", fake_exists)
 
 
-def test_container_cgroup_root_resolves_v2_unified_line(monkeypatch) -> None:
+def test_container_cgroup_root_resolves_v2_unified_line(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _patch_proc_self_cgroup(
         monkeypatch, "0::/kubepods/besteffort/pod123/container456\n"
     )
@@ -137,7 +152,7 @@ def test_container_cgroup_root_resolves_v2_unified_line(monkeypatch) -> None:
 
 
 def test_container_cgroup_root_falls_back_when_joined_path_lacks_control_files(
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Regression test: some runtimes already bind-mount /sys/fs/cgroup to
     the container's own cgroup slice, but /proc/self/cgroup can still report
@@ -154,12 +169,16 @@ def test_container_cgroup_root_falls_back_when_joined_path_lacks_control_files(
     assert _container_cgroup_root() == Path("/sys/fs/cgroup")
 
 
-def test_container_cgroup_root_falls_back_when_proc_missing(monkeypatch) -> None:
+def test_container_cgroup_root_falls_back_when_proc_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _patch_proc_self_cgroup(monkeypatch, None)
     assert _container_cgroup_root() == Path("/sys/fs/cgroup")
 
 
-def test_container_cgroup_root_falls_back_without_unified_line(monkeypatch) -> None:
+def test_container_cgroup_root_falls_back_without_unified_line(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # cgroup v1-style content -- no "0::" unified entry to resolve through.
     _patch_proc_self_cgroup(
         monkeypatch, "4:memory:/docker/abc123\n5:cpu,cpuacct:/docker/abc123\n"
@@ -168,14 +187,14 @@ def test_container_cgroup_root_falls_back_without_unified_line(monkeypatch) -> N
 
 
 def test_container_cgroup_root_is_a_noop_when_already_at_mount_root(
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _patch_proc_self_cgroup(monkeypatch, "0::/\n")
     assert _container_cgroup_root() == Path("/sys/fs/cgroup")
 
 
 def test_memory_limit_bytes_reads_resolved_container_cgroup(
-    monkeypatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Regression test for the mounted-root-vs-container-cgroup bug: reading
     straight from ``/sys/fs/cgroup/memory.max`` can silently return the
@@ -189,7 +208,9 @@ def test_memory_limit_bytes_reads_resolved_container_cgroup(
     assert _memory_limit_bytes(host_total=10**15) == 123456789
 
 
-def test_cpu_quota_reads_resolved_container_cgroup(monkeypatch, tmp_path: Path) -> None:
+def test_cpu_quota_reads_resolved_container_cgroup(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     container_root = tmp_path / "container-scope"
     container_root.mkdir()
     (container_root / "cpu.max").write_text("400000 100000")
@@ -200,33 +221,35 @@ def test_cpu_quota_reads_resolved_container_cgroup(monkeypatch, tmp_path: Path) 
 
 
 def test_partitioned_write_open_files_hint_passes_through_below_ceiling(
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("CRC_DUCKDB_PARTITIONED_WRITE_MAX_OPEN_FILES", raising=False)
     assert partitioned_write_open_files_hint(3) == 3
 
 
 def test_partitioned_write_open_files_hint_caps_at_default_ceiling(
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("CRC_DUCKDB_PARTITIONED_WRITE_MAX_OPEN_FILES", raising=False)
     assert partitioned_write_open_files_hint(248) == 64
 
 
 def test_partitioned_write_open_files_hint_honors_custom_ceiling(
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("CRC_DUCKDB_PARTITIONED_WRITE_MAX_OPEN_FILES", raising=False)
     assert partitioned_write_open_files_hint(248, ceiling=128) == 128
 
 
 def test_partitioned_write_open_files_hint_env_override_bypasses_ceiling(
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("CRC_DUCKDB_PARTITIONED_WRITE_MAX_OPEN_FILES", "200")
     assert partitioned_write_open_files_hint(248) == 200
 
 
-def test_partitioned_write_open_files_hint_ignores_invalid_env(monkeypatch) -> None:
+def test_partitioned_write_open_files_hint_ignores_invalid_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("CRC_DUCKDB_PARTITIONED_WRITE_MAX_OPEN_FILES", "not-a-number")
     assert partitioned_write_open_files_hint(3) == 3

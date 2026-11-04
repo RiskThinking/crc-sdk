@@ -308,6 +308,17 @@ def sql_quote(value: object) -> str:
     return f"'{escaped}'"
 
 
+def fetch_one_row(con: DuckDBPyConnection, query: str) -> tuple[Any, ...]:
+    """Run ``query`` and return its first row, e.g. for aggregate queries.
+
+    Raises ``LookupError`` when the query returns no rows.
+    """
+    row = con.execute(query).fetchone()
+    if row is None:
+        raise LookupError(f"query returned no rows: {query.strip()[:200]}")
+    return row
+
+
 class DuckDBStreamEngine:
     """Streaming helpers over analytics-tuned DuckDB connections."""
 

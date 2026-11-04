@@ -35,13 +35,12 @@ _COUNTRY_CODE = re.compile(r"^[A-Z]{2}$")
 def _validate_bounds(bounds: Sequence[float]) -> Bounds:
     if len(bounds) != 4:
         raise ValueError("bounds must contain min_lon, min_lat, max_lon, max_lat")
-    result = tuple(float(value) for value in bounds)
-    minimum_x, minimum_y, maximum_x, maximum_y = result
+    minimum_x, minimum_y, maximum_x, maximum_y = (float(value) for value in bounds)
     if not (
         -180 <= minimum_x < maximum_x <= 180 and -90 <= minimum_y < maximum_y <= 90
     ):
         raise ValueError("bounds must be ordered WGS84 longitude/latitude values")
-    return result
+    return (minimum_x, minimum_y, maximum_x, maximum_y)
 
 
 def _require_cdl_extra() -> tuple[Any, Any, Any]:

@@ -77,6 +77,7 @@ def test_builder_is_lazy_and_explain_does_not_resolve_years(
 
     details = plan.explain(format="json")
 
+    assert isinstance(details, dict)
     assert details["resolved_version"] is None
     assert details["requested_years"] == _YEARS
     assert details["return_period_tail"] == "lower"

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import warnings
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Generator, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from functools import lru_cache, partial
@@ -331,7 +331,7 @@ def _record_batches(values: Any) -> Iterator[pa.RecordBatch]:
         yield from values
 
 
-def _prefetch_one(values: Iterable[Any]) -> Iterator[Any]:
+def _prefetch_one(values: Iterable[Any]) -> Generator[Any, None, None]:
     """Pull one item ahead on a single thread with a strict one-item bound."""
     iterator = iter(values)
     sentinel = object()

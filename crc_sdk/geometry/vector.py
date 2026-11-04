@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import pyarrow as pa  # type: ignore[import-untyped]
 
+from crc_sdk.connectors.duckdb.connection import fetch_one_row
+
 if TYPE_CHECKING:
     from duckdb import DuckDBPyConnection
 
@@ -150,9 +152,9 @@ def expand_polygon_candidates(
 
     resolved_batch_rows = batch_rows
     if resolved_batch_rows is None:
-        row_count = con.execute(
-            f"SELECT COUNT(*) FROM ({polygon_sql}) AS _crc_polygon_count"
-        ).fetchone()[0]
+        row_count = fetch_one_row(
+            con, f"SELECT COUNT(*) FROM ({polygon_sql}) AS _crc_polygon_count"
+        )[0]
         if row_count > _AUTO_BATCH_THRESHOLD_ROWS:
             resolved_batch_rows = _AUTO_BATCH_ROWS
 
@@ -219,7 +221,7 @@ def _expand_one_shot(
         )
     finally:
         con.unregister(register_name)
-    return int(con.execute(f"SELECT COUNT(*) FROM {candidates_table}").fetchone()[0])
+    return int(fetch_one_row(con, f"SELECT COUNT(*) FROM {candidates_table}")[0])
 
 
 def _expand_batched(
@@ -268,7 +270,7 @@ def _expand_batched(
             finally:
                 con.unregister(register_name)
 
-    return int(con.execute(f"SELECT COUNT(*) FROM {candidates_table}").fetchone()[0])
+    return int(fetch_one_row(con, f"SELECT COUNT(*) FROM {candidates_table}")[0])
 
 
 def _fetch_arrow_table(con: DuckDBPyConnection, polygon_sql: str) -> Any:

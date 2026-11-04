@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
-from crc_sdk.connectors.duckdb.connection import sql_quote
+from crc_sdk.connectors.duckdb.connection import fetch_one_row, sql_quote
 
 from .h3 import antimeridian_safe_sql, cell_boundary_sql
 
@@ -412,15 +412,16 @@ def _write_flat_exploded_coverage(
             GROUP BY {hex_col}
             """
         )
-        stats = con.execute(
+        stats = fetch_one_row(
+            con,
             """
             SELECT
                 COUNT(*) FILTER (WHERE cnt = 1),
                 COUNT(*) FILTER (WHERE cnt > 1),
                 COALESCE(SUM(cnt) FILTER (WHERE cnt > 1), 0)
             FROM _crc_hex_counts
-            """
-        ).fetchone()
+            """,
+        )
         single_count = int(stats[0])
         competing_count = int(stats[1])
         competing_ops = int(stats[2])
@@ -448,7 +449,7 @@ def _write_flat_exploded_coverage(
             """
         )
         needed_count = int(
-            con.execute("SELECT COUNT(*) FROM _crc_needed_hexes").fetchone()[0]
+            fetch_one_row(con, "SELECT COUNT(*) FROM _crc_needed_hexes")[0]
         )
         _materialize_needed_hex_geoms(
             con,
@@ -481,15 +482,16 @@ def _write_flat_exploded_coverage(
             """
         )
         row_count = int(
-            con.execute(
-                f"SELECT COUNT(*) FROM read_parquet({sql_quote(output_parquet)})"
-            ).fetchone()[0]
+            fetch_one_row(
+                con, f"SELECT COUNT(*) FROM read_parquet({sql_quote(output_parquet)})"
+            )[0]
         )
         partial_count = int(
-            con.execute(
+            fetch_one_row(
+                con,
                 f"SELECT COUNT(*) FROM read_parquet({sql_quote(output_parquet)}) "
-                f"WHERE pct < 1.0"
-            ).fetchone()[0]
+                f"WHERE pct < 1.0",
+            )[0]
         )
     finally:
         for table in (
@@ -572,15 +574,16 @@ def write_hierarchical_coverage(
             GROUP BY {hex_col}
             """
         )
-        stats = con.execute(
+        stats = fetch_one_row(
+            con,
             """
             SELECT
                 COUNT(*) FILTER (WHERE cnt = 1),
                 COUNT(*) FILTER (WHERE cnt > 1),
                 COALESCE(SUM(cnt) FILTER (WHERE cnt > 1), 0)
             FROM _crc_hex_counts
-            """
-        ).fetchone()
+            """,
+        )
         single_count = int(stats[0])
         competing_count = int(stats[1])
         competing_ops = int(stats[2])
@@ -625,7 +628,7 @@ def write_hierarchical_coverage(
             """
         )
         parent_touch_count = int(
-            con.execute("SELECT COUNT(*) FROM _crc_parent_touch").fetchone()[0]
+            fetch_one_row(con, "SELECT COUNT(*) FROM _crc_parent_touch")[0]
         )
 
         _drop_relation(con, "_crc_parent_geoms")
@@ -639,7 +642,7 @@ def write_hierarchical_coverage(
             """
         )
         parent_geom_count = int(
-            con.execute("SELECT COUNT(*) FROM _crc_parent_geoms").fetchone()[0]
+            fetch_one_row(con, "SELECT COUNT(*) FROM _crc_parent_geoms")[0]
         )
 
         _drop_relation(con, "_crc_parent_class")
@@ -658,14 +661,15 @@ def write_hierarchical_coverage(
         )
         _drop_relation(con, "_crc_parent_geoms")
         _drop_relation(con, "_crc_parent_touch")
-        class_stats = con.execute(
+        class_stats = fetch_one_row(
+            con,
             """
             SELECT
                 COUNT(*) FILTER (WHERE interior),
                 COUNT(*) FILTER (WHERE NOT interior)
             FROM _crc_parent_class
-            """
-        ).fetchone()
+            """,
+        )
         interior_parents = int(class_stats[0])
         boundary_parents = int(class_stats[1])
         logger.info(
@@ -710,7 +714,7 @@ def write_hierarchical_coverage(
             """
         )
         boundary_child_count = int(
-            con.execute("SELECT COUNT(*) FROM _crc_boundary_children").fetchone()[0]
+            fetch_one_row(con, "SELECT COUNT(*) FROM _crc_boundary_children")[0]
         )
         edge_single_count = materialize_edge_hexes(
             con,
@@ -763,7 +767,7 @@ def write_hierarchical_coverage(
             """
         )
         needed_count = int(
-            con.execute("SELECT COUNT(*) FROM _crc_needed_hexes").fetchone()[0]
+            fetch_one_row(con, "SELECT COUNT(*) FROM _crc_needed_hexes")[0]
         )
         logger.info("hierarchical: needed_hexes=%s", needed_count)
 
@@ -835,14 +839,15 @@ def write_hierarchical_coverage(
             """
         )
         row_count = int(
-            con.execute(
-                f"SELECT COUNT(*) FROM read_parquet({sql_quote(out)})"
-            ).fetchone()[0]
+            fetch_one_row(con, f"SELECT COUNT(*) FROM read_parquet({sql_quote(out)})")[
+                0
+            ]
         )
         partial_count = int(
-            con.execute(
-                f"SELECT COUNT(*) FROM read_parquet({sql_quote(out)}) WHERE pct < 1.0"
-            ).fetchone()[0]
+            fetch_one_row(
+                con,
+                f"SELECT COUNT(*) FROM read_parquet({sql_quote(out)}) WHERE pct < 1.0",
+            )[0]
         )
     finally:
         shutil.rmtree(stage_dir, ignore_errors=True)
@@ -978,7 +983,7 @@ def materialize_edge_hexes(
             """
         )
     total_singles = int(
-        con.execute("SELECT COUNT(*) FROM _crc_single_hex_ids").fetchone()[0]
+        fetch_one_row(con, "SELECT COUNT(*) FROM _crc_single_hex_ids")[0]
     )
     if total_singles == 0:
         _drop_relation(con, "_crc_single_hex_ids")
@@ -1014,9 +1019,7 @@ def materialize_edge_hexes(
                 LIMIT {batch_rows}
                 """
             )
-        batch_count = int(
-            con.execute("SELECT COUNT(*) FROM _crc_edge_batch").fetchone()[0]
-        )
+        batch_count = int(fetch_one_row(con, "SELECT COUNT(*) FROM _crc_edge_batch")[0])
         if batch_count == 0:
             break
 
@@ -1062,16 +1065,14 @@ def materialize_edge_hexes(
             single_hexes_relation="_crc_edge_batch",
         )
         con.execute(f"INSERT INTO {output_table} {edge_sql}")
-        last_hex = con.execute(
-            f"SELECT MAX({hex_col}) FROM _crc_edge_batch"
-        ).fetchone()[0]
+        last_hex = fetch_one_row(con, f"SELECT MAX({hex_col}) FROM _crc_edge_batch")[0]
         if batch_count < batch_rows:
             break
 
     _drop_relation(con, "_crc_edge_batch_geoms")
     _drop_relation(con, "_crc_edge_batch")
     _drop_relation(con, "_crc_single_hex_ids")
-    return int(con.execute(f"SELECT COUNT(*) FROM {output_table}").fetchone()[0])
+    return int(fetch_one_row(con, f"SELECT COUNT(*) FROM {output_table}")[0])
 
 
 def build_coverage_sql(
