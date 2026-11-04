@@ -31,8 +31,9 @@ Tests are offline by default. Opt-in live checks:
 
 `.github/workflows/ci.yml` runs on pushes to `main` and pull requests:
 
-- lint (ruff, mypy) and tests on Python 3.11–3.14 with the locked
-  dependencies (3.14 is non-blocking while native wheels catch up);
+- lint on Python 3.12: `ruff check`, `ruff format --check` and `mypy`;
+- tests on Python 3.11–3.14 with the locked dependencies (3.14 is
+  non-blocking while native wheels catch up);
 - tests against the minimum supported crc-framework;
 - a clean install of the built wheel, plus a Windows job.
 
