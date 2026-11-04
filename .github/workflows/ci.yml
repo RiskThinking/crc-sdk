@@ -10,6 +10,23 @@ permissions:
   contents: read
 
 jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+      - name: Check lockfile and install all extras
+        run: uv sync --locked --all-extras --python 3.12
+      - name: Ruff lint
+        run: uv run --locked --all-extras --python 3.12 ruff check .
+      - name: Ruff format
+        run: uv run --locked --all-extras --python 3.12 ruff format --check .
+      - name: Mypy
+        run: uv run --locked --all-extras --python 3.12 mypy
+
   tests:
     name: Python ${{ matrix.python }}
     runs-on: ubuntu-latest
