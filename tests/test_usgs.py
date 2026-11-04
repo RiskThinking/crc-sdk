@@ -222,3 +222,35 @@ def test_observation_date_and_datetime(
         next(plan(tmp_path).batches()).to_pylist()[0]["date"].isoformat()
         == "2020-01-01"
     )
+
+
+def test_rejects_a_feature_repeated_across_pages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The second page shifted: it repeats day 1 and the count still matches.
+    pages = iter(
+        [
+            {
+                "type": "FeatureCollection",
+                "features": [feature("2020-01-01", "4")],
+                "numberMatched": 2,
+                "numberReturned": 1,
+                "links": [{"rel": "next", "href": "?page=2"}],
+            },
+            {
+                "type": "FeatureCollection",
+                "features": [feature("2020-01-01", "4")],
+                "numberMatched": 2,
+                "numberReturned": 1,
+                "links": [],
+            },
+        ]
+    )
+    monkeypatch.setattr(
+        "crc_sdk.workflows.usgs.urlopen",
+        lambda *a, **kw: io.BytesIO(json.dumps(next(pages)).encode()),
+    )
+    request = plan(tmp_path)
+    with pytest.raises(RuntimeError, match="repeated feature"):
+        request.prefetch()
+    assert not (request._directory() / "observations.jsonl").exists()

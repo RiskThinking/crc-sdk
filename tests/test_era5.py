@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -508,3 +509,58 @@ def test_quantile_override_preserves_return_level_checks(
     assert not ingest.require_sample_support
     assert ingest.minimum_return_value == bound.get("minimum_return_value")
     assert ingest.maximum_return_value == bound.get("maximum_return_value")
+
+
+def test_cache_survives_a_growing_release(
+    store: ERA5Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def plan(end: int) -> Any:
+        return (
+            HazardDataset.era5("txx", store="test")
+            .for_area((-50.0, -2.0, 50.0, 2.0), land_only=True)
+            .years(2000, end)
+            .cache(tmp_path / "cache")
+            .canonicalize(policy=BlockExtremaPolicy(minimum_years=4, h3_resolution=3))
+        )
+
+    first = plan(2003).prefetch()
+    assert first.cache_misses == 4
+    assert first.source_version == "final-through-2007-12-31"
+    # ARCO appended months: the release string moves, cached years stay valid.
+    monkeypatch.setattr(
+        ERA5Provider,
+        "resolve_version",
+        lambda self, requested: "final-through-2008-03-31",
+    )
+    grown = plan(2007)
+    result = grown.prefetch()
+    assert (result.cache_hits, result.cache_misses) == (4, 4)
+    assert result.source_version == "final-through-2008-03-31"
+
+    offline = grown.cache(tmp_path / "cache", mode="offline")
+    assert offline.prefetch().cache_hits == 8
+    offline.materialize(tmp_path / "txx.parquet")
+    metadata = read_hazard_metadata(tmp_path / "txx.parquet")
+    assert metadata.source.version == "final-through-2008-03-31"
+    manifest = json.loads((tmp_path / "cache" / "manifest.json").read_text())
+    releases = {
+        entry["year"]: entry["resolved_version"]
+        for entry in manifest["entries"].values()
+    }
+    assert releases[2000] == "final-through-2007-12-31"  # kept as provenance
+    assert releases[2007] == "final-through-2008-03-31"
+
+
+def test_entries_keyed_by_release_are_still_reused(
+    store: ERA5Store, tmp_path: Path
+) -> None:
+    plan = _plan(tmp_path, h3_resolution=3)
+    plan.prefetch()
+    path = tmp_path / "cache" / "manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest["entries"] = {
+        plan._legacy_key(entry["resolved_version"], entry["year"]): entry
+        for entry in manifest["entries"].values()
+    }
+    path.write_text(json.dumps(manifest))
+    assert plan.cache(tmp_path / "cache", mode="offline").prefetch().cache_hits == 8

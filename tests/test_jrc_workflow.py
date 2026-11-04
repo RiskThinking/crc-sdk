@@ -353,3 +353,45 @@ def test_offline_reports_all_invalid_cached_periods(
         )
     for period in (2, 5, 10, 100, 1000):
         assert f"continental:RP{period}" in str(error.value)
+
+
+def test_plans_sharing_a_cache_keep_their_own_manifests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(JRC_DATASETS, "test", _dataset(tmp_path / "source"))
+    first = _plan(tmp_path)
+    second = (
+        HazardDataset.jrc("test", version="1.2.3")
+        .for_area((0.0, 0.0, 0.005, 0.005))
+        .cache(tmp_path / "cache", mode="reuse")
+        .canonicalize(policy=JRCFloodPolicy.curated(h3_resolution=9))
+    )
+    # Another provider's entries in the same directory survive as well.
+    (tmp_path / "cache").mkdir()
+    (tmp_path / "cache" / "manifest.json").write_text(
+        json.dumps({"provider": "era5", "entries": {"k": {"year": 2000}}})
+    )
+
+    assert first.prefetch().cache_misses == 5
+    assert second.prefetch().cache_misses == 5
+    for plan in (first, second):
+        offline = plan.cache(tmp_path / "cache", mode="offline")
+        assert offline.prefetch().cache_hits == 5
+        details = offline.explain(format="json")
+        assert isinstance(details, dict) and details["cache"]["manifest_reusable"]
+    manifest = json.loads((tmp_path / "cache" / "manifest.json").read_text())
+    assert manifest["entries"] == {"k": {"year": 2000}}
+    assert len(manifest["plans"]) == 2
+
+
+def test_legacy_single_plan_manifest_is_still_reused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(JRC_DATASETS, "test", _dataset(tmp_path / "source"))
+    plan = _plan(tmp_path)
+    plan.prefetch()
+    path = tmp_path / "cache" / "manifest.json"
+    manifest = json.loads(path.read_text())
+    path.write_text(json.dumps({k: v for k, v in manifest.items() if k != "plans"}))
+
+    assert plan.cache(tmp_path / "cache", mode="offline").prefetch().cache_hits == 5

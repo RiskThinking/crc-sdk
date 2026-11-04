@@ -896,3 +896,94 @@ def test_evaluate_impact_empty_assets_writes_output_metadata(tmp_path: Path) -> 
         (pq.read_schema(output).metadata or {})[PORTFOLIO_METADATA_KEY.encode()]
     )
     assert metadata["interpretation"] == "event_aligned"
+
+
+def test_failed_portfolio_write_leaves_no_partial_output(tmp_path: Path) -> None:
+    cells = [
+        point_to_cell(LONGITUDE + 0.05 * index, LATITUDE, H3_RESOLUTION)
+        for index in range(20)
+    ]
+    provider = _provider(
+        tmp_path, *[_row(cell_index=cell, source_id="s") for cell in cells]
+    )
+    assets = pa.table(
+        {
+            "asset_id": [f"a{index}" for index in range(len(cells))],
+            "cell_index": pa.array(cells, type=pa.uint64()),
+        }
+    )
+    output = tmp_path / "out" / "portfolio.parquet"
+    request = (
+        HazardDataset.local(provider.source)
+        .for_assets(AssetPortfolio(assets, location=CellColumn()))
+        .return_periods([10, 100])
+    )
+    request.write_parquet(output, execution=ExecutionOptions(max_workers=1))
+    previous = output.read_bytes()
+    calls = 0
+
+    def failing(values: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        if calls > 5:
+            raise RuntimeError("boom")
+        return values
+
+    with pytest.raises(RuntimeError, match="boom"):
+        request.impact(
+            failing, name="x", value_unit="u", value_semantics="s"
+        ).write_parquet(output, execution=ExecutionOptions(max_workers=1, batch_rows=4))
+    # The earlier, complete output survives and no staged file is left behind.
+    assert output.read_bytes() == previous
+    assert not [path for path in output.parent.iterdir() if "partial" in path.name]
+
+
+def test_curve_quantiles_memoizes_shared_curves_exactly() -> None:
+    def point_mass(location: float) -> dict[str, Any]:
+        row = _row(curve_kind="point_mass")
+        row.update(
+            curve_type="point_mass",
+            curve_location=location,
+            curve_scale=0.0,
+            curve_atom_probability=1.0,
+            curve_atom_location=location,
+        )
+        return row
+
+    rows = [_row(), _row(curve_location=3.0), _row(), point_mass(0.0)]
+    rows.append(point_mass(-0.0))
+    values = curve_quantiles(_table(*rows), [0.5, 0.9], max_workers=1)
+    expected = [
+        tuple(distribution_from_hazard_row(row).quantiles([0.5, 0.9])) for row in rows
+    ]
+    assert values == expected
+    assert values[0] == values[2] != values[1]
+    # 0.0 and -0.0 compare equal but are distinct curves bit for bit.
+    signs = [np.copysign(1.0, first) for first, *_ in values[3:] if first is not None]
+    expected_signs = [np.copysign(1.0, value[0]) for value in expected[3:]]
+    assert signs == expected_signs
+
+
+def test_remote_plan_validates_impact_and_selection_eagerly(tmp_path: Path) -> None:
+    plan = (
+        HazardDataset.era5("txx")
+        .for_area((0.0, 0.0, 1.0, 1.0))
+        .years(2000, 2010)
+        .cache(tmp_path / "cache")
+        .canonicalize()
+    )
+    request = plan.for_assets(
+        AssetPortfolio(pa.table({"asset_id": ["a"], "cell_index": [1]}))
+    )
+    with pytest.raises(ValueError, match="impact name"):
+        request.impact(
+            lambda values: values, name="", value_unit="u", value_semantics="s"
+        )
+    with pytest.raises(TypeError, match="callable"):
+        request.impact(42, name="x", value_unit="u", value_semantics="s")
+    with pytest.raises(TypeError, match="single string"):
+        request.select(hazard_names="flood")
+    with pytest.raises(TypeError, match="integer years"):
+        request.select(horizons=["2050"])
+    assert request.select(horizons=[2050]).selection.horizons == (2050,)
+    assert not (tmp_path / "cache").exists()

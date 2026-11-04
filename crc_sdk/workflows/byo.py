@@ -7,9 +7,10 @@ share one immutable plan: nothing is opened, read or fitted until
 
 from __future__ import annotations
 
+import glob
 import hashlib
 import json
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -37,6 +38,8 @@ from ._remote import (
     MaterializationResult,
     ProgressCallback,
     RemotePortfolioEvaluation,
+    is_complete_output,
+    materialize_staged,
     validate_bounds,
 )
 from .distributions import return_periods_to_probabilities
@@ -111,13 +114,39 @@ def _table_identity(table: pa.Table) -> str:
     return hashlib.sha256(sink.getvalue().to_pybytes()).hexdigest()
 
 
+def _tree_fingerprint(root: Path, files: Iterable[Path]) -> str:
+    digest = hashlib.sha256()
+    for path in sorted(files):
+        status = path.stat()
+        digest.update(
+            json.dumps(
+                [path.relative_to(root).as_posix(), status.st_size, status.st_mtime_ns]
+            ).encode()
+        )
+    return digest.hexdigest()
+
+
 def _file_identity(path: str) -> list[Any]:
-    # Local files are fingerprinted so a changed source invalidates the cache.
+    # Local files, directories (Zarr stores, Parquet datasets) and globs are
+    # fingerprinted so a changed source invalidates the cache. Remote URLs
+    # are identified by path only: use cache(..., mode="refresh") after an
+    # upstream change.
     target = Path(path)
-    if "://" in path or not target.is_file():
+    if "://" in path:
         return [path]
-    status = target.stat()
-    return [str(target.resolve()), status.st_size, status.st_mtime_ns]
+    if target.is_file():
+        status = target.stat()
+        return [str(target.resolve()), status.st_size, status.st_mtime_ns]
+    if target.is_dir():
+        files = (item for item in target.rglob("*") if item.is_file())
+        return [str(target.resolve()), _tree_fingerprint(target, files)]
+    if any(character in path for character in "*?["):
+        parent = Path(path.split("*")[0].split("?")[0].split("[")[0])
+        root = parent if parent.is_dir() else parent.parent
+        matches = [Path(item) for item in glob.glob(path, recursive=True)]
+        files = [item for item in matches if item.is_file()]
+        return [path, _tree_fingerprint(root.resolve(), (f.resolve() for f in files))]
+    return [path]
 
 
 @dataclass(frozen=True)
@@ -453,9 +482,9 @@ class BYOPlan:
     ) -> HazardDataset:
         """Materialize to a deterministic path under the cache directory."""
         output = self._automatic_output()
-        if output.is_file() and self.cache_mode != "refresh":
+        if is_complete_output(output) and self.cache_mode != "refresh":
             return HazardDataset.local(output)
-        return self.materialize(output, progress=progress)
+        return materialize_staged(self.materialize, output, progress=progress)
 
     def for_assets(self, assets: Any | AssetPortfolio) -> RemotePortfolioEvaluation:
         portfolio = (

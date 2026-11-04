@@ -213,3 +213,16 @@ def test_failed_group_refresh_preserves_original_snapshot(
     offline = plan.cache(tmp_path, mode="offline", sha256=checksums)
     assert offline.source_levels().to_pylist()[0]["datum_epoch"] == "1983-2001"
     assert offline.annual_extremes().to_pylist()[0]["datum_epoch"] == "1983-2001"
+
+
+def test_refresh_prunes_superseded_snapshots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    install_fake(monkeypatch, payloads())
+    plan = NOAAExtremeWaterLevelPlan.for_station("8638610").cache(tmp_path)
+    plan.prefetch()
+    for _ in range(3):
+        plan.cache(tmp_path, mode="refresh").prefetch()
+    snapshots = tmp_path / "noaa-extreme-water-levels" / "8638610" / "snapshots"
+    assert len(list(snapshots.iterdir())) == 1
+    assert plan.cache(tmp_path, mode="offline").source_info()

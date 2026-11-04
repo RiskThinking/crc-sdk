@@ -39,6 +39,7 @@ from ._remote import (
     PrefetchResult,
     ProgressCallback,
     file_checksum,
+    merge_manifest_entries,
     read_manifest,
     validate_bounds,
     write_manifest,
@@ -152,8 +153,10 @@ class StationObservationPlan:
             "local": path.relative_to(directory).as_posix(),
             "retrieved_at": datetime.now(UTC).isoformat(),
         }
+        current = read_manifest(directory) or {}
+        catalogues = dict(current.get("catalogues", {}))
         catalogues[self.provider] = entry
-        write_manifest(directory, {**manifest, "catalogues": catalogues})
+        write_manifest(directory, {**current, "catalogues": catalogues})
         return table, entry
 
     def _station_selection(self, directory: Path) -> tuple[Any, dict[str, Any]]:
@@ -434,6 +437,7 @@ class StationObservationPlan:
             }
 
         failure: Exception | None = None
+        fetched: dict[str, dict[str, Any]] = {}
         jobs = iter(todo)
         with ThreadPoolExecutor(max_workers=self.workers) as pool:
             pending = {pool.submit(fetch, job) for job in islice(jobs, self.workers)}
@@ -447,21 +451,14 @@ class StationObservationPlan:
                             failure = error
                     else:
                         entries[key] = entry
-                        stored[key] = entry
+                        fetched[key] = entry
                 if failure is None:
                     pending.update(
                         pool.submit(fetch, job) for job in islice(jobs, len(completed))
                     )
         # Persist partial successes on failure, without rewriting per object.
         if todo:
-            write_manifest(
-                directory,
-                {
-                    **(read_manifest(directory) or {}),
-                    "provider": "noaa-stations",
-                    "entries": stored,
-                },
-            )
+            merge_manifest_entries(directory, fetched, provider="noaa-stations")
         if failure is not None:
             raise failure
         ordered = [
@@ -582,19 +579,28 @@ class StationObservationPlan:
         with tempfile.TemporaryDirectory(prefix="crc-station-") as scratch:
             directory = self.cache_dir or Path(scratch)
             entries, _, _ = self._prepare(directory, progress)
-            with pq.ParquetWriter(destination, self._annual_schema()) as writer:
-                batch: list[dict[str, Any]] = []
-                for annual in self._annual(directory, entries):
-                    batch.append(annual)
-                    if len(batch) == 4096:
+            # Staged beside the destination: a failure never leaves a
+            # truncated but readable file at the final path.
+            with tempfile.TemporaryDirectory(
+                prefix=".crc-station-write-", dir=destination.parent
+            ) as staging:
+                staged = Path(staging) / "annual.parquet"
+                with pq.ParquetWriter(staged, self._annual_schema()) as writer:
+                    batch: list[dict[str, Any]] = []
+                    for annual in self._annual(directory, entries):
+                        batch.append(annual)
+                        if len(batch) == 4096:
+                            writer.write_table(
+                                pa.Table.from_pylist(
+                                    batch, schema=self._annual_schema()
+                                )
+                            )
+                            batch.clear()
+                    if batch:
                         writer.write_table(
                             pa.Table.from_pylist(batch, schema=self._annual_schema())
                         )
-                        batch.clear()
-                if batch:
-                    writer.write_table(
-                        pa.Table.from_pylist(batch, schema=self._annual_schema())
-                    )
+                staged.replace(destination)
         return destination
 
     def materialize(

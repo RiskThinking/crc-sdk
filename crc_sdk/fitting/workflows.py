@@ -339,14 +339,22 @@ def _prefetch_one(values: Iterable[Any]) -> Iterator[Any]:
     def next_or_sentinel() -> Any:
         return next(iterator, sentinel)
 
-    with ThreadPoolExecutor(max_workers=1) as executor:
+    executor = ThreadPoolExecutor(max_workers=1)
+    finished = False
+    try:
         future = executor.submit(next_or_sentinel)
         while True:
             item = future.result()
             if item is sentinel:
+                finished = True
                 break
             future = executor.submit(next_or_sentinel)
             yield item
+    finally:
+        # An abandoned generator may be finalized by the garbage collector on
+        # any thread, including one that is still starting; joining the worker
+        # there deadlocks, so only wait after normal exhaustion.
+        executor.shutdown(wait=finished, cancel_futures=not finished)
 
 
 def _list_views(
@@ -660,7 +668,9 @@ def _fit_parameters(
     if policy.lower_bound is not None:
         values = np.maximum(values, policy.lower_bound)
     if np.any(np.diff(values) < 0.0):
-        raise ValueError("CDF quantiles must be non-decreasing")
+        raise _RowRejected(
+            "non_monotone_values", "CDF quantiles must be non-decreasing"
+        )
 
     # Point-mass identity is mathematical, not a fit-quality decision. Check
     # the complete source support (including probabilities zero and one)
@@ -696,6 +706,21 @@ def _fit_parameters(
         return _no_data("insufficient_informative_support")
     if len(np.unique(informative)) < eligibility.minimum_distinct_informative_values:
         return _no_data("degenerate_effective_range")
+
+    if np.all(knot_values == knot_values[0]):
+        # Every interior quantile agrees: only the support bounds differ, and
+        # no family can be fitted to a zero range. The distribution the
+        # knots describe is a point mass at that value.
+        location = float(knot_values[0])
+        curve = _empty_curve("point_mass", "point_mass")
+        curve.update(
+            curve_location=location,
+            curve_scale=0.0,
+            curve_atom_probability=1.0,
+            curve_atom_location=location,
+            _treatment="point_mass",
+        )
+        return curve
 
     if len(knot_values) < MINIMUM_FIT_KNOTS:
         if policy.short_axis_action == "reject":
@@ -799,9 +824,7 @@ def _provenance(
         ),
         lower_bound=policy.lower_bound,
         censor_location=(
-            policy.censor_location
-            if policy.fit_method == "censored_quantile"
-            else None
+            policy.censor_location if policy.fit_method == "censored_quantile" else None
         ),
         residual_scale_floor_ratio=(
             policy.residual_scale_floor_ratio
@@ -1166,9 +1189,7 @@ def fit_cdf_quantile_batches(
                     residual_scale = curve.pop("_residual_scale", None)
                     residual_scale_floor = curve.pop("_residual_scale_floor", None)
                     censored_point_count = curve.pop("_censored_point_count", None)
-                    uncensored_point_count = curve.pop(
-                        "_uncensored_point_count", None
-                    )
+                    uncensored_point_count = curve.pop("_uncensored_point_count", None)
                     curve.pop("_minimum_informative_value", None)
                     kind = curve["curve_kind"]
                     summary.canonical_rows += 1

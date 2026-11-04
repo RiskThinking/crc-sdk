@@ -35,6 +35,8 @@ from ._remote import (
     ProgressCallback,
     RemotePortfolioEvaluation,
     file_checksum,
+    is_complete_output,
+    materialize_staged,
     read_manifest,
     validate_bounds,
     write_manifest,
@@ -401,9 +403,11 @@ class ECCCIDFPlan:
             raise ValueError("one-chain evaluation requires cache(path)")
         identity = json.dumps([self._request(), repr(self.fit_policy)], sort_keys=True)
         key = hashlib.sha256(identity.encode()).hexdigest()[:20]
-        return self.materialize(
-            self.cache_dir / "canonical" / f"idf-{key}.parquet", progress=progress
-        )
+        output = self.cache_dir / "canonical" / f"idf-{key}.parquet"
+        # Pinned station bytes cannot change, so a complete fit is reusable.
+        if self.cache_mode != "refresh" and is_complete_output(output):
+            return HazardDataset.local(output)
+        return materialize_staged(self.materialize, output, progress=progress)
 
     def for_assets(self, assets: Any | AssetPortfolio) -> RemotePortfolioEvaluation:
         portfolio = (

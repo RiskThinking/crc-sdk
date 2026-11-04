@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import math
 import multiprocessing
+import os
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from decimal import Decimal
 from functools import partial
 from pathlib import Path
 from typing import Any, Literal, Union, cast
+from uuid import uuid4
 
 import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
@@ -35,6 +37,11 @@ CURVE_COLUMNS = (
     "curve_atom_location",
     "curve_probabilities",
     "curve_values",
+)
+
+_OPTIONAL_CURVE_COLUMNS = ("curve_probabilities", "curve_values")
+_REQUIRED_CURVE_COLUMNS = tuple(
+    name for name in CURVE_COLUMNS if name not in _OPTIONAL_CURVE_COLUMNS
 )
 
 CurveDistribution = Union[
@@ -172,19 +179,21 @@ def warn_if_outside_window(
     return False
 
 
+_PLAIN_TYPES = frozenset({type(None), float, int, str, list})
+
+
 def _python_value(value: Any) -> Any:
+    if type(value) in _PLAIN_TYPES:
+        return value
     return value.as_py() if hasattr(value, "as_py") else value
 
 
 def curve_parameters_from_row(row: Mapping[str, Any]) -> CurveParameters:
     """Reconstruct validated curve parameters from one canonical row mapping."""
     try:
-        values = {
-            name: _python_value(row.get(name))
-            if name in {"curve_probabilities", "curve_values"}
-            else _python_value(row[name])
-            for name in CURVE_COLUMNS
-        }
+        values = {name: _python_value(row[name]) for name in _REQUIRED_CURVE_COLUMNS}
+        for name in _OPTIONAL_CURVE_COLUMNS:
+            values[name] = _python_value(row.get(name))
     except KeyError as error:
         raise ValueError(
             f"canonical row is missing curve column {error.args[0]!r}"
@@ -290,6 +299,23 @@ def return_period_value_columns(
     return columns
 
 
+_MISSING = object()
+_CURVE_GETTERS = tuple(CURVE_COLUMNS)
+_MEMO_PROBE_ROWS = 2048
+
+
+def _curve_key(row: Mapping[str, Any]) -> tuple[Any, ...]:
+    """Hashable identity of a row's curve parameters, exact to the bit pattern."""
+    key = tuple(map(row.get, _CURVE_GETTERS))
+    if 0.0 in key:
+        # 0.0 == -0.0 hash alike, yet a point mass at -0.0 evaluates to -0.0.
+        key += tuple(
+            math.copysign(1.0, value) if isinstance(value, float) else None
+            for value in key
+        )
+    return key
+
+
 def _curve_quantiles(
     records: Sequence[Mapping[str, Any]],
     probabilities: tuple[float, ...],
@@ -297,21 +323,47 @@ def _curve_quantiles(
     impact: Any | None = None,
     context_columns: Mapping[str, str] | None = None,
 ) -> list[tuple[float | None, ...]]:
+    # Rows often share curve parameters (e.g. assets in one cell, or zero-hazard
+    # point masses): validate and evaluate each distinct curve once per chunk.
+    evaluated: dict[tuple[Any, ...], tuple[float, ...] | None] = {}
+    no_data = tuple(None for _ in probabilities)
+    base_context: TransformContext | None = None
+    if impact is not None:
+        found = getattr(impact.function, "context", None)
+        base_context = (
+            found if isinstance(found, TransformContext) else TransformContext()
+        )
     results: list[tuple[float | None, ...]] = []
-    for row in records:
-        try:
-            values = (
-                curve_parameters_from_row(row)
-                .to_distribution()
-                .quantiles(probabilities)
-            )
-        except NoDataCurveError:
-            results.append(tuple(None for _ in probabilities))
+    memoize = True
+    for index, row in enumerate(records):
+        if index == _MEMO_PROBE_ROWS and len(evaluated) > 0.9 * index:
+            memoize = False  # parameters are (nearly) all distinct
+        key: tuple[Any, ...] | None = None
+        values: Any = _MISSING
+        if memoize:
+            key = _curve_key(row)
+            try:
+                values = evaluated.get(key, _MISSING)
+            except TypeError:  # list-valued (tabulated) curves are not memoized
+                key = None
+        if values is _MISSING:
+            try:
+                values = tuple(
+                    map(
+                        float,
+                        curve_parameters_from_row(row)
+                        .to_distribution()
+                        .quantiles(probabilities),
+                    )
+                )
+            except NoDataCurveError:
+                values = None
+            if key is not None:
+                evaluated[key] = values
+        if values is None:
+            results.append(no_data)
             continue
-        if impact is not None:
-            base_context = getattr(impact.function, "context", None)
-            if not isinstance(base_context, TransformContext):
-                base_context = TransformContext()
+        if base_context is not None:
             cell = base_context.cell
             country = base_context.country
             continent = base_context.continent
@@ -339,8 +391,11 @@ def _curve_quantiles(
                 building_type=building_type,
                 historic_mean=historic_mean,
             )
-            values = impact.function.evaluate(values, context=context)
-        results.append(tuple(float(value) for value in values))
+            assert impact is not None
+            impacted = impact.function.evaluate(list(values), context=context)
+            results.append(tuple(float(value) for value in impacted))
+        else:
+            results.append(values)
     return results
 
 
@@ -395,7 +450,9 @@ def curve_quantiles(
     records = table.to_pylist()
     if not records:
         return []
-    workers = max_workers or detected_cpu_count()
+    # Per-curve evaluation costs microseconds, less than shipping rows to a
+    # worker, so a pool is opt-in (an explicit max_workers above one).
+    workers = max_workers or 1
     if workers <= 1 or len(records) <= chunk_rows:
         return _curve_quantiles(records, normalized)
     with ProcessPoolExecutor(
@@ -408,6 +465,31 @@ def curve_quantiles(
             chunk_rows,
             executor,
         )
+
+
+class _LazyPool:
+    """A process pool started only when a batch needs one."""
+
+    def __init__(self, workers: int) -> None:
+        self._workers = workers
+        self._executor: ProcessPoolExecutor | None = None
+
+    def get(self) -> ProcessPoolExecutor | None:
+        if self._workers <= 1:
+            return None
+        if self._executor is None:
+            self._executor = ProcessPoolExecutor(
+                max_workers=self._workers,
+                mp_context=_MP_CONTEXT,
+            )
+        return self._executor
+
+    def __enter__(self) -> _LazyPool:
+        return self
+
+    def __exit__(self, *exc_info: Any) -> None:
+        if self._executor is not None:
+            self._executor.__exit__(*exc_info)
 
 
 def stream_curve_quantiles_wide_to_parquet(
@@ -448,54 +530,57 @@ def stream_curve_quantiles_wide_to_parquet(
     )
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
-    workers = max_workers or detected_cpu_count()
+    # Evaluation is cheaper in-process than through a pool unless rows also
+    # run a user impact function; an explicit max_workers always applies.
+    workers = max_workers or (detected_cpu_count() if impact is not None else 1)
     written = 0
 
-    def _drain(executor: ProcessPoolExecutor | None) -> None:
+    def _drain(writer: Any, pool: _LazyPool) -> None:
         nonlocal written
-        with pq.ParquetWriter(output, output_schema, compression="zstd") as writer:
-            for batch in reader:
-                if batch.num_rows == 0:
-                    continue
-                evaluation_columns = [
-                    name for name in CURVE_COLUMNS if name in batch.schema.names
-                ]
-                if impact is not None:
-                    for name in ("cell_index", *(context_columns or {}).values()):
-                        if name not in evaluation_columns:
-                            evaluation_columns.append(name)
-                evaluation_table = pa.Table.from_arrays(
-                    [batch.column(name) for name in evaluation_columns],
-                    names=evaluation_columns,
+        for batch in reader:
+            if batch.num_rows == 0:
+                continue
+            evaluation_columns = [
+                name for name in CURVE_COLUMNS if name in batch.schema.names
+            ]
+            if impact is not None:
+                for name in ("cell_index", *(context_columns or {}).values()):
+                    if name not in evaluation_columns:
+                        evaluation_columns.append(name)
+            evaluation_table = pa.Table.from_arrays(
+                [batch.column(name) for name in evaluation_columns],
+                names=evaluation_columns,
+            )
+            values = _evaluate_in_chunks(
+                evaluation_table.to_pylist(),
+                normalized,
+                chunk_rows,
+                pool.get() if batch.num_rows > chunk_rows else None,
+                impact=impact,
+                context_columns=context_columns,
+            )
+            value_arrays = [
+                pa.array(
+                    [row[index] for row in values],
+                    type=pa.float64(),
                 )
-                values = _evaluate_in_chunks(
-                    evaluation_table.to_pylist(),
-                    normalized,
-                    chunk_rows,
-                    executor,
-                    impact=impact,
-                    context_columns=context_columns,
-                )
-                value_arrays = [
-                    pa.array(
-                        [row[index] for row in values],
-                        type=pa.float64(),
-                    )
-                    for index in range(len(value_columns))
-                ]
-                out_batch = pa.RecordBatch.from_arrays(
-                    [batch.column(name) for name in passthrough_columns] + value_arrays,
-                    schema=output_schema,
-                )
-                writer.write_batch(out_batch)
-                written += out_batch.num_rows
+                for index in range(len(value_columns))
+            ]
+            out_batch = pa.RecordBatch.from_arrays(
+                [batch.column(name) for name in passthrough_columns] + value_arrays,
+                schema=output_schema,
+            )
+            writer.write_batch(out_batch)
+            written += out_batch.num_rows
 
-    if workers <= 1:
-        _drain(None)
-    else:
-        with ProcessPoolExecutor(
-            max_workers=workers,
-            mp_context=_MP_CONTEXT,
-        ) as executor:
-            _drain(executor)
+    # Stage beside the output so a failure never leaves a truncated but
+    # readable Parquet file at the final path.
+    staged = output.with_name(f".{output.name}.{uuid4().hex}.partial")
+    try:
+        with _LazyPool(workers) as pool:
+            with pq.ParquetWriter(staged, output_schema, compression="zstd") as writer:
+                _drain(writer, pool)
+        os.replace(staged, output)
+    finally:
+        staged.unlink(missing_ok=True)
     return written

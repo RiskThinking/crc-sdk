@@ -136,3 +136,30 @@ def test_incomplete_page_sequence_is_rejected(
     )
     with pytest.raises(RuntimeError, match="incomplete snapshot"):
         plan(tmp_path).prefetch()
+
+
+def test_feature_repeated_across_pages_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pages = iter(
+        [
+            {
+                "type": "FeatureCollection",
+                "features": [feature(1)],
+                "links": [{"rel": "next", "href": "?offset=1"}],
+                "numberMatched": 2,
+            },
+            {
+                "type": "FeatureCollection",
+                "features": [feature(1)],
+                "links": [],
+                "numberMatched": 2,
+            },
+        ]
+    )
+    monkeypatch.setattr(
+        "crc_sdk.workflows.eccc_daily.urlopen",
+        lambda *a, **kw: io.BytesIO(json.dumps(next(pages)).encode()),
+    )
+    with pytest.raises(RuntimeError, match="repeated feature"):
+        plan(tmp_path).prefetch()

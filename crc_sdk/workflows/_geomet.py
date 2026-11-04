@@ -11,7 +11,13 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlsplit
 
-from ._remote import file_checksum, http_request, read_manifest, write_manifest
+from ._remote import (
+    check_new_feature,
+    file_checksum,
+    http_request,
+    read_manifest,
+    write_manifest,
+)
 
 
 def prepare_snapshot(
@@ -42,6 +48,7 @@ def prepare_snapshot(
     directory.mkdir(parents=True, exist_ok=True)
     expected_path = urlsplit(url).path
     seen: set[str] = set()
+    feature_ids: set[Any] = set()
     page_urls: list[str] = []
     page_sha256: list[str] = []
     count = 0
@@ -85,6 +92,7 @@ def prepare_snapshot(
                     raise ValueError(f"{label} page exceeds requested limit")
                 for feature in features:
                     validate(feature)
+                    check_new_feature(feature, feature_ids, label)
                     target.write(
                         json.dumps(feature, separators=(",", ":"), sort_keys=True)
                         + "\n"
