@@ -187,9 +187,7 @@ class _FakeProvider:
 def test_run_tiled_canonicalization_skips_empty_tiles(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(
-        "crc_sdk.workflows.tiling.OSClimateProvider", _FakeProvider
-    )
+    monkeypatch.setattr("crc_sdk.workflows.tiling.OSClimateProvider", _FakeProvider)
     spec = OSClimateSelectionSpec(
         hazard_type="RiverineInundation",
         indicator_id="flood_depth",

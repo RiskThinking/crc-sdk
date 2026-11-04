@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import calendar
 import io
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -137,7 +137,7 @@ def test_fluent_compatibility_and_identifiers() -> None:
     with pytest.raises(ValueError, match="USAF"):
         HazardDataset.isd().for_stations([STATION])
     with pytest.raises(ValueError, match="complete-year"):
-        plan.years(2020, datetime.now(timezone.utc).year)
+        plan.years(2020, datetime.now(UTC).year)
     assert plan.years(2025, 2025).selected_years == (2025,)
 
 

@@ -7,7 +7,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from numbers import Integral
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Union
+from typing import TYPE_CHECKING, Any
 
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
 from crc_framework import CallableImpact, ImpactFunction
@@ -87,7 +87,7 @@ class CellColumn:
     name: str = "cell_index"
 
 
-AssetLocation = Union[PointColumns, CellColumn]
+AssetLocation = PointColumns | CellColumn
 
 
 def _source_columns(value: Any) -> tuple[str, ...] | None:

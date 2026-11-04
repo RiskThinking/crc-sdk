@@ -3,7 +3,7 @@
 import math
 from collections.abc import Mapping
 from datetime import datetime
-from typing import Literal, Optional, Union
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -31,16 +31,16 @@ class SourceProvenance(BaseModel):
 
     provider: str = Field(min_length=1)
     dataset: str = Field(min_length=1)
-    uri: Optional[str] = None
-    version: Optional[str] = None
-    licence: Optional[str] = None
-    attribution: Optional[str] = None
-    retrieved_at: Optional[str] = None
-    checksum: Optional[str] = None
+    uri: str | None = None
+    version: str | None = None
+    licence: str | None = None
+    attribution: str | None = None
+    retrieved_at: str | None = None
+    checksum: str | None = None
 
     @field_validator("retrieved_at")
     @classmethod
-    def validate_retrieved_at(cls, value: Optional[str]) -> Optional[str]:
+    def validate_retrieved_at(cls, value: str | None) -> str | None:
         if value is not None:
             try:
                 datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -57,12 +57,12 @@ class EnsembleDescriptor(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     pooling: Literal["single_member", "pooled", "unknown"] = "unknown"
-    models: Optional[Union[int, tuple[str, ...]]] = None
-    members: Optional[Union[int, tuple[str, ...]]] = None
-    scenario: Optional[str] = None
-    downscaling_method: Optional[str] = None
-    bias_adjustment: Optional[str] = None
-    pooling_method: Optional[str] = None
+    models: int | tuple[str, ...] | None = None
+    members: int | tuple[str, ...] | None = None
+    scenario: str | None = None
+    downscaling_method: str | None = None
+    bias_adjustment: str | None = None
+    pooling_method: str | None = None
 
     @model_validator(mode="after")
     def validate_counts(self) -> "EnsembleDescriptor":
@@ -92,12 +92,12 @@ class TemporalWindow(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     kind: Literal["window", "time_invariant"] = "window"
-    start_year: Optional[int] = None
-    end_year: Optional[int] = None
-    reference_year: Optional[int] = None
-    baseline: Optional[tuple[int, int]] = None
+    start_year: int | None = None
+    end_year: int | None = None
+    reference_year: int | None = None
+    baseline: tuple[int, int] | None = None
     calendar: Literal["gregorian", "noleap", "360_day", "unspecified"] = "unspecified"
-    minimum_complete_years: Optional[int] = Field(default=None, ge=1)
+    minimum_complete_years: int | None = Field(default=None, ge=1)
 
     @property
     def horizon(self) -> int:
@@ -144,30 +144,30 @@ class CurveFitProvenance(BaseModel):
         "sample_mle",
         "sample_lmoments",
     ] = "quantile_least_squares"
-    initialization: Optional[str] = None
-    input_kind: Optional[Literal["probability_labelled", "samples"]] = None
-    sample_resampling: Optional[int] = Field(default=None, ge=2)
-    lower_bound: Optional[float] = None
-    censor_location: Optional[float] = None
-    residual_scale_floor_ratio: Optional[float] = Field(default=None, gt=0.0)
-    platform: Optional[str] = None
-    crc_framework_version: Optional[str] = None
+    initialization: str | None = None
+    input_kind: Literal["probability_labelled", "samples"] | None = None
+    sample_resampling: int | None = Field(default=None, ge=2)
+    lower_bound: float | None = None
+    censor_location: float | None = None
+    residual_scale_floor_ratio: float | None = Field(default=None, gt=0.0)
+    platform: str | None = None
+    crc_framework_version: str | None = None
     families: tuple[str, ...]
     selection_metric: Literal["fixed_family", "first_acceptable"] = "fixed_family"
     weighting: Literal["uniform"] = "uniform"
     endpoint_policy: Literal["exclude_zero_and_one"] = "exclude_zero_and_one"
     atom_policy: Literal["none", "infer_min_plateau"]
     constant_policy: Literal["point_mass"] = "point_mass"
-    minimum_informative_value: Optional[float] = None
+    minimum_informative_value: float | None = None
     minimum_informative_knots: int = Field(default=0, ge=0)
     minimum_distinct_informative_values: int = Field(default=0, ge=0)
     parametric_failure_action: Literal["raise", "skip", "tabulated"] = "raise"
     require_sample_support: bool = False
     validation_return_periods: tuple[float, ...] = ()
-    minimum_return_value: Optional[float] = None
-    maximum_return_value: Optional[float] = None
-    maximum_normalized_rmse: Optional[float] = None
-    maximum_absolute_residual: Optional[float] = None
+    minimum_return_value: float | None = None
+    maximum_return_value: float | None = None
+    maximum_normalized_rmse: float | None = None
+    maximum_absolute_residual: float | None = None
     on_fit_failure: Literal["raise", "skip"]
 
 
@@ -180,19 +180,19 @@ class HazardDatasetMetadata(BaseModel):
     h3_resolution: int = Field(ge=0, le=15)
     probability_convention: Literal["non_exceedance"] = "non_exceedance"
     return_period_tail: Literal["upper", "lower"] = "upper"
-    return_period_support: Optional[tuple[float, float]] = None
-    source_probability_support: Optional[tuple[float, float]] = None
+    return_period_support: tuple[float, float] | None = None
+    source_probability_support: tuple[float, float] | None = None
     value_unit: str = Field(min_length=1)
     value_semantics: str = Field(min_length=1)
     geometry_encoding: Literal["WKB"] = "WKB"
     geometry_crs: str = "EPSG:4326"
     producer: str = Field(min_length=1)
     source: SourceProvenance
-    fitting: Optional[CurveFitProvenance] = None
-    probability_semantics: Optional[ProbabilitySemantics] = None
-    source_return_period_convention: Optional[ReturnPeriodConvention] = None
-    temporal_window: Optional[TemporalWindow] = None
-    ensemble: Optional[EnsembleDescriptor] = None
+    fitting: CurveFitProvenance | None = None
+    probability_semantics: ProbabilitySemantics | None = None
+    source_return_period_convention: ReturnPeriodConvention | None = None
+    temporal_window: TemporalWindow | None = None
+    ensemble: EnsembleDescriptor | None = None
     creation_version: str = Field(min_length=1)
     row_key: tuple[str, ...] = HAZARD_ROW_KEY
     sort_order: tuple[str, ...] = HAZARD_SORT_ORDER
@@ -277,7 +277,7 @@ class HazardDatasetMetadata(BaseModel):
         return cls.model_validate_json(value)
 
     def to_parquet_metadata(
-        self, existing: Optional[Mapping[bytes, bytes]] = None
+        self, existing: Mapping[bytes, bytes] | None = None
     ) -> dict[bytes, bytes]:
         result = dict(existing or {})
         result[PARQUET_METADATA_KEY.encode("utf-8")] = self.to_json_bytes()
@@ -285,7 +285,7 @@ class HazardDatasetMetadata(BaseModel):
 
     @classmethod
     def from_parquet_metadata(
-        cls, metadata: Optional[Mapping[bytes, bytes]]
+        cls, metadata: Mapping[bytes, bytes] | None
     ) -> "HazardDatasetMetadata":
         key = PARQUET_METADATA_KEY.encode("utf-8")
         if metadata is None or key not in metadata:

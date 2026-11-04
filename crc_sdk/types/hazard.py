@@ -1,7 +1,7 @@
 """Hazard query and fitted-curve parameter models."""
 
 from collections.abc import Mapping
-from typing import Any, Literal, Optional, Union, cast
+from typing import Any, Literal, cast
 
 from crc_framework.distributions import (
     DistributionFamily,
@@ -25,24 +25,24 @@ class CurveParameters(BaseModel):
     curve_kind: Literal["fitted", "hurdle", "point_mass", "tabulated", "no_data"] = (
         "fitted"
     )
-    curve_type: Union[
-        DistributionFamily,
-        Literal[
+    curve_type: (
+        DistributionFamily
+        | Literal[
             "point_mass",
             "linear_probability",
             "below_effective_resolution",
             "insufficient_informative_support",
             "degenerate_effective_range",
             "scientific_exclusion",
-        ],
-    ]
-    curve_shape: Optional[float] = None
-    curve_location: Optional[float] = None
-    curve_scale: Optional[float] = None
-    curve_atom_probability: Optional[float] = None
-    curve_atom_location: Optional[float] = None
-    curve_probabilities: Optional[tuple[float, ...]] = None
-    curve_values: Optional[tuple[float, ...]] = None
+        ]
+    )
+    curve_shape: float | None = None
+    curve_location: float | None = None
+    curve_scale: float | None = None
+    curve_atom_probability: float | None = None
+    curve_atom_location: float | None = None
+    curve_probabilities: tuple[float, ...] | None = None
+    curve_values: tuple[float, ...] | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -140,12 +140,12 @@ class CurveParameters(BaseModel):
 
     def to_distribution(
         self,
-    ) -> Union[
-        FittedDistribution,
-        HurdleDistribution,
-        PointMassDistribution,
-        TabulatedDistribution,
-    ]:
+    ) -> (
+        FittedDistribution
+        | HurdleDistribution
+        | PointMassDistribution
+        | TabulatedDistribution
+    ):
         """Reconstruct the framework distribution represented by these fields."""
         if self.curve_kind == "no_data":
             raise NoDataCurveError(f"curve has no data: {self.curve_type}")
@@ -188,9 +188,9 @@ class HazardQuery(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     hazard_name: str
-    horizon: Optional[int] = None
-    pathway: Optional[str] = None
-    cell_index: Optional[int] = Field(
+    horizon: int | None = None
+    pathway: str | None = None
+    cell_index: int | None = Field(
         default=None,
         ge=0,
         le=(1 << 64) - 1,

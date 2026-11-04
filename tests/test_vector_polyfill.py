@@ -1,5 +1,3 @@
-from pathlib import Path
-
 import duckdb
 import pyarrow as pa
 import pytest

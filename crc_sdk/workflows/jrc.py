@@ -6,7 +6,7 @@ import hashlib
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlencode
@@ -451,7 +451,7 @@ class JRCCanonicalizationPlan:
             "dataset": provider.dataset.name,
             "requested_version": self.area.source.requested_version,
             "resolved_version": version,
-            "resolved_at": datetime.now(timezone.utc).isoformat(),
+            "resolved_at": datetime.now(UTC).isoformat(),
             "bounds": self.area.bounds,
             "source_periods": periods,
             "resources": materialized_entries,

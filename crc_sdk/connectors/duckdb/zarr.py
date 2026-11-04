@@ -5,7 +5,7 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from math import ceil, floor
 from pathlib import Path
-from typing import Any, Literal, Optional, Union
+from typing import Any, Literal
 
 import numpy as np
 import pyarrow as pa  # type: ignore[import-untyped]
@@ -47,9 +47,9 @@ class RasterCurve:
     boundary: tuple[Point, Point, Point, Point]
     axis_values: np.ndarray[Any, np.dtype[np.float64]]
     values: np.ndarray[Any, np.dtype[np.float64]]
-    point: Optional[Point] = None
-    source_id: Optional[str] = None
-    horizon: Optional[int] = None
+    point: Point | None = None
+    source_id: str | None = None
+    horizon: int | None = None
 
 
 class ZarrRaster:
@@ -60,8 +60,8 @@ class ZarrRaster:
         array: Any,
         metadata: RasterMetadata,
         *,
-        connection: Optional[DuckDBConnection] = None,
-        work_dir: Optional[Union[str, Path]] = None,
+        connection: DuckDBConnection | None = None,
+        work_dir: str | Path | None = None,
     ) -> None:
         if len(array.shape) not in (2, 3):
             raise ValueError(
@@ -89,9 +89,9 @@ class ZarrRaster:
         array_path: str,
         metadata: RasterMetadata,
         branch: str = "main",
-        snapshot_id: Optional[str] = None,
-        connection: Optional[DuckDBConnection] = None,
-        work_dir: Optional[Union[str, Path]] = None,
+        snapshot_id: str | None = None,
+        connection: DuckDBConnection | None = None,
+        work_dir: str | Path | None = None,
     ) -> "ZarrRaster":
         """Open a raster stored in an Icechunk (Zarr v3) repository.
 
@@ -161,7 +161,7 @@ class ZarrRaster:
 
     def scan(
         self,
-        bounds: Optional[Bounds] = None,
+        bounds: Bounds | None = None,
         *,
         batch_rows: int = 262_144,
     ) -> "ZarrScan":
@@ -174,7 +174,7 @@ class ZarrRaster:
         self,
         coordinates: Sequence[Point],
         *,
-        connection: Optional[DuckDBConnection] = None,
+        connection: DuckDBConnection | None = None,
     ) -> Any:
         """Read requested lon/lat points and return a DuckDB relation."""
         if not coordinates:
@@ -246,7 +246,7 @@ class ZarrRaster:
             self._pixel_to_world(column + 1, row),
         )
 
-    def iter_curves(self, bounds: Optional[Bounds] = None) -> Iterator[RasterCurve]:
+    def iter_curves(self, bounds: Bounds | None = None) -> Iterator[RasterCurve]:
         """Stream source pixels with complete leading-axis curves."""
         column_start, column_stop, row_start, row_stop = self._pixel_window(
             bounds or self.bounds
@@ -421,7 +421,7 @@ class ZarrScan:
     bounds: Bounds
     batch_rows: int
 
-    def relation(self, *, connection: Optional[DuckDBConnection] = None) -> Any:
+    def relation(self, *, connection: DuckDBConnection | None = None) -> Any:
         """Create a fresh lazy DuckDB relation for one query execution."""
         # Validate bounds eagerly, as `GeoTiffScan.relation` does.
         self.raster._pixel_window(self.bounds)
@@ -439,9 +439,7 @@ class ZarrScan:
         )
         return self.raster._project_metadata(relation)
 
-    def pipeline(
-        self, *, connection: Optional[DuckDBConnection] = None
-    ) -> DuckDBPipeline:
+    def pipeline(self, *, connection: DuckDBConnection | None = None) -> DuckDBPipeline:
         """Compose this bounded scan with lazy DuckDB relational operations."""
         return DuckDBPipeline(self, connection=connection)
 

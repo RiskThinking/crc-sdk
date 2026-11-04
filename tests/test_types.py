@@ -1,4 +1,4 @@
-from typing import Any, Optional
+from typing import Any
 
 import pytest
 from crc_framework import FittedDistribution, HurdleDistribution, TabulatedDistribution
@@ -61,7 +61,7 @@ def test_h3_resolution_is_validated() -> None:
     ],
 )
 def test_supported_curve_families_construct_public_distributions(
-    family: str, shape: Optional[float]
+    family: str, shape: float | None
 ) -> None:
     parameters = CurveParameters.model_validate(
         {

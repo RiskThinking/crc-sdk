@@ -103,10 +103,12 @@ def enrich_adm2_with_adm1(
     con.execute("DROP TABLE IF EXISTS _crc_adm1_src")
     con.execute("DROP TABLE IF EXISTS _crc_adm2_src")
     con.execute(
-        f"CREATE TEMPORARY TABLE _crc_adm1_src AS SELECT * FROM ST_Read({sql_quote(adm1_source)})"
+        "CREATE TEMPORARY TABLE _crc_adm1_src AS "
+        f"SELECT * FROM ST_Read({sql_quote(adm1_source)})"
     )
     con.execute(
-        f"CREATE TEMPORARY TABLE _crc_adm2_src AS SELECT * FROM ST_Read({sql_quote(adm2_source)})"
+        "CREATE TEMPORARY TABLE _crc_adm2_src AS "
+        f"SELECT * FROM ST_Read({sql_quote(adm2_source)})"
     )
     for table in ("_crc_adm1_src", "_crc_adm2_src"):
         try:
