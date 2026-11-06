@@ -7,18 +7,29 @@ user family that implements `PayoutFunction` and is registered with
 design chooses within bounds. Covers round-trip through canonical JSON and
 carry a `definition_hash`, as `ImpactExpression` does.
 
+`design` chooses a template's free parameters on an outcome sample for an
+objective (`MSE`, `ExpectedUncovered`, `WeightedCVaR` or a `UserObjective`)
+under a `Budget` and a `Limit`; its LP and QP routes need the optional extra
+`crc-sdk[parametric]`. `evaluate` and `compare` assess covers and designs.
+
 The module works on numpy arrays and does no I/O. See `docs/parametric.md`.
 """
 
 from crc_sdk.parametric.basis_risk import BasisRisk, ImpactNoise, NoBasisRisk
+from crc_sdk.parametric.constraints import Budget, Limit
 from crc_sdk.parametric.cover import Cover
+from crc_sdk.parametric.design import DesignOptions, DesignResult, design
 from crc_sdk.parametric.errors import (
     ComonotoneIndexWarning,
     CoverDefinitionError,
+    DesignError,
+    InfeasibleDesignError,
     LeakageError,
     ParametricError,
     ProbabilitySemanticsError,
     SampleError,
+    SolverUnavailableError,
+    UnboundedDesignError,
     UnknownPayoutKindError,
     UnresolvedParameterError,
 )
@@ -33,6 +44,12 @@ from crc_sdk.parametric.index import (
 from crc_sdk.parametric.loss import LossModel
 from crc_sdk.parametric.metadata import EvaluationMetadata
 from crc_sdk.parametric.metrics import MetricOptions
+from crc_sdk.parametric.objectives import (
+    MSE,
+    ExpectedUncovered,
+    UserObjective,
+    WeightedCVaR,
+)
 from crc_sdk.parametric.parameters import Free
 from crc_sdk.parametric.payouts import (
     BinaryPayout,
@@ -61,19 +78,27 @@ __all__ = [
     "AtStation",
     "BasisRisk",
     "BinaryPayout",
+    "Budget",
     "ComonotoneIndexWarning",
     "CostOfCapitalLoad",
     "Cover",
     "CoverDefinitionError",
+    "DesignError",
+    "DesignOptions",
+    "DesignResult",
     "EvaluationMetadata",
+    "ExpectedUncovered",
     "Free",
     "ImpactNoise",
     "IndexDefinition",
+    "InfeasibleDesignError",
     "LeakageError",
+    "Limit",
     "LinearConstraints",
     "LinearInAmounts",
     "LinearPayout",
     "LossModel",
+    "MSE",
     "MetricOptions",
     "NoBasisRisk",
     "OutcomeSample",
@@ -84,10 +109,15 @@ __all__ = [
     "PurePremium",
     "SampleError",
     "SampleProvenance",
+    "SolverUnavailableError",
     "StepPayout",
+    "UnboundedDesignError",
     "UnknownPayoutKindError",
     "UnresolvedParameterError",
+    "UserObjective",
+    "WeightedCVaR",
     "compare",
+    "design",
     "evaluate",
     "holdout",
     "register_payout",

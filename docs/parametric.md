@@ -6,8 +6,8 @@
 cover pays an amount fixed in advance whenever a measured index, such as a
 year's maximum daily rainfall, reaches stated thresholds. This page covers the
 parts available now: covers, payout functions and their parameters, the
-outcome samples they are evaluated on, and the evaluation and comparison of
-covers. Design builds on them and will be documented here when it lands.
+outcome samples they are evaluated on, the evaluation and comparison of
+covers, and the design of a cover's free parameters.
 
 Everything here works on numpy arrays and does no I/O, except
 `write_comparison`, which writes one Parquet file.
@@ -341,3 +341,165 @@ rows of several calls (in and out of sample, several folds) to one file,
 concatenate the tables with `pyarrow.concat_tables` and pass
 `metadata=EvaluationMetadata.merge(*(EvaluationMetadata.from_table(t) for t in
 tables))`.
+
+## Design a cover
+
+`design(template, sample, objective, *, pricing=PurePremium(), budget=None,
+limit=None, options=DesignOptions())` chooses a template's `Free` parameters
+on a design sample and returns a `DesignResult`: the resolved cover and its
+design record. The template must be written for the sample's asset (or for
+none) and pay in the sample's loss unit on an index in its index unit.
+
+```python
+from crc_sdk.parametric import (Budget, CostOfCapitalLoad, DesignOptions, Free,
+                                StepPayout, WeightedCVaR, design, evaluate, holdout)
+
+design_years, held_out = holdout(sample, train_fraction=0.7)
+template = Cover(index, StepPayout([60.0, 80.0, 100.0], [Free(), Free(), Free()]),
+                 payout_unit="EUR", asset_id="warehouse-a")
+result = design(template, design_years, WeightedCVaR(alpha=0.9, beta=0.95),
+                pricing=CostOfCapitalLoad(0.06, 0.99), budget=Budget(ratio=0.8),
+                options=DesignOptions(ranges=True))
+result.cover, result.parameters, result.objective_value, result.premium
+evaluate(result, held_out, split="out_of_sample")   # priced at the design premium
+```
+
+The design needs the optional extra `crc-sdk[parametric]` (the HiGHS solver,
+`highspy`) on its linear and quadratic routes; without it they raise
+`SolverUnavailableError`, an `ImportError` that names the extra. Importing
+`crc_sdk.parametric` loads no solver.
+
+### Objectives
+
+On the design sample, with probabilities p, loss L, payout π and the uncovered
+loss U = max(L − π, 0):
+
+| Objective | Minimises | Solved as |
+| --- | --- | --- |
+| `MSE()` | Σ p (L − π)²: paying more than the loss counts as much as paying less | a QP in the amounts |
+| `ExpectedUncovered()` | E[U] = Σ p U: paying more than the loss earns nothing | an LP |
+| `WeightedCVaR(alpha, beta)` | α · CVaR_β(U) + (1 − α) · E[U], α ∈ [0, 1], β ∈ (0, 1) | an LP, the CVaR in the Rockafellar–Uryasev form min_z z + Σ p (U − z)⁺ / (1 − β) |
+| `UserObjective(function, *, name, parameters=None)` | `function(loss, payout, probability)`, a float | a grid search, evaluated in numpy |
+
+The objectives weigh the years differently: MSE penalises payouts that miss
+the loss in either direction, E[U] counts every year's shortfall alike, and
+the weighted CVaR adds weight on the worst 1 − β of the shortfall. Which suits
+a cover depends on what its owner needs; none is better in general. A user
+objective's `name` and `parameters` go into the record and the design id; its
+function does not, so give each function its own name.
+
+### Pricing and constraints
+
+- The premium is priced on the design sample with `pricing`: `PurePremium()`
+  or `CostOfCapitalLoad(rate, q)`. The cost-of-capital premium is convex in
+  the payout, so the design stays an LP or a QP; its CVaR enters in the
+  Rockafellar–Uryasev form too.
+- `Budget(ratio=k)` means premium ≤ k · E[L] on the design sample;
+  `Budget(amount=B)` means premium ≤ B, in payout units. Exactly one of the two.
+- `Limit(amount)`: no payout exceeds `amount`. For the built-in families it
+  bounds every amount (their payout is at most their largest amount).
+- The payout family's own constraints hold: amounts ≥ 0, non-decreasing levels
+  under `monotone=True`, and every `Free` parameter's bounds.
+- E[U] and the weighted CVaR need a budget or bounded amounts (a `Free` upper
+  bound or a `Limit`): without either, any payout at least as large as the loss
+  is optimal, and `design` raises `DesignError` before solving. MSE needs
+  neither.
+
+### Routes
+
+| Template | Objective | Route |
+| --- | --- | --- |
+| amounts free, thresholds fixed (any built-in family, or a `LinearInAmounts` user family) | E[U], weighted CVaR | one LP (`route="lp"`) |
+| the same | MSE | one QP in the amounts (`route="qp"`) |
+| free thresholds on grids (attachment, exhaustion, breakpoints, knots, trigger) | any built-in | a grid over the thresholds, with the LP or QP at each point (`route="grid"`) |
+| a `UserObjective`, or a payout not linear in its amounts | any | a grid over every free parameter, evaluated in numpy; candidates that break the budget or the limit are dropped |
+
+- **The grid.** Every parameter the grid searches needs `Free(..., grid=...)`.
+  The candidates are the Cartesian product of the grids, in lexicographic
+  order; unordered thresholds and non-monotone levels are skipped.
+  `DesignOptions(max_grid_points=10_000)` caps the product; a larger grid
+  raises `DesignError`. On a finite sample the objective is piecewise constant
+  or piecewise smooth in the thresholds, so a stated grid is used rather than
+  gradients. `DesignResult.profile` is a `pyarrow.Table` with one row per
+  candidate: its values, `objective` and `status` (`"optimal"` or `"feasible"`,
+  `"infeasible"`, `"invalid"`, `"over_budget"`, `"over_limit"`).
+- **Scaling.** Losses and payouts are divided by the largest loss of a draw (1
+  if that is at most 1e-6) before solving; results are in payout units.
+- **Solver settings.** HiGHS's simplex for the LPs (a vertex solution), its QP
+  solver with a Hessian regularisation of 1e-12 for the QPs. The record holds
+  the solver's name and version, the options, the status, the iterations and
+  the solver time.
+
+### Checks and errors
+
+After every solve numpy recomputes the payout, the objective, the premium, the
+budget, the limit and the family's constraints from the returned values, with
+the relative tolerance `DesignOptions.feasibility_tolerance` (1e-7, relative to
+the larger of the bound and the scale). Nothing is returned that fails them.
+
+| Error | When |
+| --- | --- |
+| `InfeasibleDesignError` | no payout meets the constraints, including a fixed amount or a lower bound above the limit, and a grid without a feasible candidate |
+| `UnboundedDesignError` | the solver reports an unbounded objective |
+| `DesignError` | any other solver status, a failed check, a missing grid, a grid above the cap, E[U] or weighted CVaR without a budget or bounds |
+| `SolverUnavailableError` | the LP or QP route without `crc-sdk[parametric]` |
+
+The design errors are `RuntimeError`s and carry `asset_id`, `status` and
+`solver_message`. Free amounts below 1e-9 of the scale are set to 0 and listed
+in `DesignResult.zeroed`, so a rounding residue does not count as a payout.
+
+### Non-unique optima
+
+A design sample often leaves part of a design open, and the result says so
+rather than presenting one solver's answer as the design.
+
+- **Unidentified amounts.** An amount whose payout band no design year reaches
+  changes nothing on the sample: not the objective, the premium or the budget.
+  `DesignResult.unidentified` lists them, and `DesignOptions(fill="lowest")`,
+  the default, sets each to the smallest value the constraints allow (under
+  `monotone`, the previous level; else its lower bound); `fill="highest"` takes
+  the largest, and raises without a bound above. Both keep the design exactly
+  optimal, but out of sample a year can fall into such a band, and then the
+  rule sets its payout.
+- **The LP route.** With `DesignOptions(ranges=True)` every identified amount
+  is ranged over the near-optimal designs, those within ε · max(1, |optimum|)
+  of the optimum in scaled units, at ε = 1e-9 and ε = 1e-11 (four more LPs per
+  amount, at HiGHS feasibility tolerances of 1e-10). An amount is pinned when
+  its narrow range is at most half its wide one, or narrower than 1e-7 of the
+  scale; `unique` is true when every identified amount is pinned, and
+  `DesignResult.ranges` gives the wide ranges in payout units. At a unique
+  vertex a range shrinks with ε; on a set of optimal designs it keeps the set's
+  width. Without `ranges=True`, `unique` is `None` on the LP route.
+- **The QP route.** `unique` is true when H = Bᵀ diag(p) B, over the identified
+  amounts, is positive definite (smallest eigenvalue above 1e-10 of the
+  largest).
+- **The grid.** `ties` counts the other candidates whose objective lies within
+  `feasibility_tolerance` · max(1, |best|) of the best (in scaled units; in the
+  objective's own units for a user objective); the first in lexicographic order
+  wins. `ties` is 0 on the LP and QP routes. With ties, `unique` is false;
+  otherwise it is the LP's or QP's report at the chosen candidate, and `None`
+  for a grid evaluated in numpy.
+
+**Degenerate tails.** For a weighted CVaR the result records `p_zero_loss` =
+P(L = 0), `tail_outcomes` = (1 − β) / p_min, and `degenerate_tail`:
+`"expected_uncovered"` when β ≤ `p_zero_loss` (the objective is then a multiple
+of E[U]), `"single_outcome"` when the tail holds at most one draw (a minimax
+over years), otherwise `None`. They are recorded, not raised.
+
+### The design result
+
+`DesignResult` holds the resolved `cover` and its `parameters` (the designed
+value of each free parameter); `template_hash`; `design_id`, `sha256:` plus the
+SHA-256 of the canonical JSON of the template hash, the objective, the pricing,
+the budget, the limit, the options and the design sample's `content_hash`
+(the solver and the time are in the record, not in the id); the
+`objective_value`, the design `premium`, `expected_loss`, `budget_bound` and
+`budget_use`; the `route`; the solver's identity, status and work; the
+non-uniqueness report and the degenerate-tail flags; and the `design_sample`.
+
+`evaluate` and `compare` take a `DesignResult` in place of a cover: its rows
+use the design premium (`premium_basis` `"design"`), carry its `design_id`,
+`unique`, `ties` and `degenerate_tail`, and its `to_record()` goes into the
+metadata's `designs`, with the solver in `solvers`. In-sample rows of a design
+measure its fit on the years it was chosen on; out-of-sample rows, on held-out
+years or fresh draws, are the ones to report.
