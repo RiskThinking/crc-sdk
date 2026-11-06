@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import sys
 import warnings
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
+import h3  # type: ignore[import-untyped]
 import numpy as np
 import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
@@ -23,6 +25,7 @@ from crc_sdk.parametric import (
     AtStation,
     Budget,
     ComonotoneIndexWarning,
+    CostOfCapitalLoad,
     Cover,
     EvaluationMetadata,
     ExpectedUncovered,
@@ -37,6 +40,7 @@ from crc_sdk.parametric import (
     NearestCell,
     NoBasisRisk,
     ParametricPlan,
+    PurePremium,
     SampleError,
     StationColumn,
     StepPayout,
@@ -47,6 +51,7 @@ from crc_sdk.parametric import (
     sample_annual,
     setup_text,
 )
+from crc_sdk.parametric.metadata import EVALUATION_METADATA_KEY
 from crc_sdk.types import SourceProvenance
 from crc_sdk.workflows import AssetPortfolio, CellColumn, ImpactContextColumns
 
@@ -353,14 +358,103 @@ def test_the_entry_point_checks_its_arguments() -> None:
         StationColumn("")
 
 
-def test_nearest_cell_needs_point_assets() -> None:
-    cell = point_to_cell(6.96, 50.94, 7)
-    assets = AssetPortfolio(
-        pa.table({"asset_id": ["a"], "cell_index": pa.array([cell], pa.uint64())}),
+def _cell_assets(*cells: Any, ids: Sequence[str] = ("warehouse-a",)) -> Any:
+    """Assets located by their H3 cells (`CellColumn`), with values."""
+    return AssetPortfolio(
+        pa.table(
+            {
+                "asset_id": list(ids),
+                "cell_index": pa.array(list(cells), pa.uint64()),
+                "value_eur": [2e6 + 1e5 * k for k in range(len(ids))],
+            }
+        ),
         location=CellColumn(),
     )
-    with pytest.raises(SampleError, match="PointColumns"):
-        _plan(assets=assets, value_column=None, value_unit="1")
+
+
+def test_nearest_cell_locates_assets_by_their_h3_cells() -> None:
+    # The H3 cell of warehouse-a's point lies inside the grid cell
+    # (50.875, 6.875), the cell its point is nearest.
+    cell = point_to_cell(6.96, 50.94, 7)
+    by_cell = _plan(assets=_cell_assets(cell)).basis_risk(ImpactNoise(0.3, upper=1.0))
+    by_point = _plan(assets=_assets("warehouse-a")).basis_risk(
+        ImpactNoise(0.3, upper=1.0)
+    )
+    sample = by_cell.samples()["warehouse-a"]
+    assert sample.content_hash == by_point.samples()["warehouse-a"].content_hash
+    series = sample.provenance.sources[0]["series"]
+    assert series["asset_location"] == "h3_cell"
+    assert series["cell"] == {"latitude": 50.875, "longitude": 6.875}
+    # The function route at the H3 cell's centre, with the plan's generator.
+    latitude, longitude = h3.cell_to_latlng(h3.int_to_str(cell))
+    by_hand = AnnualSeries.nearest_cell(
+        _annual(),
+        longitude=longitude,
+        latitude=latitude,
+        unit="mm/day",
+        source=PROVENANCE.model_dump(mode="json"),
+    )
+    assert series["distance_km"] == by_hand.provenance["distance_km"]
+    expected = sample_annual(
+        by_hand,
+        loss_model=LossModel(
+            RAMP, value_column="value_eur", value_unit="EUR"
+        ).for_asset(_cell_assets(cell), "warehouse-a"),
+        basis_risk=ImpactNoise(0.3, upper=1.0),
+        asset_id="warehouse-a",
+        rng=np.random.default_rng(np.random.SeedSequence(42).spawn(1)[0]),
+    )
+    assert sample.content_hash == expected.content_hash
+    # Builders and explain() read no geometry.
+    document: Any = by_cell.covers(_linear()).explain(format="json")
+    assert document["assets"]["location"] == "CellColumn(name='cell_index')"
+
+
+def test_an_h3_cell_that_straddles_grid_cells_raises() -> None:
+    # A point on the boundary between two grid cells (longitude 7.0): its H3
+    # cell has vertices on both sides, so it does not say which series is
+    # the asset's.
+    straddling = point_to_cell(7.0, 50.9, 7)
+    vertices = h3.cell_to_boundary(h3.int_to_str(straddling))
+    assert min(lon for _, lon in vertices) < 7.0 < max(lon for _, lon in vertices)
+    plan = _plan(assets=_cell_assets(straddling)).basis_risk(NoBasisRisk())
+    with pytest.raises(SampleError, match="straddles cells of the grid"):
+        plan.samples()
+    # A coarser grid holds the whole H3 cell: the 0.5-degree step puts the
+    # boundary at 6.75 and 7.25, so the cell lies in one grid cell.
+    coarse = pa.table(
+        {
+            "year": pa.array(YEARS, pa.int32()),
+            "latitude": [51.0] * len(YEARS),
+            "longitude": [7.0] * len(YEARS),
+            "value": np.linspace(30.0, 150.0, len(YEARS)),
+        }
+    )
+    on_coarse = _plan(
+        coarse, _cell_assets(straddling), location=NearestCell(spacing=(0.5, 0.5))
+    ).basis_risk(NoBasisRisk())
+    sample = on_coarse.samples()["warehouse-a"]
+    assert sample.provenance.sources[0]["series"]["cell"] == {
+        "latitude": 51.0,
+        "longitude": 7.0,
+    }
+
+
+def test_h3_cell_assets_that_cannot_be_located_raise(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    far = point_to_cell(12.0, 40.0, 7)
+    with pytest.raises(SampleError, match="half a grid step"):
+        _plan(assets=_cell_assets(far)).basis_risk(NoBasisRisk()).samples()
+    with pytest.raises(SampleError, match="not a valid H3 cell"):
+        _plan(assets=_cell_assets(12345)).basis_risk(NoBasisRisk()).samples()
+    with pytest.raises(SampleError, match="has no H3 cell"):
+        _plan(assets=_cell_assets(None)).basis_risk(NoBasisRisk()).samples()
+    # Without the geometry extra, the error names it.
+    cell = point_to_cell(6.96, 50.94, 7)
+    monkeypatch.setitem(sys.modules, "h3", None)
+    with pytest.raises(ImportError, match=r"crc-sdk\[geometry\]"):
+        _plan(assets=_cell_assets(cell)).basis_risk(NoBasisRisk()).samples()
 
 
 def test_a_registry_impact_that_needs_a_cell_is_refused_without_one() -> None:
@@ -412,6 +506,27 @@ def test_a_registry_impact_that_needs_a_cell_is_refused_without_one() -> None:
     sample = by_cell.basis_risk(NoBasisRisk()).samples()["a"]
     expected = with_cell.evaluate(np.linspace(30.0, 150.0, 30))
     np.testing.assert_allclose(sample.loss[:, 0], expected)
+    # So do assets located on a grid by their H3 cells (NearestCell).
+    on_grid = _plan(
+        assets=AssetPortfolio(
+            pa.table(
+                {
+                    "asset_id": ["a"],
+                    "cell_index": pa.array([cell], pa.uint64()),
+                    "country": ["DEU"],
+                }
+            ),
+            location=CellColumn(),
+        ),
+        impact=rx1day,
+        value_column=None,
+        value_unit="1",
+        context=ImpactContextColumns(country="country"),
+    )
+    gridded = on_grid.basis_risk(NoBasisRisk()).samples()["a"]
+    np.testing.assert_allclose(
+        gridded.loss[:, 0], with_cell.evaluate(gridded.index[:, 0])
+    )
 
 
 def test_basis_risk_is_required_and_noise_needs_a_seed() -> None:
@@ -471,6 +586,103 @@ def test_objectives_and_splits_are_checked() -> None:
         Holdout(1.0)
     with pytest.raises(ValueError, match="k must"):
         KFold(1)
+
+
+COC = CostOfCapitalLoad(0.06, 0.99)
+
+
+def test_pricing_prices_a_plan_of_resolved_covers(tmp_path: Path) -> None:
+    base = (
+        _plan(assets=_assets("warehouse-a"))
+        .basis_risk(NoBasisRisk())
+        .covers(_linear())
+        .split(Holdout(0.7))
+        .metrics(OPTIONS)
+    )
+    plan = base.pricing(COC)
+    assert base.pricing_rule is None and plan.pricing_rule == COC
+    # explain() states the pricing of every planned evaluation, without I/O.
+    document: Any = plan.explain(format="json")
+    assert document["designs"] is None
+    assert [e["pricing"] for e in document["setup"]["evaluations"]] == [
+        COC.to_document()
+    ] * 2
+    loaded = "Pricing: a cost-of-capital load, P = (1 - 0.06) E[payout] + 0.06 "
+    assert loaded in setup_text(document["setup"])
+    unpriced: Any = base.explain(format="json")
+    assert {e["pricing"]["kind"] for e in unpriced["setup"]["evaluations"]} == {"pure"}
+    # Every row is priced with it on its evaluation block, as compare prices.
+    result = plan.write_parquet(tmp_path / "priced.parquet")
+    pure = base.write_parquet(tmp_path / "pure.parquet")
+    train, test = holdout(result.samples["warehouse-a"], 0.7)
+    blocks: tuple[tuple[Literal["in_sample", "out_of_sample"], Any], ...] = (
+        ("in_sample", train),
+        ("out_of_sample", test),
+    )
+    for split, block in blocks:
+        by_hand = compare(
+            [_linear("warehouse-a")],
+            block,
+            split=split,
+            pricing=COC,
+            design_sample=train,
+            options=OPTIONS,
+        ).to_pylist()[0]
+        row = next(r for r in result.table.to_pylist() if r["split"] == split)
+        assert row["premium"] == by_hand["premium"]
+        assert row["cvar_net_loss_b0_9"] == by_hand["cvar_net_loss_b0_9"]
+        unloaded = next(r for r in pure.table.to_pylist() if r["split"] == split)
+        assert row["premium"] > unloaded["premium"]
+    assert {
+        json.dumps(e["pricing"], sort_keys=True)
+        for e in result.metadata.setup.evaluations
+    } == {json.dumps(COC.to_document(), sort_keys=True)}
+    assert loaded in setup_text(result.metadata)
+    with pytest.raises(TypeError, match="pricing"):
+        UNTYPED_PLAN.pricing(base, "cost of capital")
+
+
+def test_pricing_and_the_objectives_pricing_must_agree() -> None:
+    plan = (
+        _plan(assets=_assets("warehouse-a"))
+        .basis_risk(NoBasisRisk())
+        .covers(_step(), _linear())
+        .split(Holdout(0.7))
+    )
+    by_pricing = plan.pricing(COC).objective(MSE(), budget=Budget(ratio=1.0))
+    by_objective = plan.objective(MSE(), pricing=COC, budget=Budget(ratio=1.0))
+    stated_twice = plan.objective(
+        MSE(), pricing=CostOfCapitalLoad(0.06, 0.99), budget=Budget(ratio=1.0)
+    ).pricing(COC)
+    documents: list[Any] = [
+        p.explain(format="json") for p in (by_pricing, by_objective, stated_twice)
+    ]
+    assert documents[0] == documents[1] == documents[2]
+    assert documents[0]["designs"]["pricing"] == COC.to_document()
+    # The designs are priced with the plan's pricing too.
+    designed = by_pricing.designs()
+    assert [d.design_id for d in designed] == [
+        d.design_id for d in by_objective.designs()
+    ]
+    train, _ = holdout(by_pricing.samples()["warehouse-a"], 0.7)
+    bound = Cover(
+        INDEX, _step().payout, payout_unit="EUR", asset_id="warehouse-a", label="step"
+    )
+    expected = design(bound, train, MSE(), pricing=COC, budget=Budget(ratio=1.0))
+    assert designed[0].design_id == expected.design_id
+    # Two different pricings raise, in either order.
+    with pytest.raises(ValueError, match="state it once"):
+        plan.pricing(COC).objective(MSE(), pricing=PurePremium())
+    with pytest.raises(ValueError, match="state it once"):
+        plan.objective(MSE(), pricing=PurePremium()).pricing(COC)
+    # Without either, the premiums are pure, as before.
+    pure: Any = plan.objective(MSE()).explain(format="json")
+    assert pure["designs"]["pricing"] == {"kind": "pure"}
+    # An objective restated without a pricing keeps .pricing(...)'s.
+    restated: Any = (
+        plan.pricing(COC).objective(MSE()).objective(MSE()).explain(format="json")
+    )
+    assert restated["designs"]["pricing"] == COC.to_document()
 
 
 # -- samples and seeding -------------------------------------------------------
@@ -695,12 +907,20 @@ def test_write_parquet_writes_every_split_with_its_setup(tmp_path: Path) -> None
     assert "fold 3 of a 4-fold split over blocks of years" in text
     assert "the leakage check passed" in text
     assert "Design step (mse) (" in text
+    # The annual table's record is written once; every hazard source names it.
     hazard = [entry for entry in metadata.sources if entry["role"] == "hazard"]
-    assert hazard and all(
-        entry["annual_table"]["kind"] == "table"
-        and entry["annual_table"]["table_sha256"].startswith("sha256:")
-        for entry in hazard
-    )
+    assert len(hazard) == len(metadata.setup.samples)
+    (record,) = metadata.source_records
+    assert set(record) == {"annual_table"}
+    table_record = record["annual_table"]
+    assert table_record["kind"] == "table"
+    assert table_record["table_sha256"].startswith("sha256:")
+    assert table_record["rows"] == len(YEARS) * len(CELLS)
+    assert all("annual_table" not in entry for entry in hazard)
+    assert {entry["annual_table_sha256"] for entry in hazard} == {
+        table_record["table_sha256"]
+    }
+    assert metadata.to_json().count(table_record["table_sha256"]) == 1 + len(hazard)
     assert metadata.licences[0]["licence"] == "CC0-1.0"
     assert len({entry["sample_hash"] for entry in metadata.rng}) == len(
         metadata.setup.samples
@@ -723,6 +943,7 @@ def test_without_a_split_every_row_is_in_sample(tmp_path: Path) -> None:
     assert result.row_count == 2
     sample = result.samples["warehouse-a"]
     assert result.designs[0].design_sample.content_hash == sample.content_hash
+    assert result.fresh_samples is None
 
 
 def test_a_written_file_is_replaced_atomically(tmp_path: Path) -> None:
@@ -760,10 +981,11 @@ def test_file_sources_and_assets_are_read_at_execution(tmp_path: Path) -> None:
     pq.write_table(_annual(), source)
     pq.write_table(_assets(), assets)
     result = plan.write_parquet(tmp_path / "comparison.parquet")
-    record = next(e for e in result.metadata.sources if e["role"] == "hazard")
+    entry = next(e for e in result.metadata.sources if e["role"] == "hazard")
+    (record,) = result.metadata.source_records
     assert record["annual_table"]["path"] == str(source)
     assert record["annual_table"]["file_sha256"].startswith("sha256:")
-    series_source = record["series"]["source"]
+    series_source = entry["series"]["source"]
     assert series_source["file_sha256"] == record["annual_table"]["file_sha256"]
     assert series_source["licence"] == "CC0-1.0"
     assert result.row_count == 2
@@ -774,11 +996,99 @@ def test_a_source_plan_is_executed_once_and_explained(tmp_path: Path) -> None:
     plan = _plan(source).basis_risk(NoBasisRisk()).covers(_linear()).metrics(OPTIONS)
     result = plan.write_parquet(tmp_path / "comparison.parquet")
     assert source.calls == ["annual_extremes", "explain"]
-    record = next(e for e in result.metadata.sources if e["role"] == "hazard")
+    entry = next(e for e in result.metadata.sources if e["role"] == "hazard")
+    (record,) = result.metadata.source_records
     assert record["annual_table"]["explain"]["recipe"] == "rx1day"
-    assert record["series"]["source"]["source_type"] == "_SourcePlan"
+    assert entry["series"]["source"]["source_type"] == "_SourcePlan"
     with pytest.raises(SampleError, match="unit"):
         _plan(_SourcePlan(_annual(), unit="mm")).basis_risk(NoBasisRisk()).samples()
+
+
+def _earlier_layout(metadata: EvaluationMetadata) -> dict[str, Any]:
+    """The metadata as plans wrote it before `source_records`.
+
+    The annual table's record was then repeated in every hazard source, under
+    `annual_table`, and the metadata had no `source_records`.
+    """
+    document: dict[str, Any] = json.loads(metadata.to_json())
+    (record,) = document.pop("source_records")
+    document["sources"] = [
+        {
+            **{k: v for k, v in entry.items() if k != "annual_table_sha256"},
+            **record,
+        }
+        if entry["role"] == "hazard"
+        else entry
+        for entry in document["sources"]
+    ]
+    return document
+
+
+def test_metadata_in_the_earlier_layout_still_reads(tmp_path: Path) -> None:
+    plan = (
+        _plan()
+        .basis_risk(ImpactNoise(0.3, upper=1.0))
+        .covers(_step(), _linear())
+        .objective(MSE(), budget=Budget(ratio=1.0))
+        .split(Holdout(0.7))
+        .metrics(OPTIONS)
+    )
+    result = plan.write_parquet(tmp_path / "comparison.parquet")
+    earlier = _earlier_layout(result.metadata)
+    assert "source_records" not in earlier
+    assert all(
+        entry["annual_table"]["table_sha256"].startswith("sha256:")
+        for entry in earlier["sources"]
+        if entry["role"] == "hazard"
+    )
+    stored = EvaluationMetadata.from_json(json.dumps(earlier))
+    assert stored.source_records == ()
+    # setup_text states the same setup from either layout, and from a table.
+    assert setup_text(stored) == setup_text(result.metadata)
+    text = json.dumps(earlier, sort_keys=True).encode("utf-8")
+    table = result.table.replace_schema_metadata(
+        {EVALUATION_METADATA_KEY.encode("utf-8"): text}
+    )
+    pq.write_table(table, tmp_path / "earlier.parquet")
+    read = pq.read_table(tmp_path / "earlier.parquet")
+    assert EvaluationMetadata.from_table(read) == stored
+    assert setup_text(read) == setup_text(result.table)
+    out = read.filter(pa.compute.equal(read.column("split"), "out_of_sample"))
+    assert setup_text(out) == setup_text(
+        result.table.filter(
+            pa.compute.equal(result.table.column("split"), "out_of_sample")
+        )
+    )
+
+
+def test_merged_comparisons_keep_each_source_record(tmp_path: Path) -> None:
+    def written(table: Any, name: str) -> Any:
+        return (
+            _plan(table)
+            .basis_risk(NoBasisRisk())
+            .covers(_linear())
+            .metrics(OPTIONS)
+            .write_parquet(tmp_path / name)
+        )
+
+    first, second = written(_annual(1), "first.parquet"), written(_annual(2), "two")
+    merged = EvaluationMetadata.merge(first.metadata, second.metadata)
+    records = [entry["annual_table"] for entry in merged.source_records]
+    assert [r["table_sha256"] for r in records] == [
+        first.metadata.source_records[0]["annual_table"]["table_sha256"],
+        second.metadata.source_records[0]["annual_table"]["table_sha256"],
+    ]
+    # Each hazard source names the record of the table its sample was read from.
+    by_sample = {
+        entry["sample_hash"]: entry["annual_table_sha256"]
+        for entry in merged.sources
+        if entry["role"] == "hazard"
+    }
+    for result, record in zip((first, second), records, strict=True):
+        for sample in result.samples.values():
+            assert by_sample[sample.content_hash] == record["table_sha256"]
+    again = EvaluationMetadata.merge(first.metadata, first.metadata)
+    assert again.source_records == first.metadata.source_records
 
 
 def test_out_of_sample_rows_match_compare_on_the_held_out_years(

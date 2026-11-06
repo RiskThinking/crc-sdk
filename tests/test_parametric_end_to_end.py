@@ -115,10 +115,11 @@ def test_the_docs_quick_start_runs_as_written(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     quick_start = _python_blocks("## Quick start")
+    builders = _python_blocks("### Builders")
     per_year = _python_blocks("## Next step: per-year values")
     curve_by_hand = _python_blocks("### From a fitted curve")
     annual_by_hand = _python_blocks("### From per-year values")
-    assert [len(blocks) for blocks in (quick_start, per_year)] == [2, 1]
+    assert [len(blocks) for blocks in (quick_start, builders, per_year)] == [2, 1, 1]
     assert [len(blocks) for blocks in (curve_by_hand, annual_by_hand)] == [1, 1]
     monkeypatch.chdir(tmp_path)
     namespace: dict[str, Any] = {}
@@ -206,6 +207,30 @@ def test_the_docs_quick_start_runs_as_written(
     ]
     assert out[0]["method"] == "fresh_draws"
     assert out[0]["details"] == {"fresh_draws_seed": 7, "plan_seed": 42}
+    assert result.fresh_samples is not None
+    assert set(out_of_sample.column("sample_hash").to_pylist()) == {
+        result.fresh_samples["warehouse-a"].content_hash
+    }
+
+    # The pricing of the fixed cover alone, without an objective's.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", ReturnPeriodExtrapolationWarning)
+        run(builders)
+    priced = namespace["priced_result"]
+    assert priced.row_count == 2 and priced.designs == ()
+    assert {e["pricing"]["kind"] for e in priced.metadata.setup.evaluations} == {
+        "cost_of_capital"
+    }
+    assert "Pricing: a cost-of-capital load, P = (1 - 0.06) E[payout]" in (
+        setup_text(priced.metadata)
+    )
+    loaded = priced.table.filter(pc.equal(priced.table["split"], "out_of_sample"))
+    assert loaded.column("sample_hash").to_pylist() == [
+        result.fresh_samples["warehouse-a"].content_hash
+    ]
+    assert (
+        loaded.column("premium")[0].as_py() > out_of_sample.column("premium")[3].as_py()
+    )
 
     # The next step: the same covers on per-year values, with a holdout.
     run(per_year)
@@ -458,7 +483,9 @@ def test_the_plan_from_an_annual_extremes_file(tmp_path: Path) -> None:
         "values_sha256": result.metadata.assets["values_sha256"],
     }
     hazard = next(e for e in stored.sources if e["role"] == "hazard")
-    assert hazard["annual_table"]["file_sha256"].startswith("sha256:")
+    (record,) = stored.source_records
+    assert record["annual_table"]["file_sha256"].startswith("sha256:")
+    assert hazard["annual_table_sha256"] == record["annual_table"]["table_sha256"]
     assert hazard["series"]["kind"] == "nearest_cell"
     assert hazard["series"]["cell"] == {"latitude": 50.875, "longitude": 6.875}
     assert {d["route"] for d in stored.designs} == {"lp"}

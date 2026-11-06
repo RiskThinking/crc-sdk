@@ -22,6 +22,9 @@ with sorted keys. It holds:
 - `sources`, `licences` and `rng`: the samples' source documents, their
   licences and attributions, and the generator state before every random
   step, each tagged with its sample's hash;
+- `source_records`: what a plan read, once for all its samples (the
+  canonical file, or the annual table), empty for a comparison that
+  `compare` or `evaluate` builds;
 - `assets`: the number of assets; the id column and the hash of the
   (asset id, value) pairs when the caller knows them. Asset values are never
   written.
@@ -224,13 +227,22 @@ class EvaluationMetadata(_EvaluationModel):
     covers: tuple[CoverEntry, ...]
     designs: tuple[dict[str, Any], ...] = ()
     sources: tuple[dict[str, Any], ...] = ()
+    source_records: tuple[dict[str, Any], ...] = ()
     assets: dict[str, Any]
     licences: tuple[dict[str, Any], ...] = ()
     rng: tuple[dict[str, Any], ...] = ()
 
     @model_validator(mode="after")
     def _check(self) -> Self:
-        for name in ("solvers", "designs", "sources", "assets", "licences", "rng"):
+        for name in (
+            "solvers",
+            "designs",
+            "sources",
+            "source_records",
+            "assets",
+            "licences",
+            "rng",
+        ):
             _plain(name, getattr(self, name))
         ids = [design.get("design_id") for design in self.designs]
         if not all(isinstance(value, str) for value in ids):
@@ -283,8 +295,9 @@ class EvaluationMetadata(_EvaluationModel):
         `compare` calls (in and out of sample, several folds or assets) into
         one file. The environments, the basis and the metric options must
         agree, and a column or design id must mean the same in each; samples,
-        evaluations, covers, designs, sources, licences and generator states
-        are combined without repeats. `created_at` is the latest one.
+        evaluations, covers, designs, sources, source records, licences and
+        generator states are combined without repeats. `created_at` is the
+        latest one.
 
         Raises `EvaluationError` if the items disagree, and `TypeError` for an
         item that is not `EvaluationMetadata`.
@@ -377,6 +390,9 @@ class EvaluationMetadata(_EvaluationModel):
             ),
             designs=tuple(designs.values()),
             sources=_unique(entry for item in items for entry in item.sources),
+            source_records=_unique(
+                entry for item in items for entry in item.source_records
+            ),
             assets={"count": len(asset_ids), **assets},
             licences=_unique(entry for item in items for entry in item.licences),
             rng=_unique(entry for item in items for entry in item.rng),

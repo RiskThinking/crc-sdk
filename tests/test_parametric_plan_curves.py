@@ -227,10 +227,19 @@ def test_for_evaluation_runs_end_to_end_offline(dataset: Path, tmp_path: Path) -
     assert {entry["row"]["cell_index"] for entry in hazard} == {
         format(cell, "x") for cell in CELLS.values()
     }
-    record = hazard[0]["canonical_file"]
+    # The canonical file's record is written once, and each curve names it.
+    assert len(stored.source_records) == 1
+    record = stored.source_records[0]["canonical_file"]
     assert record["path"] == str(dataset)
     assert record["file_sha256"].startswith("sha256:")
     assert record["curves"] == 2
+    assert all("canonical_file" not in entry for entry in hazard)
+    assert {entry["canonical_file_sha256"] for entry in hazard} == {
+        record["file_sha256"]
+    }
+    assert {entry["details"]["file_sha256"] for entry in hazard} == {
+        record["file_sha256"]
+    }
     assert hazard[0]["details"]["spatial_match"] == "h3_cell"
     assert hazard[0]["metadata"]["probability_semantics"] == "annual_exceedance"
     assert stored.licences[0]["licence"] == "CC0-1.0"
@@ -357,6 +366,15 @@ def test_fresh_draws_use_their_own_seed_and_designs_follow_the_function_route(
     assert {s.content_hash for s in plan.samples().values()} == {
         s.content_hash for s in samples.values()
     }
+    # The result holds the fresh draws, one sample per asset in asset order.
+    assert result.fresh_samples is not None
+    assert list(result.fresh_samples) == ["warehouse-a", "depot-b"]
+    evaluated = {
+        entry["sample_hash"]
+        for entry in result.metadata.setup.samples
+        if entry["roles"] == ["evaluation"]
+    }
+    assert {s.content_hash for s in result.fresh_samples.values()} == evaluated
     request = _request(dataset)
     curves = {row["asset_id"]: row for row in request.asset_curves().to_pylist()}
     metadata = request.dataset.metadata()
@@ -398,6 +416,8 @@ def test_fresh_draws_use_their_own_seed_and_designs_follow_the_function_route(
             if row["asset_id"] == asset_id and row["split"] == "out_of_sample"
         ]
         assert [row["sample_hash"] for row in rows] == [fresh.content_hash] * 2
+        assert result.fresh_samples[asset_id].content_hash == fresh.content_hash
+        assert result.fresh_samples[asset_id].provenance.rng == fresh.provenance.rng
         for row, expected in zip(rows, by_hand.to_pylist(), strict=True):
             assert row["expected_uncovered"] == pytest.approx(
                 expected["expected_uncovered"], rel=1e-12
@@ -418,6 +438,8 @@ def test_holdout_and_kfold_split_the_draws(dataset: Path) -> None:
     assert out[0]["details"] == {"train_fraction": 0.6, "plan_seed": 5}
     folded = base.split(KFold(4)).write_parquet(dataset.parent / "kfold.parquet")
     assert folded.row_count == 2 * 4 * 2
+    # Only fresh draws give fresh samples.
+    assert held.fresh_samples is None and folded.fresh_samples is None
 
 
 # -- the loss model -------------------------------------------------------------

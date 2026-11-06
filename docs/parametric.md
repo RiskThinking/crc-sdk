@@ -158,8 +158,9 @@ ParametricPlan.for_annual_extremes(source, assets, *, impact, unit, provenance, 
 # then, on either plan:
   .basis_risk(model)                          # required
   .covers(*covers)                            # resolved covers and templates
-  .objective(*objectives, pricing=PurePremium(), budget=None, limit=None,
+  .objective(*objectives, pricing=None, budget=None, limit=None,
              options=DesignOptions())         # to design the templates
+  .pricing(PurePremium() | CostOfCapitalLoad(rate, q))   # optional
   .split(FreshDraws(n_draws, seed=...) | Holdout(train_fraction) | KFold(k))
   .metrics(MetricOptions(...))                # optional
   .explain(format="text")                     # no I/O
@@ -211,13 +212,31 @@ ParametricPlan.for_annual_extremes(source, assets, *, impact, unit, provenance, 
 | `.monte_carlo(n_draws, *, seed, ...)` | Fitted curves only, and required there: the simulated years per asset, the plan's seed, the semantics the caller states for a dataset that declares none, and `outside_support` |
 | `.basis_risk(model)` | How index and loss differ: `NoBasisRisk()` (warns with `ComonotoneIndexWarning`), `ImpactNoise(sigma, upper=...)` or a `BasisRisk` of your own. Required: no model is assumed |
 | `.covers(*covers)` | The covers to compare. A template is designed; a resolved cover is evaluated as it is. A cover written for no asset applies to every asset, as a copy written for that asset; one written for an asset applies to it only. Each cover pays in the loss unit, on an index read at the asset (`AtAsset()`), in the hazard's unit |
-| `.objective(*objectives, pricing, budget, limit, options)` | Designs every template under each objective, with `design`'s terms. `pricing` also prices the resolved covers; without `.objective(...)` they are priced with `PurePremium()` |
+| `.objective(*objectives, pricing, budget, limit, options)` | Designs every template under each objective, with `design`'s terms. `pricing` is the plan's pricing, below |
+| `.pricing(pricing)` | The plan's pricing, `PurePremium()` or `CostOfCapitalLoad(rate, q)`, for a plan of resolved covers that has no `.objective(...)` |
 | `.split(rule)` | `FreshDraws(n_draws, seed=...)` (fitted curves), `Holdout(train_fraction)` or `KFold(k)`, below |
 | `.metrics(options)` | The `MetricOptions` of every row |
 
 A designed cover keeps the template's label (or the first 12 hex digits of its
 hash) followed by the objective, for example `"step (mse)"`; its hash and
 design id identify it.
+
+**Pricing.** One pricing prices every premium of a plan, so that its rows are
+priced alike: each design's on its design block, and each resolved cover's on
+each evaluation block. `.objective(..., pricing=...)` states it, and so does
+`.pricing(...)`, which a plan of resolved covers needs to price them without an
+objective. Both may be given if they state the same pricing; two different
+pricings raise `ValueError`, whichever comes first. Without either, the
+premiums are pure (`PurePremium()`). `explain()` shows the pricing in every
+planned evaluation, and in the design terms.
+
+```python
+from crc_sdk.parametric import CostOfCapitalLoad
+
+priced = (plan.covers(linear)                   # the quick start's fixed cover
+              .pricing(CostOfCapitalLoad(0.06, 0.99)))
+priced_result = priced.write_parquet("priced.parquet")
+```
 
 ### Splits
 
@@ -267,19 +286,30 @@ semantics the caller states and the fresh draws; the dataset's own metadata
 | --- | --- |
 | `.samples()` | One `OutcomeSample` per asset, all draws or years, in asset order |
 | `.designs()` | Every `DesignResult`, in asset, fold, cover and objective order |
-| `.write_parquet(path)` | A `ParametricResult`: `output`, `table`, `metadata`, `samples`, `designs` and `row_count` |
+| `.write_parquet(path)` | A `ParametricResult`: `output`, `table`, `metadata`, `samples`, `designs`, `fresh_samples` and `row_count` |
 
 `write_parquet` writes the rows of every asset, split and fold to one local
 Parquet file through a temporary sibling and `os.replace`, and creates the
 parent directory. Its metadata, under `crc.parametric.evaluation`, merges that
-of every block (below) and adds to each hazard source the source's record: on
-fitted curves `canonical_file` (the dataset's path, its SHA-256 and the number
-of matched curves; each sample also records its curve row's key and spatial
-match), on per-year values `annual_table` (its rows, columns and SHA-256, the
-source plan's `explain()`, and for a file its path and SHA-256). Every
-evaluation's `details` holds the plan's seed (`"plan_seed"`), every fresh-draw
-evaluation's also the fresh draws' seed (`"fresh_draws_seed"`), and `assets`
-the count, the id column and a SHA-256 of the (asset id, value) pairs.
+of every block (below) and adds the source's record once, in
+`source_records`: on fitted curves `{"canonical_file": {...}}` (the dataset's
+path, its SHA-256 and the number of matched curves; each sample also records
+its curve row's key and spatial match), on per-year values
+`{"annual_table": {...}}` (its rows, columns and SHA-256, the source plan's
+`explain()`, and for a file its path and SHA-256). Each hazard source names
+its record by that checksum, `canonical_file_sha256` or `annual_table_sha256`,
+so merged comparisons keep each record once and tell their samples apart.
+Every evaluation's `details` holds the plan's seed (`"plan_seed"`), every
+fresh-draw evaluation's also the fresh draws' seed (`"fresh_draws_seed"`), and
+`assets` the count, the id column and a SHA-256 of the (asset id, value) pairs.
+Metadata that plans wrote before `source_records`, with the record repeated in
+every hazard source, reads as before.
+
+The `ParametricResult` holds what the rows are evaluated on: `samples`, one
+sample per asset with all its draws or years, and, with `FreshDraws`,
+`fresh_samples`, one sample per asset of the fresh draws, whose
+`content_hash` is the `sample_hash` of the out-of-sample rows (`None` without
+fresh draws).
 
 ## Next step: per-year values
 
@@ -339,11 +369,17 @@ The builders, splits, seeding and outputs are those above.
 - **`location`** finds each asset's series. `NearestCell()` reads per-cell
   tables (`year`, `latitude`, `longitude`, `value`): the cell whose centre is
   nearest the asset, accepted only within half a grid step in latitude and
-  longitude (`AnnualSeries.nearest_cell`); the assets need longitude and
-  latitude. `StationColumn("station_id")` reads per-station tables: the asset
-  column names each asset's station, matched against the table's `station`
-  column (`table_column="station_id"` for NOAA water levels). An asset that
-  cannot be located raises; none is dropped.
+  longitude (`AnnualSeries.nearest_cell`). An asset with a point
+  (`PointColumns`) is located at its point. An asset with an H3 cell
+  (`CellColumn`) is located at its cell, with the `geometry` extra: the grid
+  cell nearest the H3 cell's centre is accepted only if the whole H3 cell lies
+  within it. An H3 cell that straddles two grid cells does not say which
+  series is the asset's, so it raises `SampleError`; give that asset a point.
+  Such a series records `"asset_location": "h3_cell"`, and its `distance_km`
+  is measured from the H3 cell's centre. `StationColumn("station_id")` reads
+  per-station tables: the asset column names each asset's station, matched
+  against the table's `station` column (`table_column="station_id"` for NOAA
+  water levels). An asset that cannot be located raises; none is dropped.
 - **`unit`** is the unit of the table's values. It is checked against the
   impact's calibration (an `ImpactExpression` or a registry impact), against a
   `unit` column of the table, and against the source plan's `explain()`.
@@ -357,8 +393,10 @@ The builders, splits, seeding and outputs are those above.
   context=...)`: loss = `impact(hazard) × value`, the value from an asset
   column, or 1 with `value_unit="1"` (the damage ratio). A registry impact
   that needs an H3 cell in its context (such as `rx1day`) raises unless the
-  impact, or `context`, is a `TransformContext` with the cell: this route reads
-  no cell for an asset.
+  impact, or `context`, is a `TransformContext` with the cell, or the assets
+  have H3 cells (`CellColumn`) and `context` names context columns
+  (`ImpactContextColumns`), which give each asset's impact its own cell. A
+  point asset has no cell on this route.
 - **`years`** states the years every series must cover (by default the years
   the table holds); a year without a value raises, unless `missing="drop_year"`
   drops it and lists it. No trend is removed.
@@ -830,8 +868,9 @@ semantics, basis-risk and loss models, and every evaluation with its split and
 pricing); every metric column's metric, parameter, unit and definition; every
 cover's document; the designs' records, each with its cover's label as
 evaluated (`cover_label`), so two designs that resolve to the same cover keep
-their own labels; and the samples' sources, licences
-and generator states. Asset values are never written. A comparison is derived
+their own labels; the samples' sources, licences and generator states; and,
+in a plan's comparison, what the plan read, once (`source_records`). Asset
+values are never written. A comparison is derived
 data under its inputs' licences, which the metadata lists.
 
 `write_comparison(table, path, *, metadata=None)` checks that the metadata
@@ -1023,8 +1062,8 @@ years or fresh draws, are the ones to report.
   asset. On per-year values, `sample_annual(..., index=series)` reads it at
   another cell, station or hazard; on fitted curves, an index elsewhere needs
   a joint distribution of two curves, which the curves do not give.
-- **An H3 cell for registry impacts on per-year values.** Give the impact a
-  context with the cell, as above. On fitted curves the plan passes each
-  asset's matched cell.
+- **An H3 cell for registry impacts on point assets on per-year values.** Give
+  the impact a context with the cell, or locate the assets by their H3 cells,
+  as above. On fitted curves the plan passes each asset's matched cell.
 - **Pooled k-fold metrics, bootstrap intervals, trend removal.** Each fold has
   its own rows, and years are used as recorded.

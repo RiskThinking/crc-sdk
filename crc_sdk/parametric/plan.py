@@ -12,6 +12,7 @@ ParametricPlan.for_annual_extremes(source, assets, impact=, unit=, provenance=)
   .basis_risk(model)                    # required: how index and loss differ
   .covers(*covers)                      # resolved covers and templates
   .objective(*objectives, pricing=, budget=, limit=, options=)
+  .pricing(PurePremium() | CostOfCapitalLoad(rate, q))     # optional
   .split(FreshDraws(n, seed=) | Holdout(0.7) | KFold(5))   # optional
   .metrics(MetricOptions(...))          # optional: levels and thresholds
   .explain()                            # the setup, no I/O
@@ -38,7 +39,8 @@ an `annual_extremes()` execution point (ERA5 and CMIP6 canonicalization
 plans, NEX-GDDP-CMIP6, station plans, NOAA water levels), an Arrow table in
 one of their layouts, or a local Parquet file of one. Each asset's series is
 the grid cell whose centre is nearest the asset (`NearestCell`, the default,
-for per-cell tables), or the station an asset column names
+for per-cell tables; an asset located by its H3 cell needs the whole cell
+inside one grid cell), or the station an asset column names
 (`StationColumn`). `unit` is the unit of the table's values and
 `provenance` (a `SourceProvenance`) the source's licence, attribution and
 version: annual-extremes tables carry no licence of their own. Each asset
@@ -65,6 +67,11 @@ resolved covers are evaluated as they are. A designed cover's label is the
 template's label (or the first 12 hex digits of its hash) followed by the
 objective, for example `"step (mse)"`.
 
+**Pricing.** One pricing prices every premium of the plan: the designs' on
+their design block and the resolved covers' on each evaluation block. It is
+`.objective(..., pricing=...)`'s or `.pricing(...)`'s, which must agree when
+both are stated, and `PurePremium()` when neither is.
+
 **Splits.** Without `.split(...)`, every cover is designed and evaluated on
 the whole sample, so every row is in sample. `FreshDraws(n_draws, seed=)`
 (curves only) designs on the plan's draws and evaluates on `n_draws` fresh
@@ -81,11 +88,13 @@ builds it, through a temporary sibling and `os.replace`. Its metadata under
 `crc.parametric.evaluation` (`EvaluationMetadata`) holds the setup of every
 number: the samples with their source, loss and basis-risk models, the
 splits, the pricing, the designs and the covers, plus the source's record
-(the canonical file's path and SHA-256, or the annual table's checksum and
-the source plan's `explain()`), the licences, the generator states, and the
-plan's seed in every evaluation's `details` (`"plan_seed"`, with
-`"fresh_draws_seed"` on fresh-draw rows). Asset values are never written;
-the metadata holds a SHA-256 of the (asset id, value) pairs.
+once, in `source_records` (the canonical file's path and SHA-256, or the
+annual table's checksum and the source plan's `explain()`), the licences,
+the generator states, and the plan's seed in every evaluation's `details`
+(`"plan_seed"`, with `"fresh_draws_seed"` on fresh-draw rows). Asset values
+are never written; the metadata holds a SHA-256 of the (asset id, value)
+pairs. The returned `ParametricResult` holds the samples, the fresh draws
+and the designs.
 """
 
 from __future__ import annotations
@@ -140,6 +149,7 @@ from crc_sdk.parametric.sample import (
     _arrow_table,
     _identifier,
     _string_values,
+    _thaw,
     holdout,
     year_block_kfold,
 )
@@ -308,13 +318,23 @@ class NearestCell:
     """Read each asset's series from the grid cell whose centre is nearest it.
 
     For per-cell annual tables such as ERA5's and CMIP6's `annual_extremes()`
-    (`year`, `latitude`, `longitude`, `value`). The assets need points
-    (`PointColumns`). The cell is accepted only if its centre lies within
-    half a grid step of the asset in latitude and in longitude, as
-    `AnnualSeries.nearest_cell` decides; otherwise the plan raises at
-    execution. `longitude` and `latitude` name the table's coordinate
-    columns; `spacing` is the grid step `(latitude, longitude)` in degrees,
-    by default the smallest step between the table's coordinates.
+    (`year`, `latitude`, `longitude`, `value`). The cell is accepted only if
+    its centre lies within half a grid step of the asset in latitude and in
+    longitude, as `AnnualSeries.nearest_cell` decides; otherwise the plan
+    raises at execution. `longitude` and `latitude` name the table's
+    coordinate columns; `spacing` is the grid step `(latitude, longitude)` in
+    degrees, by default the smallest step between the table's coordinates.
+
+    - Assets located by a point (`PointColumns`) are located at the point.
+    - Assets located by an H3 cell (`CellColumn`) are located at the cell:
+      the grid cell nearest the H3 cell's centre is accepted only if the
+      whole H3 cell lies within it, every vertex within half a grid step of
+      its centre. An H3 cell that straddles two grid cells does not say
+      which cell's series is the asset's, so the plan raises `SampleError`
+      at execution; give such an asset a point instead. The series records
+      `"asset_location": "h3_cell"`, and its `distance_km` is measured from
+      the H3 cell's centre. This needs the `geometry` extra
+      (`crc-sdk[geometry]`).
     """
 
     longitude: str = "longitude"
@@ -383,22 +403,54 @@ class StationColumn:
 
 @dataclass(frozen=True)
 class _DesignSpec:
-    """What `.objective(...)` states: the objectives and the design terms."""
+    """What `.objective(...)` states: the objectives and the design terms.
+
+    `pricing` is `None` when `.objective(...)` states none; the plan's
+    pricing then applies (`ParametricPlan._pricing`).
+    """
 
     objectives: tuple[Objective, ...]
-    pricing: Pricing
+    pricing: Pricing | None
     budget: Budget | None
     limit: Limit | None
     options: DesignOptions
 
-    def to_document(self) -> dict[str, Any]:
+    def to_document(self, pricing: Pricing) -> dict[str, Any]:
+        """The design terms, with `pricing`, the plan's pricing."""
         return {
             "budget": None if self.budget is None else self.budget.to_document(),
             "limit": None if self.limit is None else self.limit.to_document(),
             "objectives": [objective.to_document() for objective in self.objectives],
             "options": self.options.to_document(),
-            "pricing": self.pricing.to_document(),
+            "pricing": pricing.to_document(),
         }
+
+
+_PRICINGS = (PurePremium, CostOfCapitalLoad)
+
+
+def _check_pricing(pricing: Any) -> Pricing:
+    if not isinstance(pricing, _PRICINGS):
+        raise TypeError(
+            "pricing must be PurePremium() or CostOfCapitalLoad(rate, q), "
+            f"got {type(pricing).__name__}"
+        )
+    return pricing
+
+
+def _same_pricing(first: Pricing, second: Pricing) -> bool:
+    return json.dumps(first.to_document(), sort_keys=True) == json.dumps(
+        second.to_document(), sort_keys=True
+    )
+
+
+def _pricing_conflict(by_pricing: Pricing, by_objective: Pricing) -> ValueError:
+    return ValueError(
+        f".pricing(...) states {by_pricing.to_document()}, but "
+        f".objective(..., pricing=...) states {by_objective.to_document()}; one "
+        "pricing prices every premium of the plan, so state it once, or state "
+        "the same pricing in both"
+    )
 
 
 @dataclass(frozen=True, eq=False)
@@ -408,10 +460,13 @@ class ParametricResult:
     - `output`: the Parquet file;
     - `table`: the comparison table as written, with its metadata;
     - `metadata`: its `EvaluationMetadata`, under `crc.parametric.evaluation`;
-    - `samples`: one `OutcomeSample` per asset, in asset order (all years,
-      before any split);
+    - `samples`: one `OutcomeSample` per asset, in asset order (all years
+      or draws, before any split);
     - `designs`: every `DesignResult`, in asset, fold, cover and objective
-      order.
+      order;
+    - `fresh_samples`: with `FreshDraws`, one `OutcomeSample` per asset, in
+      asset order: the fresh draws the out-of-sample rows are evaluated on.
+      `None` without fresh draws.
     """
 
     output: Path
@@ -419,6 +474,7 @@ class ParametricResult:
     metadata: EvaluationMetadata
     samples: Mapping[str, OutcomeSample]
     designs: tuple[DesignResult, ...]
+    fresh_samples: Mapping[str, OutcomeSample] | None = None
 
     @property
     def row_count(self) -> int:
@@ -429,6 +485,7 @@ class ParametricResult:
 @dataclass(frozen=True, eq=False)
 class _Run:
     samples: Mapping[str, OutcomeSample]
+    fresh: Mapping[str, OutcomeSample] | None
     designs: tuple[DesignResult, ...]
     tables: tuple[Any, ...]
     source_key: str
@@ -632,6 +689,65 @@ def _curve_context(
     return TransformContext(**fields)
 
 
+def _h3_cell(
+    asset_id: str, value: Any, column: str
+) -> tuple[str, tuple[float, float], tuple[tuple[float, float], ...]]:
+    """An asset's H3 cell: its text, its centre and its boundary vertices.
+
+    The centre and the vertices are `(latitude, longitude)` pairs in degrees.
+    Raises `SampleError` for a missing or invalid cell, and `ImportError`
+    without the `geometry` extra.
+    """
+    if value is None:
+        raise SampleError(f"asset {asset_id!r} has no H3 cell in column {column!r}")
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, np.integer))
+        or not 0 <= int(value) < 2**64
+    ):
+        raise SampleError(
+            f"asset {asset_id!r} has {value!r} in column {column!r}, which is not "
+            "an unsigned 64-bit H3 cell index"
+        )
+    try:
+        import h3  # type: ignore[import-untyped]
+    except ImportError as error:
+        raise ImportError(
+            "NearestCell locates assets by their H3 cells (CellColumn) with the "
+            "cells' geometry, which requires `pip install crc-sdk[geometry]`"
+        ) from error
+    text = str(h3.int_to_str(int(value)))
+    if not h3.is_valid_cell(text):
+        raise SampleError(
+            f"asset {asset_id!r} has {int(value)} in column {column!r}, which is "
+            "not a valid H3 cell"
+        )
+    latitude, longitude = h3.cell_to_latlng(text)
+    vertices = tuple((float(lat), float(lon)) for lat, lon in h3.cell_to_boundary(text))
+    return text, (float(latitude), float(longitude)), vertices
+
+
+def _within_grid_cell(
+    vertices: Sequence[tuple[float, float]],
+    cell: Mapping[str, Any],
+    spacing: Mapping[str, Any],
+) -> bool:
+    """Whether every vertex lies within half a grid step of the cell's centre.
+
+    The test of `AnnualSeries.nearest_cell`, with its slack; longitudes are
+    compared modulo 360.
+    """
+    slack = 1.0 + 1e-9
+    half_lat = 0.5 * float(spacing["latitude"]) * slack
+    half_lon = 0.5 * float(spacing["longitude"]) * slack
+    centre_lat, centre_lon = float(cell["latitude"]), float(cell["longitude"])
+    for latitude, longitude in vertices:
+        d_lon = (longitude - centre_lon + 180.0) % 360.0 - 180.0
+        if abs(latitude - centre_lat) > half_lat or abs(d_lon) > half_lon:
+            return False
+    return True
+
+
 # -- the plan ----------------------------------------------------------------
 
 
@@ -641,15 +757,16 @@ class ParametricPlan:
 
     Start one with `ParametricPlan.for_evaluation(request)` (fitted curves)
     or `ParametricPlan.for_annual_extremes(...)` (per-year values); the
-    builders (`monte_carlo`, `basis_risk`, `covers`, `objective`, `split`,
-    `metrics`) return new plans, and neither they nor `explain()` do any
-    I/O. The execution points `samples()`, `designs()` and
+    builders (`monte_carlo`, `basis_risk`, `covers`, `objective`, `pricing`,
+    `split`, `metrics`) return new plans, and neither they nor `explain()`
+    do any I/O. The execution points `samples()`, `designs()` and
     `write_parquet(path)` read the source and the assets. The module
     docstring describes both routes.
 
     `entry` names the entry point. On the curve route `source` is the
     request, `unit` and `provenance` are `None` (the dataset's metadata
     states them at execution) and `draws` holds what `monte_carlo` states.
+    `pricing_rule` holds what `.pricing(...)` states.
     """
 
     source: Any
@@ -670,6 +787,7 @@ class ParametricPlan:
     metric_options: MetricOptions = field(default_factory=MetricOptions)
     entry: Literal["for_annual_extremes", "for_evaluation"] = "for_annual_extremes"
     draws: _MonteCarlo | None = None
+    pricing_rule: Pricing | None = None
 
     # -- the entry points -----------------------------------------------------
 
@@ -806,7 +924,8 @@ class ParametricPlan:
           (annual-extremes tables carry none); it identifies the series in
           every sample, so one source has one `provenance`.
         - `location` finds each asset's series: `NearestCell()` (the
-          default) or `StationColumn(name)`. `year_column` and
+          default), for assets located by a point or by an H3 cell that lies
+          within one grid cell, or `StationColumn(name)`. `year_column` and
           `hazard_column` name the table's year and value columns.
         - `years` states the years every series must cover (by default the
           years the table holds); `missing="drop_year"` drops a year without
@@ -815,12 +934,13 @@ class ParametricPlan:
           `numpy.random.SeedSequence(seed)` per asset, in asset order.
 
         Raises `TypeError` for arguments of the wrong type, `SampleError`
-        for a unit the impact is not calibrated for, assets that
-        `NearestCell` cannot locate or a missing asset column, and
-        `ValueError` for other invalid arguments. A registry impact that
-        needs an H3 cell in its context (such as `rx1day`) raises
-        `SampleError` unless the impact or `context` is a `TransformContext`
-        with a cell: this route reads no cell for an asset.
+        for a unit the impact is not calibrated for or a missing asset
+        column, and `ValueError` for other invalid arguments. A registry
+        impact that needs an H3 cell in its context (such as `rx1day`)
+        raises `SampleError` unless the impact or `context` is a
+        `TransformContext` with a cell, or the assets are located by their
+        H3 cells (`CellColumn`) and `context` names context columns: a point
+        asset has no cell on this route.
         """
         _source_kind(source)
         portfolio = _assets(assets)
@@ -838,16 +958,6 @@ class ParametricPlan:
             raise TypeError(
                 "location must be NearestCell() or StationColumn(name), got "
                 f"{type(location).__name__}"
-            )
-        if (
-            isinstance(location, NearestCell)
-            and isinstance(portfolio, AssetPortfolio)
-            and not isinstance(portfolio.location, PointColumns)
-        ):
-            raise SampleError(
-                "NearestCell needs each asset's longitude and latitude; locate "
-                "the assets with PointColumns, or name their stations with "
-                "StationColumn"
             )
         columns = _table_columns(portfolio)
         if columns is not None:
@@ -1046,7 +1156,7 @@ class ParametricPlan:
     def objective(
         self,
         *objectives: Objective,
-        pricing: Pricing = PurePremium(),
+        pricing: Pricing | None = None,
         budget: Budget | None = None,
         limit: Limit | None = None,
         options: DesignOptions = DesignOptions(),
@@ -1057,13 +1167,15 @@ class ParametricPlan:
         `WeightedCVaR(alpha, beta)` or `UserObjective`s; each template is
         designed under each, on each design block. `pricing` prices the
         premium of the designs on their design block, and of the resolved
-        covers on each evaluation block; `budget`, `limit` and `options` are
-        those of `design`. Without `.objective(...)` resolved covers are
-        priced with `PurePremium()` and templates cannot be evaluated.
-        Replaces any objective set before.
+        covers on each evaluation block. It is the plan's pricing, which
+        `.pricing(...)` states too: without it here, `.pricing(...)`'s
+        applies, and without both `PurePremium()`. `budget`, `limit` and
+        `options` are those of `design`. Without `.objective(...)` templates
+        cannot be evaluated. Replaces any objective set before.
 
         Raises `TypeError` for arguments of the wrong type, and `ValueError`
-        for no objective or the same objective twice.
+        for no objective, the same objective twice, or a pricing that
+        differs from the one `.pricing(...)` states.
         """
         if not objectives:
             raise ValueError("objective needs at least one objective")
@@ -1080,11 +1192,11 @@ class ParametricPlan:
             if text in documents:
                 raise ValueError(f"objective {text} is given twice")
             documents.append(text)
-        if not isinstance(pricing, (PurePremium, CostOfCapitalLoad)):
-            raise TypeError(
-                "pricing must be PurePremium() or CostOfCapitalLoad(rate, q), "
-                f"got {type(pricing).__name__}"
-            )
+        if pricing is not None:
+            pricing = _check_pricing(pricing)
+            stated = self.pricing_rule
+            if stated is not None and not _same_pricing(stated, pricing):
+                raise _pricing_conflict(stated, pricing)
         if budget is not None and not isinstance(budget, Budget):
             raise TypeError(f"budget must be a Budget, got {type(budget).__name__}")
         if limit is not None and not isinstance(limit, Limit):
@@ -1101,6 +1213,32 @@ class ParametricPlan:
             options=options,
         )
         return dataclasses.replace(self, design_spec=spec)
+
+    def pricing(self, pricing: Pricing) -> ParametricPlan:
+        """Price the premiums: `PurePremium()` or `CostOfCapitalLoad(rate, q)`.
+
+        One pricing prices every premium of the plan: the resolved covers'
+        on each evaluation block and the designs' on their design block, so
+        that every row of the comparison is priced alike. This builder
+        states it for a plan of resolved covers, which needs no
+        `.objective(...)`; `.objective(..., pricing=...)` states it too, and
+        both may be given when they state the same pricing. Without either,
+        the premiums are pure (`PurePremium()`). `explain()` shows the
+        pricing in every planned evaluation and in the design terms.
+        Replaces any pricing set before with `.pricing(...)`.
+
+        Raises `TypeError` for another type, and `ValueError` for a pricing
+        that differs from the one `.objective(..., pricing=...)` states.
+        """
+        chosen = _check_pricing(pricing)
+        spec = self.design_spec
+        if (
+            spec is not None
+            and spec.pricing is not None
+            and not _same_pricing(chosen, spec.pricing)
+        ):
+            raise _pricing_conflict(chosen, spec.pricing)
+        return dataclasses.replace(self, pricing_rule=chosen)
 
     def split(self, rule: Holdout | KFold | FreshDraws) -> ParametricPlan:
         """Hold out data: `FreshDraws(n_draws, seed=)`, `Holdout(f)` or `KFold(k)`.
@@ -1144,7 +1282,11 @@ class ParametricPlan:
     # -- explain ----------------------------------------------------------------
 
     def _pricing(self) -> Pricing:
-        return PurePremium() if self.design_spec is None else self.design_spec.pricing
+        """The plan's pricing: `.objective`'s, else `.pricing`'s, else pure."""
+        spec = self.design_spec
+        if spec is not None and spec.pricing is not None:
+            return spec.pricing
+        return PurePremium() if self.pricing_rule is None else self.pricing_rule
 
     def _known_asset_ids(self) -> list[str] | None:
         assets = self.assets
@@ -1298,7 +1440,7 @@ class ParametricPlan:
         designs = None
         if spec is not None:
             designs = {
-                **spec.to_document(),
+                **spec.to_document(self._pricing()),
                 "templates": [
                     cover.definition_hash
                     for cover in self.cover_list
@@ -1529,16 +1671,25 @@ class ParametricPlan:
     ) -> AnnualSeries:
         location = self.location
         if isinstance(location, NearestCell):
-            point = portfolio.location
-            if not isinstance(point, PointColumns):
-                raise SampleError(
-                    "NearestCell needs each asset's longitude and latitude; "
-                    "locate the assets with PointColumns"
+            located = portfolio.location
+            vertices: tuple[tuple[float, float], ...] | None = None
+            if isinstance(located, PointColumns):
+                longitude = row.get(located.longitude)
+                latitude = row.get(located.latitude)
+                if longitude is None or latitude is None:
+                    raise SampleError(
+                        f"asset {asset_id!r} has no longitude or latitude"
+                    )
+            elif isinstance(located, CellColumn):
+                cell, (latitude, longitude), vertices = _h3_cell(
+                    asset_id, row.get(located.name), located.name
                 )
-            longitude, latitude = row.get(point.longitude), row.get(point.latitude)
-            if longitude is None or latitude is None:
-                raise SampleError(f"asset {asset_id!r} has no longitude or latitude")
-            return AnnualSeries.nearest_cell(
+            else:
+                raise SampleError(
+                    "NearestCell locates assets by a point (PointColumns) or an "
+                    f"H3 cell (CellColumn), got {type(located).__name__}"
+                )
+            series = AnnualSeries.nearest_cell(
                 table,
                 longitude=longitude,
                 latitude=latitude,
@@ -1550,6 +1701,27 @@ class ParametricPlan:
                 spacing=location.spacing,
                 years=self.years,
                 source=source,
+            )
+            if vertices is None:
+                return series
+            matched = series.provenance["cell"]
+            spacing = series.provenance["spacing_degrees"]
+            if not _within_grid_cell(vertices, matched, spacing):
+                raise SampleError(
+                    f"asset {asset_id!r} is located by its H3 cell {cell}, which "
+                    "straddles cells of the grid (step "
+                    f"{spacing['latitude']:g}, {spacing['longitude']:g} degrees): "
+                    "its centre is nearest the grid cell at "
+                    f"({matched['latitude']:g}, {matched['longitude']:g}), but "
+                    "part of it lies in another, so the cell does not say which "
+                    "series is the asset's; give the asset a point "
+                    "(PointColumns) instead"
+                )
+            return AnnualSeries(
+                series.years,
+                series.values,
+                series.unit,
+                {**_thaw(series.provenance), "asset_location": "h3_cell"},
             )
         if location.name not in row:
             raise SampleError(f"the asset table has no column {location.name!r}")
@@ -1849,7 +2021,7 @@ class ParametricPlan:
                             cover,
                             train,
                             objective,
-                            pricing=spec.pricing,
+                            pricing=pricing,
                             budget=spec.budget,
                             limit=spec.limit,
                             options=spec.options,
@@ -1888,6 +2060,7 @@ class ParametricPlan:
                     )
         return _Run(
             samples=MappingProxyType(samples),
+            fresh=None if built.fresh is None else MappingProxyType(built.fresh),
             designs=tuple(designs),
             tables=tuple(tables),
             source_key=built.record_key,
@@ -1901,14 +2074,16 @@ class ParametricPlan:
 
         Reads the source and the assets. Each sample holds all of the
         asset's draws or years, before any split (fresh draws are drawn by
-        `write_parquet()` only). Raises `ValueError` without
-        a basis-risk model or, on fitted curves, without `monte_carlo`;
-        `SampleError` for an asset that cannot be located, a curve that
+        `write_parquet()` only, which returns them in `fresh_samples`).
+        Raises `ValueError` without a basis-risk model or, on fitted curves,
+        without `monte_carlo`; `SampleError` for an asset that cannot be
+        located (an H3 cell that straddles grid cells included), a curve that
         cannot be sampled (`sample_curve`), several curves for one asset, a
         cover whose index unit is not the dataset's, or a series with a
-        missing year (unless `missing="drop_year"`); and
+        missing year (unless `missing="drop_year"`);
         `ProbabilitySemanticsError` for curves whose semantics are not those
-        of one year.
+        of one year; and `ImportError` for assets located by their H3 cells
+        on per-year values without the `geometry` extra.
         """
         return MappingProxyType(self._build_samples().samples)
 
@@ -1936,30 +2111,40 @@ class ParametricPlan:
         split and fold to one local Parquet file, through a temporary
         sibling and `os.replace`; the parent directory is created. The
         metadata (`EvaluationMetadata`, under `crc.parametric.evaluation`)
-        merges that of every block, and adds to each hazard source the
-        source's record: on fitted curves `canonical_file` (the dataset's
-        path, its SHA-256 and the number of matched curves); on per-year
-        values `annual_table` (its SHA-256, the source plan's `explain()`
-        and, for a file, its path and SHA-256). It adds the plan's seed to
-        every evaluation's `details` (`"plan_seed"`) and the fresh draws'
-        seed to every fresh-draw evaluation's (`"fresh_draws_seed"`), and
-        the asset id column and a SHA-256 of the (asset id, value) pairs to
-        `assets`.
+        merges that of every block, and adds the source's record once, in
+        `source_records`: on fitted curves `{"canonical_file": {...}}` (the
+        dataset's path, its SHA-256 and the number of matched curves); on
+        per-year values `{"annual_table": {...}}` (the table's rows, columns
+        and SHA-256, the source plan's `explain()` and, for a file, its path
+        and SHA-256). Each hazard source names its record by that checksum:
+        `canonical_file_sha256` (the file's) or `annual_table_sha256` (the
+        table's). It adds the plan's seed to every evaluation's `details`
+        (`"plan_seed"`) and the fresh draws' seed to every fresh-draw
+        evaluation's (`"fresh_draws_seed"`), and the asset id column and a
+        SHA-256 of the (asset id, value) pairs to `assets`.
 
-        Returns a `ParametricResult`. Raises `ValueError` without covers, a
-        basis-risk model, or an objective for templates; and as `samples`,
-        `design` and `compare` raise.
+        Returns a `ParametricResult`, with the fresh draws in
+        `fresh_samples` when the split is `FreshDraws`. Raises `ValueError`
+        without covers, a basis-risk model, or an objective for templates;
+        and as `samples`, `design` and `compare` raise.
         """
         run = self._run(evaluate=True)
         merged = EvaluationMetadata.merge(
             *(EvaluationMetadata.from_table(table) for table in run.tables)
         )
         document = merged.model_dump(mode="json")
+        checksum = run.source[
+            "file_sha256" if run.source_key == "canonical_file" else "table_sha256"
+        ]
         document["sources"] = [
-            {**entry, run.source_key: run.source}
+            {**entry, f"{run.source_key}_sha256": checksum}
             if entry.get("role") == "hazard"
             else entry
             for entry in document["sources"]
+        ]
+        document["source_records"] = [
+            *document.get("source_records", ()),
+            {run.source_key: run.source},
         ]
         seeded = self._seed_details()
         rule = self.split_rule
@@ -1999,4 +2184,5 @@ class ParametricPlan:
             metadata=metadata,
             samples=run.samples,
             designs=run.designs,
+            fresh_samples=run.fresh,
         )
