@@ -26,6 +26,10 @@ priced on the design sample (`"design"`), so out-of-sample rows use the price
 agreed at design; otherwise the premium priced on the evaluation sample with
 `pricing` (`"evaluation"`).
 
+Invalid arguments raise `EvaluationError` (a `ValueError`), and arguments of
+the wrong type `TypeError`; problems of the cover or the sample raise
+`UnresolvedParameterError`, `SampleError` or `LeakageError`.
+
 Everything except `write_comparison` works in memory and does no I/O.
 """
 
@@ -46,7 +50,11 @@ import pyarrow.parquet as pq  # type: ignore[import-untyped]
 
 from crc_sdk._version import framework_version, platform_tag, sdk_version
 from crc_sdk.parametric.cover import Cover
-from crc_sdk.parametric.errors import SampleError, UnresolvedParameterError
+from crc_sdk.parametric.errors import (
+    EvaluationError,
+    SampleError,
+    UnresolvedParameterError,
+)
 from crc_sdk.parametric.metadata import (
     EVALUATION_METADATA_KEY,
     IDENTITY_COLUMNS,
@@ -136,7 +144,7 @@ class _Item:
 
 def _split(split: Any) -> Split:
     if split not in get_args(Split):
-        raise ValueError(f"split must be one of {get_args(Split)}, got {split!r}")
+        raise EvaluationError(f"split must be one of {get_args(Split)}, got {split!r}")
     checked: Split = split
     return checked
 
@@ -147,7 +155,7 @@ def _fold(fold: Any) -> int:
         or not isinstance(fold, (int, np.integer))
         or not 0 <= int(fold) <= _INT32_MAX
     ):
-        raise ValueError(f"fold must be a non-negative integer, got {fold!r}")
+        raise EvaluationError(f"fold must be a non-negative integer, got {fold!r}")
     return int(fold)
 
 
@@ -176,41 +184,49 @@ def _premium(premium: Any) -> float | None:
     if premium is None:
         return None
     if isinstance(premium, bool) or not isinstance(premium, (int, float, np.number)):
-        raise ValueError(f"premium must be a number, got {premium!r}")
+        raise EvaluationError(f"premium must be a number, got {premium!r}")
     value = float(premium)
     if not math.isfinite(value) or value < 0.0:
-        raise ValueError(f"premium must be finite and non-negative, got {premium!r}")
+        raise EvaluationError(
+            f"premium must be finite and non-negative, got {premium!r}"
+        )
     return value + 0.0
 
 
 def _design_record(design: DesignedCover) -> dict[str, Any]:
     design_id = design.design_id
     if not isinstance(design_id, str) or not design_id:
-        raise ValueError(f"a design needs a design_id, got {design_id!r}")
+        raise EvaluationError(f"a design needs a design_id, got {design_id!r}")
     record = design.to_record()
     if not isinstance(record, Mapping):
         raise TypeError("a design's to_record() must return a mapping")
     record = dict(record)
     if record.setdefault("design_id", design_id) != design_id:
-        raise ValueError(
+        raise EvaluationError(
             f"the design's record names the design_id {record['design_id']!r}, "
             f"not {design_id!r}"
         )
     premium = design.premium
     if isinstance(premium, bool) or not isinstance(premium, (int, float, np.number)):
-        raise ValueError(f"the design premium must be a number, got {premium!r}")
+        raise EvaluationError(f"the design premium must be a number, got {premium!r}")
     if not math.isfinite(float(premium)) or float(premium) < 0.0:
-        raise ValueError(f"the design premium must be finite and >= 0, got {premium!r}")
+        raise EvaluationError(
+            f"the design premium must be finite and >= 0, got {premium!r}"
+        )
     _sample(design.design_sample, "a design's design_sample")
     unique, ties, flag = design.unique, design.ties, design.degenerate_tail
     if unique is not None and not isinstance(unique, bool):
-        raise ValueError(f"a design's unique must be a bool or None, got {unique!r}")
+        raise EvaluationError(
+            f"a design's unique must be a bool or None, got {unique!r}"
+        )
     if ties is not None and (
         isinstance(ties, bool) or not isinstance(ties, (int, np.integer)) or ties < 0
     ):
-        raise ValueError(f"a design's ties must be an integer >= 0, got {ties!r}")
+        raise EvaluationError(f"a design's ties must be an integer >= 0, got {ties!r}")
     if flag is not None and not isinstance(flag, str):
-        raise ValueError(f"a design's degenerate_tail must be a string, got {flag!r}")
+        raise EvaluationError(
+            f"a design's degenerate_tail must be a string, got {flag!r}"
+        )
     return record
 
 
@@ -218,7 +234,7 @@ def _items(covers: Any) -> list[_Item]:
     if isinstance(covers, (str, bytes, Cover)) or not isinstance(covers, Sequence):
         raise TypeError("covers must be a sequence of covers or designs")
     if not covers:
-        raise ValueError("compare needs at least one cover")
+        raise EvaluationError("compare needs at least one cover")
     items: list[_Item] = []
     for entry in covers:
         if isinstance(entry, Cover):
@@ -310,7 +326,7 @@ def _split_document(
     """How the split was made, for the metadata's `setup.evaluations`."""
     step = _split_step(sample)
     if step is not None and "fold" in step and int(step["fold"]) != fold:
-        raise ValueError(
+        raise EvaluationError(
             f"the sample is block {step.get('block')!r} of fold {step['fold']} of "
             f"a {step['kind']} split, but fold={fold} was given"
         )
@@ -552,7 +568,7 @@ def _table(
                 "the design sample and the evaluation sample hold different assets"
             )
         if given is not None and own.content_hash != given.content_hash:
-            raise ValueError(
+            raise EvaluationError(
                 "design_sample= differs from the design's own design sample; "
                 "leave it out for designed covers"
             )
@@ -579,7 +595,7 @@ def _table(
     keys = [tuple(row[name] for name in KEY_COLUMNS) for row in rows]
     repeated = sorted({key[0] for key in keys if keys.count(key) > 1})
     if repeated:
-        raise ValueError(
+        raise EvaluationError(
             f"covers repeat a row key (the same cover and design twice): {repeated}"
         )
     metadata = _metadata(
@@ -630,8 +646,11 @@ def evaluate(
 
     Raises `UnresolvedParameterError` for a template, `SampleError` if the
     cover's units or asset differ from the sample's or a design sample is
-    missing or wrong, `LeakageError` for a shared period, `ValueError` for
-    invalid arguments and `TypeError` for arguments of the wrong type.
+    missing or wrong, `LeakageError` for a shared period, `EvaluationError`
+    (a `ValueError`) for invalid arguments, such as an unknown split, a
+    negative fold or premium, a fold that contradicts the sample's k-fold
+    step or an invalid design record, and `TypeError` for arguments of the
+    wrong type.
     """
     return _table(
         _items([cover]),
@@ -661,16 +680,16 @@ def compare(
     rows use its design premium, and a cover given as is the premium priced
     on `sample` with `pricing`. `design_sample` is for the covers given as
     is; each design brings its own, and a `design_sample` that differs from
-    it raises `ValueError`.
+    it raises `EvaluationError`.
 
     The table has covers as rows and metrics as columns, in the order of
     `covers`. Its key (`cover_hash`, `design_id`, `asset_id`, `level`,
     `scenario`, `split`, `fold`) is unique: the same cover twice raises
-    `ValueError`. To put rows of several samples, splits or folds in one
+    `EvaluationError`. To put rows of several samples, splits or folds in one
     file, concatenate the tables with `pyarrow.concat_tables` and pass
     `EvaluationMetadata.merge` of their metadata to `write_comparison`.
 
-    Raises as `evaluate` does.
+    Raises as `evaluate` does, and `EvaluationError` for an empty `covers`.
     """
     return _table(
         _items(covers),
@@ -699,8 +718,9 @@ def write_comparison(
     temporary sibling and moved into place with `os.replace`, so a failed
     write leaves no partial file and any previous file intact.
 
-    Raises `ValueError` if the metadata does not describe the table or the
-    path is a URL, and `TypeError` for a table that is not a `pyarrow.Table`.
+    Raises `EvaluationError` if the metadata does not describe the table or
+    the path is a URL, and `TypeError` for a table that is not a
+    `pyarrow.Table` or metadata that is not `EvaluationMetadata`.
     """
     if not isinstance(table, pa.Table):
         raise TypeError(f"table must be a pyarrow.Table, got {type(table).__name__}")
@@ -712,7 +732,7 @@ def write_comparison(
     chosen.check_table(table)
     text = os.fspath(path)
     if not isinstance(text, str) or "://" in text:
-        raise ValueError(f"write_comparison writes local files, got {path!r}")
+        raise EvaluationError(f"write_comparison writes local files, got {path!r}")
     target = Path(text)
     existing = dict(table.schema.metadata or {})
     existing[EVALUATION_METADATA_KEY.encode("utf-8")] = chosen.to_json().encode("utf-8")
@@ -734,8 +754,9 @@ def to_long(table: Any) -> Any:
     `value`. Rows are ordered by metric column, then by the wide rows'
     order. The table's metadata is kept.
 
-    Raises `ValueError` for a table without comparison metadata, and
-    `TypeError` for a table that is not a `pyarrow.Table`.
+    Raises `EvaluationError` for a table without comparison metadata or
+    with metadata that does not describe it, and `TypeError` for a table
+    that is not a `pyarrow.Table`.
     """
     if not isinstance(table, pa.Table):
         raise TypeError(f"table must be a pyarrow.Table, got {type(table).__name__}")

@@ -16,6 +16,7 @@ from crc_sdk.parametric import (
     BinaryPayout,
     CostOfCapitalLoad,
     Cover,
+    EvaluationError,
     EvaluationMetadata,
     Free,
     IndexDefinition,
@@ -209,7 +210,7 @@ def test_compare_puts_covers_in_rows_and_metrics_in_columns() -> None:
 
 
 def test_compare_rejects_a_repeated_cover() -> None:
-    with pytest.raises(ValueError, match="repeat a row key"):
+    with pytest.raises(EvaluationError, match="repeat a row key"):
         compare([_linear(), _linear(label="again")], _sample(), split="in_sample")
 
 
@@ -223,10 +224,12 @@ def test_the_same_cover_as_given_and_as_designed_is_two_rows() -> None:
     assert table.column("ties").to_pylist() == [None, 0]
 
 
-@pytest.mark.parametrize("covers", [[], "linear", _linear(), [object()]])
+@pytest.mark.parametrize("covers", ["linear", _linear(), [object()]])
 def test_compare_rejects_invalid_cover_lists(covers: Any) -> None:
-    with pytest.raises((TypeError, ValueError)):
+    with pytest.raises(TypeError):
         UNTYPED_COMPARE(covers, _sample(), split="in_sample")
+    with pytest.raises(EvaluationError, match="at least one cover"):
+        compare([], _sample(), split="in_sample")
 
 
 # -- checks between cover and sample -----------------------------------------
@@ -261,20 +264,27 @@ def test_units_and_assets_must_match(cover: Cover, message: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "arguments",
+    ("arguments", "message"),
     [
-        {"split": "held_out"},
-        {"split": "in_sample", "fold": -1},
-        {"split": "in_sample", "fold": True},
-        {"split": "in_sample", "fold": 1.0},
-        {"split": "in_sample", "premium": -1.0},
-        {"split": "in_sample", "premium": float("nan")},
-        {"split": "in_sample", "premium": "10"},
+        ({"split": "held_out"}, "split must be one of"),
+        ({"split": None}, "split must be one of"),
+        ({"split": "in_sample", "fold": -1}, "fold must be"),
+        ({"split": "in_sample", "fold": True}, "fold must be"),
+        ({"split": "in_sample", "fold": 1.0}, "fold must be"),
+        ({"split": "in_sample", "fold": 2**31}, "fold must be"),
+        ({"split": "in_sample", "premium": -1.0}, "premium must be finite"),
+        ({"split": "in_sample", "premium": float("nan")}, "premium must be finite"),
+        ({"split": "in_sample", "premium": "10"}, "premium must be a number"),
     ],
 )
-def test_invalid_arguments_raise_value_errors(arguments: dict[str, Any]) -> None:
-    with pytest.raises(ValueError):
+def test_invalid_arguments_raise_evaluation_errors(
+    arguments: dict[str, Any], message: str
+) -> None:
+    with pytest.raises(EvaluationError, match=message):
         UNTYPED_EVALUATE(_linear(), _sample(), **arguments)
+    if "premium" not in arguments:
+        with pytest.raises(EvaluationError, match=message):
+            UNTYPED_COMPARE([_linear()], _sample(), **arguments)
 
 
 @pytest.mark.parametrize(
@@ -363,9 +373,9 @@ def test_in_sample_means_the_design_sample() -> None:
 def test_a_conflicting_design_sample_raises() -> None:
     train, test = holdout(_sample())
     design = _Design(_linear(), design_sample=train)
-    with pytest.raises(ValueError, match="differs from the design's own"):
+    with pytest.raises(EvaluationError, match="differs from the design's own"):
         evaluate(design, test, split="out_of_sample", design_sample=test)
-    with pytest.raises(ValueError, match="differs from the design's own"):
+    with pytest.raises(EvaluationError, match="differs from the design's own"):
         compare([_binary(), design], test, split="out_of_sample", design_sample=test)
     row = evaluate(
         design, test, split="out_of_sample", design_sample=train
@@ -381,7 +391,7 @@ def test_kfold_rows_carry_their_fold() -> None:
     assert table.column("fold").to_pylist() == [2]
     evaluation = EvaluationMetadata.from_table(table).setup.evaluations[0]
     assert (evaluation["method"], evaluation["details"]) == ("kfold", {"k": 4})
-    with pytest.raises(ValueError, match="fold 2"):
+    with pytest.raises(EvaluationError, match="fold 2"):
         evaluate(design, test, split="out_of_sample")
     in_sample = evaluate(design, train, split="in_sample", fold=2)
     assert in_sample.column("fold").to_pylist() == [2]
@@ -430,23 +440,25 @@ def test_the_design_sample_must_hold_the_same_asset() -> None:
 
 
 @pytest.mark.parametrize(
-    "overrides",
+    ("overrides", "message"),
     [
-        {"design_id": ""},
-        {"premium": -1.0},
-        {"premium": float("inf")},
-        {"unique": 1},
-        {"ties": -1},
-        {"degenerate_tail": 3},
-        {"record": {"design_id": "sha256:" + "2" * 64}},
+        ({"design_id": ""}, "needs a design_id"),
+        ({"premium": "120"}, "design premium must be a number"),
+        ({"premium": -1.0}, "design premium must be finite"),
+        ({"premium": float("inf")}, "design premium must be finite"),
+        ({"unique": 1}, "unique must be a bool"),
+        ({"ties": -1}, "ties must be an integer"),
+        ({"ties": True}, "ties must be an integer"),
+        ({"degenerate_tail": 3}, "degenerate_tail must be a string"),
+        ({"record": {"design_id": "sha256:" + "2" * 64}}, "names the design_id"),
     ],
 )
-def test_invalid_designs_raise(overrides: dict[str, Any]) -> None:
+def test_invalid_designs_raise(overrides: dict[str, Any], message: str) -> None:
     train, test = holdout(_sample())
     fields: dict[str, Any] = {"cover": _linear(), "design_sample": train, **overrides}
     design: Any = _Design(**fields)
     assert isinstance(design, DesignedCover)
-    with pytest.raises(ValueError):
+    with pytest.raises(EvaluationError, match=message):
         evaluate(design, test, split="out_of_sample")
 
 
@@ -508,13 +520,13 @@ def test_write_comparison_is_atomic(
 
 def test_write_comparison_checks_the_table(tmp_path: Path) -> None:
     table = evaluate(_linear(), _sample(), split="in_sample")
-    with pytest.raises(ValueError, match="metric columns differ"):
+    with pytest.raises(EvaluationError, match="metric columns differ"):
         write_comparison(
             table.append_column("extra", pa.array([1.0])), tmp_path / "a.parquet"
         )
-    with pytest.raises(ValueError, match="no 'crc.parametric.evaluation'"):
+    with pytest.raises(EvaluationError, match="no 'crc.parametric.evaluation'"):
         write_comparison(table.replace_schema_metadata({}), tmp_path / "b.parquet")
-    with pytest.raises(ValueError, match="local files"):
+    with pytest.raises(EvaluationError, match="local files"):
         write_comparison(table, "s3://bucket/comparison.parquet")
     with pytest.raises(TypeError):
         UNTYPED_WRITE(table.to_pylist(), tmp_path / "c.parquet")
@@ -530,7 +542,9 @@ def test_rows_of_several_evaluations_in_one_file(tmp_path: Path) -> None:
     in_sample = compare(covers, train, split="in_sample", design_sample=train)
     out = compare(covers, test, split="out_of_sample", design_sample=train)
     table = pa.concat_tables([in_sample, out])
-    with pytest.raises(ValueError, match="no evaluation of sample|not in the metadata"):
+    with pytest.raises(
+        EvaluationError, match="no evaluation of sample|not in the metadata"
+    ):
         write_comparison(table, tmp_path / "x.parquet")
     metadata = EvaluationMetadata.merge(
         EvaluationMetadata.from_table(in_sample), EvaluationMetadata.from_table(out)
@@ -580,8 +594,10 @@ def test_to_long_gives_one_row_per_cover_and_metric() -> None:
     assert tail["value"] == table.column("tail_coverage_b0_99").to_pylist()[1]
     rmse = rows[("linear", "rmse")]
     assert rmse["parameter"] is None and rmse["unit"] == "EUR"
-    with pytest.raises(ValueError):
+    with pytest.raises(EvaluationError, match="no 'crc.parametric.evaluation'"):
         to_long(table.replace_schema_metadata({}))
+    with pytest.raises(EvaluationError, match="metric columns differ"):
+        to_long(table.drop_columns(["rmse"]))
     with pytest.raises(TypeError):
         to_long(table.to_pylist())
 

@@ -8,7 +8,13 @@ from typing import Any
 import numpy as np
 import pytest
 
-from crc_sdk.parametric import Cover, IndexDefinition, LinearPayout, MetricOptions
+from crc_sdk.parametric import (
+    Cover,
+    EvaluationError,
+    IndexDefinition,
+    LinearPayout,
+    MetricOptions,
+)
 from crc_sdk.parametric.metrics import metric_columns, metric_values
 
 UNTYPED_OPTIONS: Any = MetricOptions
@@ -202,23 +208,26 @@ def test_options_document() -> None:
 
 
 @pytest.mark.parametrize(
-    "options",
+    ("options", "message"),
     [
-        {"betas": (0.0,)},
-        {"betas": (1.0,)},
-        {"betas": (0.9, 0.9)},
-        {"betas": (math.nan,)},
-        {"betas": ("0.9",)},
-        {"return_periods": (1.0,)},
-        {"return_periods": (10, 10.0)},
-        {"loss_thresholds": (-1.0,)},
-        {"loss_thresholds": (0.0, 0.0)},
-        {"payout_threshold": -0.5},
-        {"payout_threshold": True},
-        {"alpha": 0.9},
+        ({"betas": (0.0,)}, "betas must lie in"),
+        ({"betas": (1.0,)}, "betas must lie in"),
+        ({"betas": (0.9, 0.9)}, "betas repeat a value"),
+        ({"betas": (math.nan,)}, r"betas\.0: "),
+        ({"betas": ("0.9",)}, r"betas\.0: "),
+        ({"betas": 0.9}, "betas: "),
+        ({"return_periods": (1.0,)}, "greater than 1 year"),
+        ({"return_periods": (10, 10.0)}, "return_periods repeat a value"),
+        ({"loss_thresholds": (-1.0,)}, "loss_thresholds must be non-negative"),
+        ({"loss_thresholds": (0.0, 0.0)}, "loss_thresholds repeat a value"),
+        ({"payout_threshold": -0.5}, "payout_threshold must be non-negative"),
+        ({"payout_threshold": True}, "payout_threshold: "),
+        ({"alpha": 0.9}, "alpha: "),
     ],
 )
-def test_invalid_options_raise(options: dict[str, Any]) -> None:
+def test_invalid_options_raise(options: dict[str, Any], message: str) -> None:
+    with pytest.raises(EvaluationError, match=f"invalid MetricOptions: .*{message}"):
+        UNTYPED_OPTIONS(**options)
     with pytest.raises(ValueError):
         UNTYPED_OPTIONS(**options)
 
@@ -232,12 +241,15 @@ def test_invalid_options_raise(options: dict[str, Any]) -> None:
         (np.ones(2), np.array([1.0, -1.0]), np.full(2, 0.5), 0.0),
         (np.ones(2), np.ones(2), np.full(2, 0.5), math.inf),
         (np.ones(2), np.ones(2), np.full(2, 0.5), True),
+        (np.ones(2), np.ones(2), np.full(2, 0.5), "1"),
+        (np.array([math.nan, 1.0]), np.ones(2), np.full(2, 0.5), 0.0),
+        (np.ones(2), np.ones(2), np.array([1.5, -0.5]), 0.0),
     ],
 )
 def test_invalid_inputs_raise(
     loss: Any, payout: Any, probability: Any, premium: Any
 ) -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(EvaluationError):
         metric_values(
             loss, payout, probability, premium=premium, options=MetricOptions()
         )

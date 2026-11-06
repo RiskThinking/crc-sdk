@@ -23,6 +23,7 @@ from crc_sdk.parametric.errors import (
     ComonotoneIndexWarning,
     CoverDefinitionError,
     DesignError,
+    EvaluationError,
     InfeasibleDesignError,
     LeakageError,
     ParametricError,
@@ -42,7 +43,7 @@ from crc_sdk.parametric.index import (
     IndexDefinition,
 )
 from crc_sdk.parametric.loss import LossModel
-from crc_sdk.parametric.metadata import EvaluationMetadata
+from crc_sdk.parametric.metadata import EvaluationMetadata, setup_text
 from crc_sdk.parametric.metrics import MetricOptions
 from crc_sdk.parametric.objectives import (
     MSE,
@@ -86,6 +87,7 @@ __all__ = [
     "DesignError",
     "DesignOptions",
     "DesignResult",
+    "EvaluationError",
     "EvaluationMetadata",
     "ExpectedUncovered",
     "Free",
@@ -123,6 +125,7 @@ __all__ = [
     "register_payout",
     "sample_annual",
     "sample_curve",
+    "setup_text",
     "to_long",
     "write_comparison",
     "year_block_kfold",

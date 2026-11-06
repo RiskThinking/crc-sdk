@@ -11,6 +11,7 @@ __all__ = [
     "ComonotoneIndexWarning",
     "CoverDefinitionError",
     "DesignError",
+    "EvaluationError",
     "InfeasibleDesignError",
     "LeakageError",
     "ParametricError",
@@ -59,6 +60,19 @@ class ProbabilitySemanticsError(SampleError):
 
 class LeakageError(SampleError):
     """An out-of-sample evaluation shares periods with its design sample."""
+
+
+class EvaluationError(ParametricError, ValueError):
+    """An evaluation's arguments, metric options or comparison metadata are invalid.
+
+    Raised by `evaluate`, `compare`, `write_comparison`, `to_long`,
+    `MetricOptions`, `EvaluationMetadata` and `setup_text` for invalid values:
+    an unknown split, a negative fold or premium, an invalid design record, a
+    repeated row key, metric options out of range, or metadata that does not
+    describe its table. Problems of the cover or the sample keep their own
+    errors (`UnresolvedParameterError`, `SampleError`, `LeakageError`), and
+    arguments of the wrong type raise `TypeError`.
+    """
 
 
 class DesignError(ParametricError, RuntimeError):

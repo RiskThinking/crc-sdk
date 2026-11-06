@@ -33,7 +33,8 @@ cover. `metric_values` returns, in this order:
 `MetricOptions` states beta, T, the loss thresholds l and the payout
 threshold eps; nothing is hidden. Labels write the number with the point as
 an underscore, as crc-sdk's return-period columns do: beta = 0.99 gives
-`b0_99`, T = 100 gives `rp100`, l = 0 gives `l0`.
+`b0_99`, T = 100 gives `rp100`, l = 0 gives `l0`. Invalid options and inputs
+raise `EvaluationError`.
 
 **VaR and CVaR here are over years.** `VaR_beta(X)` is the smallest x with
 `sum(p[X <= x]) >= beta`, the comparison allowing 1e-10 for rounding, so a
@@ -57,8 +58,10 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from pydantic import model_validator
 
-from crc_sdk.impacts._types import FiniteFloat, StrictFrozenModel
+from crc_sdk.impacts._types import FiniteFloat
 from crc_sdk.parametric._risk import Draws
+from crc_sdk.parametric.errors import EvaluationError
+from crc_sdk.parametric.metadata import _EvaluationModel
 
 __all__ = [
     "MetricColumn",
@@ -86,7 +89,7 @@ def _distinct(name: str, values: tuple[float, ...]) -> None:
         raise ValueError(f"{name} repeat a value, so their column names collide")
 
 
-class MetricOptions(StrictFrozenModel):
+class MetricOptions(_EvaluationModel):
     """The levels and thresholds of the metrics. Every one is stated.
 
     - `betas`: the levels beta in (0, 1) of the tail metrics: tail coverage,
@@ -99,8 +102,9 @@ class MetricOptions(StrictFrozenModel):
     - `payout_threshold`: eps >= 0, the payout at or below which a year
       counts as a year without payout.
 
-    Raises `ValueError` for values outside these ranges, non-finite values,
-    and repeated values (their column names would collide).
+    Raises `EvaluationError` (a `ValueError`) for values outside these
+    ranges, non-finite values, unknown options and repeated values (their
+    column names would collide).
     """
 
     betas: tuple[FiniteFloat, ...] = (0.9, 0.95, 0.99)
@@ -348,22 +352,30 @@ def metric_values(
     (>= 0), the cover's payout (>= 0) and the draw's probability (> 0,
     summing to 1 within 1e-12). `premium` is the premium used, in the loss
     unit. A value is `None` where the metric is undefined (see the module
-    docstring). Raises `ValueError` for arrays of different shapes,
-    non-finite or negative values, or probabilities that do not sum to 1.
+    docstring). Raises `EvaluationError` (a `ValueError`) for arrays of
+    different shapes, non-finite or negative values, probabilities that do
+    not sum to 1, or a premium that is not a finite number.
     """
-    loss_draws = Draws(loss, probability)
-    payout_draws = Draws(payout, probability)
+    try:
+        loss_draws = Draws(loss, probability)
+        payout_draws = Draws(payout, probability)
+    except ValueError as error:
+        raise EvaluationError(str(error)) from error
     p = loss_draws.probability
     if payout_draws.values.shape != p.shape:
-        raise ValueError("loss and payout must have one value per draw")
+        raise EvaluationError("loss and payout must have one value per draw")
     if abs(_fsum(p) - 1.0) > _PROBABILITY_SUM_TOLERANCE:
-        raise ValueError("probability must sum to 1 within 1e-12")
-    if isinstance(premium, bool) or not math.isfinite(float(premium)):
-        raise ValueError(f"premium must be a finite number, got {premium!r}")
+        raise EvaluationError("probability must sum to 1 within 1e-12")
+    if (
+        isinstance(premium, bool)
+        or not isinstance(premium, (int, float, np.number))
+        or not math.isfinite(float(premium))
+    ):
+        raise EvaluationError(f"premium must be a finite number, got {premium!r}")
     L = loss_draws.values
     pi = payout_draws.values
     if (L < 0.0).any() or (pi < 0.0).any():
-        raise ValueError("loss and payout must be non-negative")
+        raise EvaluationError("loss and payout must be non-negative")
     P = float(premium) + 0.0
     covered = np.minimum(pi, L)
     residual = L - pi
