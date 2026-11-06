@@ -1058,8 +1058,9 @@ def sample_annual(
 
     notes = ["The years are used as recorded; no trend is removed."]
     if dropped:
+        noun, verb = ("year", "was") if len(dropped) == 1 else ("years", "were")
         notes.append(
-            f"{len(dropped)} years without a value were dropped: "
+            f"{len(dropped)} {noun} without a value {verb} dropped: "
             f"{', '.join(str(year) for year in dropped[:10])}"
             f"{', ...' if len(dropped) > 10 else ''}."
         )

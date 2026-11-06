@@ -30,18 +30,21 @@ The module claims no licence of its own for a comparison: it is derived data
 under its inputs' terms, which `licences` lists.
 
 `setup_text(metadata)` states the setup in plain text, one statement a line,
-for a notebook or a report to print next to the numbers. Invalid metadata
-raises `EvaluationError`.
+for a notebook or a report to print next to the numbers; it also takes a
+comparison table and reads its metadata. Invalid metadata raises
+`EvaluationError`.
 """
 
 from __future__ import annotations
 
 import json
 import math
+import re
 from collections.abc import Iterable, Mapping, Sequence
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Literal, Self
 
+import pyarrow as pa  # type: ignore[import-untyped]
 from pydantic import ValidationError, model_validator
 
 from crc_sdk.impacts._types import ContentHash, StrictFrozenModel
@@ -622,6 +625,215 @@ def _sample_text(sample: Mapping[str, Any], where: str) -> str:
     )
 
 
+def _recorded(document: Mapping[str, Any], key: str, where: str) -> str | None:
+    """`document[key]` as text; `None` when absent, null or empty."""
+    value = _get(document, key, (str, int), where)
+    if isinstance(value, bool):
+        raise EvaluationError(f"{where}.{key} has the wrong type: {value!r}")
+    return None if value is None or value == "" else str(value)
+
+
+def _source_record(entry: Mapping[str, Any], where: str) -> str:
+    """One source record: what it is, and its provider, dataset, horizon, pathway.
+
+    A curve's provider and dataset come from its dataset metadata's `source`
+    block, and its hazard, horizon and pathway from its canonical row; a
+    per-year series' from its provenance's `source`. A field the record does
+    not hold is said to be not recorded.
+    """
+    role = _recorded(entry, "role", where) or "source"
+    row = _get(entry, "row", Mapping, where) or {}
+    document: Mapping[str, Any]
+    if entry.get("kind") == "curve":
+        metadata = _get(entry, "metadata", Mapping, where) or {}
+        document = _get(metadata, "source", Mapping, f"{where}.metadata") or {}
+        head = f"the {role} curve"
+        hazard = _recorded(row, "hazard_name", f"{where}.row")
+        if hazard is not None:
+            head += f" {hazard}"
+    elif "series" in entry:
+        series = _get(entry, "series", Mapping, where) or {}
+        if isinstance(series.get("source"), str):
+            document = {"name": series["source"]}
+        else:
+            document = _get(series, "source", Mapping, f"{where}.series") or {}
+        head = f"the {role} series"
+    else:
+        document = entry
+        head = f"the {role}"
+    name = _recorded(document, "name", where)
+    if name is not None:
+        head += f' "{name}"'
+    fields = {
+        "provider": _recorded(document, "provider", where),
+        "dataset": _recorded(document, "dataset", where),
+        "horizon": _recorded(row, "horizon", f"{where}.row"),
+        "pathway": _recorded(row, "pathway", f"{where}.row"),
+    }
+    known = [f"{key} {value}" for key, value in fields.items() if value is not None]
+    missing = [key for key, value in fields.items() if value is None]
+    text = head + (f" from {_join(known)}" if known else "")
+    if missing:
+        text += f", with {_join(missing)} not recorded"
+    return text
+
+
+def _sources(sources: Sequence[Mapping[str, Any]]) -> str:
+    records = _first_seen(
+        _source_record(entry, f"sources[{i}]") for i, entry in enumerate(sources)
+    )
+    return f"Source: {'; '.join(records) or 'not recorded'}."
+
+
+def _seeds(evaluation: Mapping[str, Any], where: str) -> tuple[int | None, int | None]:
+    """The plan's seed and the fresh draws' seed an evaluation records."""
+    details = _get(evaluation, "details", Mapping, where) or {}
+    return (
+        _get(details, "plan_seed", int, f"{where}.details"),
+        _get(details, "fresh_draws_seed", int, f"{where}.details"),
+    )
+
+
+def _seeds_text(plan: int | None, fresh: int | None) -> str:
+    parts = [] if plan is None else [f"the plan's seed {plan}"]
+    if fresh is not None:
+        parts.append(f"the fresh draws' seed {fresh}")
+    return "; ".join(parts)
+
+
+_COUNTED = re.compile(r"(\d+) of (\d+) draws (.+)", re.DOTALL)
+"""A note that counts draws, such as the draws beyond a curve's fitted support."""
+
+
+def _note_labels(
+    groups: Mapping[str, Sequence[int]],
+    samples: Sequence[Mapping[str, Any]],
+    roles: Sequence[Sequence[str]],
+    owners: Sequence[Sequence[str]],
+    fresh: set[str],
+) -> dict[str, str]:
+    """Which drawn sample each group of samples is, in words.
+
+    A group is the samples of one lineage: one drawn sample and the blocks
+    split from it, which carry its notes. By its samples' roles it is the
+    design sample, the fresh draws or another evaluation sample, followed by
+    its asset when the setup has several. A group whose blocks play both
+    roles is named by its asset alone, or is the sample split into blocks.
+    Groups that would read the same also get their first sample's hash.
+    """
+    several = len(_first_seen(asset for assets in owners for asset in assets)) > 1
+    labels: dict[str, str] = {}
+    for key, members in groups.items():
+        kinds = set()
+        for i in members:
+            if "design" in roles[i]:
+                kinds.add("the design sample")
+            elif str(samples[i].get("sample_hash")) in fresh:
+                kinds.add("the fresh draws")
+            else:
+                kinds.add("the evaluation sample")
+        assets = _first_seen(asset for i in members for asset in owners[i])
+        owner = f"for {_join(assets)}" if several and assets else ""
+        if len(kinds) == 1:
+            labels[key] = " ".join(["in", kinds.pop(), owner]).rstrip()
+        else:
+            labels[key] = owner or "in the sample split into blocks"
+    for label in set(labels.values()):
+        same = [key for key, value in labels.items() if value == label]
+        if len(same) < 2:
+            continue
+        for key in same:
+            first = groups[key][0]
+            name = samples[first].get("sample_hash")
+            which = _short(name) if name is not None else f"setup.samples[{first}]"
+            labels[key] = f"{label} (sample {which})"
+    return labels
+
+
+def _notes(
+    samples: Sequence[Mapping[str, Any]], evaluations: Sequence[Mapping[str, Any]]
+) -> list[str]:
+    """The samples' notes, each written once.
+
+    Blocks split from one drawn sample carry its notes, which are written
+    once. A note that counts draws (`<n> of <m> draws ...`) and differs
+    between drawn samples only in its counts, such as the draws beyond a
+    curve's fitted support in the design sample and in the fresh draws, is
+    written once with every sample's own counts, asset by asset and the
+    design sample first.
+    """
+    notes: list[list[str]] = []
+    roles: list[list[str]] = []
+    owners: list[list[str]] = []
+    for i, sample in enumerate(samples):
+        where = f"setup.samples[{i}]"
+        values = _list(sample, "notes", where)
+        if not all(isinstance(note, str) for note in values):
+            raise EvaluationError(f"{where}.notes must be a list of text")
+        notes.append(values)
+        roles.append([str(role) for role in _list(sample, "roles", where)])
+        owners.append([str(asset) for asset in _list(sample, "asset_ids", where)])
+    groups: dict[str, list[int]] = {}
+    for i, sample in enumerate(samples):
+        key = sample.get("lineage") or sample.get("sample_hash") or f"#{i}"
+        groups.setdefault(str(key), []).append(i)
+    group_of = {i: key for key, members in groups.items() for i in members}
+    counted = {
+        tuple(
+            _first_seen(
+                note for i in members for note in notes[i] if _COUNTED.fullmatch(note)
+            )
+        )
+        for members in groups.values()
+    }
+    if len(counted) <= 1:
+        # One drawn sample, or the same counts in each: the notes as they are.
+        return _first_seen(note for values in notes for note in values)
+
+    fresh = {
+        str(evaluation.get("sample_hash"))
+        for evaluation in evaluations
+        if evaluation.get("method") == "fresh_draws"
+    }
+    labels = _note_labels(groups, samples, roles, owners, fresh)
+    designed = {group_of[i] for i in range(len(samples)) if "design" in roles[i]}
+    first = {
+        asset: n
+        for n, asset in enumerate(
+            _first_seen(asset for assets in owners for asset in assets)
+        )
+    }
+
+    def place(i: int) -> tuple[int, bool]:
+        asset = first[owners[i][0]] if owners[i] else len(first)
+        return asset, group_of[i] not in designed
+
+    # A note as it is (no entries), or the rest of a counted note with each
+    # drawn sample's counts and label.
+    statements: dict[tuple[bool, str], list[tuple[str, str, str]]] = {}
+    for i in sorted(range(len(samples)), key=place):
+        for note in notes[i]:
+            match = _COUNTED.fullmatch(note)
+            if match is None:
+                statements.setdefault((False, note), [])
+                continue
+            count, total, rest = match.groups()
+            entries = statements.setdefault((True, rest), [])
+            if (count, total, labels[group_of[i]]) not in entries:
+                entries.append((count, total, labels[group_of[i]]))
+    lines: list[str] = []
+    for (is_counted, text), entries in statements.items():
+        if not is_counted:
+            lines.append(text)
+            continue
+        parts = [
+            f"{count} of {total}{' draws' if j == 0 else ''} {label}"
+            for j, (count, total, label) in enumerate(entries)
+        ]
+        lines.append(f"{_join(parts)} {text}")
+    return lines
+
+
 def _pricing(pricing: Any, where: str) -> str:
     if pricing is None:
         return "not stated"
@@ -820,7 +1032,7 @@ def _metrics(options: Mapping[str, Any], unit: str) -> str:
 
 
 def setup_text(
-    metadata: EvaluationMetadata | EvaluationSetup | Mapping[str, Any],
+    metadata: EvaluationMetadata | EvaluationSetup | Mapping[str, Any] | pa.Table,
 ) -> str:
     """Return the setup behind a comparison's numbers, as plain text.
 
@@ -833,11 +1045,19 @@ def setup_text(
       the split was made (a holdout and its train fraction, k-fold and k,
       fresh draws, a separate sample), the evaluation and design samples
       (years, periods, blocks) and the leakage check;
+    - `Seeds`: the plan's seed (`plan_seed`) and the fresh draws' seed
+      (`fresh_draws_seed`) that the evaluations' `details` record, if any;
     - `Sample`: the source kind, the probability semantics and who stated
       them, the basis-risk model and its parameters, and the loss model;
+    - `Source`: each source record of the samples, such as a hazard curve or
+      a per-year series, with its provider, dataset, horizon and pathway, and
+      which of them the record does not hold;
     - `Sample notes`: what the sources recorded, such as draws beyond the
       fitted support, a pooled ensemble, dropped years, an index read from
-      another series, or a comonotone index and loss;
+      another series, or a comonotone index and loss. A note that differs
+      between drawn samples only in its counts, such as the draws beyond the
+      fitted support in the design sample and in the fresh draws, is written
+      once, with each sample's own counts;
     - `Pricing`: the pricing of the covers given as is; a design keeps its
       design premium, and a row's `premium_basis` says which premium it uses;
     - `Design`, one line per design: the objective, pricing, budget and
@@ -847,33 +1067,44 @@ def setup_text(
     - `Metrics`: the levels beta, the return periods and the loss and payout
       thresholds.
 
-    Statements that every evaluation or sample shares are written once.
+    Statements that every evaluation or sample shares are written once; the
+    seeds too, unless the evaluations record different ones, when each
+    `Split` line states its own.
 
-    `metadata` is a comparison's `EvaluationMetadata`, for example
-    `EvaluationMetadata.from_table(table)`, or a setup alone: an
+    `metadata` is a comparison's `EvaluationMetadata`; a comparison table (a
+    `pyarrow.Table`, such as one `compare` returns or one read back from a
+    file that `write_comparison` or a plan's `write_parquet` wrote), whose
+    `crc.parametric.evaluation` metadata is read as
+    `EvaluationMetadata.from_table` reads it; or a setup alone: an
     `EvaluationSetup`, or a mapping in its layout, such as a setup known
-    before anything is drawn. A setup alone has no design records, and keys
-    it does not know yet (sample hashes, counts) may be missing: the text
-    then says what is not known. The text depends only on `metadata`, so the
-    same metadata gives the same text; nothing is read or written.
+    before anything is drawn. A setup alone has no design or source records,
+    so it has no `Design` or `Source` lines, and keys it does not know yet
+    (sample hashes, counts) may be missing: the text then says what is not
+    known. The text depends only on `metadata`, so the same metadata gives
+    the same text; nothing is read or written.
 
-    Raises `EvaluationError` for setup values of the wrong type, and
+    Raises `EvaluationError` for setup values of the wrong type and for a
+    table without valid `crc.parametric.evaluation` metadata, and
     `TypeError` for an argument of none of these types.
     """
     designs: tuple[dict[str, Any], ...] = ()
     labels: dict[str, str | None] = {}
+    sources: tuple[dict[str, Any], ...] | None = None
+    if isinstance(metadata, pa.Table):
+        metadata = EvaluationMetadata.from_table(metadata)
     if isinstance(metadata, EvaluationMetadata):
         setup: Mapping[str, Any] = metadata.setup.model_dump(mode="json")
         designs = metadata.designs
         labels = _design_labels(designs, metadata.covers)
+        sources = metadata.sources
     elif isinstance(metadata, EvaluationSetup):
         setup = metadata.model_dump(mode="json")
     elif isinstance(metadata, Mapping):
         setup = metadata
     else:
         raise TypeError(
-            "setup_text takes EvaluationMetadata, an EvaluationSetup or a setup "
-            f"mapping, got {type(metadata).__name__}"
+            "setup_text takes EvaluationMetadata, a comparison table, an "
+            f"EvaluationSetup or a setup mapping, got {type(metadata).__name__}"
         )
     samples = _objects(setup, "samples", "setup")
     evaluations = _objects(setup, "evaluations", "setup")
@@ -912,13 +1143,26 @@ def setup_text(
         for i, evaluation in enumerate(evaluations)
     ]
     shared = len(set(pricings)) <= 1
+    seeds = [
+        _seeds(evaluation, f"setup.evaluations[{i}]")
+        for i, evaluation in enumerate(evaluations)
+    ]
+    plan_seeds = {plan for plan, _ in seeds if plan is not None}
+    fresh_seeds = {fresh for _, fresh in seeds if fresh is not None}
+    one_seed = len(plan_seeds) <= 1 and len(fresh_seeds) <= 1
     for i, evaluation in enumerate(evaluations):
         text = _split(evaluation, by_hash, f"setup.evaluations[{i}]")
+        if not one_seed and _seeds_text(*seeds[i]):
+            text += f" Seeds: {_seeds_text(*seeds[i])}."
         if not shared:
             text += f" Pricing: {pricings[i]}."
         lines.append(text)
     if not evaluations:
         lines.append("Split: not known.")
+    if one_seed and (plan_seeds or fresh_seeds):
+        plan = next(iter(plan_seeds), None)
+        fresh = next(iter(fresh_seeds), None)
+        lines.append(f"Seeds: {_seeds_text(plan, fresh)}.")
 
     # Every sample is checked, also those the text describes only once.
     years = [_years(sample, f"setup.samples[{i}]") for i, sample in enumerate(samples)]
@@ -935,14 +1179,11 @@ def setup_text(
             for span, text in zip(years, descriptions, strict=True)
         ]
 
-    notes: list[str] = []
-    for i, sample in enumerate(samples):
-        values = _list(sample, "notes", f"setup.samples[{i}]")
-        if not all(isinstance(note, str) for note in values):
-            raise EvaluationError(f"setup.samples[{i}].notes must be a list of text")
-        notes += values
+    if sources is not None:
+        lines.append(_sources(sources))
+    notes = _notes(samples, evaluations)
     if notes:
-        lines.append(f"Sample notes: {' '.join(_first_seen(notes))}")
+        lines.append(f"Sample notes: {' '.join(notes)}")
 
     if not pricings:
         pricing = "not stated"

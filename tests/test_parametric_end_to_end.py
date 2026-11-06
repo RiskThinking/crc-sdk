@@ -147,6 +147,19 @@ def test_the_docs_quick_start_runs_as_written(
     assert "more frequent than the shortest fitted return period (2 years)" in after
     assert "Design step (expected_uncovered) (" in after
     assert "Basis risk: impact noise" in after
+    for text in (before, after):
+        assert "\nSeeds: the plan's seed 42; the fresh draws' seed 7.\n" in text
+    assert "\nSource: " not in before  # the dataset is read only at execution
+    assert (
+        "\nSource: the hazard curve rx1day from provider example, dataset "
+        "synthetic rx1day, horizon 2050 and pathway ssp245.\n"
+    ) in after
+    # The support note as "Stating the setup" quotes it.
+    assert (
+        "2527 of 5000 draws in the design sample and 2464 of 5000 in the fresh "
+        "draws are more frequent than the shortest fitted return period (2 years)"
+    ) in after
+    assert after.count("rarer than the longest fitted return period") == 1
 
     result = namespace["result"]
     assert (tmp_path / "rx1day.parquet").is_file()

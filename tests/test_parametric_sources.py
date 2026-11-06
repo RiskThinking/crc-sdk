@@ -728,7 +728,18 @@ def test_missing_years_raise_or_are_dropped_and_listed() -> None:
     )
     assert sample.period.tolist() == [2000, 2002]
     assert sample.provenance.details["dropped_years"] == (2001, 2003)
-    assert any("2001, 2003" in note for note in sample.provenance.notes)
+    assert "2 years without a value were dropped: 2001, 2003." in (
+        sample.provenance.notes
+    )
+    one = sample_annual(
+        _series([50.0, None, 100.0, 70.0]),
+        loss_model=LOSS,
+        basis_risk=NOISE,
+        asset_id="a",
+        rng=np.random.default_rng(0),
+        missing="drop_year",
+    )
+    assert "1 year without a value was dropped: 2001." in one.provenance.notes
     with pytest.raises(SampleError, match="missing must be"):
         UNTYPED_ANNUAL(
             series, loss_model=LOSS, basis_risk=NOISE, asset_id="a", missing="ignore"

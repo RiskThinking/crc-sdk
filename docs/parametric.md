@@ -448,18 +448,37 @@ at another cell, station or hazard than the loss.
 Every number in a comparison rests on a setup: the asset, the basis, the
 split, the samples' source and basis-risk model, the pricing and, for a design,
 its objective and constraints. `setup_text(result.metadata)`, or
-`setup_text(EvaluationMetadata.from_table(table))` for a table read back,
-states that setup in plain text, one statement per line (`Level`, `Split`,
-`Sample`, `Sample notes`, `Pricing`, `Design`, `Metrics`), for a notebook or a
-report to print next to the numbers. It reads only the metadata, so the same
-table always gives the same text, and statements that every split or sample
-shares are written once. Before execution, `setup_text(plan.explain(
-format="json")["setup"])`, or `setup_text(metadata.setup)`, gives the same
-lines without the design records, and says what only execution knows (the
-years of each block, the leakage check) is not known yet. Out-of-sample rows'
-`Split` line says how the split was made and that the leakage check passed.
-The plan's seed is in every evaluation's `details` under `"plan_seed"`, and
-the fresh draws' seed under `"fresh_draws_seed"`.
+`setup_text(table)` for a comparison table, such as one read back with
+`pyarrow.parquet.read_table`, states that setup in plain text, one statement
+per line (`Level`, `Split`, `Seeds`, `Sample`, `Source`, `Sample notes`,
+`Pricing`, `Design`, `Metrics`), for a notebook or a report to print next to
+the numbers. A table is read through its `crc.parametric.evaluation`
+metadata, which rows and columns taken from it keep; a table without that
+metadata raises `EvaluationError`. The text reads only the metadata, so the
+same table always gives the same text, and statements that every split or
+sample shares are written once.
+
+- `Seeds` states the plan's seed, which every evaluation's `details` holds
+  under `"plan_seed"`, and the fresh draws' seed, which every fresh-draw
+  evaluation's holds under `"fresh_draws_seed"`. When merged evaluations
+  record different seeds, each `Split` line states its own.
+- `Source` names each source record of the samples: for a fitted curve, its
+  hazard, the provider and dataset of its dataset's metadata, and the horizon
+  and pathway of its canonical row; for per-year values, the provider and
+  dataset of the series. A field that a record does not hold is stated as not
+  recorded, never guessed.
+- `Sample notes` writes a note that counts draws once, with each sample's own
+  counts. In the quick start, the draws beyond the curve's fitted support
+  read "2527 of 5000 draws in the design sample and 2464 of 5000 in the fresh
+  draws are more frequent than the shortest fitted return period (2 years)",
+  and the same for the longest. Blocks split from one sample share its
+  notes, which are written once.
+
+Before execution, `setup_text(plan.explain(format="json")["setup"])`, or
+`setup_text(metadata.setup)`, gives the same lines without the design and
+source records, and says what only execution knows (the years of each block,
+the leakage check) is not known yet. Out-of-sample rows' `Split` line says how
+the split was made and that the leakage check passed.
 
 ## Define a cover and evaluate its payouts
 

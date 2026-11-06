@@ -236,10 +236,30 @@ def test_for_evaluation_runs_end_to_end_offline(dataset: Path, tmp_path: Path) -
     assert stored.assets["count"] == 2 and stored.assets["values_sha256"]
     assert len(result.designs) == 2 * 3
     text = setup_text(stored)
+    assert setup_text(read) == text
     assert "on fresh Monte Carlo draws: evaluated on 1000 simulated years" in text
     assert "designed on 1500 simulated years" in text
     assert "with annual_exceedance semantics, as the dataset declares" in text
     assert "more frequent than the shortest fitted return period (2 years)" in text
+    assert "\nSeeds: the plan's seed 42; the fresh draws' seed 7.\n" in text
+    assert (
+        "\nSource: the hazard curve rx1day from provider example, dataset "
+        "synthetic rx1day, horizon 2050 and pathway ssp245.\n"
+    ) in text
+    # One note per kind, with the counts of each asset's design and fresh draws.
+    notes = next(line for line in text.splitlines() if line.startswith("Sample notes"))
+    design_draws = result.samples["warehouse-a"]
+    below = design_draws.provenance.details["outside_support"]["below"]
+    assert notes.startswith(
+        f"Sample notes: {below} of 1500 draws in the design sample for warehouse-a, "
+    )
+    assert notes.count("more frequent than the shortest fitted return period") == 1
+    for label in (
+        "in the fresh draws for warehouse-a",
+        "in the design sample for depot-b",
+        "in the fresh draws for depot-b",
+    ):
+        assert label in notes
 
 
 def test_samples_follow_sample_curve_on_the_asset_curves_rows(dataset: Path) -> None:
