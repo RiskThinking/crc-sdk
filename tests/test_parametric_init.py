@@ -27,6 +27,7 @@ PUBLIC = [
     "EvaluationMetadata",
     "ExpectedUncovered",
     "Free",
+    "FreshDraws",
     "Holdout",
     "ImpactNoise",
     "IndexDefinition",

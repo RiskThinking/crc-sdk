@@ -1,16 +1,18 @@
-"""The parametric plan: from per-year hazard values and assets to compared covers.
+"""The parametric plan: from hazard curves or per-year values to compared covers.
 
-`ParametricPlan.for_annual_extremes(source, assets, *, impact, unit,
-provenance, ...)` starts a lazy, immutable plan, as every crc-sdk source
-does. Builders return a new plan and do no I/O, and neither does
-`explain()`:
+A plan is lazy and immutable, as every crc-sdk source is. Builders return a
+new plan and do no I/O, and neither does `explain()`. It has two entry
+points:
 
 ```text
+ParametricPlan.for_evaluation(request, value_column=, value_unit=)   # fitted curves
+  .monte_carlo(n_draws, seed=)          # required there: simulated years
 ParametricPlan.for_annual_extremes(source, assets, impact=, unit=, provenance=)
+# then, on either plan:
   .basis_risk(model)                    # required: how index and loss differ
   .covers(*covers)                      # resolved covers and templates
   .objective(*objectives, pricing=, budget=, limit=, options=)
-  .split(Holdout(0.7) | KFold(5))       # optional: hold out years
+  .split(FreshDraws(n, seed=) | Holdout(0.7) | KFold(5))   # optional
   .metrics(MetricOptions(...))          # optional: levels and thresholds
   .explain()                            # the setup, no I/O
   .samples()                            # execution: one sample per asset
@@ -18,26 +20,42 @@ ParametricPlan.for_annual_extremes(source, assets, impact=, unit=, provenance=)
   .write_parquet("comparison.parquet")  # execution: written atomically
 ```
 
-**Sources.** `source` is a crc-sdk plan with an `annual_extremes()` execution
-point (ERA5 and CMIP6 canonicalization plans, NEX-GDDP-CMIP6, station plans,
-NOAA water levels), an Arrow table in one of their layouts, or a local
-Parquet file of one. It is read only at an execution point. Each asset's
-series is the grid cell whose centre is nearest the asset (`NearestCell`,
-the default, for per-cell tables), or the station an asset column names
+**Fitted curves** (`for_evaluation`). `request` is the `PortfolioEvaluation`
+built with `HazardDataset.local(path).for_assets(assets).select(...)
+.impact(...)`; the plan reuses its dataset, assets, selection and impact.
+At execution, `request.asset_curves()` gives each asset's canonical curve
+row (one hazard, horizon and pathway per asset), and `sample_curve` draws
+`n_draws` simulated years from it, each with probability 1/n. The
+probability-semantics rules of `sample_curve` apply: a curve whose
+`probability_semantics` is unspecified is refused unless `.monte_carlo(...,
+assume_semantics=...)` states one, and draws beyond the fitted support and a
+pooled ensemble are noted in each sample. The impact gets the asset's
+matched H3 cell and its context columns, as `request.write_parquet` gives
+them.
+
+**Per-year values** (`for_annual_extremes`). `source` is a crc-sdk plan with
+an `annual_extremes()` execution point (ERA5 and CMIP6 canonicalization
+plans, NEX-GDDP-CMIP6, station plans, NOAA water levels), an Arrow table in
+one of their layouts, or a local Parquet file of one. Each asset's series is
+the grid cell whose centre is nearest the asset (`NearestCell`, the default,
+for per-cell tables), or the station an asset column names
 (`StationColumn`). `unit` is the unit of the table's values and
 `provenance` (a `SourceProvenance`) the source's licence, attribution and
-version: annual-extremes tables carry no licence of their own.
+version: annual-extremes tables carry no licence of their own. Each asset
+gets one `OutcomeSample` from `sample_annual`: its years are the rows, each
+with probability 1/n, and no trend is removed.
 
-**Samples.** Each asset gets one `OutcomeSample` from `sample_annual`: its
-years are the rows, each with probability 1/n, and no trend is removed. The
-loss is `impact(hazard) × value`, with the value from an asset column or 1
-(the damage ratio). The basis-risk model is required, as in
-`sample_annual`: `NoBasisRisk()` must be written out.
+On both routes the loss is `impact(hazard) × value`, with the value from an
+asset column or 1 (the damage ratio), and the basis-risk model is required:
+`NoBasisRisk()` must be written out.
 
-**Seeding.** The plan holds an integer `seed`. At execution it builds
+**Seeding.** The plan holds an integer `seed` (`monte_carlo`'s, or
+`for_annual_extremes`'). At execution it builds
 `numpy.random.SeedSequence(seed)` and spawns one child generator per asset,
-in asset order; on this route only the basis-risk model draws. A model that
-draws, such as `ImpactNoise`, needs a seed.
+in asset order; each draws the hazard uniforms first, then the basis-risk
+model. Fresh draws use `SeedSequence(FreshDraws.seed)` the same way. On the
+per-year route only the basis-risk model draws, so `ImpactNoise` needs a
+seed there.
 
 **Covers and designs.** A cover written for no asset (`asset_id=None`)
 applies to every asset, as a copy written for that asset; one written for an
@@ -48,24 +66,26 @@ template's label (or the first 12 hex digits of its hash) followed by the
 objective, for example `"step (mse)"`.
 
 **Splits.** Without `.split(...)`, every cover is designed and evaluated on
-all years, so every row is in sample. `Holdout(train_fraction)` designs on
-the first years and evaluates on the latest ones; `KFold(k)` holds out each
-of `k` contiguous blocks of years in turn. Every block gets in-sample rows
-(on the design block) and out-of-sample rows (on the held-out block). Resolved
-covers are evaluated on the same blocks, with the design block as their
-design sample, so their terms are taken as chosen without the held-out
-years. Monte Carlo samples and their fresh draws need a curve source, which
-this entry point does not read.
+the whole sample, so every row is in sample. `FreshDraws(n_draws, seed=)`
+(curves only) designs on the plan's draws and evaluates on `n_draws` fresh
+draws from the same curve. `Holdout(train_fraction)` designs on the first
+periods (years or draws) and evaluates on the rest; `KFold(k)` holds out
+each of `k` contiguous blocks in turn. Every block gets in-sample rows (on
+the design block) and out-of-sample rows (on the held-out block or the fresh
+draws). Resolved covers are evaluated on the same blocks, with the design
+block as their design sample, so their terms are taken as chosen without
+the held-out data.
 
 **Output.** `write_parquet(path)` writes one comparison table, as `compare`
 builds it, through a temporary sibling and `os.replace`. Its metadata under
 `crc.parametric.evaluation` (`EvaluationMetadata`) holds the setup of every
 number: the samples with their source, loss and basis-risk models, the
-splits, the pricing, the designs and the covers, plus the source table's
-checksum, the source plan's `explain()`, the licences, the generator
-states and the plan's seed (in every evaluation's `details`, as
-`"plan_seed"`). Asset values are never written; the metadata holds a SHA-256 of the
-(asset id, value) pairs.
+splits, the pricing, the designs and the covers, plus the source's record
+(the canonical file's path and SHA-256, or the annual table's checksum and
+the source plan's `explain()`), the licences, the generator states, and the
+plan's seed in every evaluation's `details` (`"plan_seed"`, with
+`"fresh_draws_seed"` on fresh-draw rows). Asset values are never written;
+the metadata holds a SHA-256 of the (asset id, value) pairs.
 """
 
 from __future__ import annotations
@@ -85,15 +105,23 @@ from typing import Any, Literal, get_args
 import numpy as np
 import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
-from crc_framework import ClimateImpact, TransformContext, impact_registry_manifest
+from crc_framework import (
+    CallableImpact,
+    ClimateImpact,
+    ImpactFunction,
+    TransformContext,
+    impact_registry_manifest,
+)
+from crc_framework import ImpactExpression as FrameworkImpactExpression
 
 from crc_sdk.impacts.calibration import units_equivalent
+from crc_sdk.impacts.expression import ImpactExpression
 from crc_sdk.parametric._canonical import content_hash
 from crc_sdk.parametric.basis_risk import BasisRisk, ImpactNoise
 from crc_sdk.parametric.constraints import Budget, Limit
 from crc_sdk.parametric.cover import Cover
 from crc_sdk.parametric.design import DesignOptions, DesignResult, design
-from crc_sdk.parametric.errors import SampleError
+from crc_sdk.parametric.errors import ProbabilitySemanticsError, SampleError
 from crc_sdk.parametric.evaluate import compare, write_comparison
 from crc_sdk.parametric.index import AtAsset
 from crc_sdk.parametric.loss import LossModel
@@ -115,16 +143,28 @@ from crc_sdk.parametric.sample import (
     holdout,
     year_block_kfold,
 )
-from crc_sdk.parametric.sources import AnnualSeries, MissingYears, sample_annual
+from crc_sdk.parametric.sources import (
+    AnnualSemantics,
+    AnnualSeries,
+    MissingYears,
+    OutsideSupport,
+    sample_annual,
+    sample_curve,
+)
 from crc_sdk.types import SourceProvenance
+from crc_sdk.workflows.distributions import CURVE_COLUMNS
 from crc_sdk.workflows.portfolio import (
     AssetPortfolio,
     CellColumn,
     ImpactContextColumns,
+    ImpactSpec,
     PointColumns,
+    PortfolioEvaluation,
+    _ExpressionImpact,
 )
 
 __all__ = [
+    "FreshDraws",
     "Holdout",
     "KFold",
     "NearestCell",
@@ -194,6 +234,67 @@ class KFold:
     def to_document(self) -> dict[str, Any]:
         """Return `{"kind": "kfold", "k": k}`."""
         return {"kind": "kfold", "k": self.k}
+
+
+def _positive_count(name: str, value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, np.integer)):
+        raise ValueError(f"{name} must be a positive integer, got {value!r}")
+    if int(value) < 1:
+        raise ValueError(f"{name} must be a positive integer, got {value!r}")
+    return int(value)
+
+
+def _seed_value(name: str, value: Any) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, np.integer))
+        or int(value) < 0
+    ):
+        raise ValueError(f"{name} must be a non-negative integer, got {value!r}")
+    return int(value)
+
+
+@dataclass(frozen=True)
+class FreshDraws:
+    """Evaluate on fresh Monte Carlo draws from each asset's curve.
+
+    For plans on fitted curves (`for_evaluation`). The designs are made on
+    the plan's draws (`monte_carlo`), and every cover is evaluated out of
+    sample on `n_draws` fresh draws from the same curve, drawn with one
+    child generator of `numpy.random.SeedSequence(seed)` per asset, in asset
+    order. Draws are independent simulated years, so fresh draws are the
+    plain out-of-sample test. `seed` must differ from the plan's seed; it is
+    recorded in every fresh-draw evaluation's `details` as
+    `"fresh_draws_seed"`. Raises `ValueError` unless `n_draws` is a positive
+    integer and `seed` a non-negative one.
+    """
+
+    n_draws: int
+    seed: int = field(kw_only=True)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "n_draws", _positive_count("n_draws", self.n_draws))
+        object.__setattr__(self, "seed", _seed_value("seed", self.seed))
+
+    def to_document(self) -> dict[str, Any]:
+        """Return `{"kind": "fresh_draws", "n_draws": n, "seed": seed}`."""
+        return {"kind": "fresh_draws", "n_draws": self.n_draws, "seed": self.seed}
+
+
+@dataclass(frozen=True)
+class _MonteCarlo:
+    """What `.monte_carlo(...)` states: the draws per asset and the curve rules."""
+
+    n_draws: int
+    assume_semantics: AnnualSemantics | None
+    outside_support: OutsideSupport
+
+    def to_document(self) -> dict[str, Any]:
+        return {
+            "assume_semantics": self.assume_semantics,
+            "n_draws": self.n_draws,
+            "outside_support": self.outside_support,
+        }
 
 
 def _column_name(name: str, value: Any) -> str:
@@ -330,9 +431,21 @@ class _Run:
     samples: Mapping[str, OutcomeSample]
     designs: tuple[DesignResult, ...]
     tables: tuple[Any, ...]
+    source_key: str
     source: dict[str, Any]
     id_column: str
     values_sha256: str | None
+
+
+@dataclass(frozen=True, eq=False)
+class _Samples:
+    """What execution builds before any design: the samples and the source."""
+
+    portfolio: AssetPortfolio
+    samples: dict[str, OutcomeSample]
+    fresh: dict[str, OutcomeSample] | None
+    record_key: str
+    record: dict[str, Any]
 
 
 # -- helpers -----------------------------------------------------------------
@@ -424,6 +537,10 @@ def _registry_needs_cell(
     return factor
 
 
+def _listed(values: Sequence[Any] | None) -> list[Any] | None:
+    return None if values is None else list(values)
+
+
 def _objective_tag(objective: Objective) -> str:
     if isinstance(objective, WeightedCVaR):
         return f"weighted_cvar alpha={objective.alpha:g} beta={objective.beta:g}"
@@ -451,25 +568,95 @@ def _design_label(template: Cover, objective: Objective) -> str:
     return f"{base} ({_objective_tag(objective)})"
 
 
+_CONTEXT_FIELDS = ("cell", "country", "continent", "building_type", "historic_mean")
+_CURVE_ROW_COLUMNS = (
+    "cell_index",
+    "hazard_name",
+    "horizon",
+    "pathway",
+    "source_id",
+    *CURVE_COLUMNS,
+)
+"""The columns of an `asset_curves()` row that make its canonical curve row."""
+
+
+def _request_impact(spec: ImpactSpec) -> tuple[Any, ImpactContextColumns | None]:
+    """The impact a request's `ImpactSpec` holds, as given, and its context.
+
+    An expression comes back as the `ImpactExpression` itself, so its
+    `definition_hash` is kept, and a callable as the callable.
+    """
+    function: Any = spec.function
+    if isinstance(function, _ExpressionImpact):
+        function = function.expression
+    elif isinstance(function, CallableImpact):
+        function = function.function
+    context = spec.context_columns if spec.context_columns.items() else None
+    return function, context
+
+
+def _takes_context(impact: Any) -> bool:
+    """Whether `LossModel` passes a framework context to `impact`."""
+    return not isinstance(
+        impact, (ImpactExpression, FrameworkImpactExpression)
+    ) and isinstance(impact, ImpactFunction)
+
+
+def _curve_context(
+    impact: Any,
+    curve: Mapping[str, Any],
+    asset: Mapping[str, Any],
+    columns: ImpactContextColumns | None,
+) -> TransformContext:
+    """The context `PortfolioEvaluation` gives an impact for one matched row.
+
+    The impact's own context, with the matched H3 cell and the asset's
+    context columns on top; null asset values keep the impact's own.
+    """
+    base = getattr(impact, "context", None)
+    fields: dict[str, Any] = {
+        name: getattr(base, name) if isinstance(base, TransformContext) else None
+        for name in _CONTEXT_FIELDS
+    }
+    if curve.get("cell_index") is not None:
+        fields["cell"] = int(curve["cell_index"])
+    for field_name, column_name in columns.items() if columns is not None else ():
+        if column_name not in asset:
+            raise SampleError(f"the asset table has no column {column_name!r}")
+        value = asset[column_name]
+        if value is None:
+            continue
+        fields[field_name] = (
+            float(value) if field_name == "historic_mean" else str(value)
+        )
+    return TransformContext(**fields)
+
+
 # -- the plan ----------------------------------------------------------------
 
 
 @dataclass(frozen=True, eq=False, repr=False)
 class ParametricPlan:
-    """A lazy plan from per-year hazard values and assets to compared covers.
+    """A lazy plan from hazard curves or per-year values to compared covers.
 
-    Start one with `ParametricPlan.for_annual_extremes(...)`; the builders
-    (`basis_risk`, `covers`, `objective`, `split`, `metrics`) return new
-    plans, and neither they nor `explain()` do any I/O. The execution points
-    `samples()`, `designs()` and `write_parquet(path)` read the source and
-    the assets. The module docstring describes the route.
+    Start one with `ParametricPlan.for_evaluation(request)` (fitted curves)
+    or `ParametricPlan.for_annual_extremes(...)` (per-year values); the
+    builders (`monte_carlo`, `basis_risk`, `covers`, `objective`, `split`,
+    `metrics`) return new plans, and neither they nor `explain()` do any
+    I/O. The execution points `samples()`, `designs()` and
+    `write_parquet(path)` read the source and the assets. The module
+    docstring describes both routes.
+
+    `entry` names the entry point. On the curve route `source` is the
+    request, `unit` and `provenance` are `None` (the dataset's metadata
+    states them at execution) and `draws` holds what `monte_carlo` states.
     """
 
     source: Any
     assets: AssetPortfolio | Path
     loss_model: LossModel
-    unit: str
-    provenance: SourceProvenance
+    unit: str | None
+    provenance: SourceProvenance | None
     location: NearestCell | StationColumn = field(default_factory=NearestCell)
     year_column: str = "year"
     hazard_column: str = "value"
@@ -479,10 +666,106 @@ class ParametricPlan:
     basis_risk_model: BasisRisk | None = None
     cover_list: tuple[Cover, ...] = ()
     design_spec: _DesignSpec | None = None
-    split_rule: Holdout | KFold | None = None
+    split_rule: Holdout | KFold | FreshDraws | None = None
     metric_options: MetricOptions = field(default_factory=MetricOptions)
+    entry: Literal["for_annual_extremes", "for_evaluation"] = "for_annual_extremes"
+    draws: _MonteCarlo | None = None
 
-    # -- the entry point ------------------------------------------------------
+    # -- the entry points -----------------------------------------------------
+
+    @classmethod
+    def for_evaluation(
+        cls,
+        request: PortfolioEvaluation,
+        *,
+        value_column: str | None = None,
+        value_unit: str = "1",
+    ) -> ParametricPlan:
+        """Plan covers on each asset's fitted hazard curve.
+
+        `request` is the `PortfolioEvaluation` built with
+        `HazardDataset.local(path).for_assets(assets).select(...)
+        .impact(...)`; the plan reuses its dataset, assets, selection and
+        impact, and changes nothing in it. Each asset needs one curve: the
+        selection must leave one hazard, horizon and pathway. At execution,
+        `request.asset_curves()` gives the asset's canonical curve row and
+        `sample_curve` draws the simulated years that `.monte_carlo(n_draws,
+        seed=...)` states, so `.monte_carlo(...)` is required.
+
+        - The loss is `impact(hazard) × value`: the impact is the request's
+          (an `ImpactExpression` keeps its `definition_hash`), the value the
+          asset column `value_column` in `value_unit`, or 1 (the damage
+          ratio, `value_unit="1"`). A framework `ImpactFunction` gets the
+          context `request.write_parquet` gives it: its own, with the asset's
+          matched H3 cell and the request's context columns on top.
+        - The index is the curve's hazard at the asset, in the dataset's
+          `value_unit`, so every cover's index must be in that unit
+          (checked at execution).
+        - The assets are an in-memory table or a local Parquet file (read at
+          execution); the asset order is the table's row order.
+
+        Raises `TypeError` for a request of another type (for a remote
+        source, materialize it first and build the request on the
+        `HazardDataset` it returns) or for SQL assets; `ValueError` for a
+        request without an impact or a selection of several hazards,
+        horizons or pathways; and `SampleError` for a missing asset column
+        or an invalid loss model.
+        """
+        if not isinstance(request, PortfolioEvaluation):
+            raise TypeError(
+                "request must be a PortfolioEvaluation, as HazardDataset.local("
+                "path).for_assets(assets) builds; for a remote source, "
+                "materialize it first (plan.materialize(path) returns the "
+                f"HazardDataset), got {type(request).__name__}"
+            )
+        spec = request.impact_spec
+        if spec is None:
+            raise ValueError(
+                "the request has no impact; add .impact(function, name=..., "
+                "value_unit=..., value_semantics=...) to state the loss"
+            )
+        selection = request.selection
+        for name, values in (
+            ("hazard_names", selection.hazard_names),
+            ("horizons", selection.horizons),
+            ("pathways", selection.pathways),
+        ):
+            if values is not None and len(values) > 1:
+                raise ValueError(
+                    f"the plan samples one curve per asset, but the request "
+                    f"selects {len(values)} {name}; select one with "
+                    f".select({name}=[...])"
+                )
+        portfolio = request.portfolio
+        if isinstance(portfolio.data, str):
+            raise TypeError(
+                "the plan reads each asset's row at execution; pass the assets "
+                "as an Arrow table or a Parquet file path, not SQL"
+            )
+        impact, context = _request_impact(spec)
+        loss_model = LossModel(
+            impact,
+            value_column=value_column,
+            value_unit=value_unit,
+            context=context,
+            name=spec.name,
+        )
+        columns = _table_columns(portfolio)
+        if columns is not None:
+            needed = [value_column] if value_column is not None else []
+            if context is not None:
+                needed += [name for _, name in context.items()]
+            absent = [name for name in needed if name not in columns]
+            if absent:
+                raise SampleError(f"the asset table has no columns {absent}")
+        return cls(
+            source=request,
+            assets=portfolio,
+            loss_model=loss_model,
+            unit=None,
+            provenance=None,
+            entry="for_evaluation",
+        )
 
     @classmethod
     def for_annual_extremes(
@@ -625,6 +908,72 @@ class ParametricPlan:
 
     # -- builders ---------------------------------------------------------------
 
+    @property
+    def _on_curves(self) -> bool:
+        return self.entry == "for_evaluation"
+
+    def monte_carlo(
+        self,
+        n_draws: int,
+        *,
+        seed: int,
+        assume_semantics: AnnualSemantics | None = None,
+        outside_support: OutsideSupport = "raise",
+    ) -> ParametricPlan:
+        """State the simulated years: `n_draws` draws from each asset's curve.
+
+        Required on plans on fitted curves (`for_evaluation`). Each draw is
+        one year with probability `1/n_draws`, as `sample_curve` draws it.
+        `seed` is the plan's seed: one child of
+        `numpy.random.SeedSequence(seed)` per asset, in asset order, draws
+        the hazard and then the basis-risk model. It is recorded in every
+        evaluation's `details` as `"plan_seed"`.
+
+        A draw is a year only if the curve describes one year's value, so
+        the dataset's `probability_semantics` must be `annual_exceedance` or
+        `annual_value_distribution`. A dataset that declares none is refused
+        at execution unless `assume_semantics` states one of the two; a
+        stated value that contradicts the declared one raises.
+        `outside_support` is what a tabulated curve does with draws outside
+        its knots: `"raise"` (the default), `"extrapolate"` or `"clamp"`
+        (`sample_curve`). Replaces any draws stated before.
+
+        Raises `ValueError` on a plan on per-year values, for invalid counts,
+        seeds or `outside_support`, or a seed equal to the fresh draws';
+        `ProbabilitySemanticsError` for another `assume_semantics`.
+        """
+        if not self._on_curves:
+            raise ValueError(
+                "monte_carlo draws simulated years from fitted curves; this plan "
+                "reads per-year values (for_annual_extremes)"
+            )
+        count = _positive_count("n_draws", n_draws)
+        plan_seed = _seed_value("seed", seed)
+        if assume_semantics is not None and assume_semantics not in get_args(
+            AnnualSemantics
+        ):
+            raise ProbabilitySemanticsError(
+                f"assume_semantics must be one of {get_args(AnnualSemantics)}, "
+                f"got {assume_semantics!r}"
+            )
+        if outside_support not in get_args(OutsideSupport):
+            raise ValueError(
+                f"outside_support must be one of {get_args(OutsideSupport)}, "
+                f"got {outside_support!r}"
+            )
+        rule = self.split_rule
+        if isinstance(rule, FreshDraws) and rule.seed == plan_seed:
+            raise ValueError(
+                f"seed {plan_seed} is also the fresh draws' seed; fresh draws need "
+                "another seed, or they repeat the design draws"
+            )
+        draws = _MonteCarlo(
+            n_draws=count,
+            assume_semantics=assume_semantics,
+            outside_support=outside_support,
+        )
+        return dataclasses.replace(self, seed=plan_seed, draws=draws)
+
     def basis_risk(self, model: BasisRisk) -> ParametricPlan:
         """State the basis-risk model every sample is built with.
 
@@ -632,14 +981,15 @@ class ParametricPlan:
         with `ComonotoneIndexWarning`), `ImpactNoise(sigma, upper=...)` or a
         user model that implements `BasisRisk`. Required before execution.
         Raises `TypeError` for another type, and `ValueError` for
-        `ImpactNoise` on a plan without a seed.
+        `ImpactNoise` on a plan on per-year values without a seed (on fitted
+        curves, `monte_carlo` states the seed).
         """
         if not isinstance(model, BasisRisk):
             raise TypeError(
                 "model must be a BasisRisk model such as NoBasisRisk() or "
                 f"ImpactNoise(sigma), got {type(model).__name__}"
             )
-        if isinstance(model, ImpactNoise) and self.seed is None:
+        if isinstance(model, ImpactNoise) and self.seed is None and not self._on_curves:
             raise ValueError(
                 "ImpactNoise draws one factor per year; give the plan a seed "
                 "(for_annual_extremes(..., seed=...))"
@@ -651,8 +1001,10 @@ class ParametricPlan:
 
         A template (a cover with `Free` parameters) is designed under each
         objective of `.objective(...)`; a resolved cover is evaluated as it
-        is. Each cover pays in the loss unit on an index in the table's unit,
-        read at the asset (`AtAsset()`). Replaces any covers set before.
+        is. Each cover pays in the loss unit on an index read at the asset
+        (`AtAsset()`), in the table's unit on per-year values; on fitted
+        curves the index unit is checked against the dataset's `value_unit`
+        at execution. Replaces any covers set before.
 
         Raises `TypeError` for a non-cover, `SampleError` for a cover in
         other units or on an index read elsewhere, and `ValueError` for no
@@ -670,7 +1022,7 @@ class ParametricPlan:
                     f"{cover.payout_unit!r}, but the loss is in "
                     f"{self.loss_model.value_unit!r}"
                 )
-            if cover.index.unit != self.unit:
+            if self.unit is not None and cover.index.unit != self.unit:
                 raise SampleError(
                     f"cover {cover.label or cover.definition_hash!r} pays on an "
                     f"index in {cover.index.unit!r}, but the table's values are "
@@ -750,19 +1102,32 @@ class ParametricPlan:
         )
         return dataclasses.replace(self, design_spec=spec)
 
-    def split(self, rule: Holdout | KFold) -> ParametricPlan:
-        """Hold out years: `Holdout(train_fraction)` or `KFold(k)`.
+    def split(self, rule: Holdout | KFold | FreshDraws) -> ParametricPlan:
+        """Hold out data: `FreshDraws(n_draws, seed=)`, `Holdout(f)` or `KFold(k)`.
 
-        Every design block gets in-sample rows and every held-out block
-        out-of-sample rows. Raises `TypeError` for another rule; Monte Carlo
-        fresh draws need a curve source.
+        Every design block gets in-sample rows and every held-out block (or
+        the fresh draws) out-of-sample rows. `FreshDraws` needs a plan on
+        fitted curves; `Holdout` and `KFold` split per-year samples by year
+        and Monte Carlo samples by draw. Raises `TypeError` for another rule
+        or fresh draws on per-year values, and `ValueError` for fresh draws
+        with the plan's seed.
         """
-        if not isinstance(rule, (Holdout, KFold)):
+        if not isinstance(rule, (Holdout, KFold, FreshDraws)):
             raise TypeError(
-                "rule must be Holdout(train_fraction) or KFold(k); fresh draws "
-                "need a Monte Carlo sample from a curve, got "
-                f"{type(rule).__name__}"
+                "rule must be FreshDraws(n_draws, seed=...), Holdout(train_fraction) "
+                f"or KFold(k), got {type(rule).__name__}"
             )
+        if isinstance(rule, FreshDraws):
+            if not self._on_curves:
+                raise TypeError(
+                    "fresh draws need a Monte Carlo sample from a curve "
+                    "(for_evaluation); split per-year values with Holdout or KFold"
+                )
+            if rule.seed == self.seed:
+                raise ValueError(
+                    f"seed {rule.seed} is also the plan's seed; fresh draws need "
+                    "another seed, or they repeat the design draws"
+                )
         return dataclasses.replace(self, split_rule=rule)
 
     def metrics(self, options: MetricOptions) -> ParametricPlan:
@@ -806,6 +1171,9 @@ class ParametricPlan:
         elif isinstance(rule, Holdout):
             folds, method = 1, "holdout"
             details = {"train_fraction": rule.train_fraction}
+        elif isinstance(rule, FreshDraws):
+            folds, method = 1, "fresh_draws"
+            details = {"fresh_draws_seed": rule.seed}
         else:
             folds, method, details = rule.k, "kfold", {"k": rule.k}
         evaluations: list[dict[str, Any]] = []
@@ -832,7 +1200,30 @@ class ParametricPlan:
         return evaluations
 
     def _source_description(self) -> dict[str, Any]:
+        if self._on_curves:
+            request: PortfolioEvaluation = self.source
+            selection = request.selection
+            spec = request.impact_spec
+            assert spec is not None
+            return {
+                "impact": {
+                    "name": spec.name,
+                    "value_semantics": spec.value_semantics,
+                    "value_unit": spec.value_unit,
+                },
+                "join": "PortfolioEvaluation.asset_curves()",
+                "kind": "canonical_dataset",
+                "metadata": None,
+                "path": os.fspath(request.dataset.provider.source),
+                "selection": {
+                    "hazard_names": _listed(selection.hazard_names),
+                    "horizons": _listed(selection.horizons),
+                    "pathways": _listed(selection.pathways),
+                },
+                "type": type(request.dataset).__name__,
+            }
         kind = _source_kind(self.source)
+        assert self.provenance is not None
         description: dict[str, Any] = {
             "columns": {"value": self.hazard_column, "year": self.year_column},
             "kind": kind,
@@ -849,9 +1240,8 @@ class ParametricPlan:
             description["rows"] = int(self.source.num_rows)
         return description
 
-    def _explain_document(self) -> dict[str, Any]:
-        ids = self._known_asset_ids()
-        model = self.basis_risk_model
+    def _sample_description(self) -> dict[str, Any]:
+        """One asset's sample, as far as it is known before execution."""
         sample: dict[str, Any] = {
             "index_unit": self.unit,
             "loss_model": self.loss_model.to_document(),
@@ -862,8 +1252,43 @@ class ParametricPlan:
             "semantics_source": "data",
             "source_kind": "annual",
         }
-        if model is not None:
-            sample["basis_risk"] = model.to_document()
+        if self._on_curves:
+            draws = self.draws
+            assumed = None if draws is None else draws.assume_semantics
+            sample.update(
+                {
+                    "draws": None if draws is None else draws.n_draws,
+                    "probability_semantics": assumed,
+                    "semantics_source": "dataset" if assumed is None else "caller",
+                    "source_kind": "monte_carlo",
+                }
+            )
+        if self.basis_risk_model is not None:
+            sample["basis_risk"] = self.basis_risk_model.to_document()
+        return sample
+
+    def _rng_description(self) -> dict[str, Any]:
+        generators = (
+            "one child of numpy.random.SeedSequence(seed) per asset, in asset order"
+        )
+        if not self._on_curves:
+            return {
+                "generators": generators,
+                "seed": self.seed,
+                "steps": ["basis_risk"],
+            }
+        rule = self.split_rule
+        return {
+            "fresh_draws_seed": rule.seed if isinstance(rule, FreshDraws) else None,
+            "generators": generators
+            + "; fresh draws: one child of SeedSequence(fresh_draws_seed) per asset",
+            "seed": self.seed,
+            "steps": ["hazard", "basis_risk"],
+        }
+
+    def _explain_document(self) -> dict[str, Any]:
+        ids = self._known_asset_ids()
+        sample = self._sample_description()
         samples = (
             [{**sample, "asset_ids": []}]
             if ids is None
@@ -886,13 +1311,31 @@ class ParametricPlan:
             id_column: str | None = assets.id_column
         else:
             location, id_column = None, None
+        if isinstance(assets, Path):
+            path: str | None = os.fspath(assets)
+        elif isinstance(assets.data, os.PathLike):
+            path = os.fspath(assets.data)
+        else:
+            path = None
         provenance = self.provenance
+        licences: list[dict[str, Any]] | None = (
+            None
+            if provenance is None
+            else [
+                {
+                    "attribution": provenance.attribution,
+                    "licence": provenance.licence,
+                    "role": "hazard",
+                    "source": provenance.dataset,
+                }
+            ]
+        )
         document: dict[str, Any] = {
             "assets": {
                 "count": None if ids is None else len(ids),
                 "id_column": id_column,
                 "location": location,
-                "path": os.fspath(assets) if isinstance(assets, Path) else None,
+                "path": path,
                 "value_column": self.loss_model.value_column,
             },
             "covers": [
@@ -906,25 +1349,11 @@ class ParametricPlan:
                 for cover in self.cover_list
             ],
             "designs": designs,
-            "entry": "for_annual_extremes",
+            "entry": self.entry,
             "execution": _EXECUTION,
-            "licences": [
-                {
-                    "attribution": provenance.attribution,
-                    "licence": provenance.licence,
-                    "role": "hazard",
-                    "source": provenance.dataset,
-                }
-            ],
+            "licences": licences,
             "producer": "crc_sdk.parametric",
-            "rng": {
-                "generators": (
-                    "one child of numpy.random.SeedSequence(seed) per asset, in "
-                    "asset order"
-                ),
-                "seed": self.seed,
-                "steps": ["basis_risk"],
-            },
+            "rng": self._rng_description(),
             "setup": {
                 "basis": "annual",
                 "evaluations": self._evaluations(),
@@ -933,6 +1362,19 @@ class ParametricPlan:
             },
             "sources": [self._source_description()],
         }
+        if self._on_curves:
+            rule = self.split_rule
+            document["monte_carlo"] = {
+                **(
+                    {"assume_semantics": None, "n_draws": None, "outside_support": None}
+                    if self.draws is None
+                    else self.draws.to_document()
+                ),
+                "fresh_draws": (
+                    rule.to_document() if isinstance(rule, FreshDraws) else None
+                ),
+                "seed": self.seed,
+            }
         return document
 
     def explain(
@@ -945,13 +1387,18 @@ class ParametricPlan:
         sample per asset with its source, loss and basis-risk models, and
         the planned evaluations with their split, fold and pricing),
         `covers`, `designs` (the objectives and design terms), `sources`,
-        `assets`, `licences` and `rng` (the seed). Its `setup` has the layout
-        of `EvaluationSetup`, so `setup_text(plan.explain(format="json")
-        ["setup"])` states it before anything is read; the plan's seed is in
-        every evaluation's `details` under `"plan_seed"`. What only execution
-        knows (the years, the matched cells, the checksums and the hashes
-        of the samples and designs) is in the written metadata.
-        `format="json"` returns a dict, `"text"` its JSON text.
+        `assets`, `licences`, `rng` (the seeds) and `entry`; a plan on
+        fitted curves adds `monte_carlo` (the draws, the semantics stated by
+        the caller, `outside_support` and the fresh draws). Its `setup` has
+        the layout of `EvaluationSetup`, so `setup_text(plan.explain(
+        format="json")["setup"])` states it before anything is read; the
+        plan's seed is in every evaluation's `details` under `"plan_seed"`,
+        and the fresh draws' under `"fresh_draws_seed"`. What only execution
+        knows is in the written metadata: the years and the matched cells or
+        curves, the checksums, the hashes of the samples and designs and, on
+        fitted curves, the dataset's metadata (its units, semantics and
+        licence, so `licences` is `None` here). `format="json"` returns a
+        dict, `"text"` its JSON text.
         """
         document = self._explain_document()
         if format == "json":
@@ -965,6 +1412,14 @@ class ParametricPlan:
         assets = "?" if ids is None else str(len(ids))
         objectives = 0 if self.design_spec is None else len(self.design_spec.objectives)
         split = "none" if self.split_rule is None else repr(self.split_rule)
+        if self._on_curves:
+            source = Path(self.source.dataset.provider.source).name
+            draws = "?" if self.draws is None else str(self.draws.n_draws)
+            return (
+                f"ParametricPlan.for_evaluation({source}, assets={assets}, "
+                f"draws={draws}, covers={len(self.cover_list)}, "
+                f"objectives={objectives}, split={split})"
+            )
         return (
             f"ParametricPlan.for_annual_extremes({type(self.source).__name__}, "
             f"assets={assets}, covers={len(self.cover_list)}, "
@@ -972,6 +1427,12 @@ class ParametricPlan:
         )
 
     # -- execution --------------------------------------------------------------
+
+    @property
+    def _annual_unit(self) -> str:
+        """The unit of the annual table's values (per-year route only)."""
+        assert self.unit is not None
+        return self.unit
 
     def _require_basis_risk(self) -> BasisRisk:
         if self.basis_risk_model is None:
@@ -1035,7 +1496,9 @@ class ParametricPlan:
             )
             record["explain"] = explained
             stated = explained.get("unit") if isinstance(explained, dict) else None
-            if isinstance(stated, str) and not units_equivalent(stated, self.unit):
+            if isinstance(stated, str) and not units_equivalent(
+                stated, self._annual_unit
+            ):
                 raise SampleError(
                     f"the source's values are in {stated!r}, but the plan states "
                     f"unit={self.unit!r}"
@@ -1047,6 +1510,7 @@ class ParametricPlan:
 
     def _series_source(self) -> dict[str, Any]:
         """The series' `source`: what identifies the data, stable across runs."""
+        assert self.provenance is not None
         document: dict[str, Any] = self.provenance.model_dump(mode="json")
         kind = _source_kind(self.source)
         if kind == "plan":
@@ -1078,7 +1542,7 @@ class ParametricPlan:
                 table,
                 longitude=longitude,
                 latitude=latitude,
-                unit=self.unit,
+                unit=self._annual_unit,
                 year=self.year_column,
                 value=self.hazard_column,
                 longitude_column=location.longitude,
@@ -1099,7 +1563,7 @@ class ParametricPlan:
             year=self.year_column,
             value=self.hazard_column,
             where={location.table_column: station},
-            unit=self.unit,
+            unit=self._annual_unit,
             years=self.years,
             source=source,
         )
@@ -1147,11 +1611,13 @@ class ParametricPlan:
         return covers
 
     def _blocks(
-        self, sample: OutcomeSample
+        self, sample: OutcomeSample, fresh: OutcomeSample | None
     ) -> list[tuple[int, OutcomeSample, OutcomeSample | None]]:
         rule = self.split_rule
         if rule is None:
             return [(0, sample, None)]
+        if isinstance(rule, FreshDraws):
+            return [(0, sample, fresh)]
         if isinstance(rule, Holdout):
             train, test = holdout(sample, rule.train_fraction)
             return [(0, train, test)]
@@ -1160,9 +1626,10 @@ class ParametricPlan:
             for fold, (train, test) in enumerate(year_block_kfold(sample, rule.k))
         ]
 
-    def _build_samples(
-        self,
-    ) -> tuple[AssetPortfolio, dict[str, OutcomeSample], dict[str, Any]]:
+    def _build_samples(self, *, fresh: bool = False) -> _Samples:
+        """The samples of every asset; with `fresh`, also their fresh draws."""
+        if self._on_curves:
+            return self._curve_samples(fresh=fresh)
         basis_risk = self._require_basis_risk()
         portfolio = self._portfolio()
         rows = self._asset_rows(portfolio)
@@ -1181,7 +1648,151 @@ class ParametricPlan:
                 rng=rng,
                 missing=self.missing,
             )
-        return portfolio, samples, record
+        return _Samples(portfolio, samples, None, "annual_table", record)
+
+    # -- the curve route ---------------------------------------------------------
+
+    def _require_draws(self) -> _MonteCarlo:
+        if self.draws is None:
+            raise ValueError(
+                "state the simulated years with .monte_carlo(n_draws, seed=...); "
+                "the plan draws them from each asset's curve"
+            )
+        return self.draws
+
+    def _curve_rows(
+        self, curves: Any, id_column: str, asset_ids: Sequence[str]
+    ) -> dict[str, dict[str, Any]]:
+        """Each asset's one matched curve row of `asset_curves()`."""
+        rows: dict[str, list[dict[str, Any]]] = {}
+        ids = _string_values(curves.column(id_column), id_column)
+        for asset_id, row in zip(ids, curves.to_pylist(), strict=True):
+            rows.setdefault(asset_id, []).append(row)
+        matched: dict[str, dict[str, Any]] = {}
+        for asset_id in asset_ids:
+            found = rows.get(asset_id, [])
+            if not found:
+                raise SampleError(
+                    f"asset {asset_id!r} has no curve in the request's selection"
+                )
+            if len(found) > 1:
+                keys = [
+                    (row["hazard_name"], row["horizon"], row["pathway"])
+                    for row in found
+                ]
+                raise SampleError(
+                    f"asset {asset_id!r} has {len(found)} curves (hazard, horizon, "
+                    f"pathway): {keys}; the plan samples one curve per asset, so "
+                    "select one with request.select(hazard_names=[...], "
+                    "horizons=[...], pathways=[...])"
+                )
+            matched[asset_id] = found[0]
+        return matched
+
+    def _curve_loss_model(
+        self,
+        portfolio: AssetPortfolio,
+        asset_id: str,
+        asset: Mapping[str, Any],
+        curve: Mapping[str, Any],
+    ) -> LossModel:
+        """The loss model for one asset, with the context its matched row gives."""
+        model = self.loss_model
+        if _takes_context(model.impact):
+            context = model.context
+            model = LossModel(
+                model.impact,
+                value_column=model.value_column,
+                value_unit=model.value_unit,
+                context=_curve_context(
+                    model.impact,
+                    curve,
+                    asset,
+                    context if isinstance(context, ImpactContextColumns) else None,
+                ),
+                name=model.name,
+            )
+        return model.for_asset(portfolio, asset_id)
+
+    def _curve_samples(self, *, fresh: bool) -> _Samples:
+        basis_risk = self._require_basis_risk()
+        draws = self._require_draws()
+        request: PortfolioEvaluation = self.source
+        portfolio = self._portfolio()
+        rows = self._asset_rows(portfolio)
+        metadata = request.dataset.metadata()
+        for cover in self.cover_list:
+            if cover.index.unit != metadata.value_unit:
+                raise SampleError(
+                    f"cover {cover.label or cover.definition_hash!r} pays on an "
+                    f"index in {cover.index.unit!r}, but the dataset's values are "
+                    f"in {metadata.value_unit!r}"
+                )
+        path = Path(request.dataset.provider.source)
+        file_sha256 = _file_sha256(path)
+        curves = dataclasses.replace(request, portfolio=portfolio).asset_curves()
+        matched = self._curve_rows(
+            curves, portfolio.id_column, [asset_id for asset_id, _ in rows]
+        )
+        rule = self.split_rule if fresh else None
+        fresh_seed = rule.seed if isinstance(rule, FreshDraws) else None
+        generators = self._generators(len(rows))
+        fresh_generators: list[np.random.Generator | None] = (
+            [None] * len(rows)
+            if fresh_seed is None
+            else [
+                np.random.default_rng(child)
+                for child in np.random.SeedSequence(fresh_seed).spawn(len(rows))
+            ]
+        )
+        samples: dict[str, OutcomeSample] = {}
+        fresh_samples: dict[str, OutcomeSample] = {}
+        for (asset_id, row), rng, fresh_rng in zip(
+            rows, generators, fresh_generators, strict=True
+        ):
+            curve = matched[asset_id]
+            loss_model = self._curve_loss_model(portfolio, asset_id, row, curve)
+            canonical = {
+                name: curve[name] for name in _CURVE_ROW_COLUMNS if name in curve
+            }
+            details = {
+                "file_sha256": file_sha256,
+                "spatial_match": curve["spatial_match"],
+            }
+
+            def draw(
+                count: int, generator: np.random.Generator | None
+            ) -> OutcomeSample:
+                assert generator is not None
+                return sample_curve(
+                    canonical,
+                    metadata=metadata,
+                    n_draws=count,
+                    rng=generator,
+                    loss_model=loss_model,
+                    basis_risk=basis_risk,
+                    asset_id=asset_id,
+                    assume_semantics=draws.assume_semantics,
+                    outside_support=draws.outside_support,
+                    details=details,
+                )
+
+            samples[asset_id] = draw(draws.n_draws, rng)
+            if isinstance(rule, FreshDraws):
+                fresh_samples[asset_id] = draw(rule.n_draws, fresh_rng)
+        record = {
+            "curves": int(curves.num_rows),
+            "file_sha256": file_sha256,
+            "kind": "canonical_dataset",
+            "path": os.fspath(path),
+        }
+        return _Samples(
+            portfolio,
+            samples,
+            fresh_samples if isinstance(rule, FreshDraws) else None,
+            "canonical_file",
+            record,
+        )
 
     def _values_sha256(
         self, portfolio: AssetPortfolio, asset_ids: Sequence[str]
@@ -1217,14 +1828,16 @@ class ParametricPlan:
                 f"covers {names} have free parameters; design them with "
                 ".objective(...), or resolve them with Cover.with_values"
             )
-        portfolio, samples, record = self._build_samples()
+        built = self._build_samples(fresh=evaluate)
+        portfolio, samples = built.portfolio, built.samples
         asset_ids = list(samples)
         covers = self._covers_for(asset_ids)
         pricing = self._pricing()
         designs: list[DesignResult] = []
         tables: list[Any] = []
         for asset_id in asset_ids:
-            for fold, train, test in self._blocks(samples[asset_id]):
+            fresh = None if built.fresh is None else built.fresh[asset_id]
+            for fold, train, test in self._blocks(samples[asset_id], fresh):
                 items: list[Cover | DesignResult] = []
                 for cover in covers[asset_id]:
                     if not cover.free_parameters():
@@ -1277,7 +1890,8 @@ class ParametricPlan:
             samples=MappingProxyType(samples),
             designs=tuple(designs),
             tables=tuple(tables),
-            source=record,
+            source_key=built.record_key,
+            source=built.record,
             id_column=portfolio.id_column,
             values_sha256=self._values_sha256(portfolio, asset_ids),
         )
@@ -1286,23 +1900,27 @@ class ParametricPlan:
         """Execution: build one outcome sample per asset, in asset order.
 
         Reads the source and the assets. Each sample holds all of the
-        asset's years (before any split). Raises `ValueError` without a
-        basis-risk model, and `SampleError` for an asset that cannot be
-        located or a series with a missing year (unless
-        `missing="drop_year"`).
+        asset's draws or years, before any split (fresh draws are drawn by
+        `write_parquet()` only). Raises `ValueError` without
+        a basis-risk model or, on fitted curves, without `monte_carlo`;
+        `SampleError` for an asset that cannot be located, a curve that
+        cannot be sampled (`sample_curve`), several curves for one asset, a
+        cover whose index unit is not the dataset's, or a series with a
+        missing year (unless `missing="drop_year"`); and
+        `ProbabilitySemanticsError` for curves whose semantics are not those
+        of one year.
         """
-        _, samples, _ = self._build_samples()
-        return MappingProxyType(samples)
+        return MappingProxyType(self._build_samples().samples)
 
     def designs(self) -> tuple[DesignResult, ...]:
         """Execution: design every template, in asset, fold, cover, objective order.
 
-        Each template is designed on each design block (all years without a
-        split; the design block of a holdout; each fold's design block)
-        under each objective. Raises `ValueError` without covers, an objective
-        or a basis-risk model, the design errors of `design`, and
-        `SolverUnavailableError` without `crc-sdk[parametric]` on the LP and
-        QP routes.
+        Each template is designed on each design block (the whole sample
+        without a split or with fresh draws; the design block of a holdout;
+        each fold's design block) under each objective. Raises `ValueError`
+        without covers, an objective or a basis-risk model, the design errors
+        of `design`, and `SolverUnavailableError` without
+        `crc-sdk[parametric]` on the LP and QP routes.
         """
         if self.design_spec is None:
             raise ValueError(
@@ -1318,11 +1936,15 @@ class ParametricPlan:
         split and fold to one local Parquet file, through a temporary
         sibling and `os.replace`; the parent directory is created. The
         metadata (`EvaluationMetadata`, under `crc.parametric.evaluation`)
-        merges that of every block, and adds the source table's record (its
-        SHA-256, the source plan's `explain()` and, for a file, its path and
-        SHA-256) to each hazard source, the plan's seed to every evaluation's
-        `details` (`"plan_seed"`), and the asset id column and a SHA-256 of
-        the (asset id, value) pairs to `assets`.
+        merges that of every block, and adds to each hazard source the
+        source's record: on fitted curves `canonical_file` (the dataset's
+        path, its SHA-256 and the number of matched curves); on per-year
+        values `annual_table` (its SHA-256, the source plan's `explain()`
+        and, for a file, its path and SHA-256). It adds the plan's seed to
+        every evaluation's `details` (`"plan_seed"`) and the fresh draws'
+        seed to every fresh-draw evaluation's (`"fresh_draws_seed"`), and
+        the asset id column and a SHA-256 of the (asset id, value) pairs to
+        `assets`.
 
         Returns a `ParametricResult`. Raises `ValueError` without covers, a
         basis-risk model, or an objective for templates; and as `samples`,
@@ -1334,14 +1956,23 @@ class ParametricPlan:
         )
         document = merged.model_dump(mode="json")
         document["sources"] = [
-            {**entry, "annual_table": run.source}
+            {**entry, run.source_key: run.source}
             if entry.get("role") == "hazard"
             else entry
             for entry in document["sources"]
         ]
         seeded = self._seed_details()
+        rule = self.split_rule
+        fresh = {"fresh_draws_seed": rule.seed} if isinstance(rule, FreshDraws) else {}
         document["setup"]["evaluations"] = [
-            {**entry, "details": {**entry.get("details", {}), **seeded}}
+            {
+                **entry,
+                "details": {
+                    **entry.get("details", {}),
+                    **(fresh if entry.get("method") == "fresh_draws" else {}),
+                    **seeded,
+                },
+            }
             for entry in document["setup"]["evaluations"]
         ]
         document["assets"] = {

@@ -752,6 +752,59 @@ class PortfolioEvaluation:
             ),
         )
 
+    def asset_curves(
+        self,
+        *,
+        execution: ExecutionOptions | None = None,
+    ) -> pa.Table:
+        """Return each asset's matched canonical curve rows.
+
+        Joins the assets to the dataset's curves as ``write_parquet`` does
+        (the asset's H3 cell, refined by exact geometry where the source has
+        it) and returns one row per asset, hazard, horizon and pathway,
+        sorted in that order: the asset id and passthrough columns (and the
+        asset's longitude and latitude), then ``cell_index``,
+        ``hazard_name``, ``horizon``, ``pathway``, ``source_id``,
+        ``spatial_match`` and the curve columns of the dataset's schema
+        (``curve_kind``, ``curve_type``, ...). Each row is a canonical curve
+        row, so ``distribution_from_hazard_row(row)`` rebuilds its
+        distribution; ``no_data`` rows are returned as they are. The
+        selection applies; return periods and the impact are not used.
+        ``self.dataset.metadata()`` gives the curves' units, tail and
+        probability semantics.
+
+        Execution point: reads the dataset. Only ``execution.connection``
+        applies. Raises ``LookupError`` when an asset has no curve for a
+        selected scenario, or several (also for cell inputs of a JRC dataset,
+        which ``write_parquet`` aggregates), and ``ValueError`` for invalid
+        or repeated asset ids and columns.
+        """
+        from ._portfolio import hazard_portfolio_curves
+
+        location = self.portfolio.location
+        if isinstance(location, PointColumns):
+            longitude_column: str | None = location.longitude
+            latitude_column: str | None = location.latitude
+            cell_index_column = None
+        else:
+            assert isinstance(location, CellColumn)
+            longitude_column = None
+            latitude_column = None
+            cell_index_column = location.name
+        return hazard_portfolio_curves(
+            provider=self.dataset.provider,
+            assets=self.portfolio.data,
+            asset_id_column=self.portfolio.id_column,
+            longitude_column=longitude_column,
+            latitude_column=latitude_column,
+            cell_index_column=cell_index_column,
+            hazard_names=self.selection.hazard_names,
+            horizons=self.selection.horizons,
+            pathways=self.selection.pathways,
+            passthrough_columns=self.portfolio.passthrough_columns or (),
+            connection=(execution or ExecutionOptions()).connection,
+        )
+
     def write_parquet(
         self,
         output: str | Path,

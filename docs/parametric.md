@@ -10,12 +10,16 @@ payout and loss is the basis risk.
 
 There are two ways to use the module:
 
-- **The plan.** `ParametricPlan.for_annual_extremes(...)` chains the steps
-  from an annual-extremes source and assets to a written comparison, as a lazy
-  crc-sdk plan: builders and `explain()` do no I/O, and the source is read only
-  at the execution points `samples()`, `designs()` and `write_parquet()`.
+- **The plan.** `ParametricPlan.for_evaluation(request)` takes the portfolio
+  evaluation you build with `HazardDataset.local(path).for_assets(assets)
+  .select(...).impact(...)`, draws simulated years from each asset's fitted
+  hazard curve, and chains the steps to a written comparison. It is a lazy
+  crc-sdk plan: builders and `explain()` do no I/O, and the data is read only
+  at the execution points `samples()`, `designs()` and `write_parquet()`. The
+  same plan also runs on per-year values, such as ERA5's annual extremes
+  ([next step](#next-step-per-year-values)).
 - **The functions.** Every step is also a function on numpy arrays and Arrow
-  tables that does no I/O (`sample_annual`, `sample_curve`, `design`,
+  tables that does no I/O (`sample_curve`, `sample_annual`, `design`,
   `compare`, ...), for your own tables, fitted curves and chains. Only
   `write_comparison` writes a file.
 
@@ -34,7 +38,7 @@ There are two ways to use the module:
 | Pricing and constraints | `PurePremium`, `CostOfCapitalLoad`, `Budget`, `Limit` | The premium of a payout, and what a design must respect |
 | Design | `design`, `DesignResult` | A template's resolved cover and its design record |
 | Comparison | `compare`, a `pyarrow.Table` | Covers as rows, metrics as columns, in and out of sample |
-| Plan | `ParametricPlan`, `ParametricResult` | The lazy workflow from a source and assets to a written comparison |
+| Plan | `ParametricPlan`, `ParametricResult` | The lazy workflow from a portfolio evaluation's curves (or per-year values) to a written comparison |
 
 "Impact" is crc-sdk's impact value, usually a damage ratio; "loss" is impact ×
 value, in the payout's unit; "hazard" is the value the loss model reads at the
@@ -44,35 +48,56 @@ set of assets.
 
 ## Quick start
 
-Design a step cover on 28 years of a synthetic annual-maximum rainfall table,
+Design a step cover on 5,000 years simulated from a fitted rainfall curve,
 under three objectives, and compare the designs with a fixed linear cover on
-the 12 years held out. The table and the asset are an illustration, not data.
-The designs need the optional extra `crc-sdk[parametric]` (the HiGHS solver).
+5,000 fresh draws. The canonical dataset (one Gumbel curve in the asset's H3
+cell) and the asset are an illustration, not data. The designs need the
+optional extra `crc-sdk[parametric]` (the HiGHS solver), and `point_to_cell`
+needs `crc-sdk[geometry]`.
 
 ```python
-import numpy as np
 import pyarrow as pa
 from crc_framework import PiecewiseLinearImpact
+from crc_sdk.connectors import hazard_arrow_schema, write_hazard_dataset
+from crc_sdk.geometry import point_to_cell
 from crc_sdk.parametric import (
-    MSE, Budget, Cover, ExpectedUncovered, Free, Holdout, ImpactNoise,
+    MSE, Budget, Cover, ExpectedUncovered, Free, FreshDraws, ImpactNoise,
     IndexDefinition, LinearPayout, MetricOptions, ParametricPlan, StepPayout,
     WeightedCVaR, setup_text,
 )
-from crc_sdk.types import SourceProvenance
+from crc_sdk.types import HazardDatasetMetadata, SourceProvenance
+from crc_sdk.workflows import HazardDataset
 
-# The layout of ERA5's and CMIP6's annual_extremes(): one row per year and cell.
-rng = np.random.default_rng(1)
-years = np.arange(1981, 2021)
-annual = pa.table({
-    "year": np.repeat(years, 4).astype("int32"),
-    "latitude": np.tile([50.875, 50.875, 51.125, 51.125], len(years)),
-    "longitude": np.tile([6.875, 7.125, 6.875, 7.125], len(years)),
-    "value": rng.gumbel(50.0, 12.0, 4 * len(years)),       # mm/day
-})
+# A synthetic canonical dataset of annual maximum daily rainfall. Real curves
+# come from a source plan: HazardDataset.crc_open(...)...materialize(path).
+metadata = HazardDatasetMetadata(
+    h3_resolution=7, value_unit="mm/day",
+    value_semantics="annual maximum daily rainfall",
+    probability_semantics="annual_exceedance",   # the curve of an annual maximum
+    return_period_support=(2.0, 500.0),          # the fitted range
+    producer="example", creation_version="1",
+    source=SourceProvenance(provider="example", dataset="synthetic rx1day",
+                            licence="CC0-1.0", attribution="Synthetic data"),
+)
+curve = {
+    "cell_index": point_to_cell(6.96, 50.94, 7), "source_id": "example",
+    "source_geometry": None, "hazard_name": "rx1day", "horizon": 2050,
+    "pathway": "ssp245", "curve_kind": "fitted", "curve_type": "gumbel_r",
+    "curve_shape": None, "curve_location": 50.0, "curve_scale": 12.0,
+    "curve_atom_probability": None, "curve_atom_location": None,
+}
+write_hazard_dataset(pa.Table.from_pylist([curve], schema=hazard_arrow_schema()),
+                     "rx1day.parquet", metadata)
+
 assets = pa.table({"asset_id": ["warehouse-a"], "longitude": [6.96],
                    "latitude": [50.94], "value_eur": [2e6]})
-provenance = SourceProvenance(provider="example", dataset="synthetic rx1day",
-                              licence="CC0-1.0", attribution="Synthetic data")
+request = (
+    HazardDataset.local("rx1day.parquet")
+    .for_assets(assets)
+    .select(hazard_names=["rx1day"], horizons=[2050], pathways=["ssp245"])
+    .impact(PiecewiseLinearImpact([40.0, 120.0], [0.0, 0.5]),   # damage ratio
+            name="rx1day_damage", value_unit="1", value_semantics="damage ratio")
+)
 
 index = IndexDefinition("rx1day", "mm/day", aggregation="annual_maximum")
 step = Cover(index, StepPayout([60.0, 80.0, 100.0], [Free(), Free(), Free()]),
@@ -81,17 +106,14 @@ linear = Cover(index, LinearPayout(60.0, 120.0, 5e5), payout_unit="EUR",
                label="linear")
 
 plan = (
-    ParametricPlan.for_annual_extremes(
-        annual, assets,
-        impact=PiecewiseLinearImpact([40.0, 120.0], [0.0, 0.5]),   # damage ratio
-        unit="mm/day", value_column="value_eur", value_unit="EUR",
-        provenance=provenance, seed=42,
-    )
+    ParametricPlan.for_evaluation(request, value_column="value_eur",
+                                  value_unit="EUR")
+    .monte_carlo(5_000, seed=42)               # simulated years from the curve
     .basis_risk(ImpactNoise(0.3, upper=1.0))   # stated, never assumed
     .covers(step, linear)                      # a template and a fixed cover
     .objective(MSE(), ExpectedUncovered(), WeightedCVaR(alpha=0.9, beta=0.9),
                budget=Budget(ratio=0.8))
-    .split(Holdout(0.7))                       # design on 1981-2008, test on 2009-2020
+    .split(FreshDraws(5_000, seed=7))          # evaluate on fresh draws
     .metrics(MetricOptions(betas=(0.9,), return_periods=(10,)))
 )
 print(setup_text(plan.explain(format="json")["setup"]))   # the setup; no I/O
@@ -103,8 +125,8 @@ result = plan.write_parquet("comparison.parquet")   # execution; atomic
 setup in plain sentences. `result.table` is the comparison as written: one row
 per cover (the three designs, labelled `"step (mse)"`,
 `"step (expected_uncovered)"` and `"step (weighted_cvar alpha=0.9 beta=0.9)"`,
-and the linear cover) and split. The out-of-sample rows are the ones to report,
-each with its setup:
+and the linear cover) and split. The out-of-sample rows, on the fresh draws,
+are the ones to report, each with its setup:
 
 ```python
 import pyarrow.compute as pc
@@ -119,27 +141,190 @@ print(setup_text(result.metadata))   # the setup of these rows, to print with th
 ```
 
 The designs' rows use the design premium (`premium_basis` `"design"`), the
-linear cover's rows the premium of its payouts on the held-out years
-(`"evaluation"`). Any number read from this table describes this synthetic
-table under this setup and nothing more.
+linear cover's rows the premium of its payouts on the fresh draws
+(`"evaluation"`). The setup text also states what the curve's fitted range
+means for these draws: with a shortest fitted return period of 2 years, about
+half of the simulated years are more frequent than it, where the curve is
+extrapolated. Any
+number read from this table describes this synthetic curve under this setup
+and nothing more.
 
 ## The parametric plan
 
 ```text
-ParametricPlan.for_annual_extremes(source, assets, *, impact, unit, provenance,
-                                   value_column=None, value_unit="1", context=None,
-                                   location=NearestCell(), year_column="year",
-                                   hazard_column="value", years=None,
-                                   missing="raise", seed=None)
+ParametricPlan.for_evaluation(request, *, value_column=None, value_unit="1")
+  .monte_carlo(n_draws, *, seed, assume_semantics=None, outside_support="raise")
+ParametricPlan.for_annual_extremes(source, assets, *, impact, unit, provenance, ...)
+# then, on either plan:
   .basis_risk(model)                          # required
   .covers(*covers)                            # resolved covers and templates
   .objective(*objectives, pricing=PurePremium(), budget=None, limit=None,
              options=DesignOptions())         # to design the templates
-  .split(Holdout(train_fraction) | KFold(k))  # optional
+  .split(FreshDraws(n_draws, seed=...) | Holdout(train_fraction) | KFold(k))
   .metrics(MetricOptions(...))                # optional
   .explain(format="text")                     # no I/O
   .samples() / .designs() / .write_parquet(path)   # execution points
 ```
+
+### Fitted curves
+
+- **`request`** is the `PortfolioEvaluation` built with
+  `HazardDataset.local(path).for_assets(assets).select(...).impact(...)`, the
+  request whose `write_parquet` evaluates the assets at return periods. The
+  plan reuses its dataset, assets, selection and impact and changes nothing in
+  it. Materialize a remote source first: a source plan's `materialize(path)`
+  returns the `HazardDataset` to build the request on.
+- **The curves.** At execution, `request.asset_curves()` joins each asset to
+  its canonical curve as `write_parquet` does (the asset's H3 cell, refined by
+  exact geometry where the source has it); an asset without a curve, or with
+  several for one scenario, raises. The plan samples one curve per asset, so
+  the selection must leave one hazard, horizon and pathway; several raise
+  `SampleError`.
+- **`.monte_carlo(n_draws, *, seed, assume_semantics=None,
+  outside_support="raise")`** is required: each asset's sample is `n_draws`
+  simulated years drawn from its curve by `sample_curve`, each with
+  probability `1/n_draws`. The rules of [outcome samples](#outcome-samples)
+  apply. The dataset's `probability_semantics` must be `annual_exceedance` or
+  `annual_value_distribution`; a dataset that declares none is refused unless
+  `assume_semantics=` states one of the two, and the setup then says that the
+  caller stated it. A `no_data` curve raises. Draws beyond the fitted support
+  are counted and named in the setup, and so is a pooled ensemble.
+  `outside_support` is what a tabulated curve does with draws outside its
+  knots.
+- **The loss** is `impact(hazard) × value`: the request's impact (an
+  `ImpactExpression` keeps its `definition_hash`) times the asset column
+  `value_column` in `value_unit`, or 1 with `value_unit="1"` (the damage
+  ratio). A framework impact gets the context `write_parquet` gives it: its
+  own, with the asset's matched H3 cell and the request's context columns on
+  top, so a registry impact such as `rx1day` needs no cell of its own.
+- **The index** is the curve's hazard at the asset, in the dataset's
+  `value_unit`: each cover's index must be in that unit, which is checked at
+  execution.
+- **The assets** are an in-memory table or a local Parquet file, read at
+  execution, in row order. Asset values are read for the loss and never
+  written.
+
+### Builders
+
+| Builder | What it states |
+| --- | --- |
+| `.monte_carlo(n_draws, *, seed, ...)` | Fitted curves only, and required there: the simulated years per asset, the plan's seed, the semantics the caller states for a dataset that declares none, and `outside_support` |
+| `.basis_risk(model)` | How index and loss differ: `NoBasisRisk()` (warns with `ComonotoneIndexWarning`), `ImpactNoise(sigma, upper=...)` or a `BasisRisk` of your own. Required: no model is assumed |
+| `.covers(*covers)` | The covers to compare. A template is designed; a resolved cover is evaluated as it is. A cover written for no asset applies to every asset, as a copy written for that asset; one written for an asset applies to it only. Each cover pays in the loss unit, on an index read at the asset (`AtAsset()`), in the hazard's unit |
+| `.objective(*objectives, pricing, budget, limit, options)` | Designs every template under each objective, with `design`'s terms. `pricing` also prices the resolved covers; without `.objective(...)` they are priced with `PurePremium()` |
+| `.split(rule)` | `FreshDraws(n_draws, seed=...)` (fitted curves), `Holdout(train_fraction)` or `KFold(k)`, below |
+| `.metrics(options)` | The `MetricOptions` of every row |
+
+A designed cover keeps the template's label (or the first 12 hex digits of its
+hash) followed by the objective, for example `"step (mse)"`; its hash and
+design id identify it.
+
+### Splits
+
+- **No split:** every cover is designed and evaluated on the whole sample,
+  and every row is in sample.
+- **`FreshDraws(n_draws, seed=...)`** (fitted curves): designs on the plan's
+  draws, evaluation on `n_draws` fresh draws from the same curve. Draws are
+  independent simulated years, so this is the plain out-of-sample test. Its
+  seed must differ from the plan's.
+- **`Holdout(train_fraction)`:** each asset's sample is split by `holdout`:
+  designs on the first `floor(train_fraction · n)` periods (years, or draws),
+  evaluation on the rest, so a per-year sample is tested on its latest years.
+- **`KFold(k)`:** `year_block_kfold` holds out each of `k` contiguous blocks of
+  periods in turn; every fold has its own designs.
+
+Every design block gets in-sample rows and every held-out block, or the fresh
+draws, out-of-sample rows (`split`, `fold`). Resolved covers are evaluated on
+the same blocks, with the design block as their design sample: their terms are
+taken as chosen without the held-out data. The leakage checks of `compare` run
+on every block.
+
+### Seeding
+
+The plan holds an integer seed: `monte_carlo`'s on fitted curves,
+`for_annual_extremes(..., seed=...)`'s on per-year values. At execution it
+builds `numpy.random.SeedSequence(seed)` and spawns one child generator per
+asset, in asset order, so adding an asset at the end leaves the others'
+samples as they were. Each child draws the hazard first, then the basis-risk
+model. Fresh draws spawn their children from `SeedSequence(FreshDraws.seed)`
+in the same way. On per-year values only the basis-risk model draws, so
+`ImpactNoise` needs a seed there. Each sample's provenance records its
+generator's state before each draw.
+
+### Explain, execute, write
+
+`explain()` returns the plan's setup as far as it is known before execution,
+as JSON text (`format="json"` gives a dict), without I/O. It mirrors the
+metadata the plan writes: `setup` (the basis, the metric options, one sample per
+asset with its loss and basis-risk models, the planned evaluations with their
+split, fold and pricing), `covers`, `designs`, `sources`, `assets`, `licences`,
+`rng` and `entry`. On fitted curves, `monte_carlo` lists the draws, the
+semantics the caller states and the fresh draws; the dataset's own metadata
+(its units, semantics and licence) is read only at execution, so `licences` is
+`None` there.
+
+| Execution point | Returns |
+| --- | --- |
+| `.samples()` | One `OutcomeSample` per asset, all draws or years, in asset order |
+| `.designs()` | Every `DesignResult`, in asset, fold, cover and objective order |
+| `.write_parquet(path)` | A `ParametricResult`: `output`, `table`, `metadata`, `samples`, `designs` and `row_count` |
+
+`write_parquet` writes the rows of every asset, split and fold to one local
+Parquet file through a temporary sibling and `os.replace`, and creates the
+parent directory. Its metadata, under `crc.parametric.evaluation`, merges that
+of every block (below) and adds to each hazard source the source's record: on
+fitted curves `canonical_file` (the dataset's path, its SHA-256 and the number
+of matched curves; each sample also records its curve row's key and spatial
+match), on per-year values `annual_table` (its rows, columns and SHA-256, the
+source plan's `explain()`, and for a file its path and SHA-256). Every
+evaluation's `details` holds the plan's seed (`"plan_seed"`), every fresh-draw
+evaluation's also the fresh draws' seed (`"fresh_draws_seed"`), and `assets`
+the count, the id column and a SHA-256 of the (asset id, value) pairs.
+
+## Next step: per-year values
+
+The same plan runs on per-year values: `ParametricPlan.for_annual_extremes`
+reads the years of an annual-extremes table (ERA5, CMIP6, NEX-GDDP-CMIP6, a
+station, NOAA water levels) at each asset. Each row is a recorded or modelled
+year with probability `1/n`, so no curve and no probability semantics are
+assumed, and no trend is removed. Here the quick start's covers and asset are
+designed on 28 years of a synthetic table and compared on the 12 years held
+out:
+
+```python
+import numpy as np
+from crc_sdk.parametric import Holdout
+
+# The layout of ERA5's and CMIP6's annual_extremes(): one row per year and cell.
+rng = np.random.default_rng(1)
+years = np.arange(1981, 2021)
+annual = pa.table({
+    "year": np.repeat(years, 4).astype("int32"),
+    "latitude": np.tile([50.875, 50.875, 51.125, 51.125], len(years)),
+    "longitude": np.tile([6.875, 7.125, 6.875, 7.125], len(years)),
+    "value": rng.gumbel(50.0, 12.0, 4 * len(years)),       # mm/day
+})
+provenance = SourceProvenance(provider="example", dataset="synthetic rx1day",
+                              licence="CC0-1.0", attribution="Synthetic data")
+
+annual_plan = (
+    ParametricPlan.for_annual_extremes(
+        annual, assets,
+        impact=PiecewiseLinearImpact([40.0, 120.0], [0.0, 0.5]),   # damage ratio
+        unit="mm/day", value_column="value_eur", value_unit="EUR",
+        provenance=provenance, seed=42,
+    )
+    .basis_risk(ImpactNoise(0.3, upper=1.0))
+    .covers(step, linear)
+    .objective(MSE(), ExpectedUncovered(), WeightedCVaR(alpha=0.9, beta=0.9),
+               budget=Budget(ratio=0.8))
+    .split(Holdout(0.7))                       # design on 1981-2008, test on 2009-2020
+    .metrics(MetricOptions(betas=(0.9,), return_periods=(10,)))
+)
+annual_result = annual_plan.write_parquet("annual-comparison.parquet")
+```
+
+The builders, splits, seeding and outputs are those above.
 
 ### Source and assets
 
@@ -178,86 +363,58 @@ ParametricPlan.for_annual_extremes(source, assets, *, impact, unit, provenance,
   the table holds); a year without a value raises, unless `missing="drop_year"`
   drops it and lists it. No trend is removed.
 
-### Builders
-
-| Builder | What it states |
-| --- | --- |
-| `.basis_risk(model)` | How index and loss differ: `NoBasisRisk()` (warns with `ComonotoneIndexWarning`), `ImpactNoise(sigma, upper=...)` or a `BasisRisk` of your own. Required: no model is assumed |
-| `.covers(*covers)` | The covers to compare. A template is designed; a resolved cover is evaluated as it is. A cover written for no asset applies to every asset, as a copy written for that asset; one written for an asset applies to it only. Each cover pays in the loss unit, on an index in `unit`, read at the asset (`AtAsset()`) |
-| `.objective(*objectives, pricing, budget, limit, options)` | Designs every template under each objective, with `design`'s terms. `pricing` also prices the resolved covers; without `.objective(...)` they are priced with `PurePremium()` |
-| `.split(rule)` | `Holdout(train_fraction)` or `KFold(k)`, below |
-| `.metrics(options)` | The `MetricOptions` of every row |
-
-A designed cover keeps the template's label (or the first 12 hex digits of its
-hash) followed by the objective, for example `"step (mse)"`; its hash and
-design id identify it.
-
-### Splits
-
-- **No split:** every cover is designed and evaluated on all years, and every
-  row is in sample.
-- **`Holdout(train_fraction)`:** each asset's sample is split by `holdout`:
-  designs on the first `floor(train_fraction · n)` years, evaluation on the
-  latest ones.
-- **`KFold(k)`:** `year_block_kfold` holds out each of `k` contiguous blocks of
-  years in turn; every fold has its own designs.
-
-Every design block gets in-sample rows and every held-out block out-of-sample
-rows (`split`, `fold`). Resolved covers are evaluated on the same blocks, with
-the design block as their design sample: their terms are taken as chosen
-without the held-out years. The leakage checks of `compare` run on every
-block.
-
-### Seeding
-
-The plan holds an integer `seed`. At execution it builds
-`numpy.random.SeedSequence(seed)` and spawns one child generator per asset, in
-asset order, so adding an asset at the end leaves the others' samples as they
-were. On this route only the basis-risk model draws; `ImpactNoise` needs a
-seed. Each sample's provenance records its generator's state before the draw.
-
-### Explain, execute, write
-
-`explain()` returns the plan's setup as far as it is known before execution,
-as JSON text (`format="json"` gives a dict), without I/O. It mirrors the
-metadata the plan writes: `setup` (the basis, the metric options, one sample per
-asset with its loss and basis-risk models, the planned evaluations with their
-split, fold and pricing), `covers`, `designs`, `sources`, `assets`, `licences`
-and `rng`.
-
-| Execution point | Returns |
-| --- | --- |
-| `.samples()` | One `OutcomeSample` per asset, all years, in asset order |
-| `.designs()` | Every `DesignResult`, in asset, fold, cover and objective order |
-| `.write_parquet(path)` | A `ParametricResult`: `output`, `table`, `metadata`, `samples`, `designs` and `row_count` |
-
-`write_parquet` writes the rows of every asset, split and fold to one local
-Parquet file through a temporary sibling and `os.replace`, and creates the
-parent directory. Its metadata, under `crc.parametric.evaluation`, merges that
-of every block (below) and adds to each hazard source the source table's
-record: its rows, columns and SHA-256, the source plan's `explain()`, and for a
-file its path and SHA-256. Every evaluation's `details` holds the plan's seed
-(`"plan_seed"`), and `assets` the count, the id column and a SHA-256 of the
-(asset id, value) pairs.
-
 ## The function route
 
 The plan's steps are functions you can chain by hand, for a table, a curve or
 an index of your own.
 
-### From per-year values
+### From a fitted curve
 
-The quick start's plan, by hand, for its one asset. With the plan's generator
-for its first asset, the sample is the plan's:
+The quick start's plan, by hand, for its one asset: `request.asset_curves()`
+gives the asset's canonical curve row, `sample_curve` draws simulated years
+from it, and fresh draws from another generator are the out-of-sample test.
+With the plan's generators for its first asset, the samples are the plan's:
 
 ```python
-from crc_sdk.parametric import (AnnualSeries, LossModel, compare, design,
-                                holdout, sample_annual, write_comparison)
+import numpy as np
+from crc_sdk.parametric import (LossModel, compare, design, sample_curve,
+                                write_comparison)
+
+row = request.asset_curves().to_pylist()[0]   # one row per asset and scenario
+metadata = request.dataset.metadata()          # units, tail, semantics, licence
+loss_model = LossModel(PiecewiseLinearImpact([40.0, 120.0], [0.0, 0.5]),
+                       value=2e6, value_unit="EUR")
+
+def draws(seed: int):
+    rng = np.random.default_rng(np.random.SeedSequence(seed).spawn(1)[0])
+    return sample_curve(row, metadata=metadata, n_draws=5_000, rng=rng,
+                        loss_model=loss_model,
+                        basis_risk=ImpactNoise(0.3, upper=1.0),
+                        asset_id="warehouse-a")
+
+design_draws, fresh_draws = draws(42), draws(7)
+designed = design(step, design_draws, ExpectedUncovered(), budget=Budget(ratio=0.8))
+table = compare([designed, linear], fresh_draws, split="out_of_sample",
+                design_sample=design_draws)   # the fixed cover needs its design sample
+write_comparison(table, "by-hand.parquet")   # atomic
+```
+
+`curve` may also be a crc-framework distribution, for example
+`distribution_from_hazard_row(row)`, or `CurveParameters`. A draw is a year
+only if the curve describes one year's value: its `probability_semantics`
+must be `annual_exceedance` or `annual_value_distribution` ([outcome
+samples](#outcome-samples)).
+
+### From per-year values
+
+The per-year plan, by hand, for its one asset. With the plan's generator for
+its first asset, the sample is the plan's:
+
+```python
+from crc_sdk.parametric import AnnualSeries, holdout, sample_annual
 
 series = AnnualSeries.nearest_cell(annual, longitude=6.96, latitude=50.94,
                                    unit="mm/day", source=provenance)
-loss_model = LossModel(PiecewiseLinearImpact([40.0, 120.0], [0.0, 0.5]),
-                       value=2e6, value_unit="EUR")
 rng = np.random.default_rng(np.random.SeedSequence(42).spawn(1)[0])
 sample = sample_annual(series, loss_model=loss_model,
                        basis_risk=ImpactNoise(0.3, upper=1.0),
@@ -266,45 +423,12 @@ design_years, held_out = holdout(sample, train_fraction=0.7)
 designed = design(step, design_years, ExpectedUncovered(), budget=Budget(ratio=0.8))
 table = compare([designed, linear], held_out, split="out_of_sample",
                 design_sample=design_years)
-write_comparison(table, "by-hand.parquet")   # atomic
+write_comparison(table, "by-hand-annual.parquet")   # atomic
 ```
 
 `AnnualSeries.from_table(table, where={"station": ...}, unit=...)` reads a
 station instead, and `sample_annual(..., index=other_series)` reads the index
 at another cell, station or hazard than the loss.
-
-### From a fitted curve
-
-A canonical curve gives simulated years: `sample_curve` draws them, and a
-second sample from another generator is the out-of-sample test.
-
-```python
-import pyarrow.compute as pc
-from crc_sdk.connectors import read_hazard_dataset, read_hazard_metadata
-from crc_sdk.geometry import point_to_cell        # crc-sdk[geometry]
-from crc_sdk.parametric import sample_curve
-
-path = "rx1day.parquet"            # a canonical dataset, e.g. from .materialize(path)
-metadata = read_hazard_metadata(path)
-curves = read_hazard_dataset(path)
-cell = point_to_cell(6.96, 50.94, metadata.h3_resolution)
-row = curves.filter(pc.equal(curves["cell_index"], cell)).to_pylist()[0]
-# one row per hazard, horizon and pathway: select the one you need
-
-def draws(seed: int):
-    return sample_curve(row, metadata=metadata, n_draws=10_000,
-                        rng=np.random.default_rng(seed), loss_model=loss_model,
-                        basis_risk=ImpactNoise(0.3, upper=1.0), asset_id="warehouse-a")
-
-design_draws, fresh_draws = draws(1), draws(2)
-designed = design(step, design_draws, ExpectedUncovered(), budget=Budget(ratio=0.8))
-table = compare([designed, linear], fresh_draws, split="out_of_sample",
-                design_sample=design_draws)   # the fixed cover needs its design sample
-```
-
-A draw is a year only if the curve describes one year's value: its
-`probability_semantics` must be `annual_exceedance` or
-`annual_value_distribution` ([outcome samples](#outcome-samples)).
 
 ## Reporting numbers
 
@@ -334,7 +458,8 @@ format="json")["setup"])`, or `setup_text(metadata.setup)`, gives the same
 lines without the design records, and says what only execution knows (the
 years of each block, the leakage check) is not known yet. Out-of-sample rows'
 `Split` line says how the split was made and that the leakage check passed.
-The plan's seed is in every evaluation's `details` under `"plan_seed"`.
+The plan's seed is in every evaluation's `details` under `"plan_seed"`, and
+the fresh draws' seed under `"fresh_draws_seed"`.
 
 ## Define a cover and evaluate its payouts
 
@@ -839,16 +964,19 @@ years or fresh draws, are the ones to report.
   own sample. Nothing sums over assets: there are no designs for a goal over
   several assets, and no dependence between assets is assumed.
 - **Several hazards in one index.** An index is one hazard at one location.
-- **Several scenarios at once.** Every sample is `"baseline"`; the comparison's
-  `scenario` column is there for later.
+- **Several scenarios at once.** Every sample is `"baseline"`, and a plan on
+  fitted curves samples one hazard, horizon and pathway per asset; the
+  comparison's `scenario` column is there for later.
 - **Several events within a year.** One draw is one year.
-- **Curves in the plan.** The plan reads per-year values. Sample a fitted curve
-  with `sample_curve` and chain the functions ([from a fitted
-  curve](#from-a-fitted-curve)).
+- **Remote requests in the plan.** `for_evaluation` takes a request on a local
+  canonical file; materialize a remote source first (its `materialize(path)`
+  returns the `HazardDataset`).
 - **An index read elsewhere in the plan.** The plan reads the index at each
-  asset; `sample_annual(..., index=series)` reads it at another cell, station
-  or hazard.
-- **An H3 cell for registry impacts in the plan.** Give the impact a context
-  with the cell, as above.
+  asset. On per-year values, `sample_annual(..., index=series)` reads it at
+  another cell, station or hazard; on fitted curves, an index elsewhere needs
+  a joint distribution of two curves, which the curves do not give.
+- **An H3 cell for registry impacts on per-year values.** Give the impact a
+  context with the cell, as above. On fitted curves the plan passes each
+  asset's matched cell.
 - **Pooled k-fold metrics, bootstrap intervals, trend removal.** Each fold has
   its own rows, and years are used as recorded.

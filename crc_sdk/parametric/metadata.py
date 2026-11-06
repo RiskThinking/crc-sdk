@@ -542,6 +542,12 @@ def _source(sample: Mapping[str, Any], where: str) -> str:
         semantics = _get(sample, "probability_semantics", str, where)
         stated = _get(sample, "semantics_source", str, where)
         who = {"dataset": "as the dataset declares", "caller": "as the caller states"}
+        if semantics is None and stated == "dataset":
+            # A plan's setup before execution: the dataset is not read yet.
+            return (
+                "Monte Carlo draws from a hazard curve, with the probability "
+                "semantics the dataset declares, not known yet"
+            )
         return (
             f"Monte Carlo draws from a hazard curve with {semantics or 'unstated'} "
             f"semantics, {who.get(stated or '', 'stated by no one recorded')}"

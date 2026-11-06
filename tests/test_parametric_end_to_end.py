@@ -1,6 +1,7 @@
 """End to end, offline: from synthetic sources to a written comparison file.
 
-- the quick start of `docs/parametric.md`, executed as written;
+- the quick start of `docs/parametric.md` (the plan on a fitted curve), its
+  per-year step and both function routes, executed as written;
 - the function route from a synthetic canonical file of fitted curves;
 - the plan from a synthetic annual-extremes file, with k-fold splits.
 """
@@ -47,10 +48,12 @@ from crc_sdk.parametric import (
     compare,
     design,
     sample_curve,
+    setup_text,
     to_long,
     write_comparison,
 )
 from crc_sdk.types import HazardDatasetMetadata, SourceProvenance
+from crc_sdk.workflows import ReturnPeriodExtrapolationWarning
 
 DOCS = Path(__file__).resolve().parents[1] / "docs" / "parametric.md"
 INDEX = IndexDefinition("rx1day", "mm/day", aggregation="annual_maximum")
@@ -112,36 +115,52 @@ def test_the_docs_quick_start_runs_as_written(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     quick_start = _python_blocks("## Quick start")
-    by_hand = _python_blocks("### From per-year values")
-    assert len(quick_start) == 2 and len(by_hand) == 1
+    per_year = _python_blocks("## Next step: per-year values")
+    curve_by_hand = _python_blocks("### From a fitted curve")
+    annual_by_hand = _python_blocks("### From per-year values")
+    assert [len(blocks) for blocks in (quick_start, per_year)] == [2, 1]
+    assert [len(blocks) for blocks in (curve_by_hand, annual_by_hand)] == [1, 1]
     monkeypatch.chdir(tmp_path)
     namespace: dict[str, Any] = {}
-    for block in (*quick_start, *by_hand):
-        exec(compile(block, str(DOCS), "exec"), namespace)
+
+    def run(blocks: list[str]) -> None:
+        for block in blocks:
+            exec(compile(block, str(DOCS), "exec"), namespace)
+
+    # The quick start: the plan on a fitted curve, with fresh draws.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", ReturnPeriodExtrapolationWarning)
+        run(quick_start)
     printed = capsys.readouterr().out
     before, after = printed.split("Level:")[1:3]
     assert "Basis: annual, one draw is one year." in before
     assert "the evaluation sample, not known yet" in before
+    assert "with the probability semantics the dataset declares, not known yet" in (
+        before
+    )
     assert (
-        "Split: out of sample, fold 0, a holdout with train fraction 0.7: "
-        "evaluated on 12 recorded years (2009 to 2020), the held-out block; "
-        "designed on 28 recorded years (1981 to 2008), the design block; the "
-        "leakage check passed"
+        "Split: out of sample, fold 0, on fresh Monte Carlo draws: evaluated on "
+        "5000 simulated years (draws 0 to 4999); designed on 5000 simulated years "
+        "(draws 0 to 4999); the leakage check passed"
     ) in after
+    assert "with annual_exceedance semantics, as the dataset declares" in after
+    assert "more frequent than the shortest fitted return period (2 years)" in after
     assert "Design step (expected_uncovered) (" in after
     assert "Basis risk: impact noise" in after
 
     result = namespace["result"]
+    assert (tmp_path / "rx1day.parquet").is_file()
     assert (tmp_path / "comparison.parquet").is_file()
     assert result.row_count == 8  # three designs and one cover, in and out of sample
     out_of_sample = namespace["out_of_sample"]
     assert out_of_sample.num_rows == 4
-    assert out_of_sample.column("cover_label").to_pylist() == [
+    labels = [
         "step (mse)",
         "step (expected_uncovered)",
         "step (weighted_cvar alpha=0.9 beta=0.9)",
         "linear",
     ]
+    assert out_of_sample.column("cover_label").to_pylist() == labels
     assert out_of_sample.column("premium_basis").to_pylist() == [
         "design",
         "design",
@@ -149,23 +168,59 @@ def test_the_docs_quick_start_runs_as_written(
         "evaluation",
     ]
     sample = result.samples["warehouse-a"]
-    assert sample.period[0] == 1981 and sample.period[-1] == 2020
+    assert sample.provenance.source_kind == "monte_carlo" and len(sample) == 5_000
     out = [
         e for e in result.metadata.setup.evaluations if e["split"] == "out_of_sample"
     ]
-    assert out[0]["method"] == "holdout"
-    assert out[0]["details"] == {"train_fraction": 0.7, "plan_seed": 42}
-    # The function route by hand gives the plan's sample and design.
-    assert namespace["sample"].content_hash == sample.content_hash
-    by_hand_design = namespace["designed"]
-    assert by_hand_design.parameters == result.designs[1].parameters
-    written = pq.read_table(tmp_path / "by-hand.parquet")
-    assert written.num_rows == 2
-    planned = result.table.filter(
+    assert out[0]["method"] == "fresh_draws"
+    assert out[0]["details"] == {"fresh_draws_seed": 7, "plan_seed": 42}
+
+    # The next step: the same covers on per-year values, with a holdout.
+    run(per_year)
+    annual_result = namespace["annual_result"]
+    assert annual_result.row_count == 8
+    assert (
+        "Split: out of sample, fold 0, a holdout with train fraction 0.7: "
+        "evaluated on 12 recorded years (2009 to 2020), the held-out block; "
+        "designed on 28 recorded years (1981 to 2008), the design block; the "
+        "leakage check passed"
+    ) in setup_text(annual_result.metadata)
+    annual_sample = annual_result.samples["warehouse-a"]
+    assert annual_sample.period[0] == 1981 and annual_sample.period[-1] == 2020
+    held = [
+        e
+        for e in annual_result.metadata.setup.evaluations
+        if e["split"] == "out_of_sample"
+    ]
+    assert held[0]["details"] == {"train_fraction": 0.7, "plan_seed": 42}
+
+    # The function route by hand gives each plan's samples and design.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", ReturnPeriodExtrapolationWarning)
+        run(curve_by_hand)
+    assert namespace["design_draws"].content_hash == sample.content_hash
+    fresh_rows = result.table.filter(
         pc.equal(result.table.column("split"), "out_of_sample")
-    ).slice(1, 1)
+    )
+    assert set(fresh_rows.column("sample_hash").to_pylist()) == {
+        namespace["fresh_draws"].content_hash
+    }
+    assert namespace["designed"].parameters == result.designs[1].parameters
+    _assert_by_hand(tmp_path / "by-hand.parquet", result.table)
+
+    run(annual_by_hand)
+    assert namespace["sample"].content_hash == annual_sample.content_hash
+    assert namespace["designed"].parameters == annual_result.designs[1].parameters
+    _assert_by_hand(tmp_path / "by-hand-annual.parquet", annual_result.table)
+
+
+def _assert_by_hand(path: Path, planned: Any) -> None:
+    """The by-hand file's E[U] design row equals the plan's out-of-sample row."""
+    written = pq.read_table(path)
+    assert written.num_rows == 2
+    row = planned.filter(pc.equal(planned.column("split"), "out_of_sample")).slice(1, 1)
     assert written.column("expected_uncovered")[0].as_py() == pytest.approx(
-        planned.column("expected_uncovered")[0].as_py(), rel=1e-12
+        row.column("expected_uncovered")[0].as_py(), rel=1e-12
     )
 
 

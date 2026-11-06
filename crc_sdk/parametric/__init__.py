@@ -18,9 +18,12 @@ objective (`MSE`, `ExpectedUncovered`, `WeightedCVaR` or a `UserObjective`)
 under a `Budget` and a `Limit`; its LP and QP routes need the optional extra
 `crc-sdk[parametric]`. `evaluate` and `compare` assess covers and designs.
 
-`ParametricPlan.for_annual_extremes(...)` chains these steps as a lazy plan,
-from an annual-extremes source and assets to a written comparison; its
-builders and `explain()` do no I/O.
+`ParametricPlan` chains these steps as a lazy plan, to a written
+comparison: `ParametricPlan.for_evaluation(request)` from the fitted hazard
+curves of a `PortfolioEvaluation` (with `.monte_carlo(...)` and, for the
+out-of-sample test, `FreshDraws`), or `ParametricPlan.for_annual_extremes(...)`
+from an annual-extremes source and assets. Its builders and `explain()` do no
+I/O.
 
 The functions work on numpy arrays and Arrow tables in memory and do no I/O,
 except `write_comparison`, which writes one Parquet file atomically. The
@@ -77,6 +80,7 @@ from crc_sdk.parametric.payouts import (
     register_payout,
 )
 from crc_sdk.parametric.plan import (
+    FreshDraws,
     Holdout,
     KFold,
     NearestCell,
@@ -113,6 +117,7 @@ __all__ = [
     "EvaluationMetadata",
     "ExpectedUncovered",
     "Free",
+    "FreshDraws",
     "Holdout",
     "ImpactNoise",
     "IndexDefinition",
