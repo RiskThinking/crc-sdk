@@ -22,6 +22,7 @@ from crc_sdk.parametric.errors import (
     UnknownPayoutKindError,
     UnresolvedParameterError,
 )
+from crc_sdk.parametric.evaluate import compare, evaluate, to_long, write_comparison
 from crc_sdk.parametric.index import (
     AtAsset,
     AtCell,
@@ -30,6 +31,8 @@ from crc_sdk.parametric.index import (
     IndexDefinition,
 )
 from crc_sdk.parametric.loss import LossModel
+from crc_sdk.parametric.metadata import EvaluationMetadata
+from crc_sdk.parametric.metrics import MetricOptions
 from crc_sdk.parametric.parameters import Free
 from crc_sdk.parametric.payouts import (
     BinaryPayout,
@@ -41,6 +44,7 @@ from crc_sdk.parametric.payouts import (
     StepPayout,
     register_payout,
 )
+from crc_sdk.parametric.pricing import CostOfCapitalLoad, PurePremium
 from crc_sdk.parametric.sample import (
     OutcomeSample,
     SampleProvenance,
@@ -58,8 +62,10 @@ __all__ = [
     "BasisRisk",
     "BinaryPayout",
     "ComonotoneIndexWarning",
+    "CostOfCapitalLoad",
     "Cover",
     "CoverDefinitionError",
+    "EvaluationMetadata",
     "Free",
     "ImpactNoise",
     "IndexDefinition",
@@ -68,20 +74,26 @@ __all__ = [
     "LinearInAmounts",
     "LinearPayout",
     "LossModel",
+    "MetricOptions",
     "NoBasisRisk",
     "OutcomeSample",
     "ParametricError",
     "PayoutFunction",
     "PiecewiseLinearPayout",
     "ProbabilitySemanticsError",
+    "PurePremium",
     "SampleError",
     "SampleProvenance",
     "StepPayout",
     "UnknownPayoutKindError",
     "UnresolvedParameterError",
+    "compare",
+    "evaluate",
     "holdout",
     "register_payout",
     "sample_annual",
     "sample_curve",
+    "to_long",
+    "write_comparison",
     "year_block_kfold",
 ]

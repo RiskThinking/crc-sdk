@@ -5,11 +5,12 @@
 `crc_sdk.parametric` defines parametric insurance covers on hazard indices: a
 cover pays an amount fixed in advance whenever a measured index, such as a
 year's maximum daily rainfall, reaches stated thresholds. This page covers the
-parts available now: covers, payout functions and their parameters, and the
-outcome samples they are evaluated on. Evaluation metrics, comparison and
-design build on them and will be documented here as they land.
+parts available now: covers, payout functions and their parameters, the
+outcome samples they are evaluated on, and the evaluation and comparison of
+covers. Design builds on them and will be documented here when it lands.
 
-Everything here works on numpy arrays and does no I/O.
+Everything here works on numpy arrays and does no I/O, except
+`write_comparison`, which writes one Parquet file.
 
 ## Define a cover and evaluate its payouts
 
@@ -191,3 +192,143 @@ the setup text. `sample.content_hash` is `sha256:` plus the SHA-256 of the
 canonical long table with its units, semantics and scenario.
 `sample.to_table()` returns that long table, with the metadata under the
 Parquet key `crc.parametric.sample`.
+
+## Evaluate and compare covers
+
+`evaluate(cover, sample, *, split, ...)` returns a one-row table of a cover's
+metrics on a sample; `compare(covers, sample, *, split, ...)` returns one row
+per cover, with covers as rows and metrics as columns. A cover is a resolved
+`Cover` (a template raises `UnresolvedParameterError`) or a design, which
+brings its design sample and its premium. The cover's payout unit, index unit
+and asset must be the sample's.
+
+```python
+from crc_sdk.parametric import (CostOfCapitalLoad, MetricOptions, compare,
+                                holdout, to_long, write_comparison)
+
+design_years, held_out = holdout(sample, train_fraction=0.7)
+# cover_a and cover_b were chosen on design_years, so name it
+table = compare([cover_a, cover_b], held_out, split="out_of_sample",
+                design_sample=design_years, pricing=CostOfCapitalLoad(0.06, 0.99),
+                options=MetricOptions(betas=(0.9, 0.99), loss_thresholds=(0.0, 1e5)))
+write_comparison(table, "comparison.parquet")   # atomic
+tidy = to_long(table)                           # one row per cover and metric
+```
+
+### Metrics
+
+On an evaluation sample with draw probabilities p, loss L, payout π, the
+uncovered loss U = max(L − π, 0), the residual R = L − π, the premium used P and
+the net loss N = L − π + P (the owner's cost of the year with the cover):
+
+| Column | Definition | Null when |
+| --- | --- | --- |
+| `expected_loss`, `expected_payout`, `expected_uncovered` | E[L], E[π], E[U] | — |
+| `premium` | P, the premium used (below) | — |
+| `coverage_ratio` | E[min(π, L)] / E[L]: the share of the expected loss that payouts cover; payouts above the loss don't count | E[L] = 0 |
+| `payout_to_loss_ratio` | E[π] / E[L]: payouts above the loss count too | E[L] = 0 |
+| `tail_coverage_b<β>` | Σ w min(π, L) / Σ w L, with w the CVaR_β weights of L: the share of the loss covered in the worst 1 − β of loss years | Σ w L = 0 |
+| `cvar_uncovered_to_loss_b<β>` | CVaR_β(U) / CVaR_β(L): the tail of the uncovered loss against the tail of the uninsured loss | CVaR_β(L) = 0 |
+| `false_negative_rate_l<ℓ>` | P(π ≤ ε, L > ℓ) / P(L > ℓ): years with a loss above ℓ and no payout | P(L > ℓ) = 0 |
+| `false_positive_rate_l<ℓ>` | P(π > ε, L ≤ ℓ) / P(L ≤ ℓ): years with a payout and a loss of at most ℓ | P(L ≤ ℓ) = 0 |
+| `rmse` | sqrt(E[R²]) | — |
+| `correlation` | the p-weighted Pearson correlation of L and π | either is constant |
+| `var_uncovered_b<β>`, `cvar_uncovered_b<β>` | VaR_β(U), CVaR_β(U) | — |
+| `var_net_loss_b<β>`, `cvar_net_loss_b<β>` | VaR_β(N), CVaR_β(N) | — |
+| `var_loss_b<β>`, `cvar_loss_b<β>` | VaR_β(L), CVaR_β(L), the same for every cover on a sample | — |
+| `loss_rp<T>`, `payout_rp<T>`, `uncovered_rp<T>`, `net_loss_rp<T>` | the value exceeded with probability 1/T: the lower (1 − 1/T)-quantile. T is in years, because a draw is a year | — |
+
+`MetricOptions(betas=(0.9, 0.95, 0.99), return_periods=(2, 5, 10, 25, 50, 100,
+250), loss_thresholds=(0.0,), payout_threshold=0.0)` states β, T, ℓ and ε; no
+threshold is hidden. ℓ is in loss units; ε is the payout at or below which a
+year counts as "no payout". Labels write the number with the point as an
+underscore, as crc-sdk's return-period columns do: β = 0.99 gives
+`cvar_uncovered_b0_99`, T = 100 gives `loss_rp100`, ℓ = 0 gives `l0`. Repeated
+values raise `ValueError`.
+
+**VaR and CVaR.** `VaR_β(X)` is the smallest x with Σ_{X ≤ x} p ≥ β, where the
+comparison allows 1e-10 for the rounding of the summed probabilities, so a β
+exactly on a step of the distribution gives the lower value on every platform.
+`CVaR_β(X) = VaR_β(X) + Σ p (X − VaR_β(X))⁺ / (1 − β)`, the mean of the worst
+1 − β of the probability; it does not depend on which value the VaR picks.
+
+**crc-framework's CVaR is a different quantity.** Its `compute_risk` gives VaR
+and CVaR over the 2ⁿ branches of independent binary factor outcomes, each with
+a downside probability and impact. This module's VaR and CVaR are over the
+years of an outcome sample, for one continuous quantity of one cover
+(uncovered loss, net loss or loss). The random variable, the outcomes and the
+dependence assumptions all differ. The two never share a column and are never
+compared.
+
+### Pricing and the premium used
+
+`PurePremium()` prices P = E[π]. `CostOfCapitalLoad(rate, q)` prices
+P = (1 − rate) · E[π] + rate · CVaR_q(π), with rate in [0, 1] and q in (0, 1).
+The premium a row uses is, in this order:
+
+- the `premium=` argument of `evaluate` (`premium_basis` `"stated"`);
+- for a design, the design premium: the contract price, priced on the design
+  sample (`"design"`), so out-of-sample rows use the price agreed at design;
+- otherwise the premium priced on the evaluation sample with `pricing`
+  (`"evaluation"`).
+
+### In and out of sample
+
+In sample means the design sample; out of sample means held-out year blocks
+(`holdout`, `year_block_kfold`), fresh Monte Carlo draws, or another sample
+that shares no year with the design sample. Every row says which in `split`
+(`"in_sample"` or `"out_of_sample"`) and `fold` (0 for a holdout and fresh
+draws; the fold for k-fold, which must match the sample's own split).
+
+- An out-of-sample evaluation needs the design sample: a design brings its
+  own; for a cover given as is, pass `design_sample=` with the sample its
+  terms were chosen on. Without one it raises `SampleError`. A design sample
+  that shares a period with the evaluation sample from the same source raises
+  `LeakageError`.
+- In sample, a known design sample must be the evaluation sample itself.
+- The metadata records how the split was made: `holdout` (with the train
+  fraction), `kfold` (with k), `fresh_draws` (Monte Carlo samples from
+  different generator states), `separate_sample` or `disjoint_periods`.
+
+Published numbers come from out-of-sample rows; in-sample rows show the gap
+between the two.
+
+### The comparison table
+
+| Column | Type | Meaning |
+| --- | --- | --- |
+| `cover_label` | string | The cover's label, or the first 12 hex digits of its hash |
+| `cover_hash` | string | `Cover.definition_hash` |
+| `design_id` | string, nullable | The design's id; null for a cover given as is |
+| `asset_id` | string | The asset |
+| `level` | string | `"asset"` |
+| `scenario` | string | The sample's scenario, `"baseline"` by default |
+| `split` | string | `"in_sample"` or `"out_of_sample"` |
+| `fold` | int32 | 0 for a holdout and fresh draws; the fold for k-fold |
+| `sample_hash` | string | The evaluation sample's `content_hash` |
+| `premium_basis` | string | `"stated"`, `"design"` or `"evaluation"` |
+| `unique`, `ties`, `degenerate_tail` | bool, int32, string; nullable | The design's non-uniqueness report; null for a cover given as is |
+| one column per metric | float64, nullable | As defined above; null where undefined |
+
+The key (`cover_hash`, `design_id`, `asset_id`, `level`, `scenario`, `split`,
+`fold`) is unique; `compare` raises `ValueError` for the same cover twice.
+`to_long(table)` gives the tidy form: the identity columns, then `column`,
+`metric`, `parameter`, `parameter_value`, `unit` and `value`.
+
+**Metadata.** The table's schema metadata holds one JSON document under the
+key `crc.parametric.evaluation`, validated by `EvaluationMetadata` and written
+with sorted keys: the crc-sdk, crc-framework and numpy versions, the platform
+and the time; the setup (basis, metric options, every sample with its source,
+semantics, basis-risk and loss models, and every evaluation with its split and
+pricing); every metric column's metric, parameter, unit and definition; every
+cover's document; the designs' records; and the samples' sources, licences
+and generator states. Asset values are never written. A comparison is derived
+data under its inputs' licences, which the metadata lists.
+
+`write_comparison(table, path, *, metadata=None)` checks that the metadata
+describes the table, then writes one local Parquet file through a temporary
+sibling and `os.replace`, so a failed write leaves no partial file. To write
+rows of several calls (in and out of sample, several folds) to one file,
+concatenate the tables with `pyarrow.concat_tables` and pass
+`metadata=EvaluationMetadata.merge(*(EvaluationMetadata.from_table(t) for t in
+tables))`.
