@@ -350,6 +350,75 @@ def test_source_probability_support_and_no_support() -> None:
     assert any("no fitted support" in note for note in bare.provenance.notes)
 
 
+def _between(uniforms: Any, rank: int) -> float:
+    """A probability with exactly `rank` of `uniforms` below it."""
+    ordered = np.sort(uniforms)
+    return float((ordered[rank - 1] + ordered[rank]) / 2)
+
+
+@pytest.mark.parametrize(
+    ("outside", "verb", "values"),
+    [(1, "is", "its value is"), (2, "are", "their values are")],
+)
+def test_support_notes_agree_with_their_counts(
+    outside: int, verb: str, values: str
+) -> None:
+    uniforms = np.random.default_rng(7).random(20)
+    support = (_between(uniforms, outside), _between(uniforms, 20 - outside))
+    metadata = _metadata(return_period_support=None, source_probability_support=support)
+    with pytest.warns(ReturnPeriodExtrapolationWarning) as caught:
+        sample = _curve(metadata=metadata, n_draws=20)
+    assert sample.provenance.details["outside_support"] == {
+        "below": outside,
+        "above": outside,
+    }
+    assert sample.provenance.notes[:2] == (
+        f"{outside} of 20 draws {verb} more frequent than the shortest fitted "
+        "return period: the curve is extrapolated there.",
+        f"{outside} of 20 draws {verb} rarer than the longest fitted return "
+        "period: the curve is extrapolated there.",
+    )
+    (warned,) = [
+        w for w in caught if issubclass(w.category, ReturnPeriodExtrapolationWarning)
+    ]
+    assert str(warned.message) == (
+        f"{outside} of 20 draws {verb} rarer than the curve's fitted support; "
+        f"{values} extrapolated"
+    )
+
+
+@pytest.mark.parametrize(
+    ("outside", "falls", "was", "them"),
+    [(1, "falls", "was", "it"), (2, "fall", "were", "them")],
+)
+def test_tabulated_notes_agree_with_their_counts(
+    outside: int, falls: str, was: str, them: str
+) -> None:
+    uniforms = np.random.default_rng(7).random(20)
+    lowest = _between(uniforms, outside)
+    curve = TabulatedDistribution([lowest, 0.9, 0.9999], [40.0, 70.0, 100.0])
+    assert float(uniforms.max()) < 0.9999
+    metadata = _metadata(return_period_support=None)
+    message = (
+        rf"^{outside} of 20 draws {falls} outside the tabulated curve's knots "
+        rf"\[.*\]; pass outside_support='extrapolate' or 'clamp' to evaluate {them}$"
+    )
+    with pytest.raises(SampleError, match=message):
+        _curve(curve, metadata=metadata, n_draws=20)
+    clamped = _curve(curve, metadata=metadata, n_draws=20, outside_support="clamp")
+    assert (
+        f"{outside} of 20 draws fell outside the tabulated knots and {was} clamped "
+        "to the nearest knot."
+    ) in clamped.provenance.notes
+    extrapolated = _curve(
+        curve, metadata=metadata, n_draws=20, outside_support="extrapolate"
+    )
+    assert (
+        f"{outside} of 20 draws fell outside the tabulated knots and {was} "
+        "extrapolated by crc-framework."
+    ) in extrapolated.provenance.notes
+
+
 def test_a_tabulated_curve_raises_outside_its_knots_by_default() -> None:
     curve = TabulatedDistribution([0.5, 0.9, 0.99], [40.0, 70.0, 100.0])
     metadata = _metadata(return_period_support=None)
@@ -710,9 +779,25 @@ def test_years_become_the_rows() -> None:
 
 def test_missing_years_raise_or_are_dropped_and_listed() -> None:
     series = _series([50.0, None, 100.0, None])
-    with pytest.raises(SampleError, match="2 years have no value"):
+    with pytest.raises(
+        SampleError,
+        match=r"^2 years have no value \(hazard \[2001, 2003\]\); pass "
+        r"missing='drop_year' to drop them, listed in the provenance$",
+    ):
         sample_annual(
             series,
+            loss_model=LOSS,
+            basis_risk=NOISE,
+            asset_id="a",
+            rng=np.random.default_rng(0),
+        )
+    with pytest.raises(
+        SampleError,
+        match=r"^1 year has no value \(hazard \[2001\]\); pass missing='drop_year' "
+        r"to drop it, listed in the provenance$",
+    ):
+        sample_annual(
+            _series([50.0, None, 100.0, 70.0]),
             loss_model=LOSS,
             basis_risk=NOISE,
             asset_id="a",

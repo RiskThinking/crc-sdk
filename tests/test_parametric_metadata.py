@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pyarrow as pa  # type: ignore[import-untyped]
+import pyarrow.compute as pc  # type: ignore[import-untyped]
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
 import pytest
 from crc_framework import FittedDistribution, PiecewiseLinearImpact
@@ -1001,9 +1003,19 @@ def test_setup_text_takes_a_comparison_table(tmp_path: Path) -> None:
     write_comparison(table, path)
     read = pq.read_table(path)
     assert setup_text(read) == expected
-    # Rows and columns taken from the table keep its metadata.
+    # Rows taken from the table keep its metadata; the text states their setup.
+    assert setup_text(read.slice(0, 1)) == expected  # the design's row
+    fixed = setup_text(read.slice(1, 1))  # the fixed cover's row: no design
+    assert fixed == "\n".join(
+        line for line in expected.splitlines() if not line.startswith("Design ")
+    )
+    # Columns taken from it keep its metadata, but not the rows' evaluations.
     some = read.select(["cover_label", "expected_uncovered"]).slice(0, 1)
-    assert setup_text(some) == expected
+    assert setup_text(some) == (
+        "Rows: not identified, as the table lacks the columns sample_hash, split, "
+        "fold and design_id; this is the setup of the whole comparison, which may "
+        f"include evaluations that the rows do not belong to.\n{expected}"
+    )
 
     with pytest.raises(EvaluationError, match=EVALUATION_METADATA_KEY):
         setup_text(pa.table({"x": [1]}))
@@ -1089,6 +1101,11 @@ RARE = (
     "draws are rarer than the longest fitted return period (50 years): the curve "
     "is extrapolated there."
 )
+RARE_ONE = (
+    "draws is rarer than the longest fitted return period (50 years): the curve "
+    "is extrapolated there."
+)
+CLAMPED = "draws fell outside the tabulated knots and {} clamped to the nearest knot."
 POOLED = (
     "The curve pools an ensemble: a draw mixes model spread with year-to-year "
     "variability."
@@ -1200,6 +1217,87 @@ def _fresh(digit: str) -> dict[str, Any]:
             f"{FREQUENT[6:]}",
             id="two samples that read the same get their hashes",
         ),
+        pytest.param(
+            [
+                _noted("1", ["design", "evaluation"], "x", f"1 of 400 {RARE_ONE}"),
+                _noted("2", ["evaluation"], "x", f"1 of 400 {RARE_ONE}"),
+            ],
+            [],
+            f"1 of 400 {RARE_ONE}",
+            id="a count of 1 in one sample: the singular, as it is",
+        ),
+        pytest.param(
+            [
+                _noted("1", ["design"], "x", f"1 of 400 {RARE_ONE}"),
+                _noted("2", ["evaluation"], "y", f"3 of 400 {RARE}"),
+            ],
+            [_fresh("2")],
+            f"1 of 400 draws in the design sample and 3 of 400 in the fresh {RARE}",
+            id="a count of 1 and a count of 3: one note, the plural",
+        ),
+        pytest.param(
+            [
+                _noted(
+                    "1",
+                    ["design"],
+                    "x",
+                    f"210 of 400 {FREQUENT}",
+                    f"1 of 400 {RARE_ONE}",
+                ),
+                _noted(
+                    "2",
+                    ["evaluation"],
+                    "y",
+                    f"190 of 400 {FREQUENT}",
+                    f"1 of 400 {RARE_ONE}",
+                ),
+            ],
+            [_fresh("2")],
+            f"210 of 400 draws in the design sample and 190 of 400 in the fresh "
+            f"{FREQUENT} 1 of 400 draws in the design sample and 1 of 400 in the "
+            f"fresh {RARE}",
+            id="counts of 1 in two samples: the plural",
+        ),
+        pytest.param(
+            [
+                _noted(
+                    "1",
+                    ["design"],
+                    "x",
+                    f"210 of 400 {FREQUENT}",
+                    f"1 of 400 {RARE_ONE}",
+                ),
+                _noted("2", ["evaluation"], "y", f"190 of 400 {FREQUENT}"),
+            ],
+            [_fresh("2")],
+            f"210 of 400 draws in the design sample and 190 of 400 in the fresh "
+            f"{FREQUENT} 1 of 400 draws in the design sample "
+            f"{RARE_ONE.removeprefix('draws ')}",
+            id="a count of 1 that only one sample carries: the singular",
+        ),
+        pytest.param(
+            [
+                _noted(
+                    "1", ["design"], "x", f"210 of 400 {FREQUENT}", f"1 of 400 {RARE}"
+                ),
+                _noted("2", ["evaluation"], "y", f"190 of 400 {FREQUENT}"),
+            ],
+            [_fresh("2")],
+            f"210 of 400 draws in the design sample and 190 of 400 in the fresh "
+            f"{FREQUENT} 1 of 400 draws in the design sample "
+            f"{RARE_ONE.removeprefix('draws ')}",
+            id="a count of 1 written with the plural: the singular",
+        ),
+        pytest.param(
+            [
+                _noted("1", ["design"], "x", f"1 of 400 {CLAMPED.format('was')}"),
+                _noted("2", ["evaluation"], "y", f"2 of 300 {CLAMPED.format('were')}"),
+            ],
+            [_fresh("2")],
+            "1 of 400 draws in the design sample and 2 of 300 in the fresh "
+            f"{CLAMPED.format('were')}",
+            id="was and were: one note, the plural",
+        ),
     ],
 )
 def test_setup_text_groups_counted_notes_per_sample(
@@ -1207,3 +1305,249 @@ def test_setup_text_groups_counted_notes_per_sample(
 ) -> None:
     setup = {"samples": samples, "evaluations": evaluations}
     assert _lines(setup_text(setup))["Sample notes"] == [f"Sample notes: {expected}"]
+
+
+# -- setup_text: a plan's explain() document, a table's own rows -----------------
+
+PLANNED_SETUP: dict[str, Any] = {
+    "basis": "annual",
+    "metric_options": {"betas": [0.99]},
+    "samples": [
+        {
+            "asset_ids": ["warehouse-a"],
+            "draws": 1000,
+            "loss_unit": "EUR",
+            "roles": ["design", "evaluation"],
+            "scenario": "baseline",
+            "semantics_source": "dataset",
+            "source_kind": "monte_carlo",
+        }
+    ],
+    "evaluations": [
+        {
+            "details": {"plan_seed": 42},
+            "fold": 0,
+            "method": "in_sample",
+            "pricing": {"kind": "pure"},
+            "split": "in_sample",
+        }
+    ],
+}
+CANONICAL: dict[str, Any] = {
+    "impact": {"name": "ramp", "value_semantics": "damage ratio", "value_unit": "1"},
+    "join": "PortfolioEvaluation.asset_curves()",
+    "kind": "canonical_dataset",
+    "metadata": None,
+    "path": "data/rx1day.parquet",
+    "selection": {
+        "hazard_names": ["rx1day"],
+        "horizons": [2050],
+        "pathways": ["ssp245"],
+    },
+    "type": "HazardDataset",
+}
+PER_YEAR: dict[str, Any] = {
+    "kind": "file",
+    "path": "data/annual.parquet",
+    "provenance": {"provider": "example", "dataset": "synthetic rx1day"},
+    "type": "PosixPath",
+}
+SERIES = (
+    "the hazard series from provider example and dataset synthetic rx1day, with "
+    "horizon and pathway not recorded"
+)
+
+
+def test_setup_text_of_an_explain_document() -> None:
+    document = {"producer": "crc_sdk.parametric", "setup": PLANNED_SETUP}
+    alone = setup_text(PLANNED_SETUP).splitlines()
+    # The setup's lines, and the sources as far as they are known before
+    # execution, where a comparison's Source line goes.
+    source = (
+        "Source: the hazard curves of the canonical dataset data/rx1day.parquet, "
+        "for hazard rx1day, horizon 2050 and pathway ssp245; their provider and "
+        "dataset are not known yet."
+    )
+    expected = [*alone[:4], source, *alone[4:]]
+    assert alone[3].startswith("Sample: ")
+    assert setup_text({**document, "sources": [CANONICAL]}).splitlines() == expected
+    # Without sources the document says so.
+    assert setup_text(document).splitlines()[4] == "Source: not recorded."
+
+
+@pytest.mark.parametrize(
+    ("record", "expected"),
+    [
+        pytest.param(
+            {**CANONICAL, "selection": {"horizons": [2050], "pathways": ["ssp245"]}},
+            "the hazard curves of the canonical dataset data/rx1day.parquet, for "
+            "any hazard, horizon 2050 and pathway ssp245",
+            id="an axis not selected",
+        ),
+        pytest.param(
+            {
+                **CANONICAL,
+                "selection": {
+                    "hazard_names": ["rx1day", "rx5day"],
+                    "horizons": [2030, 2050],
+                    "pathways": [],
+                },
+            },
+            "the hazard curves of the canonical dataset data/rx1day.parquet, for "
+            "hazards rx1day and rx5day, horizons 2030 and 2050 and no pathway",
+            id="several values, and none",
+        ),
+        pytest.param(
+            {"kind": "canonical_dataset"},
+            "the hazard curves of a canonical dataset, its path not recorded, its "
+            "selection not recorded",
+            id="path and selection not recorded",
+        ),
+        pytest.param(PER_YEAR, f"{SERIES}, read from a file data/annual.parquet"),
+        pytest.param(
+            {**PER_YEAR, "kind": "table", "rows": 160},
+            f"{SERIES}, read from a table of 160 rows",
+            id="a table",
+        ),
+        pytest.param(
+            {**PER_YEAR, "kind": "table", "rows": 1},
+            f"{SERIES}, read from a table of 1 row",
+            id="a table of one row",
+        ),
+        pytest.param(
+            {**PER_YEAR, "kind": "plan", "type": "ERA5Plan"},
+            f"{SERIES}, read from a source plan ERA5Plan",
+            id="a source plan",
+        ),
+        pytest.param(
+            {"role": "table", "name": "losses"},
+            'the table "losses", with provider, dataset, horizon and pathway not '
+            "recorded",
+            id="a source record of the metadata",
+        ),
+    ],
+)
+def test_setup_text_names_the_sources_of_an_explain_document(
+    record: dict[str, Any], expected: str
+) -> None:
+    text = setup_text({"setup": PLANNED_SETUP, "sources": [record]})
+    line = _lines(text)["Source"][0]
+    if record.get("kind") == "canonical_dataset":
+        expected += "; their provider and dataset are not known yet"
+    assert line == f"Source: {expected}."
+
+
+@pytest.mark.parametrize(
+    ("document", "message"),
+    [
+        ({"setup": "x"}, r"document\.setup has the wrong type"),
+        ({"setup": {}, "sources": "x"}, r"document\.sources must be a list"),
+        ({"setup": {}, "sources": [{"kind": 3}]}, r"sources\[0\]\.kind has the wrong"),
+        (
+            {"setup": {}, "sources": [{**CANONICAL, "selection": "rx1day"}]},
+            r"sources\[0\]\.selection has the wrong type",
+        ),
+        (
+            {"setup": {}, "sources": [{**CANONICAL, "selection": {"horizons": 2050}}]},
+            r"sources\[0\]\.selection\.horizons must be a list",
+        ),
+        (
+            {
+                "setup": {},
+                "sources": [{**CANONICAL, "selection": {"horizons": [True]}}],
+            },
+            r"sources\[0\]\.selection\.horizons\[0\] has the wrong type",
+        ),
+        (
+            {"setup": {}, "sources": [{**PER_YEAR, "kind": "table", "rows": "many"}]},
+            r"sources\[0\]\.rows has the wrong type",
+        ),
+        (
+            {"setup": {}, "sources": [{**PER_YEAR, "provenance": {"provider": 1.5}}]},
+            r"sources\[0\]\.provider has the wrong type",
+        ),
+        ({"setup": {}, "schema_version": "2.0"}, "invalid EvaluationMetadata"),
+    ],
+)
+def test_setup_text_rejects_malformed_documents(
+    document: dict[str, Any], message: str
+) -> None:
+    with pytest.raises(EvaluationError, match=message):
+        setup_text(document)
+
+
+def test_setup_text_of_the_metadatas_json_document() -> None:
+    train, test = holdout(_sample())
+    metadata = _metadata(evaluate(_Design(LINEAR, train), test, split="out_of_sample"))
+    document = json.loads(metadata.to_json())
+    assert setup_text(document) == setup_text(metadata)
+
+
+def _comparison() -> tuple[Any, Any, Any, EvaluationMetadata]:
+    """In- and out-of-sample tables of a holdout, and their merged metadata."""
+    train, test = holdout(_sample())
+    covers: list[Cover | DesignedCover] = [_Design(LINEAR, train), COVER]
+    inside = compare(covers, train, split="in_sample")
+    outside = compare(covers, test, split="out_of_sample", design_sample=train)
+    merged = EvaluationMetadata.merge(_metadata(inside), _metadata(outside))
+    table = pa.concat_tables([inside, outside]).replace_schema_metadata(
+        {EVALUATION_METADATA_KEY: merged.to_json()}
+    )
+    return inside, outside, table, merged
+
+
+def test_setup_text_of_a_table_states_the_setup_of_its_rows() -> None:
+    inside, outside, table, merged = _comparison()
+    whole = setup_text(merged)
+    assert setup_text(table) == whole
+    assert len(_lines(whole)["Split"]) == 2
+    # Rows of one split: the setup of that split's comparison alone.
+    rows_out = table.filter(pc.equal(table["split"], "out_of_sample"))
+    rows_in = table.filter(pc.equal(table["split"], "in_sample"))
+    assert setup_text(rows_out) == setup_text(_metadata(outside))
+    assert setup_text(rows_in) == setup_text(_metadata(inside))
+    assert _lines(setup_text(rows_out))["Split"] == [
+        line for line in _lines(whole)["Split"] if "out of sample" in line
+    ]
+    # Rows of the fixed cover alone name no design.
+    fixed = setup_text(table.filter(pc.equal(table["cover_label"], "binary")))
+    assert fixed == "\n".join(
+        line for line in whole.splitlines() if not line.startswith("Design ")
+    )
+    # The rows in another order, or repeated, name the same evaluations.
+    assert setup_text(pa.concat_tables([rows_out, rows_in, rows_out])) == whole
+
+
+def test_setup_text_of_a_table_whose_rows_are_not_identified() -> None:
+    _, _, table, merged = _comparison()
+    whole = setup_text(merged)
+    tail = (
+        "; this is the setup of the whole comparison, which may include "
+        "evaluations that the rows do not belong to."
+    )
+    assert setup_text(table.drop_columns(["fold"])) == (
+        f"Rows: not identified, as the table lacks the column fold{tail}\n{whole}"
+    )
+    assert setup_text(table.select(["cover_label", "split", "premium"])) == (
+        "Rows: not identified, as the table lacks the columns sample_hash, fold and "
+        f"design_id{tail}\n{whole}"
+    )
+    assert setup_text(table.slice(0, 0)) == (
+        "Rows: none; this is the setup of the whole comparison that the table's "
+        f"metadata describes.\n{whole}"
+    )
+
+
+def test_setup_text_refuses_rows_that_its_metadata_does_not_describe() -> None:
+    inside, outside, _, _ = _comparison()
+    # concat_tables keeps the first table's metadata, which lacks the rows of
+    # the second.
+    concatenated = pa.concat_tables([inside, outside])
+    with pytest.raises(EvaluationError, match="names an evaluation that its metadata"):
+        setup_text(concatenated)
+    without = _metadata(inside).model_copy(update={"designs": ()})
+    undescribed = inside.replace_schema_metadata(
+        {EVALUATION_METADATA_KEY: without.to_json()}
+    )
+    with pytest.raises(EvaluationError, match="names design 111111111111"):
+        setup_text(undescribed)

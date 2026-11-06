@@ -9,6 +9,7 @@ from typing import Any
 
 import numpy as np
 import pyarrow as pa  # type: ignore[import-untyped]
+import pyarrow.compute as pc  # type: ignore[import-untyped]
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
 import pytest
 from crc_framework import PiecewiseLinearImpact, TransformContext
@@ -260,6 +261,40 @@ def test_for_evaluation_runs_end_to_end_offline(dataset: Path, tmp_path: Path) -
         "in the fresh draws for depot-b",
     ):
         assert label in notes
+    # A count of 1 takes the singular in its sample's note, and the plural
+    # with the other samples' counts.
+    rare = "rarer than the longest fitted return period (500 years)"
+    assert f"1 of 1500 draws is {rare}: the curve is extrapolated there." in (
+        result.samples["depot-b"].provenance.notes
+    )
+    assert (
+        "1 of 1500 in the design sample for depot-b and 3 of 1000 in the fresh "
+        f"draws for depot-b are {rare}"
+    ) in notes
+
+    # The rows of one asset: the setup of that asset's evaluations alone.
+    depot = read.filter(pc.equal(read["asset_id"], "depot-b"))
+    lines = setup_text(depot).splitlines()
+    assert lines[0].startswith("Level: asset (depot-b). ")
+    splits = [line for line in lines if line.startswith("Split: ")]
+    every = [line for line in text.splitlines() if line.startswith("Split: ")]
+    assert len(splits) == 2 and len(every) == 4 and set(splits) == set(every)
+    depot_designs = {
+        d.design_id.removeprefix("sha256:")[:12]
+        for d in result.designs
+        if d.cover.asset_id == "depot-b"
+    }
+    assert len(depot_designs) == 3
+    assert {
+        line.split(") (")[1][:12] for line in lines if line.startswith("Design ")
+    } == depot_designs
+    assert next(line for line in lines if line.startswith("Sample notes")) == (
+        "Sample notes: 745 of 1500 draws in the design sample and 521 of 1000 in "
+        "the fresh draws are more frequent than the shortest fitted return period "
+        "(2 years): the curve is extrapolated there. 1 of 1500 draws in the design "
+        f"sample and 3 of 1000 in the fresh draws are {rare}: the curve is "
+        "extrapolated there."
+    )
 
 
 def test_samples_follow_sample_curve_on_the_asset_curves_rows(dataset: Path) -> None:
@@ -631,6 +666,20 @@ def test_builders_and_explain_do_no_io(tmp_path: Path) -> None:
     assert "Split: out of sample, fold 0, on fresh Monte Carlo draws" in text
     assert "with the probability semantics the dataset declares, not known yet" in text
     assert "impact noise, a mean-one lognormal factor with sigma 0.3" in text
+    # The whole document adds the dataset's path and selection, still without I/O.
+    source = (
+        f"Source: the hazard curves of the canonical dataset {absent}, for any "
+        "hazard, horizon 2050 and pathway ssp245; their provider and dataset are "
+        "not known yet."
+    )
+    lines = text.splitlines()
+    after = next(i for i, line in enumerate(lines) if line.startswith("Sample: "))
+    assert setup_text(document).splitlines() == [
+        *lines[: after + 1],
+        source,
+        *lines[after + 1 :],
+    ]
+    assert not absent.exists()
 
 
 def test_for_evaluation_checks_its_request(dataset: Path, tmp_path: Path) -> None:

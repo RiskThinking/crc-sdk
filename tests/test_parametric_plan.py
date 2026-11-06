@@ -151,6 +151,20 @@ class _SourcePlan:
         return {"recipe": "rx1day", "unit": self.unit, "years": [1981, 2020]}
 
 
+SERIES = (
+    "the hazard series from provider example and dataset synthetic rx1day, with "
+    "horizon and pathway not recorded"
+)
+
+
+def _lines(text: str) -> dict[str, list[str]]:
+    """The lines of a setup text by their label (`Split`, `Source`, ...)."""
+    lines: dict[str, list[str]] = {}
+    for line in text.splitlines():
+        lines.setdefault(line.split(":")[0], []).append(line)
+    return lines
+
+
 @pytest.fixture(autouse=True)
 def _quiet_comonotone() -> Iterator[None]:
     with warnings.catch_warnings():
@@ -183,6 +197,9 @@ def test_builders_return_new_plans_and_explain_does_no_io(tmp_path: Path) -> Non
     document: Any = on_files.covers(_linear()).explain(format="json")
     assert document["sources"][0]["kind"] == "file"
     assert document["sources"][0]["path"] == str(missing)
+    assert _lines(setup_text(document))["Source"] == [
+        f"Source: {SERIES}, read from a file {missing}."
+    ]
     assert document["assets"]["count"] is None
     assert not missing.exists()
 
@@ -276,6 +293,21 @@ def test_setup_text_states_the_plan_before_execution() -> None:
     assert "times the asset value in column value_eur, in EUR" in text
     unset: Any = _plan().explain(format="json")
     assert "Basis risk: not stated." in setup_text(unset["setup"])
+    # The whole document names the source too: the provider and dataset the plan
+    # states, and the table or source plan the values are read from.
+    rows = len(YEARS) * len(CELLS)
+    source = f"Source: {SERIES}, read from a table of {rows} rows."
+    lines = text.splitlines()
+    after = max(i for i, line in enumerate(lines) if line.startswith("Sample"))
+    assert setup_text(document).splitlines() == [
+        *lines[: after + 1],
+        source,
+        *lines[after + 1 :],
+    ]
+    planned: Any = _plan(_SourcePlan(_annual())).explain(format="json")
+    assert _lines(setup_text(planned))["Source"] == [
+        f"Source: {SERIES}, read from a source plan _SourcePlan."
+    ]
 
 
 def test_explain_without_a_split_lists_in_sample_rows_only() -> None:

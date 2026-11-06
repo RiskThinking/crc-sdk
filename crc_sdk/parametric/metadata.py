@@ -30,8 +30,9 @@ The module claims no licence of its own for a comparison: it is derived data
 under its inputs' terms, which `licences` lists.
 
 `setup_text(metadata)` states the setup in plain text, one statement a line,
-for a notebook or a report to print next to the numbers; it also takes a
-comparison table and reads its metadata. Invalid metadata raises
+for a notebook or a report to print next to the numbers. It also takes a
+comparison table, and states the setup of the evaluations its rows name, and
+a plan's `explain()` document, before execution. Invalid metadata raises
 `EvaluationError`.
 """
 
@@ -42,7 +43,7 @@ import math
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any, Literal, Self
+from typing import TYPE_CHECKING, Any, Literal, Self, TypeGuard
 
 import pyarrow as pa  # type: ignore[import-untyped]
 from pydantic import ValidationError, model_validator
@@ -678,11 +679,162 @@ def _source_record(entry: Mapping[str, Any], where: str) -> str:
     return text
 
 
-def _sources(sources: Sequence[Mapping[str, Any]]) -> str:
+_SELECTION = (
+    ("hazard_names", "hazard"),
+    ("horizons", "horizon"),
+    ("pathways", "pathway"),
+)
+"""The axes of a canonical dataset's selection, and their nouns."""
+
+
+def _selected(selection: Mapping[str, Any], key: str, noun: str, where: str) -> str:
+    """One axis of a dataset's selection: `hazard rx1day`, `any horizon`."""
+    if selection.get(key) is None:
+        return f"any {noun}"
+    words: list[str] = []
+    for i, value in enumerate(_list(selection, key, where)):
+        if isinstance(value, bool) or not isinstance(value, (str, int)):
+            raise EvaluationError(f"{where}.{key}[{i}] has the wrong type: {value!r}")
+        words.append(str(value))
+    if not words:
+        return f"no {noun}"
+    return f"{noun if len(words) == 1 else noun + 's'} {_join(words)}"
+
+
+def _planned_source(entry: Mapping[str, Any], where: str) -> str:
+    """One source of a plan's `explain()` document, as far as it is known.
+
+    A canonical dataset of fitted curves is named by its path and the
+    hazards, horizons and pathways selected from it; its provider and dataset
+    are in its metadata, which only execution reads. Per-year values are
+    named by the provider and dataset the plan states, and by the file,
+    table or source plan they are read from. Any other record is described
+    as a comparison's source records are.
+    """
+    kind = _get(entry, "kind", str, where)
+    if kind == "canonical_dataset":
+        path = _recorded(entry, "path", where)
+        place = (
+            "a canonical dataset, its path not recorded"
+            if path is None
+            else f"the canonical dataset {path}"
+        )
+        selection = _get(entry, "selection", Mapping, where)
+        if selection is None:
+            chosen = "its selection not recorded"
+        else:
+            chosen = "for " + _join(
+                [
+                    _selected(selection, key, noun, f"{where}.selection")
+                    for key, noun in _SELECTION
+                ]
+            )
+        return (
+            f"the hazard curves of {place}, {chosen}; their provider and dataset "
+            "are not known yet"
+        )
+    provenance = _get(entry, "provenance", Mapping, where)
+    if kind not in ("file", "table", "plan") or provenance is None:
+        return _source_record(entry, where)
+    text = _source_record({"role": "hazard", "series": {"source": provenance}}, where)
+    if kind == "file":
+        path = _recorded(entry, "path", where)
+        return f"{text}, read from a file{'' if path is None else f' {path}'}"
+    if kind == "table":
+        rows = _get(entry, "rows", int, where)
+        size = "" if rows is None else f" of {rows} row{'' if rows == 1 else 's'}"
+        return f"{text}, read from a table{size}"
+    name = _recorded(entry, "type", where)
+    return f"{text}, read from a source plan{'' if name is None else f' {name}'}"
+
+
+def _sources(sources: Sequence[Mapping[str, Any]], *, planned: bool = False) -> str:
+    describe = _planned_source if planned else _source_record
     records = _first_seen(
-        _source_record(entry, f"sources[{i}]") for i, entry in enumerate(sources)
+        describe(entry, f"sources[{i}]") for i, entry in enumerate(sources)
     )
     return f"Source: {'; '.join(records) or 'not recorded'}."
+
+
+_ROW_KEYS = ("sample_hash", "split", "fold", "design_id")
+"""The columns of a comparison table that name each row's evaluation and design."""
+
+
+def _of_rows(
+    metadata: EvaluationMetadata, table: Any
+) -> tuple[
+    dict[str, Any], tuple[dict[str, Any], ...], tuple[dict[str, Any], ...], str | None
+]:
+    """The setup, designs and sources of the evaluations a table's rows name.
+
+    A row names its evaluation by its sample hash, split and fold, and its
+    design by its design id. The samples kept are those the evaluations kept
+    are evaluated or designed on, and the source records those of the
+    samples kept. A table without those columns, or without rows, names no
+    evaluation: then the setup is that of the whole comparison, and the last
+    item says so. Raises `EvaluationError` for a row that names an
+    evaluation or a design the metadata does not describe.
+    """
+    setup = metadata.setup.model_dump(mode="json")
+    missing = [name for name in _ROW_KEYS if name not in table.column_names]
+    if missing:
+        columns = "column" if len(missing) == 1 else "columns"
+        return (
+            setup,
+            metadata.designs,
+            metadata.sources,
+            f"Rows: not identified, as the table lacks the {columns} "
+            f"{_join(missing)}; this is the setup of the whole comparison, which "
+            "may include evaluations that the rows do not belong to.",
+        )
+    if table.num_rows == 0:
+        return (
+            setup,
+            metadata.designs,
+            metadata.sources,
+            "Rows: none; this is the setup of the whole comparison that the "
+            "table's metadata describes.",
+        )
+    rows = table.select(list(_ROW_KEYS)).to_pylist()
+    named = {(row["sample_hash"], row["split"], row["fold"]) for row in rows}
+    evaluations = [
+        entry
+        for entry in setup["evaluations"]
+        if (entry["sample_hash"], entry["split"], entry["fold"]) in named
+    ]
+    unknown = named - {(e["sample_hash"], e["split"], e["fold"]) for e in evaluations}
+    if unknown:
+        sample_hash, split, fold = min(unknown, key=str)
+        raise EvaluationError(
+            "a row of the table names an evaluation that its metadata does not "
+            f"describe: sample {_short(sample_hash)} ({split}, fold {fold}); give "
+            "a concatenation of tables their merged metadata "
+            "(EvaluationMetadata.merge)"
+        )
+    wanted = {row["design_id"] for row in rows if row["design_id"] is not None}
+    designs = tuple(r for r in metadata.designs if r["design_id"] in wanted)
+    absent = wanted - {record["design_id"] for record in designs}
+    if absent:
+        raise EvaluationError(
+            f"a row of the table names design {_short(min(absent, key=str))}, "
+            "which its metadata does not describe"
+        )
+    hashes = {str(entry["sample_hash"]) for entry in evaluations}
+    for i, entry in enumerate(evaluations):
+        where = f"setup.evaluations[{i}]"
+        hashes.update(str(value) for value in _list(entry, "design_samples", where))
+    samples = [s for s in setup["samples"] if str(s["sample_hash"]) in hashes]
+    sources = tuple(
+        entry
+        for entry in metadata.sources
+        if entry.get("sample_hash") is None or str(entry["sample_hash"]) in hashes
+    )
+    return (
+        {**setup, "samples": samples, "evaluations": evaluations},
+        designs,
+        sources,
+        None,
+    )
 
 
 def _seeds(evaluation: Mapping[str, Any], where: str) -> tuple[int | None, int | None]:
@@ -703,6 +855,20 @@ def _seeds_text(plan: int | None, fresh: int | None) -> str:
 
 _COUNTED = re.compile(r"(\d+) of (\d+) draws (.+)", re.DOTALL)
 """A note that counts draws, such as the draws beyond a curve's fitted support."""
+
+_VERB = re.compile(r"\b(is|are|was|were)\b")
+"""The verb of a counted note's draws: the first `is`, `are`, `was` or `were`."""
+
+
+def _agree(rest: str, *, singular: bool) -> str:
+    """The rest of a counted note, its verb in the singular or the plural.
+
+    A counted note's verb agrees with its count (`1 of 400 draws is rarer`,
+    `2 of 400 draws are rarer`), and the counts of several samples together
+    take the plural.
+    """
+    forms = {"are": "is", "were": "was"} if singular else {"is": "are", "was": "were"}
+    return _VERB.sub(lambda match: forms.get(match[1], match[1]), rest, count=1)
 
 
 def _note_labels(
@@ -760,7 +926,8 @@ def _notes(
     between drawn samples only in its counts, such as the draws beyond a
     curve's fitted support in the design sample and in the fresh draws, is
     written once with every sample's own counts, asset by asset and the
-    design sample first.
+    design sample first. Its verb is singular for one sample's count of 1
+    and plural otherwise, whichever form each sample's note has.
     """
     notes: list[list[str]] = []
     roles: list[list[str]] = []
@@ -818,7 +985,7 @@ def _notes(
                 statements.setdefault((False, note), [])
                 continue
             count, total, rest = match.groups()
-            entries = statements.setdefault((True, rest), [])
+            entries = statements.setdefault((True, _agree(rest, singular=False)), [])
             if (count, total, labels[group_of[i]]) not in entries:
                 entries.append((count, total, labels[group_of[i]]))
     lines: list[str] = []
@@ -830,7 +997,8 @@ def _notes(
             f"{count} of {total}{' draws' if j == 0 else ''} {label}"
             for j, (count, total, label) in enumerate(entries)
         ]
-        lines.append(f"{_join(parts)} {text}")
+        singular = len(entries) == 1 and int(entries[0][0]) == 1
+        lines.append(f"{_join(parts)} {_agree(text, singular=singular)}")
     return lines
 
 
@@ -1031,6 +1199,11 @@ def _metrics(options: Mapping[str, Any], unit: str) -> str:
     )
 
 
+def _is_document(value: Any) -> TypeGuard[Mapping[str, Any]]:
+    """Whether `value` is a whole document, such as `explain()`'s, not a setup."""
+    return isinstance(value, Mapping) and "setup" in value and "samples" not in value
+
+
 def setup_text(
     metadata: EvaluationMetadata | EvaluationSetup | Mapping[str, Any] | pa.Table,
 ) -> str:
@@ -1039,6 +1212,8 @@ def setup_text(
     Each line is one statement, for a notebook or a report to print next to
     the numbers it describes:
 
+    - `Rows`, first and only for a table whose rows are not identified (see
+      below): that the text is the setup of the whole comparison;
     - `Level`, `Scenario`, `Basis`: one row per asset, the assets, the
       scenario, and the annual basis (one draw is one year);
     - `Split`, one line per evaluation: in or out of sample, the fold, how
@@ -1051,13 +1226,17 @@ def setup_text(
       them, the basis-risk model and its parameters, and the loss model;
     - `Source`: each source record of the samples, such as a hazard curve or
       a per-year series, with its provider, dataset, horizon and pathway, and
-      which of them the record does not hold;
+      which of them the record does not hold; before execution, the sources
+      that a plan's `explain()` document states (a canonical dataset's path
+      and selection, or a per-year source's provider and dataset, and the
+      file, table or plan it is read from);
     - `Sample notes`: what the sources recorded, such as draws beyond the
       fitted support, a pooled ensemble, dropped years, an index read from
       another series, or a comonotone index and loss. A note that differs
       between drawn samples only in its counts, such as the draws beyond the
       fitted support in the design sample and in the fresh draws, is written
-      once, with each sample's own counts;
+      once, with each sample's own counts, its verb in the singular for one
+      sample's count of 1 and in the plural otherwise;
     - `Pricing`: the pricing of the covers given as is; a design keeps its
       design premium, and a row's `premium_basis` says which premium it uses;
     - `Design`, one line per design: the objective, pricing, budget and
@@ -1071,40 +1250,72 @@ def setup_text(
     seeds too, unless the evaluations record different ones, when each
     `Split` line states its own.
 
-    `metadata` is a comparison's `EvaluationMetadata`; a comparison table (a
-    `pyarrow.Table`, such as one `compare` returns or one read back from a
-    file that `write_comparison` or a plan's `write_parquet` wrote), whose
-    `crc.parametric.evaluation` metadata is read as
-    `EvaluationMetadata.from_table` reads it; or a setup alone: an
-    `EvaluationSetup`, or a mapping in its layout, such as a setup known
-    before anything is drawn. A setup alone has no design or source records,
-    so it has no `Design` or `Source` lines, and keys it does not know yet
-    (sample hashes, counts) may be missing: the text then says what is not
-    known. The text depends only on `metadata`, so the same metadata gives
-    the same text; nothing is read or written.
+    `metadata` is one of:
 
-    Raises `EvaluationError` for setup values of the wrong type and for a
-    table without valid `crc.parametric.evaluation` metadata, and
-    `TypeError` for an argument of none of these types.
+    - a comparison's `EvaluationMetadata`, or its JSON document as a mapping
+      (`json.loads(metadata.to_json())`);
+    - a comparison table (a `pyarrow.Table`, such as one `compare` returns,
+      one read back from a file that `write_comparison` or a plan's
+      `write_parquet` wrote, or rows filtered from either). Its
+      `crc.parametric.evaluation` metadata is read as
+      `EvaluationMetadata.from_table` reads it, and the text states the setup
+      of its rows: the evaluations the rows name (by `sample_hash`, `split`
+      and `fold`), the samples those are evaluated and designed on, their
+      sources, and the designs the rows name (by `design_id`). All the rows
+      of a comparison give the text of its metadata. A table without those
+      columns or without rows names no evaluation: its text is that of the
+      whole comparison, after a `Rows` line that says so;
+    - a plan's `explain(format="json")` document (a mapping with a `setup`
+      and no `samples`): its setup, and a `Source` line from its `sources`;
+    - a setup alone: an `EvaluationSetup`, or a mapping in its layout, such
+      as a setup known before anything is drawn.
+
+    A setup alone has no design or source records, so it has no `Design` or
+    `Source` lines; an `explain()` document has no `Design` lines. Keys that
+    a setup does not know yet (sample hashes, counts) may be missing: the
+    text then says what is not known. The text depends only on `metadata`,
+    so the same metadata gives the same text; nothing is read or written.
+
+    Raises `EvaluationError` for setup and document values of the wrong
+    type, for a table without valid `crc.parametric.evaluation` metadata,
+    and for a table row that names an evaluation or a design its metadata
+    does not describe (as after `pyarrow.concat_tables`, which keeps the
+    first table's metadata: give a concatenation the metadata of
+    `EvaluationMetadata.merge`); and `TypeError` for an argument of none of
+    these types.
     """
     designs: tuple[dict[str, Any], ...] = ()
     labels: dict[str, str | None] = {}
-    sources: tuple[dict[str, Any], ...] | None = None
+    source: str | None = None
+    rows: str | None = None
+    if _is_document(metadata) and "schema_version" in metadata:
+        # The metadata's own JSON document, as `to_json` writes it.
+        metadata = EvaluationMetadata(**metadata)
     if isinstance(metadata, pa.Table):
-        metadata = EvaluationMetadata.from_table(metadata)
-    if isinstance(metadata, EvaluationMetadata):
-        setup: Mapping[str, Any] = metadata.setup.model_dump(mode="json")
+        whole = EvaluationMetadata.from_table(metadata)
+        setup: Mapping[str, Any]
+        setup, designs, sources, rows = _of_rows(whole, metadata)
+        labels = _design_labels(designs, whole.covers)
+        source = _sources(sources)
+    elif isinstance(metadata, EvaluationMetadata):
+        setup = metadata.setup.model_dump(mode="json")
         designs = metadata.designs
         labels = _design_labels(designs, metadata.covers)
-        sources = metadata.sources
+        source = _sources(metadata.sources)
     elif isinstance(metadata, EvaluationSetup):
         setup = metadata.model_dump(mode="json")
+    elif _is_document(metadata):
+        # A plan's explain() document: its setup, and its sources as far as
+        # they are known before execution.
+        setup = _get(metadata, "setup", Mapping, "document") or {}
+        source = _sources(_objects(metadata, "sources", "document"), planned=True)
     elif isinstance(metadata, Mapping):
         setup = metadata
     else:
         raise TypeError(
             "setup_text takes EvaluationMetadata, a comparison table, an "
-            f"EvaluationSetup or a setup mapping, got {type(metadata).__name__}"
+            "EvaluationSetup, a setup mapping or a plan's explain(format='json') "
+            f"document, got {type(metadata).__name__}"
         )
     samples = _objects(setup, "samples", "setup")
     evaluations = _objects(setup, "evaluations", "setup")
@@ -1133,10 +1344,11 @@ def setup_text(
     basis = setup.get("basis")
     if basis == "annual":
         basis = "annual, one draw is one year"
-    lines = [
+    lines = [] if rows is None else [rows]
+    lines.append(
         f"Level: {level}. Scenario: {_join(scenarios) or 'not stated'}. "
         f"Basis: {basis or 'not stated'}."
-    ]
+    )
 
     pricings = [
         _pricing(evaluation.get("pricing"), f"setup.evaluations[{i}]")
@@ -1179,8 +1391,8 @@ def setup_text(
             for span, text in zip(years, descriptions, strict=True)
         ]
 
-    if sources is not None:
-        lines.append(_sources(sources))
+    if source is not None:
+        lines.append(source)
     notes = _notes(samples, evaluations)
     if notes:
         lines.append(f"Sample notes: {' '.join(notes)}")

@@ -430,16 +430,18 @@ def sample_curve(
             "above_knots": above_knots,
         }
         outside = below_knots + above_knots
+        falls, was = ("falls", "was") if outside == 1 else ("fall", "were")
         if outside and outside_support == "raise":
+            them = "it" if outside == 1 else "them"
             raise SampleError(
-                f"{outside} of {n} draws fall outside the tabulated curve's knots "
-                f"[{lowest}, {highest}]; pass outside_support='extrapolate' or "
-                "'clamp' to evaluate them"
+                f"{outside} of {n} draws {falls} outside the tabulated curve's "
+                f"knots [{lowest}, {highest}]; pass outside_support='extrapolate' "
+                f"or 'clamp' to evaluate {them}"
             )
         if outside and outside_support == "clamp":
             evaluated = np.clip(uniforms, lowest, highest)
             notes.append(
-                f"{outside} of {n} draws fell outside the tabulated knots and were "
+                f"{outside} of {n} draws fell outside the tabulated knots and {was} "
                 "clamped to the nearest knot."
             )
         elif outside:
@@ -450,7 +452,7 @@ def sample_curve(
                 extrapolate=True,
             )
             notes.append(
-                f"{outside} of {n} draws fell outside the tabulated knots and were "
+                f"{outside} of {n} draws fell outside the tabulated knots and {was} "
                 "extrapolated by crc-framework."
             )
     try:
@@ -490,14 +492,16 @@ def sample_curve(
         if below:
             shortest = f" ({periods[0]:g} years)" if periods is not None else ""
             notes.append(
-                f"{below} of {n} draws are more frequent than the shortest fitted "
-                f"return period{shortest}: the curve is extrapolated there."
+                f"{below} of {n} draws {'is' if below == 1 else 'are'} more frequent "
+                f"than the shortest fitted return period{shortest}: the curve is "
+                "extrapolated there."
             )
         if above:
             longest = f" ({periods[1]:g} years)" if periods is not None else ""
             notes.append(
-                f"{above} of {n} draws are rarer than the longest fitted return "
-                f"period{longest}: the curve is extrapolated there."
+                f"{above} of {n} draws {'is' if above == 1 else 'are'} rarer than the "
+                f"longest fitted return period{longest}: the curve is extrapolated "
+                "there."
             )
     pooling = metadata.ensemble.pooling if metadata.ensemble is not None else None
     if pooling == "pooled":
@@ -565,9 +569,13 @@ def sample_curve(
         provenance=provenance,
     )
     if counts is not None and counts["above"]:
+        rarer = (
+            "is rarer than the curve's fitted support; its value is"
+            if counts["above"] == 1
+            else "are rarer than the curve's fitted support; their values are"
+        )
         warnings.warn(
-            f"{counts['above']} of {n} draws are rarer than the curve's fitted "
-            "support; their values are extrapolated",
+            f"{counts['above']} of {n} draws {rarer} extrapolated",
             ReturnPeriodExtrapolationWarning,
             stacklevel=2,
         )
@@ -1035,9 +1043,12 @@ def sample_annual(
             which.append(f"hazard {[int(y) for y in years[hazard_missing]][:10]}")
         if index is not None and index_missing.any():
             which.append(f"index {[int(y) for y in years[index_missing]][:10]}")
+        years_have, them = (
+            ("year has", "it") if len(dropped) == 1 else ("years have", "them")
+        )
         raise SampleError(
-            f"{len(dropped)} years have no value ({'; '.join(which)}); pass "
-            "missing='drop_year' to drop them, listed in the provenance"
+            f"{len(dropped)} {years_have} no value ({'; '.join(which)}); pass "
+            f"missing='drop_year' to drop {them}, listed in the provenance"
         )
     keep = ~gaps
     if not keep.any():

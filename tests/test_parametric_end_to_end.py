@@ -133,6 +133,20 @@ def test_the_docs_quick_start_runs_as_written(
         run(quick_start)
     printed = capsys.readouterr().out
     before, after = printed.split("Level:")[1:3]
+    result = namespace["result"]
+    # The out-of-sample rows' setup: the whole comparison's, without the
+    # in-sample split.
+    whole = setup_text(result.metadata)
+    assert (
+        "Level:" + after
+        == "\n".join(
+            line
+            for line in whole.splitlines()
+            if not line.startswith("Split: in sample")
+        )
+        + "\n"
+    )
+    assert "Split: in sample" in whole and "Split: in sample" not in after
     assert "Basis: annual, one draw is one year." in before
     assert "the evaluation sample, not known yet" in before
     assert "with the probability semantics the dataset declares, not known yet" in (
@@ -149,7 +163,13 @@ def test_the_docs_quick_start_runs_as_written(
     assert "Basis risk: impact noise" in after
     for text in (before, after):
         assert "\nSeeds: the plan's seed 42; the fresh draws' seed 7.\n" in text
-    assert "\nSource: " not in before  # the dataset is read only at execution
+    # Before execution, the dataset's path and selection; its metadata is read
+    # only at execution. The Source line as "Stating the setup" quotes it.
+    assert (
+        "\nSource: the hazard curves of the canonical dataset rx1day.parquet, for "
+        "hazard rx1day, horizon 2050 and pathway ssp245; their provider and "
+        "dataset are not known yet.\n"
+    ) in before
     assert (
         "\nSource: the hazard curve rx1day from provider example, dataset "
         "synthetic rx1day, horizon 2050 and pathway ssp245.\n"
@@ -161,7 +181,6 @@ def test_the_docs_quick_start_runs_as_written(
     ) in after
     assert after.count("rarer than the longest fitted return period") == 1
 
-    result = namespace["result"]
     assert (tmp_path / "rx1day.parquet").is_file()
     assert (tmp_path / "comparison.parquet").is_file()
     assert result.row_count == 8  # three designs and one cover, in and out of sample

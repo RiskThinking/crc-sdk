@@ -116,13 +116,13 @@ plan = (
     .split(FreshDraws(5_000, seed=7))          # evaluate on fresh draws
     .metrics(MetricOptions(betas=(0.9,), return_periods=(10,)))
 )
-print(setup_text(plan.explain(format="json")["setup"]))   # the setup; no I/O
+print(setup_text(plan.explain(format="json")))   # the setup; no I/O
 
 result = plan.write_parquet("comparison.parquet")   # execution; atomic
 ```
 
 `plan.explain()` gives the whole plan as JSON text; `setup_text` states its
-setup in plain sentences. `result.table` is the comparison as written: one row
+setup and the dataset it reads in plain sentences. `result.table` is the comparison as written: one row
 per cover (the three designs, labelled `"step (mse)"`,
 `"step (expected_uncovered)"` and `"step (weighted_cvar alpha=0.9 beta=0.9)"`,
 and the linear cover) and split. The out-of-sample rows, on the fresh draws,
@@ -136,7 +136,7 @@ out_of_sample = table.filter(pc.equal(table["split"], "out_of_sample"))
 out_of_sample.select(["cover_label", "premium_basis", "premium",
                       "expected_uncovered", "coverage_ratio", "tail_coverage_b0_9",
                       "unique"])
-print(setup_text(result.metadata))   # the setup of these rows, to print with them
+print(setup_text(out_of_sample))   # the setup of these rows, to print with them
 [design.unique for design in result.designs]   # is each design the only optimum?
 ```
 
@@ -447,15 +447,11 @@ at another cell, station or hazard than the loss.
 
 Every number in a comparison rests on a setup: the asset, the basis, the
 split, the samples' source and basis-risk model, the pricing and, for a design,
-its objective and constraints. `setup_text(result.metadata)`, or
-`setup_text(table)` for a comparison table, such as one read back with
-`pyarrow.parquet.read_table`, states that setup in plain text, one statement
-per line (`Level`, `Split`, `Seeds`, `Sample`, `Source`, `Sample notes`,
-`Pricing`, `Design`, `Metrics`), for a notebook or a report to print next to
-the numbers. A table is read through its `crc.parametric.evaluation`
-metadata, which rows and columns taken from it keep; a table without that
-metadata raises `EvaluationError`. The text reads only the metadata, so the
-same table always gives the same text, and statements that every split or
+its objective and constraints. `setup_text(result.metadata)` states that setup
+in plain text, one statement per line (`Level`, `Split`, `Seeds`, `Sample`,
+`Source`, `Sample notes`, `Pricing`, `Design`, `Metrics`), for a notebook or a
+report to print next to the numbers. The text reads only the metadata, so the
+same metadata always gives the same text, and statements that every split or
 sample shares are written once.
 
 - `Seeds` states the plan's seed, which every evaluation's `details` holds
@@ -471,14 +467,45 @@ sample shares are written once.
   counts. In the quick start, the draws beyond the curve's fitted support
   read "2527 of 5000 draws in the design sample and 2464 of 5000 in the fresh
   draws are more frequent than the shortest fitted return period (2 years)",
-  and the same for the longest. Blocks split from one sample share its
+  and the same for the longest. A sample's count of 1 takes the singular ("1
+  of 1500 draws in the design sample is rarer than ..."); counts of several
+  samples together take the plural. Blocks split from one sample share its
   notes, which are written once.
 
-Before execution, `setup_text(plan.explain(format="json")["setup"])`, or
-`setup_text(metadata.setup)`, gives the same lines without the design and
-source records, and says what only execution knows (the years of each block,
-the leakage check) is not known yet. Out-of-sample rows' `Split` line says how
-the split was made and that the leakage check passed.
+`setup_text(table)` states the setup of a comparison table's own rows: a table
+that `compare` returns, one read back with `pyarrow.parquet.read_table`, or
+rows filtered from either, such as the quick start's out-of-sample rows. It
+reads the table's `crc.parametric.evaluation` metadata, which rows and columns
+taken from the table keep, and keeps the evaluations that the rows name (by
+`sample_hash`, `split` and `fold`), their samples and sources, and the designs
+the rows name (by `design_id`). So the out-of-sample rows of the quick start
+give the text of `result.metadata` without the in-sample `Split` line, and the
+rows of one asset give that asset's setup alone. All of a table's rows give the
+text of its metadata.
+
+- A table without those four columns, such as a selection of a few columns,
+  or without rows, gives the text of the whole comparison, after a first line
+  that says so: `Rows: not identified, as the table lacks the column fold;
+  this is the setup of the whole comparison, ...`.
+- A table without that metadata raises `EvaluationError`, and so does a row
+  that names an evaluation or a design the metadata does not describe, as
+  after `pyarrow.concat_tables` of two comparisons, which keeps only the first
+  table's metadata. Give a concatenation the metadata of
+  `EvaluationMetadata.merge`.
+
+Before execution, `setup_text(plan.explain(format="json"))` gives the same
+lines without the design records, and says what only execution knows (the
+years of each block, the leakage check, the dataset's own metadata) is not
+known yet. Its `Source` line names what the plan states: on fitted curves the
+canonical dataset's path and the hazards, horizons and pathways selected
+("Source: the hazard curves of the canonical dataset rx1day.parquet, for
+hazard rx1day, horizon 2050 and pathway ssp245; their provider and dataset are
+not known yet." in the quick start), and on per-year values the provider and
+dataset of the plan's `provenance` and the file, table or source plan the
+values are read from. `setup_text(plan.explain(format="json")["setup"])`, or
+`setup_text(metadata.setup)`, gives the setup alone, without a `Source` line.
+Out-of-sample rows' `Split` line says how the split was made and that the
+leakage check passed.
 
 ## Define a cover and evaluate its payouts
 
