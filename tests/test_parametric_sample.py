@@ -26,7 +26,13 @@ from crc_sdk.parametric import (
     year_block_kfold,
 )
 from crc_sdk.parametric._canonical import content_hash
-from crc_sdk.parametric.sample import SAMPLE_METADATA_KEY, _check_out_of_sample
+from crc_sdk.parametric.sample import (
+    SAMPLE_METADATA_KEY,
+    SAMPLE_SCHEMA_VERSION,
+    SAMPLE_SEMANTICS_VERSION,
+    _check_out_of_sample,
+    _hash_document,
+)
 from crc_sdk.types import HazardDatasetMetadata, SourceProvenance
 
 UNTYPED_SAMPLE: Any = OutcomeSample  # for calls with deliberately invalid arguments
@@ -159,6 +165,95 @@ def test_the_content_hash_covers_the_long_table_and_its_units() -> None:
         ).content_hash
         == expected
     )
+
+
+def _list_based_table(sample: OutcomeSample) -> Any:
+    """The long table built from Python lists, as `to_table` first did."""
+    document = _hash_document(
+        asset_ids=sample.asset_ids,
+        period=sample.period,
+        probability=sample.probability,
+        index=sample.index,
+        loss=sample.loss,
+        hazard=sample.hazard,
+        index_unit=sample.index_unit,
+        loss_unit=sample.loss_unit,
+        semantics=sample.semantics,
+        scenario=sample.scenario,
+    )
+    rows = len(document["period"])
+    metadata = {
+        "asset_ids": list(sample.asset_ids),
+        "content_hash": sample.content_hash,
+        "index_unit": sample.index_unit,
+        "loss_unit": sample.loss_unit,
+        "provenance": sample.provenance.to_document(),
+        "scenario": sample.scenario,
+        "schema_version": SAMPLE_SCHEMA_VERSION,
+        "semantics": sample.semantics,
+        "semantics_version": SAMPLE_SEMANTICS_VERSION,
+    }
+    schema = pa.schema(
+        [
+            ("scenario", pa.string()),
+            ("period", pa.int64()),
+            ("asset_id", pa.string()),
+            ("probability", pa.float64()),
+            ("index", pa.float64()),
+            ("loss", pa.float64()),
+            ("hazard", pa.float64()),
+        ],
+        metadata={
+            SAMPLE_METADATA_KEY: json.dumps(
+                metadata, sort_keys=True, separators=(",", ":"), allow_nan=False
+            )
+        },
+    )
+    hazard = (
+        pa.nulls(rows, pa.float64())
+        if document["hazard"] is None
+        else pa.array(document["hazard"], pa.float64())
+    )
+    return pa.Table.from_arrays(
+        [
+            pa.array([sample.scenario] * rows, pa.string()),
+            pa.array(document["period"], pa.int64()),
+            pa.array(document["asset_id"], pa.string()),
+            pa.array(document["probability"], pa.float64()),
+            pa.array(document["index"], pa.float64()),
+            pa.array(document["loss"], pa.float64()),
+            hazard,
+        ],
+        schema=schema,
+    )
+
+
+@pytest.mark.parametrize("with_hazard", [False, True])
+def test_to_table_equals_the_list_based_table(with_hazard: bool) -> None:
+    rng = np.random.default_rng(7)
+    n = 50
+    sample = _sample(
+        n=n,
+        probability=np.full(n, 1.0 / n),
+        index=rng.gamma(2.0, 20.0, n),
+        loss=np.where(np.arange(n) % 4 == 0, 0.0, rng.gamma(2.0, 5.0, n)),
+        hazard=rng.gamma(2.0, 25.0, n) if with_hazard else None,
+        scenario="ssp245",
+    )
+    design, held_out = holdout(sample, train_fraction=0.7)
+    for block in (sample, design, held_out, sample.select([2003, 2001, 2040])):
+        table = block.to_table()
+        expected = _list_based_table(block)
+        assert table.schema.equals(expected.schema, check_metadata=True)
+        assert table.schema.metadata == expected.schema.metadata
+        assert table.equals(expected, check_metadata=True)
+        for ours, theirs in zip(table.columns, expected.columns, strict=True):
+            assert ours.type == theirs.type
+            assert ours.to_pylist() == theirs.to_pylist()
+        rebuilt = OutcomeSample.from_written_table(table)
+        assert rebuilt.content_hash == block.content_hash
+        np.testing.assert_array_equal(rebuilt.loss, block.loss)
+        assert (rebuilt.hazard is None) is (not with_hazard)
 
 
 def test_to_table_is_the_long_table_with_its_metadata(tmp_path: Path) -> None:

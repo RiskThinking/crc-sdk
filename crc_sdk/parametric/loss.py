@@ -23,7 +23,10 @@ argument of `impact_values` and `evaluate`, compares the unit of the hazard
 values with it, as `crc_sdk.impacts.check_exposure` compares units, and raises
 `SampleError` on a mismatch rather than computing losses from values in the
 wrong unit; `sample_curve` and `sample_annual` call it before drawing. Other
-impacts declare no unit, so they are not checked.
+impacts declare no unit, so they are not checked. The exception is a
+registry `ClimateImpact` (from `crc_sdk.impacts.for_factor`): its unit is the
+factor's calibration in the registry manifest. A factor whose branches
+declare different units is not checked.
 """
 
 from __future__ import annotations
@@ -36,11 +39,19 @@ from typing import Any
 import numpy as np
 import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.compute as pc  # type: ignore[import-untyped]
-from crc_framework import CallableImpact, ImpactFunction, TransformContext
+from crc_framework import (
+    CallableImpact,
+    ClimateImpact,
+    ImpactFunction,
+    TransformContext,
+    impact_registry_manifest,
+)
 from crc_framework import ImpactExpression as FrameworkImpactExpression
 from numpy.typing import ArrayLike, NDArray
 
 from crc_sdk.impacts.calibration import units_equivalent
+from crc_sdk.impacts.config import RegistryImpactReference
+from crc_sdk.impacts.errors import ImpactCalibrationError
 from crc_sdk.impacts.expression import ImpactExpression
 from crc_sdk.parametric._canonical import content_hash
 from crc_sdk.parametric.errors import SampleError
@@ -71,6 +82,41 @@ def _exposure_unit(impact: ImpactExpression | FrameworkImpactExpression) -> str:
     if isinstance(impact, ImpactExpression):
         return str(impact.calibration.exposure_unit)
     return str(impact.to_config()["calibration"]["exposure_unit"])
+
+
+def _registry_exposure_unit(factor: str) -> str | None:
+    """Return the hazard unit of a registry factor, or `None` if it has no one.
+
+    The unit is the factor's calibration in the installed registry manifest
+    (`RegistryImpactReference.pinned(factor).calibration()`; the manifest is
+    bundled with `crc_framework`, so there is no file or network access). A
+    factor whose calibration depends on a branch (for example
+    `cooling_degree_days`) has a unit if every branch declares the same one;
+    branches that disagree, or a factor the manifest does not list, give
+    `None`: the unit cannot be settled without context, so the impact is
+    not checked rather than guessed.
+    """
+    reference = RegistryImpactReference.pinned(factor)
+    try:
+        return str(reference.calibration().exposure_unit)
+    except ImpactCalibrationError as error:
+        if error.code != "branch_required":
+            return None
+    entry = next(
+        (
+            item
+            for item in impact_registry_manifest()["factors"]
+            if item["factor"] == factor
+        ),
+        None,
+    )
+    if entry is None:
+        return None
+    units = {
+        str(reference.calibration(branch).exposure_unit)
+        for branch in entry.get("branch_calibrations") or {}
+    }
+    return units.pop() if len(units) == 1 else None
 
 
 def _finite_non_negative(name: str, value: Any) -> float:
@@ -158,7 +204,11 @@ class LossModel:
             factor = getattr(impact, "factor", None)
             default_name = str(factor) if factor is not None else type(impact).__name__
             definition_hash = None
-            exposure_unit = None
+            exposure_unit = (
+                _registry_exposure_unit(str(factor))
+                if isinstance(impact, ClimateImpact)
+                else None
+            )
             function = impact
 
             def evaluate(values: FloatArray, context: TransformContext | None) -> Any:
@@ -241,8 +291,11 @@ class LossModel:
     def exposure_unit(self) -> str | None:
         """The hazard unit the impact is calibrated for, if it declares one.
 
-        An `ImpactExpression`'s `calibration.exposure_unit`. An
-        `ImpactFunction` or a callable declares none: `None`.
+        An `ImpactExpression`'s `calibration.exposure_unit`; a registry
+        `ClimateImpact`'s unit from the registry manifest (all branches of a
+        branch-dependent factor must agree). Any other `ImpactFunction`, a
+        callable, or a registry factor whose branches disagree declares none:
+        `None`.
         """
         return self._exposure_unit
 
@@ -364,7 +417,8 @@ class LossModel:
         impact's `exposure_unit` as `crc_sdk.impacts.check_exposure` compares
         units: equal after the framework's unit aliases (`metres` is `m`),
         case sensitive, with no conversion. An impact that declares no unit
-        (an `ImpactFunction` or a callable) is not checked, and its document
+        (a custom `ImpactFunction`, a callable, or a registry factor whose
+        branches disagree on the unit) is not checked, and its document
         records `exposure_unit: None`.
         """
         unit = _identifier("hazard_unit", unit)

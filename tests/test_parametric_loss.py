@@ -314,6 +314,79 @@ def test_units_compare_through_the_framework_aliases() -> None:
     LossModel(registry).check_hazard_unit("metres")
 
 
+def test_a_registry_impact_is_checked_against_its_factor_unit() -> None:
+    for factor, unit, wrong in (
+        ("inundation", "m", "cm"),
+        ("cyclone", "m/s", "km/h"),
+        ("rx1day", "mm/day", "mm"),
+        ("hot_days", "d", "K"),
+    ):
+        model = LossModel(impacts.for_factor(factor))
+        assert model.exposure_unit == unit
+        assert model.to_document()["impact"]["exposure_unit"] == unit
+        model.check_hazard_unit(unit)
+        with pytest.raises(SampleError, match="calibrated"):
+            model.check_hazard_unit(wrong)
+        with pytest.raises(SampleError, match=factor):
+            model.impact_values([1.0], hazard_unit=wrong)
+
+
+def test_a_registry_factor_with_branches_that_agree_is_checked() -> None:
+    # cooling_degree_days has an agricultural and a non-agricultural branch,
+    # both calibrated for K.d: the unit is settled without a context.
+    model = LossModel(impacts.for_factor("cooling_degree_days"))
+    assert model.exposure_unit == "K.d"
+    model.check_hazard_unit("K.d")
+    with pytest.raises(SampleError, match="calibrated"):
+        model.check_hazard_unit("d")
+
+
+def test_a_registry_factor_with_branches_that_disagree_is_skipped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from crc_sdk.impacts import ImpactCalibration as Calibration
+    from crc_sdk.impacts.config import RegistryImpactReference
+    from crc_sdk.parametric import loss as loss_module
+
+    def calibration(self: Any, branch: str | None = None) -> Any:
+        from crc_sdk.impacts import ImpactCalibrationError
+
+        if branch is None:
+            raise ImpactCalibrationError("branch_required", "depends on the branch")
+        unit = {"a": "K.d", "b": "d"}[branch]
+        return Calibration(
+            exposure_variable="x",
+            exposure_unit=unit,
+            impact_metric="damage_ratio",
+            impact_unit="1",
+        )
+
+    monkeypatch.setattr(RegistryImpactReference, "calibration", calibration)
+    manifest = {
+        "factors": [
+            {"factor": "cooling_degree_days", "branch_calibrations": {"a": 1, "b": 2}}
+        ]
+    }
+    monkeypatch.setattr(loss_module, "impact_registry_manifest", lambda: manifest)
+    model = LossModel(impacts.for_factor("cooling_degree_days"))
+    assert model.exposure_unit is None
+    model.check_hazard_unit("anything")
+    assert model.to_document()["impact"]["exposure_unit"] is None
+
+
+def test_the_registry_lookup_does_no_io(monkeypatch: pytest.MonkeyPatch) -> None:
+    import builtins
+    import socket
+
+    def refuse(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("the unit lookup must not open files or sockets")
+
+    LossModel(impacts.for_factor("inundation"))  # warm any lazy imports
+    monkeypatch.setattr(socket, "socket", refuse)
+    monkeypatch.setattr(builtins, "open", refuse)
+    assert LossModel(impacts.for_factor("cooling_degree_days")).exposure_unit == "K.d"
+
+
 def test_impacts_that_declare_no_unit_are_not_checked() -> None:
     def half(values: Any) -> Any:
         return np.asarray(values) * 0.5

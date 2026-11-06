@@ -680,19 +680,18 @@ class OutcomeSample:
         hash and the provenance, so `pyarrow.parquet.write_table` writes a
         self-describing file.
         """
-        document = _hash_document(
-            asset_ids=self.asset_ids,
-            period=self.period,
-            probability=self.probability,
-            index=self.index,
-            loss=self.loss,
-            hazard=self.hazard,
-            index_unit=self.index_unit,
-            loss_unit=self.loss_unit,
-            semantics=self.semantics,
-            scenario=self.scenario,
+        order = sorted(
+            range(len(self.asset_ids)), key=lambda j: self.asset_ids[j].encode("utf-8")
         )
-        rows = len(document["period"])
+        sorted_ids = [self.asset_ids[j] for j in order]
+        n_periods = self.period.shape[0]
+        rows = n_periods * len(order)
+
+        def flat(array: FloatArray) -> Any:
+            return pa.array(
+                np.ascontiguousarray(array[:, order]).reshape(-1), pa.float64()
+            )
+
         metadata = {
             "asset_ids": list(self.asset_ids),
             "content_hash": self.content_hash,
@@ -705,9 +704,12 @@ class OutcomeSample:
             "semantics_version": SAMPLE_SEMANTICS_VERSION,
         }
         hazard = (
-            pa.nulls(rows, pa.float64())
-            if document["hazard"] is None
-            else pa.array(document["hazard"], pa.float64())
+            pa.nulls(rows, pa.float64()) if self.hazard is None else flat(self.hazard)
+        )
+        asset_column = (
+            pa.repeat(pa.scalar(sorted_ids[0], pa.string()), rows)
+            if len(sorted_ids) == 1
+            else pa.array(sorted_ids * n_periods, pa.string())
         )
         schema = pa.schema(
             [
@@ -727,12 +729,12 @@ class OutcomeSample:
         )
         return pa.Table.from_arrays(
             [
-                pa.array([self.scenario] * rows, pa.string()),
-                pa.array(document["period"], pa.int64()),
-                pa.array(document["asset_id"], pa.string()),
-                pa.array(document["probability"], pa.float64()),
-                pa.array(document["index"], pa.float64()),
-                pa.array(document["loss"], pa.float64()),
+                pa.repeat(pa.scalar(self.scenario, pa.string()), rows),
+                pa.array(np.repeat(self.period, len(order)), pa.int64()),
+                asset_column,
+                pa.array(np.repeat(self.probability, len(order)), pa.float64()),
+                flat(self.index),
+                flat(self.loss),
                 hazard,
             ],
             schema=schema,
