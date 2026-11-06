@@ -8,7 +8,7 @@ quick start. Each page below answers one question; read only what you need.
 | Page | Answers |
 | --- | --- |
 | [Core concepts](concepts.md) | How plans, cache modes, canonical datasets and return periods work |
-| [Portfolio evaluation and impacts](portfolio.md) | How to evaluate assets and apply damage functions |
+| [Portfolio evaluation and impacts](portfolio.md) | How to evaluate assets, read each asset's matched curves and apply damage functions |
 | [Parametric covers](parametric.md) | How to define, design, evaluate and compare parametric covers: payouts, outcome samples, metrics, design and the parametric plan |
 | [Fitting](fitting.md) | Which fit method to use, and how validation and diagnostics work |
 | [Bring your own data](bring-your-own-data.md) | How to canonicalize your own tables, Zarr arrays or GeoTIFFs |

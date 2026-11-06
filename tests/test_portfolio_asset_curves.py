@@ -243,6 +243,73 @@ def test_missing_and_multiple_matches_raise_as_the_join_does(tmp_path: Path) -> 
         other.for_assets(repeated).asset_curves()
 
 
+@pytest.mark.parametrize(
+    "selection",
+    [
+        {"hazard_names": ["drought"]},
+        {"horizons": [2100]},
+        {"pathways": ["ssp126"]},
+        # Each value is held, but not together.
+        {"horizons": [2050], "pathways": ["ssp245"]},
+    ],
+    ids=["hazard", "horizon", "pathway", "horizon-and-pathway"],
+)
+def test_a_selected_scenario_the_dataset_does_not_hold_gives_an_empty_table(
+    tmp_path: Path, selection: dict[str, Any]
+) -> None:
+    dataset = _dataset(
+        tmp_path,
+        _row(source_id="a"),
+        _row(source_id="a-2080", horizon=2080, pathway="ssp245"),
+    )
+    request = dataset.for_assets(_cell_assets(CELL_A)).select(**selection)
+    output = tmp_path / "evaluated.parquet"
+    result = request.return_periods([100]).write_parquet(
+        output, execution=ExecutionOptions(max_workers=1)
+    )
+
+    curves = request.asset_curves()
+
+    assert curves.num_rows == 0
+    assert curves.column_names == ["asset_id", "sector", *KEY_COLUMNS, *CURVE_COLUMNS]
+    # As write_parquet, which writes no rows.
+    assert result.row_count == pq.read_table(output).num_rows == 0
+
+
+def test_selected_values_the_dataset_does_not_hold_add_no_rows(
+    tmp_path: Path,
+) -> None:
+    dataset = _dataset(
+        tmp_path,
+        _row(source_id="a"),
+        _row(source_id="a-2080", horizon=2080),
+    )
+    request = dataset.for_assets(_cell_assets(CELL_A)).select(
+        hazard_names=["flood", "drought"],
+        horizons=[2050, 2100],
+        pathways=["ssp585", "ssp126"],
+    )
+
+    curves = request.asset_curves()
+
+    assert curves["source_id"].to_pylist() == ["a"]
+
+
+def test_a_held_scenario_without_a_curve_at_the_asset_raises(tmp_path: Path) -> None:
+    # The dataset holds 2080, but only at another cell.
+    dataset = _dataset(
+        tmp_path,
+        _row(cell_index=CELL_A, source_id="a"),
+        _row(cell_index=CELL_B, source_id="b-2080", horizon=2080),
+    )
+    request = dataset.for_assets(_cell_assets(CELL_A))
+
+    for selected in (request, request.select(horizons=[2080])):
+        with pytest.raises(LookupError, match="missing hazard curves"):
+            selected.asset_curves()
+    assert request.select(horizons=[2050]).asset_curves().num_rows == 1
+
+
 def test_jrc_cell_inputs_with_several_curves_raise_where_write_parquet_aggregates(
     tmp_path: Path,
 ) -> None:

@@ -774,10 +774,16 @@ class PortfolioEvaluation:
         probability semantics.
 
         Execution point: reads the dataset. Only ``execution.connection``
-        applies. Raises ``LookupError`` when an asset has no curve for a
-        selected scenario, or several (also for cell inputs of a JRC dataset,
-        which ``write_parquet`` aggregates), and ``ValueError`` for invalid
-        or repeated asset ids and columns.
+        applies. The selection filters the dataset's curves: a selected
+        hazard, horizon or pathway that the dataset doesn't hold gives no
+        rows and no error, as in ``write_parquet``, so a selection that keeps
+        none of the dataset's curves returns an empty table. A selected
+        horizon outside the dataset's temporal window warns with
+        ``HorizonExtrapolationWarning``. Raises ``LookupError`` when an asset
+        has no curve, or several, for a hazard, horizon and pathway that the
+        dataset holds and the selection keeps (also for cell inputs of a JRC
+        dataset, which ``write_parquet`` aggregates), and ``ValueError`` for
+        invalid or repeated asset ids and columns.
         """
         from ._portfolio import hazard_portfolio_curves
 

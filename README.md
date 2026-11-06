@@ -83,7 +83,7 @@ Every source follows the same pattern: build a lazy plan, inspect it with
 | Read | When you need to |
 | --- | --- |
 | [Core concepts](docs/concepts.md) | Understand plans, cache modes, the canonical dataset and probability conventions |
-| [Portfolio evaluation and impacts](docs/portfolio.md) | Evaluate assets at return periods or apply damage functions |
+| [Portfolio evaluation and impacts](docs/portfolio.md) | Evaluate assets at return periods, read each asset's matched curves or apply damage functions |
 | [Parametric covers](docs/parametric.md) | Design, evaluate and compare parametric insurance covers on hazard indices, from fitted curves (`ParametricPlan.for_evaluation`) or, as a next step, per-year values such as annual extremes |
 | [Fitting](docs/fitting.md) | Choose fit methods, censoring, L-moments, validation and diagnostics |
 | [Runtime](docs/runtime.md) | Tune DuckDB, use private buckets, build PMTiles |
