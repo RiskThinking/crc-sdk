@@ -62,6 +62,48 @@ refinement.
 Execution tuning lives in `ExecutionOptions` (`connection`, `batch_rows`,
 `max_workers`, `chunk_rows`), passed as `write_parquet(..., execution=...)`.
 
+## Read each asset's matched curves
+
+`asset_curves()` runs the same join as `write_parquet` (the join rules above)
+and returns the matched canonical curve rows instead of evaluated values, as
+one in-memory `pyarrow.Table`:
+
+```python
+from crc_sdk.workflows import HazardDataset, distribution_from_hazard_row
+
+request = (
+    HazardDataset.local("flood.parquet")
+    .for_assets(assets)
+    .select(horizons=[2050], pathways=["ssp585"])
+)
+curves = request.asset_curves()            # execution point: reads the dataset
+metadata = request.dataset.metadata()      # units, tail and probability semantics
+distribution = distribution_from_hazard_row(curves.to_pylist()[0])
+```
+
+- **Rows:** one per asset, hazard, horizon and pathway, sorted in that order.
+  The selection applies; return periods and the impact are not used.
+- **Columns:** the asset id and passthrough columns (and a point asset's
+  longitude and latitude), then `cell_index`, `hazard_name`, `horizon`,
+  `pathway`, `source_id`, `spatial_match` and the curve columns of the
+  dataset's schema (`curve_kind`, `curve_type`, …). Each row is a canonical
+  curve row, so `distribution_from_hazard_row(row)` rebuilds its distribution.
+- **`no_data` rows** are returned as they are, never dropped; building a
+  distribution from one raises `NoDataCurveError`.
+- **Errors:** an asset with no curve, or with several, for a hazard, horizon
+  and pathway that the dataset holds and the selection keeps raises
+  `LookupError`. So do assets given as H3 cells that match several curves of a
+  JRC dataset, which `write_parquet` aggregates: a set of curves has no single
+  curve row. Invalid or repeated asset ids and columns raise `ValueError`.
+- **Local datasets only:** a source plan's `.for_assets(...)` materializes at
+  write time and has no `asset_curves()`. Materialize first: the plan's
+  `materialize(path)` returns the `HazardDataset` to build the request on.
+- **Execution options:** of `ExecutionOptions`, only `connection` applies,
+  passed as `asset_curves(execution=...)`.
+
+`ParametricPlan.for_evaluation` draws simulated years from these rows; see
+[parametric covers](parametric.md).
+
 ## Apply an impact function
 
 `.impact(...)` replaces sampled hazard values with event-aligned impacts:
