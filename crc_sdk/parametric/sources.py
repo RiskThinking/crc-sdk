@@ -30,6 +30,12 @@ it in the provenance. A second series as `index=` reads the index at another
 cell, station or hazard than the loss: the dependence between index and loss
 is then the data's own.
 
+**Hazard units.** Before anything is drawn, both functions check the hazard's
+unit (the curve's `value_unit`, the hazard series' `unit`) against the loss
+model's impact with `LossModel.check_hazard_unit`: an `ImpactExpression`
+calibrated for another unit raises `SampleError`. Impacts that declare no
+unit are not checked; the loss model's document records `exposure_unit: None`.
+
 Draw order, with one generator per call: the hazard uniforms first, then the
 basis-risk model. The provenance records the generator's state before each
 step, so a sample can be rebuilt exactly.
@@ -374,10 +380,11 @@ def sample_curve(
     required: the uniforms are drawn first, then the basis-risk model draws.
 
     Raises `ProbabilitySemanticsError` under the semantics rules of the
-    module docstring; `SampleError` for a `no_data` curve, a non-finite
-    quantile, a tabulated curve sampled outside its knots with
-    `outside_support="raise"`, or invalid arguments; `TypeError` for wrong
-    types. Warns with `ReturnPeriodExtrapolationWarning` for draws rarer than
+    module docstring; `SampleError` for a `value_unit` the loss model's
+    impact is not calibrated for (checked before any draw), a `no_data`
+    curve, a non-finite quantile, a tabulated curve sampled outside its
+    knots with `outside_support="raise"`, or invalid arguments; `TypeError`
+    for wrong types. Warns with `ReturnPeriodExtrapolationWarning` for draws rarer than
     the fitted support, and with `ComonotoneIndexWarning` for
     `NoBasisRisk()`.
     """
@@ -389,6 +396,8 @@ def sample_curve(
     rng = _require_generator(rng)
     asset = _identifier("asset_id", asset_id)
     _check_models(loss_model, basis_risk, asset)
+    # Before any draw, so a refused call leaves the generator untouched.
+    loss_model.check_hazard_unit(metadata.value_unit)
     if outside_support not in get_args(OutsideSupport):
         raise SampleError(
             f"outside_support must be one of {get_args(OutsideSupport)}, "
@@ -988,8 +997,10 @@ def sample_annual(
     trend is removed. `rng` is needed only by a basis-risk model that draws,
     such as `ImpactNoise`.
 
-    Raises `SampleError` for missing years, mismatched years or invalid
-    arguments, and `TypeError` for wrong types. Warns with
+    Raises `SampleError` for a hazard unit the loss model's impact is not
+    calibrated for (checked before any draw; the `index` series is not
+    checked, as the loss does not read it), missing years, mismatched years
+    or invalid arguments, and `TypeError` for wrong types. Warns with
     `ComonotoneIndexWarning` for `NoBasisRisk()` without an `index` series.
     """
     if not isinstance(hazard, AnnualSeries):
@@ -998,6 +1009,8 @@ def sample_annual(
         raise TypeError(f"index must be an AnnualSeries, got {type(index).__name__}")
     asset = _identifier("asset_id", asset_id)
     _check_models(loss_model, basis_risk, asset)
+    # The loss reads the hazard series; the index series may be in another unit.
+    loss_model.check_hazard_unit(hazard.unit)
     if rng is not None:
         rng = _require_generator(rng)
     if missing not in get_args(MissingYears):

@@ -79,6 +79,7 @@ def test_damage_ratio_without_a_value() -> None:
         "type": "PiecewiseLinearImpact",
         "name": "PiecewiseLinearImpact",
         "definition_hash": None,
+        "exposure_unit": None,
     }
     assert document["value"] == {
         "source": "none",
@@ -109,6 +110,7 @@ def test_an_expression_records_its_definition_hash() -> None:
     assert impact["kind"] == "expression"
     assert impact["definition_hash"] == expression.definition_hash
     assert impact["name"] == "linear"
+    assert impact["exposure_unit"] == "mm/day"
 
 
 def test_a_registry_impact_and_a_callable() -> None:
@@ -254,3 +256,72 @@ def test_negative_or_non_finite_impacts_raise() -> None:
         LossModel(FirstOnly()).impact_values(HAZARD)
     with pytest.raises(SampleError, match="finite and non-negative"):
         LossModel(RAMP, value=1e308, value_unit="EUR").loss_values([10.0])
+
+
+# -- the hazard unit ---------------------------------------------------------
+
+
+def test_the_hazard_unit_must_be_the_expressions_calibration_unit() -> None:
+    model = LossModel(_expression())
+    assert model.exposure_unit == "mm/day"
+    model.check_hazard_unit("mm/day")
+    np.testing.assert_allclose(
+        model.evaluate(HAZARD, hazard_unit="mm/day"), model.evaluate(HAZARD)
+    )
+    for unit in ("mm", "MM/day", "m"):
+        with pytest.raises(SampleError, match="calibrated for hazard values in"):
+            model.check_hazard_unit(unit)
+    with pytest.raises(SampleError, match="'mm'"):
+        model.impact_values(HAZARD, hazard_unit="mm")
+    with pytest.raises(SampleError, match="calibrated"):
+        model.evaluate(HAZARD, hazard_unit="mm")
+    with pytest.raises(SampleError, match="hazard_unit"):
+        model.check_hazard_unit(" mm/day")
+    # The framework's expression declares the same unit.
+    framework = LossModel(_expression().framework_expression)
+    assert framework.exposure_unit == "mm/day"
+    with pytest.raises(SampleError, match="calibrated"):
+        framework.check_hazard_unit("mm")
+    # Binding to an asset keeps the check.
+    bound = LossModel(_expression(), value_column="value", value_unit="EUR")
+    with pytest.raises(SampleError, match="calibrated"):
+        bound.for_asset(ASSETS, "warehouse-a").check_hazard_unit("mm")
+
+
+def test_units_compare_through_the_framework_aliases() -> None:
+    depth = ImpactExpression.linear(
+        0.5,
+        calibration=ImpactCalibration(
+            exposure_variable="flood_depth",
+            exposure_unit="m",
+            impact_metric="damage_ratio",
+            impact_unit="1",
+        ),
+    )
+    model = LossModel(depth)
+    model.check_hazard_unit("metres")
+    model.check_hazard_unit("m")
+    with pytest.raises(SampleError, match="calibrated"):
+        model.check_hazard_unit("cm")
+    registry = ImpactExpression.for_factor(
+        "inundation",
+        context_defaults={
+            "continent": "Europe",
+            "building_type": "Commercial buildings",
+        },
+    )
+    assert LossModel(registry).exposure_unit == "m"
+    LossModel(registry).check_hazard_unit("metres")
+
+
+def test_impacts_that_declare_no_unit_are_not_checked() -> None:
+    def half(values: Any) -> Any:
+        return np.asarray(values) * 0.5
+
+    for model in (LossModel(RAMP), LossModel(half), LossModel(ContextImpact())):
+        assert model.exposure_unit is None
+        model.check_hazard_unit("any unit")
+        assert model.to_document()["impact"]["exposure_unit"] is None
+    np.testing.assert_allclose(
+        LossModel(RAMP).evaluate(HAZARD, hazard_unit="mm/day"), RAMP_RATIO
+    )

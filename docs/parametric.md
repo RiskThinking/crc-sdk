@@ -161,7 +161,13 @@ an `ImpactExpression`, a framework `ImpactFunction` (such as
 `PortfolioEvaluation.impact(...)` takes. Without a value the loss is the
 damage ratio. A value column, and `ImpactContextColumns` for registry impacts,
 are read from the asset's row with `loss_model.for_asset(assets, asset_id)`; a
-missing or repeated asset raises.
+missing or repeated asset raises. An `ImpactExpression` declares the hazard
+unit it is calibrated for (`loss_model.exposure_unit`). Before drawing,
+`sample_curve` and `sample_annual` check the curve's `value_unit` or the hazard
+series' unit against it and raise `SampleError` when they differ (compared as
+`check_exposure` compares units, through the framework's aliases);
+`loss_model.check_hazard_unit(unit)`, or `hazard_unit=` in `evaluate`, is the
+same check by hand. Other impacts declare no unit and are not checked.
 
 **Basis risk** is a required argument:
 
@@ -191,7 +197,10 @@ counted (draws outside the support, atom draws, dropped years) and notes for
 the setup text. `sample.content_hash` is `sha256:` plus the SHA-256 of the
 canonical long table with its units, semantics and scenario.
 `sample.to_table()` returns that long table, with the metadata under the
-Parquet key `crc.parametric.sample`.
+Parquet key `crc.parametric.sample`, and `OutcomeSample.from_written_table(table)`
+reads it back, in memory or from `pyarrow.parquet.read_table`, with its
+provenance and lineage; a table whose rows no longer match the recorded
+content hash raises `SampleError`.
 
 ## Evaluate and compare covers
 

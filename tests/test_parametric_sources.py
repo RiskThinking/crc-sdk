@@ -24,6 +24,7 @@ from crc_sdk.connectors import (
     write_hazard_dataset,
 )
 from crc_sdk.geometry import point_to_cell
+from crc_sdk.impacts import ImpactCalibration, ImpactExpression
 from crc_sdk.parametric import (
     AnnualSeries,
     ComonotoneIndexWarning,
@@ -864,3 +865,107 @@ def test_invalid_basis_risk_output_raises(output: Any, message: str) -> None:
             basis_risk=_BadModel(output),
             n_draws=5,
         )
+
+
+# -- hazard units ------------------------------------------------------------
+
+RX1DAY_LOSS = LossModel(
+    ImpactExpression.linear(
+        0.01,
+        calibration=ImpactCalibration(
+            exposure_variable="rx1day",
+            exposure_unit="mm/day",
+            impact_metric="damage_ratio",
+            impact_unit="1",
+        ),
+        clamp={"minimum": 0.0, "maximum": 1.0},
+    ),
+    value=1e6,
+    value_unit="EUR",
+)
+
+
+@pytest.mark.filterwarnings(
+    "ignore::crc_sdk.workflows.ReturnPeriodExtrapolationWarning"
+)
+def test_sample_curve_checks_the_curves_unit_before_drawing() -> None:
+    sample = _curve(loss_model=RX1DAY_LOSS)
+    assert (sample.index_unit, sample.loss_unit) == ("mm/day", "EUR")
+    assert sample.provenance.loss_model is not None
+    assert sample.provenance.loss_model["impact"]["exposure_unit"] == "mm/day"
+    rng = np.random.default_rng(7)
+    before = rng.bit_generator.state
+    with pytest.raises(SampleError, match="calibrated for hazard values in 'mm/day'"):
+        sample_curve(
+            GUMBEL,
+            metadata=_metadata(value_unit="mm"),
+            n_draws=100,
+            rng=rng,
+            loss_model=RX1DAY_LOSS,
+            basis_risk=NOISE,
+            asset_id="warehouse-a",
+        )
+    assert rng.bit_generator.state == before
+
+
+def test_sample_annual_checks_the_hazard_series_unit_before_drawing() -> None:
+    hazard = _series([50.0, 70.0, 100.0, 40.0])
+    sample = sample_annual(
+        hazard,
+        loss_model=RX1DAY_LOSS,
+        basis_risk=NOISE,
+        asset_id="a",
+        rng=np.random.default_rng(5),
+    )
+    assert sample.provenance.loss_model is not None
+    assert sample.provenance.loss_model["impact"]["exposure_unit"] == "mm/day"
+    # The index series is not what the loss reads, so its unit is not checked.
+    index = AnnualSeries(
+        hazard.years, np.array([45.0, 80.0, 90.0, 55.0]), "mm", {"station": "S2"}
+    )
+    paid_on = sample_annual(
+        hazard,
+        index=index,
+        loss_model=RX1DAY_LOSS,
+        basis_risk=NoBasisRisk(),
+        asset_id="a",
+    )
+    assert paid_on.index_unit == "mm"
+    rng = np.random.default_rng(5)
+    before = rng.bit_generator.state
+    in_mm = AnnualSeries(hazard.years, hazard.values, "mm", {})
+    with pytest.raises(SampleError, match="'mm', but impact 'linear'"):
+        sample_annual(
+            in_mm, loss_model=RX1DAY_LOSS, basis_risk=NOISE, asset_id="a", rng=rng
+        )
+    assert rng.bit_generator.state == before
+    with pytest.raises(SampleError, match="calibrated"):
+        sample_annual(
+            in_mm,
+            index=hazard,
+            loss_model=RX1DAY_LOSS,
+            basis_risk=NoBasisRisk(),
+            asset_id="a",
+        )
+
+
+@pytest.mark.filterwarnings(
+    "ignore::crc_sdk.workflows.ReturnPeriodExtrapolationWarning"
+)
+def test_impacts_without_a_unit_are_not_checked_by_either_route() -> None:
+    def ratio(values: Any) -> Any:
+        return np.clip(np.asarray(values) / 100.0, 0.0, 1.0)
+
+    for loss_model in (LOSS, LossModel(ratio, value=1e6, value_unit="EUR")):
+        assert loss_model.exposure_unit is None
+        curve = _curve(metadata=_metadata(value_unit="any unit"), loss_model=loss_model)
+        annual = sample_annual(
+            AnnualSeries(np.arange(2000, 2003), np.array([5.0, 50.0, 90.0]), "K", {}),
+            loss_model=loss_model,
+            basis_risk=NOISE,
+            asset_id="a",
+            rng=np.random.default_rng(1),
+        )
+        for sample in (curve, annual):
+            assert sample.provenance.loss_model is not None
+            assert sample.provenance.loss_model["impact"]["exposure_unit"] is None

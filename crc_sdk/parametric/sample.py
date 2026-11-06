@@ -21,6 +21,10 @@ periods, so the held-out block of a per-year sample is its latest years.
 Monte Carlo draws are independent, so a fresh sample from another generator
 state is the plainer out-of-sample test.
 
+`OutcomeSample.to_table` returns a sample as its long table, with the units
+and the provenance in the schema metadata, and
+`OutcomeSample.from_written_table` reads such a table back.
+
 Everything here works on numpy arrays and Arrow tables and does no I/O:
 read a Parquet file with `pyarrow.parquet.read_table` and pass the table.
 """
@@ -735,6 +739,110 @@ class OutcomeSample:
         )
 
     @classmethod
+    def from_written_table(cls, table: Any) -> OutcomeSample:
+        """Read back a sample written by `to_table`, with its provenance.
+
+        `table` is the table `to_table()` returned, or the one read from its
+        Parquet file with `pyarrow.parquet.read_table`: an Arrow table or
+        record batch whose schema metadata holds `SAMPLE_METADATA_KEY`. The
+        rows, units, semantics, scenario and provenance are restored, so the
+        sample keeps its lineage for out-of-sample checks. Its content hash
+        must equal the one the metadata records: a table changed after it
+        was written (rows filtered, sorted or edited) is rejected; build a
+        sample from such a table with `from_table`.
+
+        Raises `SampleError` if the metadata is missing, unreadable or of
+        another schema or semantics version, a column is missing or holds
+        values the metadata contradicts (another scenario or asset, nulls),
+        a field is invalid, or the content hash differs; `TypeError` for a
+        file path (this module does no I/O) or a non-table.
+        """
+        data = _arrow_table(table, "a written sample")
+        metadata = _written_metadata(data)
+        what = "the written sample"
+        asset_ids = metadata["asset_ids"]
+        if (
+            not isinstance(asset_ids, list)
+            or not asset_ids
+            or not all(isinstance(item, str) for item in asset_ids)
+        ):
+            raise SampleError(
+                f"the metadata's asset_ids must be a non-empty list of strings, "
+                f"got {asset_ids!r}"
+            )
+        n_assets = len(asset_ids)
+        rows = data.num_rows
+        if rows == 0 or rows % n_assets:
+            raise SampleError(
+                f"the written sample has {rows} rows, not a positive multiple of "
+                f"its {n_assets} assets"
+            )
+        n = rows // n_assets
+        # Rows are sorted by period, then asset id in UTF-8 byte order.
+        order = sorted(range(n_assets), key=lambda j: asset_ids[j].encode("utf-8"))
+        columns = np.argsort(order)
+        written_ids = [asset_ids[j] for j in order] * n
+        if _string_values(_column(data, "asset_id", what), "asset_id") != written_ids:
+            raise SampleError(
+                f"the asset_id column does not hold the metadata's assets "
+                f"{asset_ids} in the written order"
+            )
+        scenario = _identifier("scenario", metadata["scenario"])
+        scenarios = set(_string_values(_column(data, "scenario", what), "scenario"))
+        if scenarios != {scenario}:
+            raise SampleError(
+                f"the scenario column holds {sorted(scenarios)}, but the metadata "
+                f"states {scenario!r}"
+            )
+
+        def per_period(name: str, values: NDArray[Any]) -> NDArray[Any]:
+            wide = values.reshape(n, n_assets)
+            if not (wide == wide[:, :1]).all():
+                raise SampleError(f"column {name!r} differs between assets of a period")
+            return wide[:, 0]
+
+        def per_asset(name: str) -> FloatArray:
+            values = _float_values(_column(data, name, what), name)
+            return values.reshape(n, n_assets)[:, columns]
+
+        hazard_column = _column(data, "hazard", what)
+        if hazard_column.null_count == rows:
+            hazard: FloatArray | None = None
+        elif hazard_column.null_count == 0:
+            hazard = per_asset("hazard")
+        else:
+            raise SampleError(
+                f"column 'hazard' is null in {hazard_column.null_count} of {rows} "
+                "rows; it must be null in every row (the hazard is the index) or "
+                "in none"
+            )
+        sample = cls(
+            asset_ids=tuple(asset_ids),
+            period=per_period(
+                "period", _integer_values(_column(data, "period", what), "period")
+            ),
+            probability=per_period(
+                "probability",
+                _float_values(_column(data, "probability", what), "probability"),
+            ),
+            index=per_asset("index"),
+            loss=per_asset("loss"),
+            hazard=hazard,
+            index_unit=metadata["index_unit"],
+            loss_unit=metadata["loss_unit"],
+            semantics=metadata["semantics"],
+            provenance=_written_provenance(metadata["provenance"]),
+            scenario=scenario,
+        )
+        if sample.content_hash != metadata["content_hash"]:
+            raise SampleError(
+                f"the table's rows do not match the content hash its metadata "
+                f"records ({metadata['content_hash']}): the table was changed after "
+                "it was written"
+            )
+        return sample
+
+    @classmethod
     def from_table(
         cls,
         table: Any,
@@ -875,6 +983,74 @@ class OutcomeSample:
             lineage=content_hash(identity),
         )
         return dataclasses.replace(bare, provenance=provenance)
+
+
+# -- written samples ---------------------------------------------------------
+
+_WRITTEN_KEYS = frozenset(
+    {
+        "asset_ids",
+        "content_hash",
+        "index_unit",
+        "loss_unit",
+        "provenance",
+        "scenario",
+        "schema_version",
+        "semantics",
+        "semantics_version",
+    }
+)
+
+
+def _written_metadata(table: Any) -> dict[str, Any]:
+    """Return the `SAMPLE_METADATA_KEY` document of a table `to_table` wrote."""
+    raw = (table.schema.metadata or {}).get(SAMPLE_METADATA_KEY.encode())
+    if raw is None:
+        raise SampleError(
+            f"the table has no {SAMPLE_METADATA_KEY!r} schema metadata, so it was "
+            "not written by OutcomeSample.to_table; build a sample from it with "
+            "OutcomeSample.from_table"
+        )
+    try:
+        document = json.loads(raw)
+    except ValueError as error:
+        raise SampleError(
+            f"the {SAMPLE_METADATA_KEY!r} metadata is not valid JSON: {error}"
+        ) from error
+    if not isinstance(document, dict):
+        raise SampleError(f"the {SAMPLE_METADATA_KEY!r} metadata must be an object")
+    missing = sorted(_WRITTEN_KEYS - set(document))
+    if missing:
+        raise SampleError(f"the {SAMPLE_METADATA_KEY!r} metadata lacks {missing}")
+    unknown = sorted(set(document) - _WRITTEN_KEYS)
+    if unknown:
+        raise SampleError(
+            f"the {SAMPLE_METADATA_KEY!r} metadata has unknown keys {unknown}"
+        )
+    for key, expected in (
+        ("schema_version", SAMPLE_SCHEMA_VERSION),
+        ("semantics_version", SAMPLE_SEMANTICS_VERSION),
+    ):
+        if document[key] != expected:
+            raise SampleError(
+                f"the written sample has {key} {document[key]!r}; this version of "
+                f"crc-sdk reads {expected!r}"
+            )
+    return document
+
+
+def _written_provenance(document: Any) -> SampleProvenance:
+    """Return the `SampleProvenance` of its `to_document()` output."""
+    if not isinstance(document, Mapping):
+        raise SampleError("the written provenance must be an object")
+    names = {item.name for item in dataclasses.fields(SampleProvenance)}
+    unknown = sorted(set(document) - names)
+    if unknown:
+        raise SampleError(f"the written provenance has unknown fields {unknown}")
+    try:
+        return SampleProvenance(**document)
+    except TypeError as error:
+        raise SampleError(f"the written provenance is incomplete: {error}") from error
 
 
 # -- splits ------------------------------------------------------------------

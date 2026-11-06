@@ -16,6 +16,10 @@ in Python and in Rust:
 
 The content hash is `"sha256:"` followed by the hex SHA-256 of the canonical
 UTF-8 bytes.
+
+A long sequence of plain numbers, or of strings, is spelled in one vectorised
+step (`format_numbers`) rather than item by item, which makes hashing a large
+outcome sample several times faster. Both paths give the same text.
 """
 
 from __future__ import annotations
@@ -24,12 +28,30 @@ import hashlib
 import json
 import math
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, NoReturn
 
-__all__ = ["canonical_json", "content_hash", "format_number"]
+import numpy as np
+from numpy.typing import ArrayLike, NDArray
+
+__all__ = ["canonical_json", "content_hash", "format_number", "format_numbers"]
 
 _MIN_POSITIONAL_EXPONENT = -5
 _MAX_POSITIONAL_EXPONENT = 15
+
+# Sequences at least this long take the vectorised path; shorter ones are
+# cheaper item by item. The text is the same either way.
+_BULK_LENGTH = 32
+
+# `float.__repr__` writes the shortest round-trip digits in this layout too,
+# except for decimal exponents from -5 to -9: it pads them (`1e-06`), and it
+# writes -5 in exponent notation (`1.5e-05`, here `0.000015`). Every number
+# repr writes with exponent -5 lies in this band of magnitudes.
+_PADDED_EXPONENTS = tuple((f"e-0{digit}", f"e-{digit}") for digit in "6789")
+_EXPONENT_MINUS_FIVE_BAND = (9e-6, 1.1e-4)
+
+
+def _reject_non_finite(number: float) -> NoReturn:
+    raise ValueError(f"canonical JSON has no spelling for {number!r}")
 
 
 def format_number(value: float) -> str:
@@ -42,7 +64,7 @@ def format_number(value: float) -> str:
     except OverflowError as error:
         raise ValueError(f"{value!r} is outside the binary64 range") from error
     if not math.isfinite(number):
-        raise ValueError(f"canonical JSON has no spelling for {number!r}")
+        _reject_non_finite(number)
     if number == 0.0:
         return "0.0"
     sign = "-" if number < 0 else ""
@@ -63,6 +85,74 @@ def format_number(value: float) -> str:
         return f"{sign}{digits[:point]}.{digits[point:]}"
     head = digits[0] + (f".{digits[1:]}" if len(digits) > 1 else "")
     return f"{sign}{head}e{'-' if exponent < 0 else '+'}{abs(exponent)}"
+
+
+def format_numbers(values: ArrayLike) -> list[str]:
+    """Return the canonical spelling of each number of a 1-D array.
+
+    The vectorised `format_number`: item by item the same text, for every
+    binary64 value. Integers are read as binary64 floats, as `format_number`
+    reads them. Raises `ValueError` for NaN, infinity, a value outside the
+    binary64 range or an array that is not 1-D.
+    """
+    try:
+        array = np.asarray(values, dtype=np.float64)
+    except OverflowError as error:
+        raise ValueError("a value is outside the binary64 range") from error
+    if array.ndim != 1:
+        raise ValueError(f"expected a 1-D array of numbers, got shape {array.shape}")
+    if array.size == 0:
+        return []
+    return _spell_numbers(array).split(",")
+
+
+def _spell_numbers(array: NDArray[np.float64]) -> str:
+    """Return the canonical spellings of a non-empty 1-D array, comma-joined."""
+    finite = np.isfinite(array)
+    if not finite.all():
+        _reject_non_finite(float(array[~finite][0]))
+    # x + 0.0 is x for every x but negative zero, which becomes zero.
+    array = array + 0.0
+    if array.min() == array.max():
+        return ",".join([format_number(float(array[0]))] * array.shape[0])
+    # json writes each float as float.__repr__.
+    text = json.dumps(array.tolist(), separators=(",", ":"))[1:-1]
+    if "e-0" not in text:
+        return text
+    for padded, unpadded in _PADDED_EXPONENTS:
+        text = text.replace(padded, unpadded)
+    low, high = _EXPONENT_MINUS_FIVE_BAND
+    magnitude = np.abs(array)
+    band = np.flatnonzero((magnitude > low) & (magnitude < high))
+    if band.size:
+        tokens = text.split(",")
+        for position in band.tolist():
+            tokens[position] = format_number(float(array[position]))
+        text = ",".join(tokens)
+    return text
+
+
+def _encode_bulk(value: Sequence[Any], parts: list[str]) -> bool:
+    """Encode a sequence of plain numbers, or of strings, in one step.
+
+    Returns False, having written nothing, for any other sequence, and for
+    numbers the profile rejects, so the item-by-item path raises its error.
+    """
+    kinds = set(map(type, value))
+    if kinds <= {float, int}:
+        try:
+            array = np.array(value, dtype=np.float64)
+        except OverflowError:
+            return False
+        if not np.isfinite(array).all():
+            return False
+        parts.append(f"[{_spell_numbers(array)}]")
+        return True
+    if kinds == {str}:
+        spelled = {item: _string(item) for item in set(value)}
+        parts.append(f"[{','.join(map(spelled.__getitem__, value))}]")
+        return True
+    return False
 
 
 def _string(value: str) -> str:
@@ -102,6 +192,8 @@ def _encode(value: Any, parts: list[str]) -> None:
             _encode(value[key], parts)
         parts.append("}")
     elif isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+        if len(value) >= _BULK_LENGTH and _encode_bulk(value, parts):
+            return
         parts.append("[")
         for position, item in enumerate(value):
             if position:

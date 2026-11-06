@@ -11,19 +11,23 @@ import numpy as np
 import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
 import pytest
+from crc_framework import FittedDistribution, PiecewiseLinearImpact
 
 from crc_sdk.parametric import (
     ComonotoneIndexWarning,
+    ImpactNoise,
     LeakageError,
+    LossModel,
     OutcomeSample,
     SampleError,
     SampleProvenance,
     holdout,
+    sample_curve,
     year_block_kfold,
 )
 from crc_sdk.parametric._canonical import content_hash
 from crc_sdk.parametric.sample import SAMPLE_METADATA_KEY, _check_out_of_sample
-from crc_sdk.types import SourceProvenance
+from crc_sdk.types import HazardDatasetMetadata, SourceProvenance
 
 UNTYPED_SAMPLE: Any = OutcomeSample  # for calls with deliberately invalid arguments
 UNTYPED_PROVENANCE: Any = SampleProvenance
@@ -193,6 +197,203 @@ def test_to_table_is_the_long_table_with_its_metadata(tmp_path: Path) -> None:
         loss_unit="EUR",
     )
     assert rebuilt.content_hash == sample.content_hash
+
+
+def _curve_sample(n: int = 200, seed: int = 42) -> OutcomeSample:
+    """A Monte Carlo sample, whose provenance has every kind of field."""
+    metadata = HazardDatasetMetadata(
+        h3_resolution=7,
+        value_unit="mm/day",
+        value_semantics="annual maximum daily rainfall",
+        producer="tests",
+        source=SourceProvenance(
+            provider="fixture",
+            dataset="rx1day",
+            licence="CC-BY-4.0",
+            attribution="Synthetic fixture",
+        ),
+        creation_version="1",
+        probability_semantics="annual_exceedance",
+        return_period_support=(2.0, 200.0),
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return sample_curve(
+            FittedDistribution.from_parameters("gumbel_r", location=50.0, scale=10.0),
+            metadata=metadata,
+            n_draws=n,
+            rng=np.random.default_rng(seed),
+            loss_model=LossModel(
+                PiecewiseLinearImpact([40.0, 100.0], [0.0, 1.0]),
+                value=1e6,
+                value_unit="EUR",
+            ),
+            basis_risk=ImpactNoise(0.3, upper=1.0),
+            asset_id="warehouse-a",
+            details={"sha256": "0" * 64},
+        )
+
+
+def _assert_same_sample(read: OutcomeSample, sample: OutcomeSample) -> None:
+    assert read.content_hash == sample.content_hash
+    assert read.asset_ids == sample.asset_ids
+    for name in ("period", "probability", "index", "loss"):
+        np.testing.assert_array_equal(getattr(read, name), getattr(sample, name))
+        assert getattr(read, name).dtype == getattr(sample, name).dtype
+    if sample.hazard is None:
+        assert read.hazard is None
+    else:
+        assert read.hazard is not None
+        np.testing.assert_array_equal(read.hazard, sample.hazard)
+    for name in ("index_unit", "loss_unit", "semantics", "scenario", "lineage"):
+        assert getattr(read, name) == getattr(sample, name)
+    assert read.provenance.to_document() == sample.provenance.to_document()
+
+
+def test_a_written_sample_reads_back_with_its_provenance(tmp_path: Path) -> None:
+    sample = _curve_sample()
+    assert sample.hazard is None and sample.provenance.rng
+    table = sample.to_table()
+    _assert_same_sample(OutcomeSample.from_written_table(table), sample)
+    _assert_same_sample(OutcomeSample.from_written_table(table.to_batches()[0]), sample)
+    path = tmp_path / "sample.parquet"
+    pq.write_table(table, path)
+    read = OutcomeSample.from_written_table(pq.read_table(path))
+    _assert_same_sample(read, sample)
+    # The generator state survives, so the sample can be rebuilt from the file.
+    rebuilt = _curve_sample(seed=0)
+    assert rebuilt.content_hash != sample.content_hash
+    state = read.provenance.generator().bit_generator.state
+    assert state == np.random.default_rng(42).bit_generator.state
+    with pytest.raises(TypeError, match="no I/O"):
+        OutcomeSample.from_written_table(path)
+
+
+def test_written_splits_keep_their_lineage(tmp_path: Path) -> None:
+    sample = _sample(
+        n=10, hazard=np.linspace(1.0, 2.0, 10), scenario="ssp585", index_unit="m"
+    )
+    design, held_out = holdout(sample)
+    path = tmp_path / "held_out.parquet"
+    pq.write_table(held_out.to_table(), path)
+    read = OutcomeSample.from_written_table(pq.read_table(path))
+    _assert_same_sample(read, held_out)
+    assert read.provenance.parent == sample.content_hash
+    _check_out_of_sample(design, read)
+    with pytest.raises(LeakageError):
+        _check_out_of_sample(sample, read)
+
+
+def _rewritten(table: Any, **changes: Any) -> Any:
+    """The table with its sample metadata changed: None deletes a key."""
+    document = json.loads(table.schema.metadata[SAMPLE_METADATA_KEY.encode()])
+    for key, value in changes.items():
+        if value is None:
+            del document[key]
+        else:
+            document[key] = value
+    return table.replace_schema_metadata(
+        {SAMPLE_METADATA_KEY: json.dumps(document, sort_keys=True)}
+    )
+
+
+def _with_column(table: Any, name: str, values: Any) -> Any:
+    position = table.schema.get_field_index(name)
+    return table.set_column(position, table.schema.field(position), values)
+
+
+def _written_cases() -> list[tuple[str, Any, str]]:
+    table = _sample(n=4, hazard=np.array([1.0, 2.0, 3.0, 4.0])).to_table()
+    provenance = json.loads(table.schema.metadata[SAMPLE_METADATA_KEY.encode()])[
+        "provenance"
+    ]
+    return [
+        ("no metadata", table.replace_schema_metadata(None), "no 'crc.parametric"),
+        (
+            "not JSON",
+            table.replace_schema_metadata({SAMPLE_METADATA_KEY: "{"}),
+            "not valid JSON",
+        ),
+        (
+            "not an object",
+            table.replace_schema_metadata({SAMPLE_METADATA_KEY: "[]"}),
+            "must be an object",
+        ),
+        ("a missing key", _rewritten(table, loss_unit=None), r"lacks \['loss_unit'\]"),
+        ("an unknown key", _rewritten(table, extra=1), r"unknown keys \['extra'\]"),
+        ("another schema", _rewritten(table, schema_version="2.0"), "'2.0'"),
+        (
+            "other semantics",
+            _rewritten(table, semantics_version="crc-parametric-sample/2"),
+            "semantics_version",
+        ),
+        ("no assets", _rewritten(table, asset_ids=[]), "non-empty list"),
+        ("three assets", _rewritten(table, asset_ids=["a", "b", "c"]), "multiple"),
+        ("a bad scenario", _rewritten(table, scenario=["x"]), "scenario"),
+        ("another unit", _rewritten(table, index_unit="mm"), "content hash"),
+        (
+            "another scenario",
+            _rewritten(table, scenario="ssp585"),
+            r"scenario column holds \['baseline'\]",
+        ),
+        (
+            "unknown provenance",
+            _rewritten(table, provenance={**provenance, "extra": 1}),
+            "unknown fields",
+        ),
+        (
+            "partial provenance",
+            _rewritten(
+                table,
+                provenance={k: v for k, v in provenance.items() if k != "sources"},
+            ),
+            "incomplete",
+        ),
+        ("no provenance", _rewritten(table, provenance=["x"]), "must be an object"),
+        ("an edited loss", _with_column(table, "loss", pa.array([9.0] * 4)), "content"),
+        ("reordered rows", table.take([3, 2, 1, 0]), "strictly increasing"),
+        ("filtered rows", table.slice(1), "sum to 1"),
+        ("a missing column", table.drop(["index"]), "no column 'index'"),
+        (
+            "another asset",
+            _with_column(table, "asset_id", pa.array(["a", "a", "b", "a"])),
+            "asset_id column",
+        ),
+        (
+            "a partial hazard",
+            _with_column(table, "hazard", pa.array([1.0, None, 3.0, 4.0])),
+            "null in 1 of 4",
+        ),
+        (
+            "two assets",
+            _rewritten(
+                _with_column(table, "asset_id", pa.array(["a", "b", "a", "b"])),
+                asset_ids=["b", "a"],
+            ),
+            "differs between assets",
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("table", "message"),
+    [case[1:] for case in _written_cases()],
+    ids=[case[0] for case in _written_cases()],
+)
+def test_written_tables_that_were_changed_are_rejected(
+    table: Any, message: str
+) -> None:
+    with pytest.raises(SampleError, match=message):
+        OutcomeSample.from_written_table(table)
+
+
+def test_a_written_table_of_two_assets_is_refused_until_phase_two() -> None:
+    table = _sample(n=4).to_table()
+    two = pa.concat_tables([table, table]).sort_by([("period", "ascending")])
+    two = _with_column(two, "asset_id", pa.array(["a", "b"] * 4))
+    two = _with_column(two, "probability", pa.array([0.25] * 8))
+    with pytest.raises(SampleError, match="exactly one asset"):
+        OutcomeSample.from_written_table(_rewritten(two, asset_ids=["b", "a"]))
 
 
 def test_select_rescales_and_records_its_parent() -> None:

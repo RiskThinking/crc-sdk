@@ -16,6 +16,14 @@ number (`value`), or 1, which gives the loss as the damage ratio in
 `value_unit="1"`. Context columns for registry impacts work as in
 `PortfolioEvaluation.impact(..., context=ImpactContextColumns(...))`: the
 asset's columns fill the framework's `TransformContext`.
+
+An `ImpactExpression` declares the hazard unit it is calibrated for
+(`calibration.exposure_unit`). `check_hazard_unit(unit)`, or the `hazard_unit=`
+argument of `impact_values` and `evaluate`, compares the unit of the hazard
+values with it, as `crc_sdk.impacts.check_exposure` compares units, and raises
+`SampleError` on a mismatch rather than computing losses from values in the
+wrong unit; `sample_curve` and `sample_annual` call it before drawing. Other
+impacts declare no unit, so they are not checked.
 """
 
 from __future__ import annotations
@@ -32,6 +40,7 @@ from crc_framework import CallableImpact, ImpactFunction, TransformContext
 from crc_framework import ImpactExpression as FrameworkImpactExpression
 from numpy.typing import ArrayLike, NDArray
 
+from crc_sdk.impacts.calibration import units_equivalent
 from crc_sdk.impacts.expression import ImpactExpression
 from crc_sdk.parametric._canonical import content_hash
 from crc_sdk.parametric.errors import SampleError
@@ -55,6 +64,13 @@ def _context_document(context: TransformContext | None) -> dict[str, Any] | None
             value = format(int(value), "x")
         document[name] = value
     return document
+
+
+def _exposure_unit(impact: ImpactExpression | FrameworkImpactExpression) -> str:
+    """Return the hazard unit an impact expression's calibration declares."""
+    if isinstance(impact, ImpactExpression):
+        return str(impact.calibration.exposure_unit)
+    return str(impact.to_config()["calibration"]["exposure_unit"])
 
 
 def _finite_non_negative(name: str, value: Any) -> float:
@@ -88,9 +104,12 @@ class LossModel:
     `TransformContext`, read by `for_asset`) or a fixed `TransformContext`.
     Expressions carry their own context, so they take none.
 
-    The provenance records the impact's type, name and `definition_hash`
-    (for expressions), the value's source and unit, and a SHA-256 of the
-    (asset id, value) pair, not the value itself.
+    `exposure_unit` is the hazard unit an expression is calibrated for, and
+    `check_hazard_unit(unit)` checks hazard values against it.
+
+    The provenance records the impact's type, name, `definition_hash` and
+    `exposure_unit` (for expressions), the value's source and unit, and a
+    SHA-256 of the (asset id, value) pair, not the value itself.
 
     Raises `SampleError` for invalid values, units or contexts, and
     `TypeError` for an impact of another type.
@@ -101,6 +120,7 @@ class LossModel:
         "_bound_context",
         "_context",
         "_evaluate",
+        "_exposure_unit",
         "_hash",
         "_impact",
         "_kind",
@@ -126,6 +146,7 @@ class LossModel:
             kind = "expression"
             default_name = str(impact.model_kind)
             definition_hash: str | None = str(impact.definition_hash)
+            exposure_unit: str | None = _exposure_unit(impact)
             expression = impact
 
             def evaluate(values: FloatArray, context: TransformContext | None) -> Any:
@@ -137,6 +158,7 @@ class LossModel:
             factor = getattr(impact, "factor", None)
             default_name = str(factor) if factor is not None else type(impact).__name__
             definition_hash = None
+            exposure_unit = None
             function = impact
 
             def evaluate(values: FloatArray, context: TransformContext | None) -> Any:
@@ -148,6 +170,7 @@ class LossModel:
                 getattr(impact, "__qualname__", None) or type(impact).__name__
             )
             definition_hash = None
+            exposure_unit = None
             wrapped = CallableImpact(impact)
 
             def evaluate(values: FloatArray, context: TransformContext | None) -> Any:
@@ -194,6 +217,7 @@ class LossModel:
         self._type = type(impact).__name__
         self._name = default_name if name is None else _identifier("name", name)
         self._hash = definition_hash
+        self._exposure_unit = exposure_unit
         self._value_column = value_column
         self._value = number
         self._value_unit = unit
@@ -212,6 +236,15 @@ class LossModel:
     def name(self) -> str:
         """The impact's label in the provenance."""
         return self._name
+
+    @property
+    def exposure_unit(self) -> str | None:
+        """The hazard unit the impact is calibrated for, if it declares one.
+
+        An `ImpactExpression`'s `calibration.exposure_unit`. An
+        `ImpactFunction` or a callable declares none: `None`.
+        """
+        return self._exposure_unit
 
     @property
     def value_column(self) -> str | None:
@@ -323,13 +356,39 @@ class LossModel:
                 "for_asset(assets, asset_id) first"
             )
 
-    def impact_values(self, hazard: ArrayLike) -> FloatArray:
+    def check_hazard_unit(self, unit: str) -> None:
+        """Raise `SampleError` unless hazard values in `unit` suit the impact.
+
+        `unit` is the unit of the hazard values the model reads, such as a
+        curve's `value_unit` or an `AnnualSeries`' `unit`. It must equal the
+        impact's `exposure_unit` as `crc_sdk.impacts.check_exposure` compares
+        units: equal after the framework's unit aliases (`metres` is `m`),
+        case sensitive, with no conversion. An impact that declares no unit
+        (an `ImpactFunction` or a callable) is not checked, and its document
+        records `exposure_unit: None`.
+        """
+        unit = _identifier("hazard_unit", unit)
+        expected = self._exposure_unit
+        if expected is not None and not units_equivalent(unit, expected):
+            raise SampleError(
+                f"the hazard values are in {unit!r}, but impact {self._name!r} is "
+                f"calibrated for hazard values in {expected!r}; convert the hazard "
+                "or use an impact calibrated in its unit"
+            )
+
+    def impact_values(
+        self, hazard: ArrayLike, *, hazard_unit: str | None = None
+    ) -> FloatArray:
         """Return the impact of each hazard value, usually a damage ratio.
 
-        The result has the hazard's shape. Raises `SampleError` if the model
-        needs an asset and is not bound, or the impact is negative or not
-        finite.
+        The result has the hazard's shape. With `hazard_unit`, the unit of
+        the values is checked first (`check_hazard_unit`). Raises
+        `SampleError` for a unit the impact is not calibrated for, if the
+        model needs an asset and is not bound, or if the impact is negative
+        or not finite.
         """
+        if hazard_unit is not None:
+            self.check_hazard_unit(hazard_unit)
         self._require_bound()
         values = np.asarray(hazard, dtype=np.float64)
         if not np.isfinite(values).all():
@@ -363,9 +422,11 @@ class LossModel:
             raise SampleError("losses must be finite and non-negative")
         return loss
 
-    def evaluate(self, hazard: ArrayLike) -> FloatArray:
+    def evaluate(
+        self, hazard: ArrayLike, *, hazard_unit: str | None = None
+    ) -> FloatArray:
         """Return the loss of each hazard value: `loss_values(impact_values(...))`."""
-        return self.loss_values(self.impact_values(hazard))
+        return self.loss_values(self.impact_values(hazard, hazard_unit=hazard_unit))
 
     def _document(self, asset_id: str | None) -> dict[str, Any]:
         if self._value_column is not None:
@@ -395,6 +456,7 @@ class LossModel:
                 "type": self._type,
                 "name": self._name,
                 "definition_hash": self._hash,
+                "exposure_unit": self._exposure_unit,
             },
             "value": {
                 "source": source,
