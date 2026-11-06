@@ -102,7 +102,8 @@ class DesignedCover(Protocol):
     - `unique`, `ties`, `degenerate_tail`: the design's non-uniqueness report
       and degenerate-tail flag, copied into every row;
     - `to_record()`: the design's record as plain JSON types, written to the
-      metadata's `designs`; a `"solver"` entry with the solver's `name` and
+      metadata's `designs` with the label of the cover as evaluated
+      (`cover_label`); a `"solver"` entry with the solver's `name` and
       `version` is listed in its `solvers`.
     """
 
@@ -499,7 +500,12 @@ def _metadata(
     records: dict[str, dict[str, Any]] = {}
     for item in items:
         if item.record is not None:
-            records.setdefault(item.record["design_id"], item.record)
+            # The label of the cover as evaluated, so each design keeps its own
+            # even when two designs resolve to the same cover.
+            records.setdefault(
+                item.record["design_id"],
+                {**item.record, "cover_label": item.cover.label},
+            )
     solvers: list[dict[str, Any]] = []
     for record in records.values():
         solver = record.get("solver")

@@ -15,6 +15,7 @@ geometry libraries are extras:
 | `raster` | `rasterio` | `GeoTiffRaster` (GeoTIFF/COG via GDAL range reads), JRC flood, CHIRPS, `from_raster` |
 | `geometry` | `h3`, `shapely` | H3 helpers, `polyfill_wkb`, raster-to-H3 sampling, station indexing |
 | `agriculture` | `icechunk`, Zarr v3, `pyproj` (Python 3.12+) | USDA CDL; FTW fields need only DuckDB |
+| `parametric` | `highspy` (the HiGHS solver) | Designing parametric covers on the LP and QP routes: `crc_sdk.parametric.design`, `ParametricPlan.objective` |
 | `test` | `mypy`, `pytest`, `ruff` | Development |
 
 Extra-gated modules import lazily and raise an `ImportError` naming the extra.
@@ -28,6 +29,7 @@ Extra-gated modules import lazily and raise an `ImportError` naming the extra.
 | `crc_sdk.connectors` | Format readers, canonical read/write, DuckDB helpers |
 | `crc_sdk.fitting` | Quantile-table fitting |
 | `crc_sdk.impacts` | Impact functions and reproducible definitions (wraps crc-framework) |
+| `crc_sdk.parametric` | Parametric insurance covers: payouts, outcome samples, design, evaluation, comparison and the parametric plan |
 | `crc_sdk.geometry` | H3, coverage, admin lookups, PMTiles |
 | `crc_sdk.types`, `crc_sdk.schema` | Pydantic metadata and the columnar contract |
 | `crc_sdk.core` | Stable re-exports from `crc_framework` |

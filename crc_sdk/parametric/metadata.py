@@ -17,7 +17,8 @@ with sorted keys. It holds:
 - `columns`: for every metric column, its metric, parameter, unit and a
   one-line definition;
 - `covers`: every cover's label, hash and full document;
-- `designs`: the record of every design evaluated;
+- `designs`: the record of every design evaluated, with the label of its
+  cover as evaluated (`cover_label`);
 - `sources`, `licences` and `rng`: the samples' source documents, their
   licences and attributions, and the generator state before every random
   step, each tagged with its sample's hash;
@@ -712,12 +713,38 @@ def _objective(objective: Mapping[str, Any], where: str) -> str:
     return str(kind)
 
 
+def _design_labels(
+    designs: tuple[dict[str, Any], ...], covers: tuple[CoverEntry, ...]
+) -> dict[str, str | None]:
+    """Each design's label, by `design_id`.
+
+    A design record holds the label of its cover as evaluated
+    (`cover_label`). Two designs can resolve to the same cover, for example
+    under a binding budget, so a label is never looked up by the cover hash
+    alone: for a record without `cover_label`, the cover's label is used
+    only when the metadata gives that hash one label.
+    """
+    by_hash: dict[str, set[str | None]] = {}
+    for entry in covers:
+        by_hash.setdefault(entry.hash, set()).add(entry.label)
+    labels: dict[str, str | None] = {}
+    for record in designs:
+        design_id = str(record["design_id"])
+        if "cover_label" in record:
+            where = f"designs[{_short(design_id)}]"
+            labels[design_id] = _get(record, "cover_label", str, where)
+            continue
+        found = by_hash.get(str(record.get("cover_hash")), set())
+        labels[design_id] = next(iter(found)) if len(found) == 1 else None
+    return labels
+
+
 def _design(
     record: Mapping[str, Any], labels: Mapping[str, str | None], unit: str
 ) -> str:
     design_id = _short(record["design_id"])
     where = f"designs[{design_id}]"
-    label = labels.get(str(record.get("cover_hash")))
+    label = labels.get(str(record["design_id"]))
     objective = _get(record, "objective", Mapping, where) or {}
     parts = [
         f"objective: {_objective(objective, where)}",
@@ -832,7 +859,7 @@ def setup_text(
     if isinstance(metadata, EvaluationMetadata):
         setup: Mapping[str, Any] = metadata.setup.model_dump(mode="json")
         designs = metadata.designs
-        labels = {entry.hash: entry.label for entry in metadata.covers}
+        labels = _design_labels(designs, metadata.covers)
     elif isinstance(metadata, EvaluationSetup):
         setup = metadata.model_dump(mode="json")
     elif isinstance(metadata, Mapping):

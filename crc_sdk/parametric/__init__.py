@@ -7,12 +7,26 @@ user family that implements `PayoutFunction` and is registered with
 design chooses within bounds. Covers round-trip through canonical JSON and
 carry a `definition_hash`, as `ImpactExpression` does.
 
+Covers are designed and evaluated on an `OutcomeSample`, one row per year
+with an index value and a loss: `sample_curve` draws simulated years from a
+fitted curve, `sample_annual` reads the years of an `AnnualSeries`, and
+`OutcomeSample.from_table` takes a user table. `LossModel` turns the hazard
+into a loss and a `BasisRisk` model states how index and loss differ.
+
 `design` chooses a template's free parameters on an outcome sample for an
 objective (`MSE`, `ExpectedUncovered`, `WeightedCVaR` or a `UserObjective`)
 under a `Budget` and a `Limit`; its LP and QP routes need the optional extra
 `crc-sdk[parametric]`. `evaluate` and `compare` assess covers and designs.
 
-The module works on numpy arrays and does no I/O. See `docs/parametric.md`.
+`ParametricPlan.for_annual_extremes(...)` chains these steps as a lazy plan,
+from an annual-extremes source and assets to a written comparison; its
+builders and `explain()` do no I/O.
+
+The functions work on numpy arrays and Arrow tables in memory and do no I/O,
+except `write_comparison`, which writes one Parquet file atomically. The
+plan reads its source and assets only at its execution points (`samples`,
+`designs`, `write_parquet`), and `write_parquet` writes atomically too. See
+`docs/parametric.md`.
 """
 
 from crc_sdk.parametric.basis_risk import BasisRisk, ImpactNoise, NoBasisRisk
@@ -62,6 +76,14 @@ from crc_sdk.parametric.payouts import (
     StepPayout,
     register_payout,
 )
+from crc_sdk.parametric.plan import (
+    Holdout,
+    KFold,
+    NearestCell,
+    ParametricPlan,
+    ParametricResult,
+    StationColumn,
+)
 from crc_sdk.parametric.pricing import CostOfCapitalLoad, PurePremium
 from crc_sdk.parametric.sample import (
     OutcomeSample,
@@ -91,9 +113,11 @@ __all__ = [
     "EvaluationMetadata",
     "ExpectedUncovered",
     "Free",
+    "Holdout",
     "ImpactNoise",
     "IndexDefinition",
     "InfeasibleDesignError",
+    "KFold",
     "LeakageError",
     "Limit",
     "LinearConstraints",
@@ -102,9 +126,12 @@ __all__ = [
     "LossModel",
     "MSE",
     "MetricOptions",
+    "NearestCell",
     "NoBasisRisk",
     "OutcomeSample",
     "ParametricError",
+    "ParametricPlan",
+    "ParametricResult",
     "PayoutFunction",
     "PiecewiseLinearPayout",
     "ProbabilitySemanticsError",
@@ -112,6 +139,7 @@ __all__ = [
     "SampleError",
     "SampleProvenance",
     "SolverUnavailableError",
+    "StationColumn",
     "StepPayout",
     "UnboundedDesignError",
     "UnknownPayoutKindError",

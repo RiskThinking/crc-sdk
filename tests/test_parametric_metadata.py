@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -13,10 +14,14 @@ from crc_framework import FittedDistribution, PiecewiseLinearImpact
 from crc_sdk.parametric import (
     AnnualSeries,
     BinaryPayout,
+    Budget,
     CostOfCapitalLoad,
     Cover,
+    DesignResult,
     EvaluationError,
     EvaluationMetadata,
+    ExpectedUncovered,
+    Free,
     ImpactNoise,
     IndexDefinition,
     LinearPayout,
@@ -25,7 +30,9 @@ from crc_sdk.parametric import (
     NoBasisRisk,
     OutcomeSample,
     SampleProvenance,
+    WeightedCVaR,
     compare,
+    design,
     evaluate,
     holdout,
     sample_annual,
@@ -259,6 +266,77 @@ def test_setup_text_of_an_in_sample_comparison() -> None:
             METRICS,
         ]
     )
+
+
+def _labelled(result: DesignResult, label: str) -> DesignResult:
+    """The design with its cover relabelled, as the parametric plan labels it."""
+    cover = result.cover
+    relabelled = Cover(
+        cover.index,
+        cover.payout,
+        payout_unit=cover.payout_unit,
+        asset_id=cover.asset_id,
+        label=label,
+    )
+    return dataclasses.replace(result, cover=relabelled)
+
+
+def test_setup_text_keeps_each_designs_label_when_two_share_a_cover() -> None:
+    # Under a binding budget, E[U] and the weighted CVaR choose the same amount,
+    # so the two designs resolve to the same cover with different design ids.
+    sample = _sample()
+    template = Cover(
+        INDEX, BinaryPayout(100.0, Free()), payout_unit="EUR", label="binary"
+    )
+    designs = [
+        _labelled(
+            design(template, sample, ExpectedUncovered(), budget=Budget(ratio=0.2)),
+            "binary (expected_uncovered)",
+        ),
+        _labelled(
+            design(template, sample, WeightedCVaR(0.9, 0.9), budget=Budget(ratio=0.2)),
+            "binary (weighted_cvar alpha=0.9 beta=0.9)",
+        ),
+    ]
+    eu, wcvar = designs
+    assert eu.cover.definition_hash == wcvar.cover.definition_hash
+    assert eu.design_id != wcvar.design_id
+    assert eu.budget_use == pytest.approx(1.0) == wcvar.budget_use
+
+    table = compare(list(designs), sample, split="in_sample")
+    metadata = _metadata(table)
+    assert [record["cover_label"] for record in metadata.designs] == [
+        "binary (expected_uncovered)",
+        "binary (weighted_cvar alpha=0.9 beta=0.9)",
+    ]
+    lines = _lines(setup_text(metadata))["Design binary"]
+    eu_id = eu.design_id.removeprefix("sha256:")[:12]
+    wcvar_id = wcvar.design_id.removeprefix("sha256:")[:12]
+    assert lines[0].startswith(
+        f"Design binary (expected_uncovered) ({eu_id}): objective: E[U], the "
+        "expected uncovered loss;"
+    )
+    assert lines[1].startswith(
+        f"Design binary (weighted_cvar alpha=0.9 beta=0.9) ({wcvar_id}): "
+        "objective: weighted CVaR"
+    )
+    # The comparison rows are those of each design evaluated alone.
+    assert table.column("cover_label").to_pylist() == [
+        "binary (expected_uncovered)",
+        "binary (weighted_cvar alpha=0.9 beta=0.9)",
+    ]
+    for row, each in zip(table.to_pylist(), designs, strict=True):
+        alone = evaluate(each, sample, split="in_sample").to_pylist()[0]
+        assert row == alone
+
+    # Records written without the label: an ambiguous cover hash gives no label,
+    # rather than the wrong one.
+    document = metadata.model_dump(mode="json")
+    for record in document["designs"]:
+        del record["cover_label"]
+    unlabelled = setup_text(EvaluationMetadata.model_validate(document))
+    assert f"Design {eu_id}: objective: E[U]" in unlabelled
+    assert f"Design {wcvar_id}: objective: weighted CVaR" in unlabelled
 
 
 def test_setup_text_of_a_holdout_comparison() -> None:
