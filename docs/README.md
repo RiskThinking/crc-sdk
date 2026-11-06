@@ -9,6 +9,7 @@ quick start. Each page below answers one question; read only what you need.
 | --- | --- |
 | [Core concepts](concepts.md) | How plans, cache modes, canonical datasets and return periods work |
 | [Portfolio evaluation and impacts](portfolio.md) | How to evaluate assets and apply damage functions |
+| [Parametric covers](parametric.md) | How to define parametric covers and payout functions, and evaluate their payouts |
 | [Fitting](fitting.md) | Which fit method to use, and how validation and diagnostics work |
 | [Bring your own data](bring-your-own-data.md) | How to canonicalize your own tables, Zarr arrays or GeoTIFFs |
 | [Runtime](runtime.md) | Extras, package layout, DuckDB tuning, private buckets, PMTiles |
