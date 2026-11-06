@@ -264,6 +264,7 @@
       "levels[6]": 11149365.5394
     },
     "premium": 532489.065518,
+    "profile": null,
     "unidentified": ["levels[4]", "levels[6]"],
     "unique": true
   },
@@ -274,6 +275,7 @@
   },
   "kind": "design",
   "limit": null,
+  "metric_options": null,
   "objective": {"alpha": 0.9, "beta": 0.9, "kind": "weighted_cvar"},
   "pricing": {"kind": "pure"},
   "sample": {

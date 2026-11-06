@@ -84,6 +84,7 @@
     "out_of_sample": null,
     "parameters": null,
     "premium": 564666.666667,
+    "profile": null,
     "unidentified": null,
     "unique": null
   },
@@ -94,6 +95,7 @@
   },
   "kind": "evaluate",
   "limit": null,
+  "metric_options": null,
   "objective": null,
   "pricing": {"kind": "pure"},
   "sample": {

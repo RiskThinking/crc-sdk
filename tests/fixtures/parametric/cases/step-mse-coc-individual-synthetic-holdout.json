@@ -256,6 +256,7 @@
       "levels[5]": 1182447.48116
     },
     "premium": 203693.668571,
+    "profile": null,
     "unidentified": [],
     "unique": true
   },
@@ -266,6 +267,7 @@
   },
   "kind": "design",
   "limit": null,
+  "metric_options": null,
   "objective": {"kind": "mse"},
   "pricing": {"kind": "cost_of_capital", "q": 0.99, "rate": 0.06},
   "sample": {

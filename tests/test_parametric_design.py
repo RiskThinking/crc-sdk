@@ -33,6 +33,7 @@ from crc_sdk.parametric import (
     Free,
     IndexDefinition,
     InfeasibleDesignError,
+    LeakageError,
     Limit,
     LinearConstraints,
     LinearPayout,
@@ -53,6 +54,7 @@ from crc_sdk.parametric import (
     evaluate,
     holdout,
     write_comparison,
+    year_block_kfold,
 )
 from crc_sdk.parametric.constraints import budget_from_document, limit_from_document
 from crc_sdk.parametric.design import DESIGN_SEMANTICS_VERSION, Fill
@@ -94,7 +96,9 @@ def _design_cases() -> list[Path]:
 DESIGN_CASES = _design_cases()
 
 
-def _block_sample(block: Mapping[str, Any], name: str) -> OutcomeSample:
+def _block_sample(
+    block: Mapping[str, Any], name: str, *, lineage: str | None = None
+) -> OutcomeSample:
     return OutcomeSample(
         asset_ids=tuple(block["asset_ids"]),
         period=np.asarray(block["period"], dtype=np.int64),
@@ -109,30 +113,66 @@ def _block_sample(block: Mapping[str, Any], name: str) -> OutcomeSample:
             source_kind="table",
             sources=({"role": "table", "name": name},),
             semantics_source="caller",
+            lineage=lineage,
         ),
     )
+
+
+def _full_sample(case: Mapping[str, Any]) -> OutcomeSample:
+    """The full sample of a holdout or k-fold case: both blocks, by period."""
+    design_block, held_out = case["sample"], case["evaluation_sample"]
+    rows = sorted(
+        zip(
+            design_block["period"] + held_out["period"],
+            design_block["index"] + held_out["index"],
+            design_block["loss"] + held_out["loss"],
+            strict=True,
+        )
+    )
+    n = len(rows)
+    block = {
+        **design_block,
+        "period": [row[0] for row in rows],
+        "index": [row[1] for row in rows],
+        "loss": [row[2] for row in rows],
+        "probability": [1.0 / n] * n,
+    }
+    return _block_sample(block, case["case_id"])
 
 
 def _case_samples(
     case: Mapping[str, Any],
 ) -> tuple[OutcomeSample, OutcomeSample | None]:
-    """The design sample and, for a holdout case, the held-out sample."""
-    if case["split"] is None:
+    """The design sample and, out of sample, the evaluation sample.
+
+    A holdout or k-fold case is split again from its full sample by the
+    module's own split, which must return the case's two blocks. A
+    fresh-draw case's draws come from another source, so the two samples get
+    different lineages.
+    """
+    split = case["split"]
+    if split is None:
         return _block_sample(case["sample"], case["case_id"]), None
-    # The k-fold and fresh-draw cases are evaluation cases for now; extend
-    # this reader before copying them here.
-    assert case["split"]["kind"] == "holdout", case["split"]
-    design_block, held_out = case["sample"], case["evaluation_sample"]
-    merged = {
-        key: design_block[key] + held_out[key] for key in ("period", "index", "loss")
-    }
-    n = len(merged["period"])
-    full = _block_sample(
-        {**design_block, **merged, "probability": [1.0 / n] * n}, case["case_id"]
-    )
-    train, test = holdout(full, train_fraction=case["split"]["train_fraction"])
-    assert train.period.tolist() == design_block["period"]
-    assert test.period.tolist() == held_out["period"]
+    if split["kind"] == "fresh_draws":
+        design_sample = _block_sample(
+            case["sample"], case["case_id"], lineage=f"{case['case_id']}/design"
+        )
+        fresh = _block_sample(
+            case["evaluation_sample"],
+            f"{case['case_id']}/fresh",
+            lineage=f"{case['case_id']}/fresh",
+        )
+        assert fresh.period.tolist() == list(range(split["n_draws"]))
+        return design_sample, fresh
+    full = _full_sample(case)
+    if split["kind"] == "holdout":
+        train, test = holdout(full, train_fraction=split["train_fraction"])
+    else:
+        assert split["kind"] == "kfold", split
+        train, test = year_block_kfold(full, k=split["k"])[split["fold"]]
+    for got, block in ((train, case["sample"]), (test, case["evaluation_sample"])):
+        assert got.period.tolist() == block["period"]
+        np.testing.assert_allclose(got.probability, block["probability"], rtol=1e-12)
     return train, test
 
 
@@ -218,8 +258,80 @@ def test_the_design_cases_are_present() -> None:
         "binary-upper-grid-mse-coc-individual-synthetic52",
         "step-lower-wcvar-b0_9-pure-individual-handmade",
     }
-    assert in_sample | out_of_sample | newer <= names
-    assert len(DESIGN_CASES) >= 29
+    kfold = {
+        f"step-mse-pure-individual-synthetic52-kfold5-fold{i}" for i in range(5)
+    } | {"step-wcvar-b0_9-coc-individual-synthetic52-kfold5-fold0"}
+    fresh = {
+        "step-mse-pure-individual-synthetic52-fresh",
+        "step-wcvar-b0_9-coc-individual-synthetic52-fresh",
+    }
+    assert in_sample | out_of_sample | newer | kfold | fresh <= names
+    assert len(DESIGN_CASES) >= 37
+
+
+def _split_cases(kind: str) -> list[dict[str, Any]]:
+    cases = [_case(path) for path in DESIGN_CASES]
+    return [case for case in cases if (case["split"] or {}).get("kind") == kind]
+
+
+def test_the_kfold_cases_split_one_full_sample() -> None:
+    cases = _split_cases("kfold")
+    assert len(cases) == 6
+    full = {_full_sample(case).content_hash for case in cases}
+    assert len(full) == 1
+    # The MSE design has every fold: its held-out blocks partition the sample.
+    mse = sorted(
+        (case for case in cases if case["objective"]["kind"] == "mse"),
+        key=lambda case: case["split"]["fold"],
+    )
+    assert [case["split"]["fold"] for case in mse] == list(range(5))
+    blocks = [case["evaluation_sample"]["period"] for case in mse]
+    assert [period for block in blocks for period in block] == list(range(52))
+    assert [len(block) for block in blocks] == [11, 11, 10, 10, 10]
+
+
+@pytest.mark.parametrize(
+    "case_id",
+    [
+        "step-mse-pure-individual-synthetic52-kfold5-fold0",
+        "step-wcvar-b0_9-coc-individual-synthetic52-kfold5-fold0",
+    ],
+)
+def test_a_held_out_fold_reaches_the_filled_level(case_id: str) -> None:
+    # Fold 0 holds out the one draw in the last bin (60 m/s and above), so
+    # the design leaves levels[5] unidentified, and the fill rule sets the
+    # payout of that held-out draw: the previous level.
+    case = _case(CASES / f"{case_id}.json")
+    sample, held_out = _case_samples(case)
+    assert held_out is not None
+    result = _design_case(case, sample)
+    assert result.unidentified == ("levels[5]",)
+    parameters = result.cover.payout.parameters()
+    assert parameters["levels[5]"] == parameters["levels[4]"]
+    index = held_out.index[:, 0]
+    reached = index >= 60.0
+    assert reached.sum() == 1
+    payout = result.cover.payout_values(index[reached])[0]
+    assert payout == parameters["levels[4]"]
+
+
+def test_fresh_draws_are_another_source() -> None:
+    cases = _split_cases("fresh_draws")
+    assert len(cases) == 2
+    for case in cases:
+        sample, fresh = _case_samples(case)
+        assert fresh is not None and len(fresh) == case["split"]["n_draws"]
+        # The draw numbers overlap the design years; only the lineage tells
+        # the two sources apart.
+        assert set(fresh.period.tolist()) <= set(sample.period.tolist())
+        result = _design_case(case, sample)
+        row = evaluate(result, fresh, split="out_of_sample").to_pylist()[0]
+        assert row["premium"] == result.premium
+        same_source = _block_sample(
+            case["evaluation_sample"], "fresh", lineage=sample.lineage
+        )
+        with pytest.raises(LeakageError):
+            evaluate(result, same_source, split="out_of_sample")
 
 
 @pytest.mark.parametrize("path", DESIGN_CASES, ids=lambda path: path.stem)
@@ -284,18 +396,26 @@ def test_design_parity(path: Path) -> None:
     # 3. The premium and the metrics.
     pricing = pricing_from_document(case["pricing"])
     options = _metric_options(case)
+    # A k-fold design block is a block of its fold; every other sample is fold 0.
+    split = case["split"] or {}
+    fold = split["fold"] if split.get("kind") == "kfold" else 0
     if expected["unique"]:
         evaluated: Cover | DesignResult = result
-        row = evaluate(result, sample, split="in_sample", options=options).to_pylist()[
-            0
-        ]
+        row = evaluate(
+            result, sample, split="in_sample", fold=fold, options=options
+        ).to_pylist()[0]
         assert row["premium_basis"] == "design"
         assert row["design_id"] == result.design_id
         premium = result.premium
     else:
         evaluated = template.with_values(expected["parameters"])
         row = evaluate(
-            evaluated, sample, split="in_sample", pricing=pricing, options=options
+            evaluated,
+            sample,
+            split="in_sample",
+            fold=fold,
+            pricing=pricing,
+            options=options,
         ).to_pylist()[0]
         premium = row["premium"]
     assert abs(premium - expected["premium"]) <= (
@@ -313,6 +433,7 @@ def test_design_parity(path: Path) -> None:
     if held_out is not None:
         out = expected["out_of_sample"]
         assert out["premium_basis"] == "design"
+        assert out["fold"] == fold
         if expected["unique"]:
             table = evaluate(
                 result,
@@ -332,6 +453,7 @@ def test_design_parity(path: Path) -> None:
                 options=options,
             )
         row = table.to_pylist()[0]
+        assert row["split"] == "out_of_sample" and row["fold"] == out["fold"]
         assert row["premium_basis"] == ("design" if expected["unique"] else "stated")
         _check_metrics(row, out["metrics"], case)
 
@@ -473,6 +595,161 @@ def test_non_unique_lp_optimum_is_reported_with_ranges() -> None:
     assert low == pytest.approx(20 / 3) and high == pytest.approx(20.0)
     row = evaluate(result, sample, split="in_sample").to_pylist()[0]
     assert row["unique"] is False
+
+
+# -- ranging on one solver instance ------------------------------------------
+
+
+NON_UNIQUE = _sample([0.0, 1.0, 2.0, 3.0], [0.0, 10.0, 20.0, 40.0])
+
+
+def test_the_ranging_lps_share_one_solver_instance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fresh: list[Mapping[str, Any] | None] = []
+    sessions: list[Any] = []
+    solve_lp, session = _solver.solve_lp, _solver.LPSession
+
+    def counted_solve(
+        programme: _solver.Programme, options: Mapping[str, Any] | None = None
+    ) -> _solver.Solution:
+        fresh.append(options)
+        return solve_lp(programme, options)
+
+    def counted_session(*args: Any, **kwargs: Any) -> _solver.LPSession:
+        sessions.append(args)
+        return session(*args, **kwargs)
+
+    monkeypatch.setattr(_solver, "solve_lp", counted_solve)
+    monkeypatch.setattr(_solver, "LPSession", counted_session)
+    result = design(
+        _step([Free(), Free()]),
+        NON_UNIQUE,
+        ExpectedUncovered(),
+        budget=Budget(amount=5.0),
+        options=DesignOptions(ranges=True),
+    )
+    # The design LP is solved on its own; the 4 ranging LPs of each of the
+    # 2 amounts share one instance and are still counted as solves.
+    assert fresh == [None]
+    assert len(sessions) == 1
+    assert sessions[0][1] == _solver.RANGING_OPTIONS
+    assert result.solves == 1 + 4 * 2
+    assert result.ranges is not None
+    assert result.ranges["levels[1]"] == pytest.approx((20 / 3, 20.0))
+
+
+def _small_lp(cost: Sequence[float], upper: float | None = None) -> _solver.Programme:
+    """`min cost @ x` s.t. `x0 + x1 >= 1`, `0 <= x <= 1`, and `x0 + 2 x1 <= upper`."""
+    rows, columns, values = [0, 0], [0, 1], [1.0, 1.0]
+    row_lower, row_upper = [1.0], [math.inf]
+    if upper is not None:
+        rows, columns, values = rows + [1, 1], columns + [0, 1], values + [1.0, 2.0]
+        row_lower, row_upper = row_lower + [-math.inf], row_upper + [upper]
+    matrix = _solver.sparse_columns(
+        np.array(rows), np.array(columns), np.array(values), (len(row_lower), 2)
+    )
+    return _solver.Programme(
+        cost=np.asarray(cost, dtype=np.float64),
+        col_lower=np.zeros(2),
+        col_upper=np.ones(2),
+        matrix=matrix,
+        row_lower=np.array(row_lower),
+        row_upper=np.array(row_upper),
+    )
+
+
+def test_a_session_solves_as_a_fresh_instance_would() -> None:
+    session = _solver.LPSession(_small_lp([1.0, 2.0]), _solver.RANGING_OPTIONS)
+    assert session.n_rows == 1
+    # Each step's optimum is a unique vertex, so both solves must find it.
+    steps: list[tuple[list[float], float | None, float]] = [
+        ([1.0, 2.0], None, 1.0),  # x = (1, 0)
+        ([0.5, -1.0], None, -1.0),  # x = (0, 1)
+        ([0.5, -1.0], 1.5, -0.25),  # x = (0.5, 0.5)
+        ([0.5, -1.0], 1.2, 0.2),  # x = (0.8, 0.2)
+        ([-1.0, -1.0], 1.2, -1.1),  # x = (1, 0.1)
+    ]
+    row: int | None = None
+    for cost, upper, optimum in steps:
+        if upper is not None:
+            if row is None:
+                row = session.add_row(np.array([1.0, 2.0]), -math.inf, math.inf)
+                assert row == 1 and session.n_rows == 2
+            session.change_row_bounds(row, -math.inf, upper)
+        session.change_cost(np.array(cost))
+        warm = session.solve()
+        cold = _solver.solve_lp(_small_lp(cost, upper), _solver.RANGING_OPTIONS)
+        assert warm.status == cold.status == "optimal"
+        assert warm.objective == pytest.approx(optimum, abs=1e-12)
+        assert cold.objective == pytest.approx(optimum, abs=1e-12)
+        assert warm.values is not None and cold.values is not None
+        np.testing.assert_allclose(warm.values, cold.values, atol=1e-12)
+    # An option for one solve, here presolve off, does not stay set.
+    assert session.solve({"presolve": "off"}).status == "optimal"
+    assert session.solve().status == "optimal"
+
+
+def test_a_session_rejects_bad_changes() -> None:
+    hessian = _solver.sparse_columns(
+        np.array([0, 1]), np.array([0, 1]), np.array([1.0, 1.0]), (2, 2)
+    )
+    lp = _small_lp([1.0, 2.0])
+    qp = _solver.Programme(
+        cost=lp.cost,
+        col_lower=lp.col_lower,
+        col_upper=lp.col_upper,
+        matrix=lp.matrix,
+        row_lower=lp.row_lower,
+        row_upper=lp.row_upper,
+        hessian=hessian,
+    )
+    with pytest.raises(ValueError, match="hessian"):
+        _solver.LPSession(qp)
+    with pytest.raises(ValueError, match="rejected the option"):
+        _solver.LPSession(lp, {"no_such_option": 1})
+    session = _solver.LPSession(lp)
+    with pytest.raises(ValueError, match="one entry per column"):
+        session.change_cost(np.zeros(3))
+    with pytest.raises(ValueError, match="finite"):
+        session.change_cost(np.array([1.0, math.nan]))
+    with pytest.raises(ValueError, match="one coefficient per column"):
+        session.add_row(np.zeros(1), 0.0, 1.0)
+    with pytest.raises(ValueError, match="finite"):
+        session.add_row(np.array([1.0, math.inf]), 0.0, 1.0)
+    with pytest.raises(ValueError, match="row 1"):
+        session.change_row_bounds(1, 0.0, 1.0)
+    with pytest.raises(ValueError, match="rejected the option"):
+        session.solve({"no_such_option": 1})
+
+
+@pytest.mark.parametrize("status", ["infeasible_or_unbounded", "error"])
+def test_a_failed_ranging_solve_raises(
+    monkeypatch: pytest.MonkeyPatch, status: str
+) -> None:
+    calls: list[Mapping[str, Any] | None] = []
+
+    def failed(
+        self: _solver.LPSession, options: Mapping[str, Any] | None = None
+    ) -> _solver.Solution:
+        calls.append(options)
+        return _solver.Solution(status, None, None, f"patched {status}", 0, 0.0)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(_solver.LPSession, "solve", failed)
+    with pytest.raises(DesignError) as raised:
+        design(
+            _step([Free(), Free()]),
+            NON_UNIQUE,
+            ExpectedUncovered(),
+            budget=Budget(amount=5.0),
+            options=DesignOptions(ranges=True),
+        )
+    assert type(raised.value) is DesignError
+    assert raised.value.status == status
+    assert raised.value.solver_message == f"patched {status}"
+    # An ambiguous status is solved again without presolve.
+    expected = [None, {"presolve": "off"}] if status != "error" else [None]
+    assert calls == expected
 
 
 def test_mse_closed_forms() -> None:

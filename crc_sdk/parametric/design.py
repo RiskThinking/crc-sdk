@@ -80,7 +80,7 @@ import copy
 import itertools
 import math
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Annotated, Any, Literal, Self, cast
 
@@ -566,24 +566,6 @@ def _programme(
     return builder.programme(hessian=hessian, offset=offset), route
 
 
-def _with_row(
-    programme: _solver.Programme, cost: FloatArray, upper: float
-) -> _solver.Programme:
-    """Add the row `cost @ x <= upper` to a programme."""
-    builder = _Builder()
-    builder.variables(
-        programme.n_columns, programme.col_lower, programme.col_upper, 0.0
-    )
-    matrix = programme.matrix
-    columns = np.repeat(np.arange(matrix.n_columns), np.diff(matrix.start))
-    builder.constraints(matrix.n_rows, programme.row_lower, programme.row_upper)
-    builder.entries(matrix.index, columns, matrix.value)
-    row = builder.constraints(1, -math.inf, upper)
-    nonzero = np.flatnonzero(cost)
-    builder.entries(np.full(nonzero.shape, row), nonzero, cost[nonzero])
-    return builder.programme()
-
-
 # -- solving -----------------------------------------------------------------
 
 
@@ -596,10 +578,20 @@ def _solve(
 ) -> _solver.Solution:
     """Solve; raise the typed error of any status other than optimal."""
     run = _solver.solve_qp if route == "qp" else _solver.solve_lp
-    solution = solves.add(run(programme, options))
+    return _checked(lambda chosen: run(programme, chosen), context, solves, options)
+
+
+def _checked(
+    run: Callable[[Mapping[str, Any] | None], _solver.Solution],
+    context: _Context,
+    solves: _Solves,
+    options: Mapping[str, Any] | None = None,
+) -> _solver.Solution:
+    """Call `run(options)`; raise the typed error of any status but optimal."""
+    solution = solves.add(run(options))
     if solution.status == "infeasible_or_unbounded":
         # Presolve may not tell the two apart; the solve without it does.
-        solution = solves.add(run(programme, {**(options or {}), "presolve": "off"}))
+        solution = solves.add(run({**(options or {}), "presolve": "off"}))
     if solution.status == "optimal":
         return solution
     kinds: dict[str, type[DesignError]] = {
@@ -751,15 +743,21 @@ def _ranges(
 ) -> tuple[dict[int, tuple[float, float]], bool]:
     """Range the identified amounts over two near-optimal sets.
 
+    Each near-optimal set is the programme's feasible set with one more row,
+    `cost @ x <= optimum + tolerance * max(1, |optimum|)`. The four LPs per
+    amount (its smallest and largest value, at each tolerance) share one
+    HiGHS instance: each changes only the objective or that row's bound,
+    and every one after the first starts from the previous solve's basis.
+
     Returns each amount's wide range in scaled units, and whether every one
     is pinned.
     """
+    session = _solver.LPSession(programme, _solver.RANGING_OPTIONS)
+    near = session.add_row(programme.cost, -math.inf, math.inf)
     found: list[dict[int, tuple[float, float]]] = []
     for tolerance in NEAR_OPTIMAL_TOLERANCES:
-        near = _with_row(
-            programme,
-            programme.cost,
-            optimum + tolerance * max(1.0, abs(optimum)),
+        session.change_row_bounds(
+            near, -math.inf, optimum + tolerance * max(1.0, abs(optimum))
         )
         bounds: dict[int, tuple[float, float]] = {}
         for column in identified:
@@ -767,17 +765,8 @@ def _ranges(
             for sign in (1.0, -1.0):
                 cost = np.zeros(programme.n_columns)
                 cost[column] = sign
-                ranged = _solver.Programme(
-                    cost=cost,
-                    col_lower=near.col_lower,
-                    col_upper=near.col_upper,
-                    matrix=near.matrix,
-                    row_lower=near.row_lower,
-                    row_upper=near.row_upper,
-                )
-                solution = _solve(
-                    ranged, "lp", context, solves, _solver.RANGING_OPTIONS
-                )
+                session.change_cost(cost)
+                solution = _checked(session.solve, context, solves)
                 assert solution.values is not None
                 ends.append(float(solution.values[column]))
             bounds[column] = (ends[0], ends[1])

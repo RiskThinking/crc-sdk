@@ -100,6 +100,7 @@
       "levels[6]": 10588995.8092
     },
     "premium": 618553.268637,
+    "profile": null,
     "unidentified": ["levels[6]"],
     "unique": true
   },
@@ -110,6 +111,7 @@
   },
   "kind": "design",
   "limit": null,
+  "metric_options": null,
   "objective": {"kind": "mse"},
   "pricing": {"kind": "pure"},
   "sample": {

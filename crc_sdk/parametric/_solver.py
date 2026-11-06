@@ -4,9 +4,11 @@
 constraint matrix and the Hessian in compressed sparse column form
 (`SparseColumns`: column pointers, row indices, values). No scipy. They
 return a `Solution`: the status, the values, the objective and the solver's
-own message, iterations and time. `identity()` names the solver and its
-version for the design record. So the backend can change without a change
-of the public API.
+own message, iterations and time. An `LPSession` solves a sequence of LPs
+that differ only in their costs and row bounds on one solver instance, each
+from the previous basis. `identity()` names the solver and its version for
+the design record. So the backend can change without a change of the public
+API.
 
 The backend is HiGHS through `highspy`, from the optional extra
 `crc-sdk[parametric]`. It is imported lazily: importing this module needs no
@@ -35,6 +37,7 @@ from crc_sdk.parametric.errors import SolverUnavailableError
 __all__ = [
     "EXTRA",
     "LP_OPTIONS",
+    "LPSession",
     "QP_OPTIONS",
     "RANGING_OPTIONS",
     "SOLVER_NAME",
@@ -245,12 +248,9 @@ def _options(
             raise ValueError(f"HiGHS rejected the option {name}={value!r}")
 
 
-def _run(
-    programme: Programme, base: Mapping[str, Any], options: Mapping[str, Any] | None
-) -> Solution:
+def _pass(highs: Any, programme: Programme) -> bool:
+    """Pass `programme` to a HiGHS instance; return whether HiGHS accepted it."""
     highspy = require()
-    highs = highspy.Highs()
-    _options(highs, base, options)
     matrix = programme.matrix
     hessian = programme.hessian
     integrality = np.zeros(programme.n_columns, dtype=np.int32)
@@ -293,8 +293,12 @@ def _run(
             hessian.value,
             integrality,
         )
-    if passed == highspy.HighsStatus.kError:
-        return Solution("error", None, None, "HiGHS rejected the model", 0, 0.0)
+    return bool(passed != highspy.HighsStatus.kError)
+
+
+def _solved(highs: Any, n_columns: int) -> Solution:
+    """Run a HiGHS instance that holds a model, and read its outcome."""
+    highspy = require()
     began = time.perf_counter()
     ran = highs.run()
     seconds = time.perf_counter() - began
@@ -323,7 +327,7 @@ def _run(
         return Solution(status, None, None, message, iterations, seconds)
     values = np.asarray(highs.getSolution().col_value, dtype=np.float64)
     objective = float(info.objective_function_value)
-    if values.shape != (programme.n_columns,) or not np.isfinite(values).all():
+    if values.shape != (n_columns,) or not np.isfinite(values).all():
         return Solution(
             "error",
             None,
@@ -333,6 +337,109 @@ def _run(
             seconds,
         )
     return Solution(status, values, objective, message, iterations, seconds)
+
+
+def _run(
+    programme: Programme, base: Mapping[str, Any], options: Mapping[str, Any] | None
+) -> Solution:
+    highs = require().Highs()
+    _options(highs, base, options)
+    if not _pass(highs, programme):
+        return Solution("error", None, None, "HiGHS rejected the model", 0, 0.0)
+    return _solved(highs, programme.n_columns)
+
+
+class LPSession:
+    """One HiGHS instance for a sequence of LPs on one programme.
+
+    The LPs differ only in their costs and row bounds. `LPSession(programme,
+    options)` passes the programme to HiGHS once; `add_row`,
+    `change_row_bounds` and `change_cost` change the model in place, and
+    `solve()` solves it from the basis of the previous solve, a warm start
+    that skips the presolve. `options` are HiGHS options on top of
+    `LP_OPTIONS`, as for `solve_lp`, and hold for every solve.
+
+    Raises `SolverUnavailableError` without highspy, and `ValueError` for a
+    programme with a Hessian, an option HiGHS rejects, or a change of the
+    wrong shape. A model HiGHS rejects gives `solve()` the status `"error"`.
+    """
+
+    def __init__(
+        self,
+        programme: Programme,
+        options: Mapping[str, bool | int | float | str] | None = None,
+    ) -> None:
+        if programme.hessian is not None:
+            raise ValueError("an LPSession takes a programme without a hessian")
+        self._highs = require().Highs()
+        self._base: dict[str, Any] = {**LP_OPTIONS, **(options or {})}
+        _options(self._highs, self._base, None)
+        self._n_columns = programme.n_columns
+        self._n_rows = programme.matrix.n_rows
+        self._accepted = _pass(self._highs, programme)
+
+    @property
+    def n_rows(self) -> int:
+        """The number of rows, the added ones included."""
+        return self._n_rows
+
+    def _check(self, status: Any, what: str) -> None:
+        if status == require().HighsStatus.kError:
+            raise ValueError(f"HiGHS rejected {what}")
+
+    def add_row(self, coefficients: FloatArray, lower: float, upper: float) -> int:
+        """Add the row `lower <= coefficients @ x <= upper`; return its index."""
+        coefficients = np.asarray(coefficients, dtype=np.float64)
+        if coefficients.shape != (self._n_columns,):
+            raise ValueError("a row needs one coefficient per column")
+        if not np.isfinite(coefficients).all():
+            raise ValueError("row coefficients must be finite")
+        nonzero = np.flatnonzero(coefficients)
+        self._check(
+            self._highs.addRow(
+                float(lower),
+                float(upper),
+                int(nonzero.shape[0]),
+                nonzero.astype(np.int32),
+                coefficients[nonzero],
+            ),
+            "the row",
+        )
+        self._n_rows += 1
+        return self._n_rows - 1
+
+    def change_row_bounds(self, row: int, lower: float, upper: float) -> None:
+        """Set the bounds of row `row` to `lower` and `upper`."""
+        if not 0 <= row < self._n_rows:
+            raise ValueError(f"row {row} is not in [0, {self._n_rows})")
+        self._check(
+            self._highs.changeRowBounds(int(row), float(lower), float(upper)),
+            f"the bounds of row {row}",
+        )
+
+    def change_cost(self, cost: FloatArray) -> None:
+        """Set the cost vector, one finite entry per column."""
+        cost = np.asarray(cost, dtype=np.float64)
+        if cost.shape != (self._n_columns,):
+            raise ValueError("cost must have one entry per column")
+        if not np.isfinite(cost).all():
+            raise ValueError("cost must be finite")
+        self._check(
+            self._highs.changeColsCost(
+                self._n_columns, np.arange(self._n_columns, dtype=np.int32), cost
+            ),
+            "the cost",
+        )
+
+    def solve(
+        self, options: Mapping[str, bool | int | float | str] | None = None
+    ) -> Solution:
+        """Solve the current model; `options` hold for this solve only."""
+        if not self._accepted:
+            return Solution("error", None, None, "HiGHS rejected the model", 0, 0.0)
+        self._highs.resetOptions()
+        _options(self._highs, self._base, options)
+        return _solved(self._highs, self._n_columns)
 
 
 def solve_lp(
