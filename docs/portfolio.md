@@ -95,6 +95,8 @@ distribution = distribution_from_hazard_row(curves.to_pylist()[0])
   `LookupError`. So do assets given as H3 cells that match several curves of a
   JRC dataset, which `write_parquet` aggregates: a set of curves has no single
   curve row. Invalid or repeated asset ids and columns raise `ValueError`.
+- **Horizons:** a selected horizon outside the dataset's temporal window warns
+  with `HorizonExtrapolationWarning`.
 - **Local datasets only:** a source plan's `.for_assets(...)` materializes at
   write time and has no `asset_curves()`. Materialize first: the plan's
   `materialize(path)` returns the `HazardDataset` to build the request on.

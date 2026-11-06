@@ -2,9 +2,11 @@
 
 The cases are read as JSON with plain numpy, as their README describes; no
 reference code is imported. Evaluation cases compare the premium and every
-metric of a fixed cover. Out-of-sample cases resolve the designed cover with
-the case's parameters and compare its metrics on the design block (in sample)
-and on the held-out block (out of sample, with the design premium).
+metric of a fixed cover, with the case's metric options. Every evaluation
+case in the folder is judged, so new ones are picked up when they are copied.
+Out-of-sample cases resolve the designed cover with the case's parameters and
+compare its metrics on the design block (in sample) and on the held-out block
+(out of sample, with the design premium).
 """
 
 from __future__ import annotations
@@ -61,7 +63,11 @@ def _paths(pattern: str) -> list[Path]:
     return sorted(CASES.glob(pattern))
 
 
-EVALUATE_CASES = _paths("*-fixed-*.json")
+def _evaluate_cases() -> list[Path]:
+    return [path for path in _paths("*.json") if _case(path)["kind"] == "evaluate"]
+
+
+EVALUATE_CASES = _evaluate_cases()
 HOLDOUT_CASES = _paths("*-holdout.json")
 
 
@@ -110,9 +116,45 @@ def _check_metrics(
         assert abs(got - value) <= relative * abs(value) + floor, (name, got, value)
 
 
+def _metric_options(case: dict[str, Any]) -> MetricOptions:
+    options = case["metric_options"]
+    return MetricOptions() if options is None else MetricOptions(**options)
+
+
 def test_the_fixture_files_are_present() -> None:
-    assert len(EVALUATE_CASES) == 17
+    names = {path.stem for path in EVALUATE_CASES}
+    families = ("linear", "binary", "piecewise-linear")
+    closed_form = (
+        {
+            f"{family}-upper-fixed-{pricing}-individual-handmade"
+            for family in families
+            for pricing in ("pure", "coc")
+        }
+        | {f"{family}-lower-fixed-pure-individual-handmade" for family in families}
+        | {f"{family}-upper-fixed-pure-individual-synthetic" for family in families}
+        | {
+            "piecewise-linear-upper-fixed-coc-individual-synthetic",
+            "step-lower-fixed-pure-individual-handmade",
+        }
+    )
+    core = {
+        f"step-fixed-{pricing}-individual-{data}"
+        for pricing in ("pure", "coc")
+        for data in ("synthetic", "thesis")
+    }
+    options = {
+        f"piecewise-linear-upper-fixed-pure-individual-{data}-options"
+        for data in ("handmade", "synthetic52")
+    }
+    assert closed_form | core | options <= names
+    assert all("-fixed-" in name for name in names)
     assert len(HOLDOUT_CASES) == 8
+    # Every case is of one asset, and is an evaluation case (read here) or a
+    # design case (read by the design test).
+    for path in _paths("*.json"):
+        case = _case(path)
+        assert case["scope"] == "individual", path.stem
+        assert case["kind"] in ("evaluate", "design"), path.stem
 
 
 @pytest.mark.parametrize("path", EVALUATE_CASES, ids=lambda path: path.stem)
@@ -121,11 +163,13 @@ def test_evaluation_cases(path: Path) -> None:
     assert case["kind"] == "evaluate" and case["scope"] == "individual"
     sample = _sample(case["sample"], case["case_id"], lineage=case["case_id"])
     cover = Cover.from_document(case["cover"])
+    options = _metric_options(case)
     table = evaluate(
         cover,
         sample,
         split="in_sample",
         pricing=pricing_from_document(case["pricing"]),
+        options=options,
     )
     row = table.to_pylist()[0]
     assert row["premium_basis"] == "evaluation"
@@ -134,11 +178,44 @@ def test_evaluation_cases(path: Path) -> None:
         case["tolerances"]["premium"] * abs(premium) + 1e-9 * _scale(case)
     )
     expected = case["expected"]["metrics"]
+    columns = {column.name for column in metric_columns(options)}
     if case["source"] == "closed_form":
-        assert set(expected) == ALL_METRICS
+        assert set(expected) == columns
     else:
+        assert case["metric_options"] is None
         assert set(expected) == ALL_METRICS - NEW_METRICS
     _check_metrics(row, expected, case)
+
+
+@pytest.mark.parametrize("data", ["handmade", "synthetic52"])
+def test_a_payout_at_the_threshold_counts_as_none(data: str) -> None:
+    # In both cases with non-default options one draw is paid exactly the
+    # payout threshold. That year counts as a year without payout, so the
+    # basis-risk rates differ from those with a zero threshold.
+    case = _case(
+        CASES / f"piecewise-linear-upper-fixed-pure-individual-{data}-options.json"
+    )
+    options = _metric_options(case)
+    zero = MetricOptions(**{**case["metric_options"], "payout_threshold": 0.0})
+    sample = _sample(case["sample"], case["case_id"], lineage=case["case_id"])
+    cover = Cover.from_document(case["cover"])
+    assert options.payout_threshold > 0.0
+    assert options.payout_threshold in cover.payout_values(sample.index[:, 0]).tolist()
+    pricing = pricing_from_document(case["pricing"])
+    at, without = (
+        evaluate(
+            cover, sample, split="in_sample", pricing=pricing, options=chosen
+        ).to_pylist()[0]
+        for chosen in (options, zero)
+    )
+    rates = [
+        name
+        for name in at
+        if name.startswith(("false_negative_rate_", "false_positive_rate_"))
+    ]
+    assert rates
+    assert any(at[name] != without[name] for name in rates)
+    _check_metrics(at, case["expected"]["metrics"], case)
 
 
 @dataclass(frozen=True)

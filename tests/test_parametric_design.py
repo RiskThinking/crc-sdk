@@ -257,6 +257,9 @@ def test_the_design_cases_are_present() -> None:
         "binary-upper-grid-eu-pure-individual-synthetic52",
         "binary-upper-grid-mse-coc-individual-synthetic52",
         "step-lower-wcvar-b0_9-pure-individual-handmade",
+        "linear-upper-grid-wcvar-b0_9-pure-individual-handmade",
+        "piecewise-linear-upper-mse-pure-individual-handmade",
+        "piecewise-linear-upper-wcvar-b0_9-coc-individual-handmade",
     }
     kfold = {
         f"step-mse-pure-individual-synthetic52-kfold5-fold{i}" for i in range(5)
@@ -266,7 +269,7 @@ def test_the_design_cases_are_present() -> None:
         "step-wcvar-b0_9-coc-individual-synthetic52-fresh",
     }
     assert in_sample | out_of_sample | newer | kfold | fresh <= names
-    assert len(DESIGN_CASES) >= 37
+    assert len(DESIGN_CASES) >= 40
 
 
 def _split_cases(kind: str) -> list[dict[str, Any]]:
@@ -606,18 +609,23 @@ NON_UNIQUE = _sample([0.0, 1.0, 2.0, 3.0], [0.0, 10.0, 20.0, 40.0])
 def test_the_ranging_lps_share_one_solver_instance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fresh: list[Mapping[str, Any] | None] = []
-    sessions: list[Any] = []
+    fresh: list[tuple[Mapping[str, Any] | None, bool]] = []
+    solved: list[_solver.Solution] = []
+    sessions: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
     solve_lp, session = _solver.solve_lp, _solver.LPSession
 
     def counted_solve(
-        programme: _solver.Programme, options: Mapping[str, Any] | None = None
+        programme: _solver.Programme,
+        options: Mapping[str, Any] | None = None,
+        *,
+        keep_basis: bool = False,
     ) -> _solver.Solution:
-        fresh.append(options)
-        return solve_lp(programme, options)
+        fresh.append((options, keep_basis))
+        solved.append(solve_lp(programme, options, keep_basis=keep_basis))
+        return solved[-1]
 
     def counted_session(*args: Any, **kwargs: Any) -> _solver.LPSession:
-        sessions.append(args)
+        sessions.append((args, kwargs))
         return session(*args, **kwargs)
 
     monkeypatch.setattr(_solver, "solve_lp", counted_solve)
@@ -629,11 +637,15 @@ def test_the_ranging_lps_share_one_solver_instance(
         budget=Budget(amount=5.0),
         options=DesignOptions(ranges=True),
     )
-    # The design LP is solved on its own; the 4 ranging LPs of each of the
-    # 2 amounts share one instance and are still counted as solves.
-    assert fresh == [None]
+    # The design LP is solved on its own and keeps its basis; the 4 ranging
+    # LPs of each of the 2 amounts share one instance, which starts from that
+    # basis, and are still counted as solves.
+    assert fresh == [(None, True)]
     assert len(sessions) == 1
-    assert sessions[0][1] == _solver.RANGING_OPTIONS
+    args, kwargs = sessions[0]
+    assert args[1] == _solver.RANGING_OPTIONS
+    assert solved[0].basis is not None
+    assert kwargs["basis"] is solved[0].basis
     assert result.solves == 1 + 4 * 2
     assert result.ranges is not None
     assert result.ranges["levels[1]"] == pytest.approx((20 / 3, 20.0))
@@ -690,6 +702,37 @@ def test_a_session_solves_as_a_fresh_instance_would() -> None:
     assert session.solve().status == "optimal"
 
 
+def test_a_session_starts_from_a_given_basis() -> None:
+    programme = _small_lp([1.0, 2.0])
+    solution = _solver.solve_lp(programme, keep_basis=True)
+    assert solution.status == "optimal" and solution.basis is not None
+    assert (solution.basis.n_columns, solution.basis.n_rows) == (2, 1)
+    assert _solver.solve_lp(programme).basis is None
+    infeasible = _solver.solve_lp(_small_lp([1.0, 2.0], 0.5), keep_basis=True)
+    assert infeasible.status == "infeasible" and infeasible.basis is None
+    # The basis is optimal: a session that starts from it needs no iteration,
+    # where one that starts from scratch needs some (both without presolve).
+    off = {"presolve": "off"}
+    cold = _solver.LPSession(programme, _solver.RANGING_OPTIONS).solve(off)
+    seeded = _solver.LPSession(programme, _solver.RANGING_OPTIONS, basis=solution.basis)
+    warm = seeded.solve(off)
+    assert cold.iterations > 0 and warm.iterations == 0
+    assert warm.values is not None and solution.values is not None
+    np.testing.assert_allclose(warm.values, solution.values, atol=1e-12)
+    # A row added to a seeded session enters the basis as a basic row, and
+    # the LP then solves as a fresh instance would: x = (0.8, 0.2).
+    seeded = _solver.LPSession(programme, _solver.RANGING_OPTIONS, basis=solution.basis)
+    row = seeded.add_row(np.array([1.0, 2.0]), -math.inf, math.inf)
+    seeded.change_row_bounds(row, -math.inf, 1.2)
+    seeded.change_cost(np.array([0.5, -1.0]))
+    warm = seeded.solve()
+    fresh = _solver.solve_lp(_small_lp([0.5, -1.0], 1.2), _solver.RANGING_OPTIONS)
+    assert warm.status == fresh.status == "optimal"
+    assert warm.objective == pytest.approx(0.2, abs=1e-12)
+    assert warm.values is not None and fresh.values is not None
+    np.testing.assert_allclose(warm.values, fresh.values, atol=1e-12)
+
+
 def test_a_session_rejects_bad_changes() -> None:
     hessian = _solver.sparse_columns(
         np.array([0, 1]), np.array([0, 1]), np.array([1.0, 1.0]), (2, 2)
@@ -708,6 +751,12 @@ def test_a_session_rejects_bad_changes() -> None:
         _solver.LPSession(qp)
     with pytest.raises(ValueError, match="rejected the option"):
         _solver.LPSession(lp, {"no_such_option": 1})
+    basis = _solver.solve_lp(lp, keep_basis=True).basis
+    with pytest.raises(ValueError, match="basis is for 2 columns and 1 rows"):
+        _solver.LPSession(_small_lp([1.0, 2.0], 1.5), basis=basis)
+    empty = _solver.Basis(2, 1, _solver.require().HighsBasis())
+    with pytest.raises(ValueError, match="rejected the basis"):
+        _solver.LPSession(lp, basis=empty)
     session = _solver.LPSession(lp)
     with pytest.raises(ValueError, match="one entry per column"):
         session.change_cost(np.zeros(3))
@@ -1196,7 +1245,10 @@ def test_unbounded_payouts_need_a_budget() -> None:
 
 def _patched(status: str, calls: list[Mapping[str, Any] | None]) -> Any:
     def solve(
-        programme: _solver.Programme, options: Mapping[str, Any] | None = None
+        programme: _solver.Programme,
+        options: Mapping[str, Any] | None = None,
+        *,
+        keep_basis: bool = False,
     ) -> _solver.Solution:
         calls.append(options)
         return _solver.Solution(status, None, None, f"patched {status}", 3, 0.0)  # type: ignore[arg-type]
@@ -1248,9 +1300,12 @@ def test_a_solution_that_breaks_the_budget_is_rejected(
     real = _solver.solve_lp
 
     def inflated(
-        programme: _solver.Programme, options: Mapping[str, Any] | None = None
+        programme: _solver.Programme,
+        options: Mapping[str, Any] | None = None,
+        *,
+        keep_basis: bool = False,
     ) -> _solver.Solution:
-        solution = real(programme, options)
+        solution = real(programme, options, keep_basis=keep_basis)
         assert solution.values is not None
         values = solution.values.copy()
         values[:2] *= 1.01

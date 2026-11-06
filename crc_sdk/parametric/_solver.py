@@ -4,9 +4,10 @@
 constraint matrix and the Hessian in compressed sparse column form
 (`SparseColumns`: column pointers, row indices, values). No scipy. They
 return a `Solution`: the status, the values, the objective and the solver's
-own message, iterations and time. An `LPSession` solves a sequence of LPs
-that differ only in their costs and row bounds on one solver instance, each
-from the previous basis. `identity()` names the solver and its version for
+own message, iterations and time, and on request an LP's optimal `Basis`.
+An `LPSession` solves a sequence of LPs that differ only in their costs and
+row bounds on one solver instance, each from the previous basis, and the
+first from a given basis. `identity()` names the solver and its version for
 the design record. So the backend can change without a change of the public
 API.
 
@@ -25,7 +26,7 @@ from __future__ import annotations
 import math
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import ModuleType
 from typing import Any, Literal
 
@@ -41,6 +42,7 @@ __all__ = [
     "QP_OPTIONS",
     "RANGING_OPTIONS",
     "SOLVER_NAME",
+    "Basis",
     "Programme",
     "Solution",
     "SolveStatus",
@@ -221,6 +223,19 @@ class Programme:
 
 
 @dataclass(frozen=True, eq=False)
+class Basis:
+    """The optimal simplex basis of a solved LP, to start another solve from.
+
+    It is opaque: `handle` is the solver's own copy of the basis, for a
+    programme of `n_columns` variables and `n_rows` rows.
+    """
+
+    n_columns: int
+    n_rows: int
+    handle: Any = field(repr=False)
+
+
+@dataclass(frozen=True, eq=False)
 class Solution:
     """The outcome of one solve.
 
@@ -228,6 +243,8 @@ class Solution:
     (including the offset); otherwise both are `None`. `message` is the
     solver's own status text, `iterations` its iteration count (simplex,
     interior point and QP iterations together) and `seconds` the wall time.
+    `basis` is the optimal basis of an LP solved with `keep_basis=True`, and
+    `None` otherwise, or when the solver has no valid basis to give.
     """
 
     status: SolveStatus
@@ -236,6 +253,7 @@ class Solution:
     message: str
     iterations: int
     seconds: float
+    basis: Basis | None = None
 
 
 def _options(
@@ -296,8 +314,11 @@ def _pass(highs: Any, programme: Programme) -> bool:
     return bool(passed != highspy.HighsStatus.kError)
 
 
-def _solved(highs: Any, n_columns: int) -> Solution:
-    """Run a HiGHS instance that holds a model, and read its outcome."""
+def _solved(highs: Any, n_columns: int, keep_basis: bool = False) -> Solution:
+    """Run a HiGHS instance that holds a model, and read its outcome.
+
+    With `keep_basis`, an optimal outcome carries the instance's basis.
+    """
     highspy = require()
     began = time.perf_counter()
     ran = highs.run()
@@ -336,47 +357,71 @@ def _solved(highs: Any, n_columns: int) -> Solution:
             iterations,
             seconds,
         )
-    return Solution(status, values, objective, message, iterations, seconds)
+    basis: Basis | None = None
+    if keep_basis:
+        kept = highs.getBasis()
+        if kept.valid:
+            basis = Basis(n_columns, int(highs.getNumRow()), kept)
+    return Solution(status, values, objective, message, iterations, seconds, basis)
 
 
 def _run(
-    programme: Programme, base: Mapping[str, Any], options: Mapping[str, Any] | None
+    programme: Programme,
+    base: Mapping[str, Any],
+    options: Mapping[str, Any] | None,
+    keep_basis: bool = False,
 ) -> Solution:
     highs = require().Highs()
     _options(highs, base, options)
     if not _pass(highs, programme):
         return Solution("error", None, None, "HiGHS rejected the model", 0, 0.0)
-    return _solved(highs, programme.n_columns)
+    return _solved(highs, programme.n_columns, keep_basis)
 
 
 class LPSession:
     """One HiGHS instance for a sequence of LPs on one programme.
 
     The LPs differ only in their costs and row bounds. `LPSession(programme,
-    options)` passes the programme to HiGHS once; `add_row`,
+    options, basis)` passes the programme to HiGHS once; `add_row`,
     `change_row_bounds` and `change_cost` change the model in place, and
     `solve()` solves it from the basis of the previous solve, a warm start
-    that skips the presolve. `options` are HiGHS options on top of
-    `LP_OPTIONS`, as for `solve_lp`, and hold for every solve.
+    that skips the presolve. The first solve starts from `basis`, an optimal
+    basis of the same programme (`solve_lp(..., keep_basis=True)`), if one is
+    given, and from scratch otherwise; a row added after it enters the basis
+    as a basic row. `options` are HiGHS options on top of `LP_OPTIONS`, as
+    for `solve_lp`, and hold for every solve.
 
     Raises `SolverUnavailableError` without highspy, and `ValueError` for a
-    programme with a Hessian, an option HiGHS rejects, or a change of the
-    wrong shape. A model HiGHS rejects gives `solve()` the status `"error"`.
+    programme with a Hessian, an option HiGHS rejects, a basis of another
+    shape or one HiGHS rejects, or a change of the wrong shape. A model
+    HiGHS rejects gives `solve()` the status `"error"`.
     """
 
     def __init__(
         self,
         programme: Programme,
         options: Mapping[str, bool | int | float | str] | None = None,
+        basis: Basis | None = None,
     ) -> None:
         if programme.hessian is not None:
             raise ValueError("an LPSession takes a programme without a hessian")
+        if basis is not None and (basis.n_columns, basis.n_rows) != (
+            programme.n_columns,
+            programme.matrix.n_rows,
+        ):
+            raise ValueError(
+                f"the basis is for {basis.n_columns} columns and {basis.n_rows} "
+                f"rows, the programme has {programme.n_columns} and "
+                f"{programme.matrix.n_rows}"
+            )
         self._highs = require().Highs()
         self._base: dict[str, Any] = {**LP_OPTIONS, **(options or {})}
         _options(self._highs, self._base, None)
         self._n_columns = programme.n_columns
         self._n_rows = programme.matrix.n_rows
         self._accepted = _pass(self._highs, programme)
+        if self._accepted and basis is not None:
+            self._check(self._highs.setBasis(basis.handle), "the basis")
 
     @property
     def n_rows(self) -> int:
@@ -443,17 +488,21 @@ class LPSession:
 
 
 def solve_lp(
-    programme: Programme, options: Mapping[str, bool | int | float | str] | None = None
+    programme: Programme,
+    options: Mapping[str, bool | int | float | str] | None = None,
+    *,
+    keep_basis: bool = False,
 ) -> Solution:
     """Solve a linear programme with HiGHS's simplex.
 
-    `options` are HiGHS options on top of `LP_OPTIONS`. Raises
-    `SolverUnavailableError` without highspy, and `ValueError` for a
+    `options` are HiGHS options on top of `LP_OPTIONS`. With `keep_basis`,
+    an optimal solution carries its basis, for an `LPSession` to start from.
+    Raises `SolverUnavailableError` without highspy, and `ValueError` for a
     programme with a Hessian or an option HiGHS rejects.
     """
     if programme.hessian is not None:
         raise ValueError("solve_lp takes a programme without a hessian")
-    return _run(programme, LP_OPTIONS, options)
+    return _run(programme, LP_OPTIONS, options, keep_basis)
 
 
 def solve_qp(

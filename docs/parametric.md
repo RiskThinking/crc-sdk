@@ -937,7 +937,9 @@ rather than presenting one solver's answer as the design.
 - **The LP route.** With `DesignOptions(ranges=True)` every identified amount
   is ranged over the near-optimal designs, those within ε · max(1, |optimum|)
   of the optimum in scaled units, at ε = 1e-9 and ε = 1e-11 (four more LPs per
-  amount, at HiGHS feasibility tolerances of 1e-10). An amount is pinned when
+  amount, at HiGHS feasibility tolerances of 1e-10). The ranging LPs share one
+  HiGHS instance, each starting from the basis of the one before it and the
+  first from the design LP's. An amount is pinned when
   its narrow range is at most half its wide one, or narrower than 1e-7 of the
   scale; `unique` is true when every identified amount is pinned, and
   `DesignResult.ranges` gives the wide ranges in payout units. At a unique

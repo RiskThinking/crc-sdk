@@ -575,10 +575,20 @@ def _solve(
     context: _Context,
     solves: _Solves,
     options: Mapping[str, Any] | None = None,
+    *,
+    keep_basis: bool = False,
 ) -> _solver.Solution:
-    """Solve; raise the typed error of any status other than optimal."""
-    run = _solver.solve_qp if route == "qp" else _solver.solve_lp
-    return _checked(lambda chosen: run(programme, chosen), context, solves, options)
+    """Solve; raise the typed error of any status other than optimal.
+
+    With `keep_basis`, an LP's solution carries its optimal basis.
+    """
+
+    def run(chosen: Mapping[str, Any] | None) -> _solver.Solution:
+        if route == "qp":
+            return _solver.solve_qp(programme, chosen)
+        return _solver.solve_lp(programme, chosen, keep_basis=keep_basis)
+
+    return _checked(run, context, solves, options)
 
 
 def _checked(
@@ -736,23 +746,29 @@ def _fill(
 
 def _ranges(
     programme: _solver.Programme,
-    optimum: float,
+    solution: _solver.Solution,
     identified: Sequence[int],
     context: _Context,
     solves: _Solves,
 ) -> tuple[dict[int, tuple[float, float]], bool]:
     """Range the identified amounts over two near-optimal sets.
 
-    Each near-optimal set is the programme's feasible set with one more row,
-    `cost @ x <= optimum + tolerance * max(1, |optimum|)`. The four LPs per
-    amount (its smallest and largest value, at each tolerance) share one
-    HiGHS instance: each changes only the objective or that row's bound,
-    and every one after the first starts from the previous solve's basis.
+    `solution` is the programme's optimal solution. Each near-optimal set is
+    the programme's feasible set with one more row, `cost @ x <= optimum +
+    tolerance * max(1, |optimum|)`. The four LPs per amount (its smallest and
+    largest value, at each tolerance) share one HiGHS instance: each changes
+    only the objective or that row's bound. The first starts from the
+    solution's basis, if it has one, with the new row basic (the optimum
+    meets it); every later one from the previous solve's basis.
 
     Returns each amount's wide range in scaled units, and whether every one
     is pinned.
     """
-    session = _solver.LPSession(programme, _solver.RANGING_OPTIONS)
+    assert solution.objective is not None
+    optimum = solution.objective
+    session = _solver.LPSession(
+        programme, _solver.RANGING_OPTIONS, basis=solution.basis
+    )
     near = session.add_row(programme.cost, -math.inf, math.inf)
     found: list[dict[int, tuple[float, float]]] = []
     for tolerance in NEAR_OPTIMAL_TOLERANCES:
@@ -917,7 +933,8 @@ def _design_amounts(
             "payout at least as large as the loss is optimal",
         )
     programme, route = _programme(basis, constraints, context)
-    solution = _solve(programme, route, context, solves)
+    ranging = report and route == "lp" and context.options.ranges
+    solution = _solve(programme, route, context, solves, keep_basis=ranging)
     assert solution.values is not None and solution.objective is not None
     k = len(names)
     edges, other = _order_edges(constraints)
@@ -968,8 +985,8 @@ def _design_amounts(
             unique = bool(eigen.min() > MSE_EIGEN_TOLERANCE * eigen.max())
         else:
             unique = True
-    elif report and context.options.ranges:
-        wide, unique = _ranges(programme, solution.objective, ranged, context, solves)
+    elif ranging:
+        wide, unique = _ranges(programme, solution, ranged, context, solves)
         ranges = {
             names[j]: (low * context.scale + 0.0, high * context.scale + 0.0)
             for j, (low, high) in wide.items()
