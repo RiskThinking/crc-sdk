@@ -63,3 +63,28 @@ def test_invalid_arguments(tmp_path: Path) -> None:
         IBTrACSPlan("NA", tmp_path).years(2021, 2020)
     with pytest.raises(ValueError):
         IBTrACSPlan("NA", tmp_path).for_storms(["  "])
+
+
+# File names as listed in NOAA's v04r01 csv directory.
+PUBLISHED = {
+    "ALL": "ibtracs.ALL.list.v04r01.csv",
+    "since1980": "ibtracs.since1980.list.v04r01.csv",
+    "last3years": "ibtracs.last3years.list.v04r01.csv",
+    "active": "ibtracs.ACTIVE.list.v04r01.csv",
+    "NA": "ibtracs.NA.list.v04r01.csv",
+    "SA": "ibtracs.SA.list.v04r01.csv",
+    "EP": "ibtracs.EP.list.v04r01.csv",
+    "WP": "ibtracs.WP.list.v04r01.csv",
+    "SP": "ibtracs.SP.list.v04r01.csv",
+    "SI": "ibtracs.SI.list.v04r01.csv",
+    "NI": "ibtracs.NI.list.v04r01.csv",
+}
+
+
+@pytest.mark.parametrize(("subset", "name"), sorted(PUBLISHED.items()))
+def test_subset_requests_the_published_file_name(
+    tmp_path: Path, subset: str, name: str
+) -> None:
+    plan = IBTrACSPlan(subset, tmp_path)
+    assert plan.url.rsplit("/", 1)[-1] == name
+    assert plan.explain()["url"] == plan.url
