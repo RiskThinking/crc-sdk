@@ -38,6 +38,8 @@ _SUBSETS = {
     "SI",
     "NI",
 }
+# NOAA spells this one file name in capitals; the subset keeps its public name.
+_FILE_NAMES = {"active": "ACTIVE"}
 
 
 @dataclass(frozen=True)
@@ -68,7 +70,8 @@ class IBTrACSPlan:
 
     @property
     def url(self) -> str:
-        return f"{_ROOT}/ibtracs.{self.subset}.list.v04r01.csv"
+        name = _FILE_NAMES.get(self.subset, self.subset)
+        return f"{_ROOT}/ibtracs.{name}.list.v04r01.csv"
 
     def for_storms(self, ids: Sequence[str]) -> IBTrACSPlan:
         values = tuple(value.strip() for value in ids)
