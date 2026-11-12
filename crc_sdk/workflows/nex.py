@@ -35,12 +35,27 @@ LICENCE_URL = "https://registry.opendata.aws/nex-gddp-cmip6/"
 ATTRIBUTION = "NASA NEX-GDDP-CMIP6, https://doi.org/10.7917/OFSG3345"
 
 
+def _text_attrs(attrs: Any) -> dict[str, Any]:
+    """Copy NetCDF attributes, decoding byte strings to text.
+
+    h5netcdf decodes fixed-length string attributes only when they are longer
+    than one character, so a one-character value such as the kelvin unit `K`
+    arrives as bytes and `str()` would render it as "b'K'".
+    """
+    return {
+        key: value.decode("utf-8", "surrogateescape")
+        if isinstance(value, bytes)
+        else value
+        for key, value in dict(attrs).items()
+    }
+
+
 class _Array:
     """Expose NetCDF dimensions through the existing CMIP6 block reader."""
 
     def __init__(self, variable: Any) -> None:
         self.variable = variable
-        self.attrs = dict(variable.attrs)
+        self.attrs = _text_attrs(variable.attrs)
         self.attrs["_ARRAY_DIMENSIONS"] = tuple(variable.dimensions)
 
     def __getitem__(self, item: Any) -> Any:
@@ -50,7 +65,7 @@ class _Array:
 class _Group:
     def __init__(self, file: Any) -> None:
         self.file = file
-        self.attrs = file.attrs
+        self.attrs = _text_attrs(file.attrs)
 
     def __getitem__(self, name: str) -> _Array:
         return _Array(self.file.variables[name])
@@ -139,7 +154,8 @@ class NEXYearPlan:
             url = source._url(year)
             retrieved_at = datetime.now(UTC).isoformat()
             with _open_backend(url, None) as file:
-                attrs = file.attrs
+                group = _Group(file)
+                attrs = group.attrs
                 for key, expected in (
                     ("cmip6_source_id", source.model),
                     ("scenario", source.scenario),
@@ -175,11 +191,9 @@ class NEXYearPlan:
                     zstore=url,
                     version=source.version,
                 )
-                provider = CMIP6Provider(dataset, group=_Group(file))
+                provider = CMIP6Provider(dataset, group=group)
                 provider.check_variable(recipe)
-                if not str(
-                    file.variables[recipe.variable].attrs.get("units", "")
-                ).strip():
+                if not str(group[recipe.variable].attrs.get("units", "")).strip():
                     raise ValueError(f"NEX {url}: source units are missing")
                 ordinals = provider.ordinals
                 if ordinals.size == 0 or np.any(np.diff(ordinals) <= 0):
