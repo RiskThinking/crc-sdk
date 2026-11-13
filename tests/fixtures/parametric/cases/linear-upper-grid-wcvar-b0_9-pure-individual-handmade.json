@@ -1,0 +1,209 @@
+{
+  "budget": {"ratio": 0.8},
+  "case_id": "linear-upper-grid-wcvar-b0_9-pure-individual-handmade",
+  "compare_parameters": "exact",
+  "cover": {
+    "asset_id": "A1",
+    "index": {
+      "aggregation": "annual_maximum",
+      "hazard_name": "rx1day",
+      "location": {"kind": "asset"},
+      "source": null,
+      "tail": "upper",
+      "unit": "mm/day"
+    },
+    "payout": {
+      "attachment": {"free": {"grid": [64.0, 80.0, 100.0], "lower": 64.0, "upper": 100.0}},
+      "exhaustion": {
+        "free": {"grid": [175.0, 210.0, 260.0], "lower": 175.0, "upper": 260.0}
+      },
+      "kind": "linear",
+      "limit": {"free": {"grid": null, "lower": 0.0, "upper": 1800.0}},
+      "tail": "upper"
+    },
+    "payout_unit": "EUR",
+    "schema_version": "1.0",
+    "semantics_version": "crc-parametric-cover/1"
+  },
+  "evaluation_sample": null,
+  "expected": {
+    "metrics": {
+      "correlation": 0.978105400895,
+      "coverage_ratio": 0.781437785779,
+      "cvar_loss_b0_9": 1600.0,
+      "cvar_loss_b0_95": 1800.0,
+      "cvar_loss_b0_99": 1800.0,
+      "cvar_net_loss_b0_9": 602.904089219,
+      "cvar_net_loss_b0_95": 614.8,
+      "cvar_net_loss_b0_99": 614.8,
+      "cvar_uncovered_b0_9": 248.104089219,
+      "cvar_uncovered_b0_95": 260.0,
+      "cvar_uncovered_b0_99": 260.0,
+      "cvar_uncovered_to_loss_b0_9": 0.155065055762,
+      "cvar_uncovered_to_loss_b0_95": 0.144444444444,
+      "cvar_uncovered_to_loss_b0_99": 0.144444444444,
+      "expected_loss": 443.5,
+      "expected_payout": 354.8,
+      "expected_uncovered": 96.9323420072,
+      "false_negative_rate_l0": 0.333333333333,
+      "false_positive_rate_l0": 0.0,
+      "loss_rp10": {"either": [1000.0, 1400.0]},
+      "loss_rp100": 1800.0,
+      "loss_rp2": {"either": [260.0, 300.0]},
+      "loss_rp25": 1800.0,
+      "loss_rp250": 1800.0,
+      "loss_rp5": {"either": [700.0, 900.0]},
+      "loss_rp50": 1800.0,
+      "net_loss_rp10": {"either": [556.956133829, 591.008178439]},
+      "net_loss_rp100": 614.8,
+      "net_loss_rp2": {"either": [431.528624535, 440.15315985]},
+      "net_loss_rp25": 614.8,
+      "net_loss_rp250": 614.8,
+      "net_loss_rp5": {"either": [549.283271376, 554.8]},
+      "net_loss_rp50": 614.8,
+      "payout_rp10": {"either": [1055.16728625, 1253.01115242]},
+      "payout_rp100": 1714.64684015,
+      "payout_rp2": {"either": [0.0, 105.516728625]},
+      "payout_rp25": 1714.64684015,
+      "payout_rp250": 1714.64684015,
+      "payout_rp5": {"either": [659.479553904, 923.271375465]},
+      "payout_rp50": 1714.64684015,
+      "payout_to_loss_ratio": 0.800000000001,
+      "premium": 354.8,
+      "rmse": 136.419808878,
+      "tail_coverage_b0_9": 0.927393122677,
+      "tail_coverage_b0_95": 0.952581577861,
+      "tail_coverage_b0_99": 0.952581577861,
+      "uncovered_rp10": {"either": [202.156133829, 236.208178438]},
+      "uncovered_rp100": 260.0,
+      "uncovered_rp2": {"either": [76.7286245346, 85.35315985]},
+      "uncovered_rp25": 260.0,
+      "uncovered_rp250": 260.0,
+      "uncovered_rp5": {"either": [194.483271375, 200.0]},
+      "uncovered_rp50": 260.0,
+      "var_loss_b0_9": {"either": [1000.0, 1400.0]},
+      "var_loss_b0_95": {"either": [1400.0, 1800.0]},
+      "var_loss_b0_99": 1800.0,
+      "var_net_loss_b0_9": {"either": [556.956133829, 591.008178439]},
+      "var_net_loss_b0_95": {"either": [591.008178439, 614.8]},
+      "var_net_loss_b0_99": 614.8,
+      "var_uncovered_b0_9": {"either": [202.156133829, 236.208178438]},
+      "var_uncovered_b0_95": {"either": [236.208178438, 260.0]},
+      "var_uncovered_b0_99": 260.0
+    },
+    "objective_value": 232.986914498,
+    "out_of_sample": null,
+    "parameters": {"attachment": 80.0, "exhaustion": 210.0, "limit": 1714.64684015},
+    "premium": 354.8,
+    "profile": [
+      {
+        "objective_value": 430.952528738,
+        "parameters": {"attachment": 64.0, "exhaustion": 175.0}
+      },
+      {
+        "objective_value": 326.385978113,
+        "parameters": {"attachment": 64.0, "exhaustion": 210.0}
+      },
+      {
+        "objective_value": 388.691836735,
+        "parameters": {"attachment": 64.0, "exhaustion": 260.0}
+      },
+      {
+        "objective_value": 334.20031809,
+        "parameters": {"attachment": 80.0, "exhaustion": 175.0}
+      },
+      {
+        "objective_value": 232.986914498,
+        "parameters": {"attachment": 80.0, "exhaustion": 210.0}
+      },
+      {
+        "objective_value": 444.95,
+        "parameters": {"attachment": 80.0, "exhaustion": 260.0}
+      },
+      {
+        "objective_value": 417.958125,
+        "parameters": {"attachment": 100.0, "exhaustion": 175.0}
+      },
+      {
+        "objective_value": 420.713636364,
+        "parameters": {"attachment": 100.0, "exhaustion": 210.0}
+      },
+      {
+        "objective_value": 527.81875,
+        "parameters": {"attachment": 100.0, "exhaustion": 260.0}
+      }
+    ],
+    "unidentified": [],
+    "unique": true
+  },
+  "generator": {
+    "commit": "cb9248d73138de9e0a61973050fedafa1c22a40e",
+    "core_version": "0.1.0",
+    "script": "parity/scripts/export_crc_fixtures.py"
+  },
+  "kind": "design",
+  "limit": null,
+  "metric_options": null,
+  "objective": {"alpha": 0.9, "beta": 0.9, "kind": "weighted_cvar"},
+  "pricing": {"kind": "pure"},
+  "sample": {
+    "asset_ids": ["A1"],
+    "index": [
+      [64.0],
+      [12.0],
+      [150.0],
+      [88.0],
+      [35.0],
+      [50.0],
+      [110.0],
+      [48.0],
+      [75.0],
+      [160.0],
+      [55.0],
+      [130.0],
+      [95.0],
+      [210.0],
+      [60.0],
+      [70.0],
+      [120.0],
+      [80.0],
+      [175.0],
+      [100.0]
+    ],
+    "index_unit": "mm/day",
+    "loss": [
+      [0.0],
+      [0.0],
+      [1000.0],
+      [300.0],
+      [0.0],
+      [40.0],
+      [450.0],
+      [0.0],
+      [150.0],
+      [900.0],
+      [0.0],
+      [650.0],
+      [400.0],
+      [1800.0],
+      [120.0],
+      [200.0],
+      [700.0],
+      [260.0],
+      [1400.0],
+      [500.0]
+    ],
+    "loss_unit": "EUR",
+    "period": [2001, 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020],
+    "probability": [0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05]
+  },
+  "scope": "individual",
+  "source": "closed_form",
+  "split": null,
+  "tolerances": {
+    "metrics": 1e-06,
+    "objective_value": 1e-06,
+    "parameters": 1e-06,
+    "premium": 1e-06
+  }
+}

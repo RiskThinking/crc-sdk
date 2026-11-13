@@ -14,6 +14,7 @@ import pytest
         "crc_sdk.geometry",
         "crc_sdk.geometry.pmtiles",
         "crc_sdk.impacts",
+        "crc_sdk.parametric",
         "crc_sdk.providers",
         "crc_sdk.schema",
         "crc_sdk.types",

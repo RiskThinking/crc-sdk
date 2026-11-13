@@ -24,6 +24,7 @@ pip install "crc-sdk[geometry,raster]"    # add extras as needed
 | `netcdf` | NetCDF sources (ERA5, NEX-GDDP-CMIP6) |
 | `zarr` | Zarr sources (ERA5, CMIP6, OS-Climate, `from_zarr`) |
 | `agriculture` | USDA Cropland Data Layer via Icechunk (Python 3.12+) |
+| `parametric` | The HiGHS solver for designing parametric covers |
 
 Missing extras raise an `ImportError` naming the extra; `import crc_sdk` never
 needs them. See [runtime and dependencies](docs/runtime.md).
@@ -82,7 +83,8 @@ Every source follows the same pattern: build a lazy plan, inspect it with
 | Read | When you need to |
 | --- | --- |
 | [Core concepts](docs/concepts.md) | Understand plans, cache modes, the canonical dataset and probability conventions |
-| [Portfolio evaluation and impacts](docs/portfolio.md) | Evaluate assets at return periods or apply damage functions |
+| [Portfolio evaluation and impacts](docs/portfolio.md) | Evaluate assets at return periods, read each asset's matched curves or apply damage functions |
+| [Parametric covers](docs/parametric.md) | Design, evaluate and compare parametric insurance covers on hazard indices, from fitted curves (`ParametricPlan.for_evaluation`) or, as a next step, per-year values such as annual extremes |
 | [Fitting](docs/fitting.md) | Choose fit methods, censoring, L-moments, validation and diagnostics |
 | [Runtime](docs/runtime.md) | Tune DuckDB, use private buckets, build PMTiles |
 | [Design decisions](docs/design-decisions.md) · [Data licences](docs/data-licences.md) | Review scientific choices and source terms |

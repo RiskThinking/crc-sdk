@@ -56,6 +56,9 @@ geometry = [
     "h3>=4.2",
     "shapely>=2",
 ]
+parametric = [
+    "highspy>=1.13,<2",
+]
 test = [
     "mypy>=1.10",
     "pytest>=8",
