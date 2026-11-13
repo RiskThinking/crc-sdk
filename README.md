@@ -109,6 +109,9 @@ discussion, and ideas.
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/rkodamana"><img src="https://avatars.githubusercontent.com/u/84455891?s=80" width="80" alt="@rkodamana" /><br /><sub><b>@rkodamana</b></sub></a><br /><a href="https://github.com/rkodamana" title="Research">🔬</a> <a href="https://github.com/RiskThinking/crc-sdk/pulls?q=is%3Apr+reviewed-by%3Arkodamana" title="Reviewed Pull Requests">👀</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/dilshank"><img src="https://avatars.githubusercontent.com/u/1534562?s=80" width="80" alt="@dilshank" /><br /><sub><b>@dilshank</b></sub></a><br /><a href="https://github.com/dilshank" title="Research">🔬</a></td>
     </tr>
+    <tr>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/shlyakh"><img src="https://avatars.githubusercontent.com/u/35546708?s=80" width="80" alt="@shlyakh" /><br /><sub><b>@shlyakh</b></sub></a><br /><a href="https://github.com/RiskThinking/crc-sdk/commits?author=shlyakh" title="Code">💻</a></td>
+    </tr>
   </tbody>
 </table>
 

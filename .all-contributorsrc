@@ -77,14 +77,24 @@
       "contributions": [
         "research"
       ]
+    },
+    {
+      "login": "shlyakh",
+      "name": "Yuri",
+      "avatar_url": "https://avatars.githubusercontent.com/u/35546708",
+      "profile": "https://github.com/shlyakh",
+      "contributions": [
+        "code"
+      ]
     }
   ],
   "contributorTemplate": "<a href=\"<%= contributor.profile %>\"><img src=\"<%= contributor.avatar_url %>?s=<%= options.imageSize %>\" width=\"<%= options.imageSize %>\" alt=\"@<%- contributor.login %>\" /><br /><sub><b>@<%- contributor.login %></b></sub></a><br /><%= contributions %>",
   "types": {
     "research": {
-      "symbol": "\ud83d\udd2c",
+      "symbol": "🔬",
       "description": "Research",
       "link": "<%= contributor.profile %>"
     }
-  }
+  },
+  "commitConvention": "angular"
 }
