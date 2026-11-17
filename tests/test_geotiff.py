@@ -5,12 +5,12 @@ import pytest
 import rasterio  # type: ignore[import-untyped]
 from rasterio.transform import from_origin  # type: ignore[import-untyped]
 
-from crc_sdk.connectors.duckdb.geotiff import (
+from crc_sdk._connectors.duckdb.geotiff import (
     GeoTiffRaster,
     _default_gcs_credentials,
     trim_cache_dir,
 )
-from crc_sdk.geometry.h3 import subsample_offsets as _real_subsample_offsets
+from crc_sdk._geometry.h3 import subsample_offsets as _real_subsample_offsets
 
 # ~0.01 degrees per pixel near the equator, well within the "small pixel"
 # regime so pixel_grid_resolution picks a coarse-enough H3 resolution that
@@ -187,7 +187,7 @@ def test_scan_h3_explicit_resolution_respects_max_subsample_cap(
         seen_counts.append(count)
         return _real_subsample_offsets(count)
 
-    monkeypatch.setattr("crc_sdk.connectors.duckdb._pixel_scan.subsample_offsets", spy)
+    monkeypatch.setattr("crc_sdk._connectors.duckdb._pixel_scan.subsample_offsets", spy)
     try:
         # H3 resolution 15 on this fixture's ~1113m pixels would need
         # thousands of subsample points per axis to guarantee coverage;
@@ -313,7 +313,7 @@ def test_pixel_window_keeps_partially_covered_edge_pixels(
 def test_write_crop_keeps_the_scan_window(
     tmp_path: Path, sample_array: np.ndarray
 ) -> None:
-    from crc_sdk.connectors.duckdb.geotiff import RasterBoundsError
+    from crc_sdk._connectors.duckdb.geotiff import RasterBoundsError
 
     raster = GeoTiffRaster.open(
         _write_geotiff(tmp_path / "sample.tif", sample_array), work_dir=tmp_path / "w"
@@ -368,7 +368,7 @@ def test_batched_pixel_boundaries_match_single_pixel_boundaries(
 ) -> None:
     import rasterio.warp  # type: ignore[import-untyped]
 
-    from crc_sdk.connectors.duckdb.geotiff import _pixel_boundaries
+    from crc_sdk._connectors.duckdb.geotiff import _pixel_boundaries
 
     path = tmp_path / "projected.tif"
     with rasterio.open(

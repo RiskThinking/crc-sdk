@@ -285,6 +285,30 @@ def test_contract_files_are_plain_packaged_json() -> None:
     assert not (directory / "legacy-baseline.json").exists()
 
 
+@pytest.mark.parametrize(
+    ("relative", "message"),
+    [
+        ("schema/hazard_field.py", "removed public namespace remains packaged"),
+        ("connectors/parquet.py", "removed public namespace remains packaged"),
+        ("pathways.py", "removed public namespace remains packaged"),
+        ("contracts/schemas/dataset-1.3.schema.json", "undeclared schema artifact"),
+        ("contracts/api/legacy-baseline.json", "superseded contract resource"),
+    ],
+)
+def test_unimportable_removed_artifacts_are_rejected_in_installed_packages(
+    checker: ModuleType,
+    declarations: tuple[dict[str, Any], dict[str, Any]],
+    tmp_path: Path,
+    relative: str,
+    message: str,
+) -> None:
+    artifact = tmp_path / relative
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text("raise ModuleNotFoundError('removed dependency')")
+    errors = checker._packaged_removal_errors(tmp_path, *declarations)
+    assert any(message in error for error in errors), errors
+
+
 def test_cli_checks_declarations_without_importing_current_exports() -> None:
     result = subprocess.run(
         [sys.executable, str(ROOT / "tools" / "api_contracts" / "check.py")],
@@ -295,3 +319,70 @@ def test_cli_checks_declarations_without_importing_current_exports() -> None:
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "declarations only" in result.stdout
+
+
+def test_function_exports_validate_their_signature(
+    checker: ModuleType,
+    declarations: tuple[dict[str, Any], dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def identity(value: str) -> str:
+        return value
+
+    _, release = declarations
+    contract: dict[str, Any] = {
+        "schema_version": "1.0",
+        "package": "crc-sdk",
+        "canonical_module": "crc_sdk",
+        "exports": {
+            "identity": {
+                "kind": "function",
+                "parameters": [
+                    {
+                        "name": "value",
+                        "kind": "positional_or_keyword",
+                        "annotation": "str",
+                    }
+                ],
+                "returns": "str",
+            }
+        },
+        "external_symbols": {"crc_framework": []},
+        "removals": {
+            "symbols": ["crc_sdk.removed.Old"],
+            "modules": ["crc_sdk.removed"],
+            "methods": {"*": ["preserve"]},
+            "schema_fields": ["hazard_name"],
+            "wire_formats": ["dataset:1.3"],
+        },
+        "naming": {"one_name_per_concept": True},
+    }
+    checker.validate_contract(contract, release)
+    package = ModuleType("crc_sdk")
+    package.__file__ = str(tmp_path / "__init__.py")
+    setattr(package, "__all__", ["identity"])
+    setattr(package, "identity", identity)
+    resources = tmp_path / "contracts" / "api"
+    resources.mkdir(parents=True)
+    (resources / "public-api.json").write_text(json.dumps(contract))
+    (resources / "release.json").write_text(json.dumps(release))
+    monkeypatch.setattr(checker, "import_runtime", lambda path: package)
+    monkeypatch.setattr(checker, "files", lambda owner: tmp_path)
+    monkeypatch.setattr(checker.importlib.metadata, "version", lambda name: "1.0.0")
+
+    def missing(name: str) -> None:
+        raise ModuleNotFoundError(name)
+
+    monkeypatch.setattr(checker.importlib, "import_module", missing)
+    checker.check_runtime(contract, release)
+    contract["exports"]["identity"]["returns"] = "int"
+    (resources / "public-api.json").write_text(json.dumps(contract))
+    with pytest.raises(checker.ContractError, match="return annotation differs"):
+        checker.check_runtime(contract, release)
+
+
+def test_sequence_defaults_are_immutable_exact_tuples(checker: ModuleType) -> None:
+    assert checker._default_matches((), {"tuple": []})
+    assert not checker._default_matches([], {"tuple": []})
+    assert not checker._default_matches(None, {"tuple": []})

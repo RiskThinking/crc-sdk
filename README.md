@@ -1,94 +1,61 @@
 # CRC SDK
 
-Python SDK for [Climate Risk Commons](https://github.com/RiskThinking/crc-docs):
-fetch open climate-hazard data, fit it into one canonical curve format, and
-evaluate asset portfolios at return periods.
+Scientific declarations, exact catalogs, and canonical datasets for
+[Climate Risk Commons](https://github.com/RiskThinking/crc-docs).
 
-| Project | Role |
-| --- | --- |
-| **crc-sdk** (this repository) | Data access, canonical hazard datasets, portfolio and impact workflows |
-| [crc-framework](https://github.com/RiskThinking/crc-framework-rs) | Numerical core: distributions, fitting, impacts, risk metrics (installed automatically) |
-| [crc-docs](https://github.com/RiskThinking/crc-docs) | Notebooks, pipelines and AI skills built on the SDK |
+The SDK owns data identity, temporal and spatial declarations, provenance, and
+columnar storage. [crc-framework](https://github.com/RiskThinking/crc-framework-rs)
+owns numerical laws, quantile evidence, fitting specifications, measurements,
+and mathematical impacts.
 
 ## Install
 
 ```sh
-pip install crc-sdk                       # Python 3.11+
-pip install "crc-sdk[geometry,raster]"    # add extras as needed
+python -m pip install crc-sdk
 ```
 
-| Extra | Needed for |
-| --- | --- |
-| `geometry` | H3/Shapely helpers, raster and station ingest, bring-your-own rasters |
-| `raster` | GeoTIFF/COG sources (JRC flood, CHIRPS, `from_raster`) |
-| `netcdf` | NetCDF sources (ERA5, NEX-GDDP-CMIP6) |
-| `zarr` | Zarr sources (ERA5, CMIP6, OS-Climate, `from_zarr`) |
-| `agriculture` | USDA Cropland Data Layer via Icechunk (Python 3.12+) |
+Python 3.11 or later is required. H3 and geometry validation are part of the core
+package. Source-format extras include `raster`, `netcdf`, `zarr`, and
+`agriculture`; source readers import those dependencies only when needed.
 
-Missing extras raise an `ImportError` naming the extra; `import crc_sdk` never
-needs them. See [runtime and dependencies](docs/runtime.md).
-
-## Quick start
-
-Evaluate two sites against the public CRC Open dataset. No account is needed;
-downloads are verified and cached under `~/.cache/crc-sdk`.
+## Declare the science you know
 
 ```python
-import pyarrow as pa
-from crc_sdk.workflows import HazardDataset
+from crc_framework import DepthAboveGround, LengthUnit, Tail
+from crc_sdk import DataSpec, Period, Probability, SeriesSpec, Variable
 
-assets = pa.table({
-    "asset_id": ["office-a", "warehouse-b"],
-    "longitude": [-79.38, -79.30],
-    "latitude": [43.65, 43.70],
-})
-
-plan = (
-    HazardDataset.crc_open()                  # public release, cached locally
-    .for_area((-79.5, 43.5, -79.2, 43.8))     # west, south, east, north (WGS84)
-    .hazards(["rx1day"])                      # annual maximum 1-day rainfall
-    .horizons([2050])
+water_depth = Variable(
+    "company:water-depth",
+    measurement=DepthAboveGround(unit=LengthUnit.METRE),
 )
-print(plan.explain())                         # builders do no I/O
-
-result = (
-    plan.for_assets(assets)
-    .return_periods([10, 100])
-    .write_parquet("rx1day-portfolio.parquet")
+series = SeriesSpec(
+    water_depth,
+    period=Period.window(2030, 2050),
+    probability=Probability.annual(tail=Tail.UPPER),
 )
-print(result.value_columns)                   # ('value_rp10', 'value_rp100')
+spec = DataSpec([water_depth], series=[series])
+assert spec.series[0].scenario is None
 ```
 
-Every source follows the same pattern: build a lazy plan, inspect it with
-`explain()`, then `materialize()` a canonical dataset or evaluate assets with
-`for_assets(...)`. See [core concepts](docs/concepts.md).
+Custom variable and scenario IDs require no taxonomy registration. Scenario,
+period, and measurement meaning can be omitted when unknown or unnecessary for
+the operation. No placeholder scenario, center year, or artifact-envelope
+construction is required to describe one measured series.
 
-## Data sources
-
-| Source | Entry point | Produces | Guide |
-| --- | --- | --- | --- |
-| CRC Open (63 pre-fitted hazards, SSP5-8.5) | `HazardDataset.crc_open()` | Canonical curves | [CRC Open](docs/sources/crc-open.md) |
-| JRC EFAS / GloFAS river flood | `HazardDataset.efas()`, `.glofas()` | Canonical curves | [JRC](docs/sources/jrc.md) |
-| JRC EDO soil-moisture drought | `HazardDataset.smi()` | Canonical curves | [JRC](docs/sources/jrc.md) |
-| ERA5 reanalysis extremes | `HazardDataset.era5(recipe)` | Canonical curves | [ERA5](docs/sources/era5.md) |
-| CMIP6 and NEX-GDDP-CMIP6 projections | `HazardDataset.cmip6(...)`, `.nex_gddp_cmip6(...)` | Curves / annual extremes | [CMIP6](docs/sources/cmip6.md) |
-| NOAA ISD / GHCNh, ECCC IDF stations | `HazardDataset.isd()`, `.ghcnh()`, `.eccc_idf(...)` | Station-point curves | [Stations](docs/sources/stations.md) |
-| USGS, CHIRPS, IBTrACS, ECCC daily, HYDAT, NOAA water levels and sea level | `*Plan` classes | Source observations | [Observations](docs/sources/observations.md) |
-| USDA Cropland Data Layer, Fields of The World | `AgriculturalLayer` | Crop pixels / field polygons | [Agriculture](docs/sources/agriculture.md) |
-| Your own tables, Zarr, rasters | `HazardDataset.from_table/from_zarr/from_raster` | Canonical curves | [Bring your own data](docs/bring-your-own-data.md) |
+An optional immutable `Catalog` reconciles exact scientific definitions and
+explicit framework fitting presets. It never normalizes identifiers or chooses
+an impact or fit implicitly.
 
 ## Documentation
 
-| Read | When you need to |
-| --- | --- |
-| [Core concepts](docs/concepts.md) | Understand plans, cache modes, the canonical dataset and probability conventions |
-| [Portfolio evaluation and impacts](docs/portfolio.md) | Evaluate assets at return periods or apply damage functions |
-| [Fitting](docs/fitting.md) | Choose fit methods, censoring, L-moments, validation and diagnostics |
-| [Runtime](docs/runtime.md) | Tune DuckDB, use private buckets, build PMTiles |
-| [Design decisions](docs/design-decisions.md) · [Data licences](docs/data-licences.md) | Review scientific choices and source terms |
-| [Development](docs/development.md) | Set up, test and release the SDK |
-
-The [documentation index](docs/README.md) lists every page with a one-line summary.
+- [Scientific declarations](docs/scientific-data.md): variables, periods, probability,
+  measurements, and exact catalogs.
+- [Canonical datasets](docs/datasets.md): current rows, numerical variants,
+  provenance, spatial support, and storage validation.
+- [Python interface contract](docs/api-reference.md): canonical imports and
+  installed-package enforcement.
+- [Development](docs/development.md): setup, checks, generated contracts, and
+  releases.
 
 ## Contributors
 
@@ -125,7 +92,6 @@ both on and off GitHub using [All Contributors](https://allcontributors.org/).
 
 ## License
 
-The SDK is licensed under [AGPL-3.0-or-later](LICENSE). Data have their own
-terms: the CRC Open dataset is [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/),
-and every canonical file records its source licence and attribution. See
-[data licences](docs/data-licences.md).
+The SDK is licensed under [AGPL-3.0-or-later](LICENSE). Source data have their own
+terms. Resource records retain their actual license, attribution, retrieval
+time, and content identity; unknown facts are not replaced with guessed terms.

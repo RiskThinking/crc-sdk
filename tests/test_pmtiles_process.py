@@ -4,7 +4,7 @@ import sys
 
 import pytest
 
-from crc_sdk.geometry.pmtiles._process import TippecanoeProcess
+from crc_sdk._geometry.pmtiles._process import TippecanoeProcess
 
 EXIT_EARLY = [sys.executable, "-c", "import sys; sys.stdin.read(1); sys.exit(3)"]
 

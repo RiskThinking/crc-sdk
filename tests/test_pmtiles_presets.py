@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from crc_sdk.geometry.pmtiles.presets import (
+from crc_sdk._geometry.pmtiles.presets import (
     AREAS,
     POINTS,
     POLYGONS,

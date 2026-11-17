@@ -1,36 +1,40 @@
-from pathlib import Path
+from typing import reveal_type
+
+from crc_framework import (
+    DepthAboveGround,
+    DistributionFamily,
+    LengthUnit,
+    SampleFit,
+    Tail,
+)
 
 from crc_sdk import (
-    FittedDistribution,
-    HurdleDistribution,
-    HurdleQuantileFitResult,
-    LocalProvider,
-    QuantileFitResult,
-    TabulatedDistribution,
-    fit_distribution,
-    fit_hurdle_quantiles,
-    fit_quantiles,
+    Calendar,
+    Catalog,
+    DataSpec,
+    Period,
+    Probability,
+    Scenario,
+    SeriesSpec,
+    Variable,
+    scientific_identity,
 )
-from crc_sdk.impacts import ImpactEvaluationResult, ImpactExpression
-from crc_sdk.types import HazardQuery
 
-provider = LocalProvider(Path("/tmp/hazards"))
-query = HazardQuery(hazard_name="cflood")
-fit: FittedDistribution = fit_distribution([0.1, 0.2, 0.3]).distribution
-knots = TabulatedDistribution([0.5, 0.8, 0.9, 0.99], [0.0, 0.2, 0.5, 1.0])
-quantile_fit: QuantileFitResult = fit_quantiles(knots)
-hurdle_fit: HurdleQuantileFitResult = fit_hurdle_quantiles(
-    knots,
-    atom_probability=0.5,
+variable = Variable("user:depth", measurement=DepthAboveGround(unit=LengthUnit.METRE))
+scenario = Scenario("user:scenario", definition={"warming": 2.0})
+period = Period.window(2030, 2050, calendar=Calendar.NO_LEAP)
+series = SeriesSpec(
+    variable,
+    scenario=scenario,
+    period=period,
+    probability=Probability.annual(tail=Tail.UPPER),
 )
-hurdle: HurdleDistribution = hurdle_fit.distribution
-curve = ImpactExpression.linear(
-    1.0,
-    calibration={
-        "exposure_variable": "value",
-        "exposure_unit": "1",
-        "impact_metric": "response",
-        "impact_unit": "1",
-    },
+spec = DataSpec([variable], series=[series])
+reveal_type(spec.variables[0].measurement)
+reveal_type(spec.series[0].probability)
+reveal_type(scientific_identity(variable))
+catalog = Catalog(
+    namespace="user:catalog", revision="1", variables=[variable], scenarios=[scenario]
 )
-recorded: ImpactEvaluationResult[float] = curve.expected_value_with_record(fit)
+reveal_type(catalog.variable(variable.id))
+reveal_type(SampleFit(family=DistributionFamily.GUMBEL_RIGHT))

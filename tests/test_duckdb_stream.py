@@ -6,7 +6,7 @@ from typing import Any
 import pyarrow as pa  # type: ignore[import-untyped]
 import pytest
 
-from crc_sdk.connectors.duckdb import (
+from crc_sdk._connectors.duckdb import (
     ArrowBatchSource,
     DuckDBConnection,
     DuckDBStreamEngine,
@@ -144,7 +144,7 @@ def test_connect_closes_the_connection_when_setup_fails(
 def test_reduce_days_over_an_empty_block_is_all_missing() -> None:
     import numpy as np
 
-    from crc_sdk.connectors.blocks import BlockStatistic, reduce_days
+    from crc_sdk._connectors.blocks import BlockStatistic, reduce_days
 
     empty = np.empty((0, 2, 3))
     for statistic in (

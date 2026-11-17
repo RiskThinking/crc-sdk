@@ -4,14 +4,14 @@ import pytest
 from shapely.geometry import Polygon, box  # type: ignore[import-untyped]
 from shapely.wkb import dumps  # type: ignore[import-untyped]
 
-import crc_sdk.geometry.vector as vector_module
-from crc_sdk.connectors.duckdb import ensure_extensions
-from crc_sdk.geometry import (
+import crc_sdk._geometry.vector as vector_module
+from crc_sdk._connectors.duckdb import ensure_extensions
+from crc_sdk._geometry import (
     VectorContainment,
     expand_polygon_candidates,
     polyfill_wkb,
 )
-from crc_sdk.geometry.vector import _to_pyarrow_array
+from crc_sdk._geometry.vector import _to_pyarrow_array
 
 
 def test_to_pyarrow_array_passes_polyfill_cells_through() -> None:

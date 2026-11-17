@@ -12,7 +12,7 @@ from shapely.geometry import (  # type: ignore[import-untyped]
 )
 from shapely.ops import unary_union  # type: ignore[import-untyped]
 
-from crc_sdk.geometry import (
+from crc_sdk._geometry import (
     GeoFormat,
     H3Indexer,
     PolyfillMode,
@@ -277,7 +277,7 @@ def test_wkb_csv_reads_hex_encoded_geometry(tmp_path: Path) -> None:
     import shapely  # type: ignore[import-untyped]
     from shapely.geometry import Point
 
-    from crc_sdk.geometry.formats import FormatAdapter, GeoFormat
+    from crc_sdk._geometry.formats import FormatAdapter, GeoFormat
 
     path = tmp_path / "points.csv"
     path.write_text("id,geometry\n1," + shapely.to_wkb(Point(1, 2), hex=True) + "\n")
@@ -297,7 +297,7 @@ def test_cell_polygon_splits_cells_crossing_the_antimeridian(longitude: float) -
     import h3
     from shapely.geometry import box
 
-    from crc_sdk.geometry import cell_polygon, materialize_cell_geometries_sql
+    from crc_sdk._geometry import cell_polygon, materialize_cell_geometries_sql
 
     cell = h3.str_to_int(h3.latlng_to_cell(0.0, longitude, 5))
     polygon = cell_polygon(cell)
@@ -313,7 +313,7 @@ def test_cell_polygon_splits_cells_crossing_the_antimeridian(longitude: float) -
         "Polygon"
     )
 
-    from crc_sdk.connectors.duckdb import ensure_extensions
+    from crc_sdk._connectors.duckdb import ensure_extensions
 
     con = duckdb.connect()
     ensure_extensions(con, "spatial", "h3")

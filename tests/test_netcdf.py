@@ -8,8 +8,8 @@ import numpy as np
 import pytest
 from shapely.geometry import Polygon  # type: ignore[import-untyped]
 
-from crc_sdk.connectors.blocks import _strip_row_count
-from crc_sdk.connectors.duckdb.netcdf import NetCDFRaster, _pixel_boundary
+from crc_sdk._connectors.blocks import _strip_row_count
+from crc_sdk._connectors.duckdb.netcdf import NetCDFRaster, _pixel_boundary
 
 # 4x4 grid, descending lat (like EDO's own north-to-south axis) and
 # ascending lon; row 0 (northernmost) holds the largest values so
@@ -209,8 +209,8 @@ def test_open_requires_netcdf_extra(
 def test_cf_packed_values_are_masked_raw_then_unpacked(tmp_path: Path) -> None:
     # int16-packed SMI: physical = raw * 0.001 + 0.5; -32768 is _FillValue and
     # -999 a separate missing_value, both matched on the *raw* stored values.
-    from crc_sdk.connectors.blocks import BlockSpec, BlockStatistic
-    from crc_sdk.connectors.duckdb.netcdf import NetCDFBlockReader
+    from crc_sdk._connectors.blocks import BlockSpec, BlockStatistic
+    from crc_sdk._connectors.duckdb.netcdf import NetCDFBlockReader
 
     raw = np.array(
         [

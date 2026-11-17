@@ -8,16 +8,8 @@ from typing import Any
 import numpy as np
 import pytest
 
-from crc_sdk.connectors import (
-    HurdleFitPolicy,
-    OSClimateIngestPolicy,
-    canonicalize_os_climate,
-    write_hazard_stream,
-)
-from crc_sdk.connectors.duckdb import DuckDBConnection, RasterMetadata, ZarrRaster
-from crc_sdk.providers import LocalProvider, OSClimateInventory
-from crc_sdk.providers.os_climate import OSClimateProvider
-from crc_sdk.types import HazardQuery
+from crc_sdk._connectors.duckdb import DuckDBConnection, RasterMetadata, ZarrRaster
+from crc_sdk._providers.os_climate import OSClimateInventory, OSClimateProvider
 
 
 class FakeZarrArray:
@@ -279,132 +271,6 @@ def test_inventory_requires_unambiguous_resource_selection() -> None:
         model_gcm="model-1",
     )
     assert selected.model_gcm == "model-1"
-
-
-def test_os_climate_canonical_stream_persists_and_queries(
-    tmp_path: Path,
-) -> None:
-    array = FakeReturnPeriodArray()
-    raster = ZarrRaster(
-        array,
-        RasterMetadata(
-            hazard_type="Wind",
-            indicator_id="max_speed",
-            scenario="ssp585",
-            year=2050,
-            units="m/s",
-            path="test/wind/ssp585/2050",
-        ),
-    )
-    policy = OSClimateIngestPolicy(
-        h3_resolution=3,
-        family="gumbel_r",
-        producer="tests",
-        creation_version="1",
-        batch_rows=2,
-        hurdle=HurdleFitPolicy(
-            atom_probability=0.5,
-            atom_location=0.0,
-        ),
-        maximum_normalized_rmse=0.2,
-    )
-    stream = canonicalize_os_climate(raster, policy)
-    destination = tmp_path / "wind-ssp585-2050.parquet"
-    write_hazard_stream(stream, destination)
-
-    table = LocalProvider(destination).read(
-        HazardQuery(hazard_name="Wind", horizon=2050, pathway="ssp585")
-    )
-    assert table.num_rows > 0
-    assert set(table["curve_type"].to_pylist()) == {"gumbel_r"}
-    assert set(table["curve_kind"].to_pylist()) == {"hurdle"}
-    assert set(table["curve_atom_probability"].to_pylist()) == {0.5}
-    assert len(set(table["source_id"].to_pylist())) == 1
-    assert len(array.reads) == 1
-
-
-def test_os_climate_plain_quantile_fit_remains_available() -> None:
-    raster = ZarrRaster(
-        FakeReturnPeriodArray(),
-        RasterMetadata(
-            hazard_type="Wind",
-            indicator_id="max_speed",
-            scenario="ssp585",
-            year=2050,
-            units="m/s",
-            path="test/wind/ssp585/2050",
-        ),
-    )
-    stream = canonicalize_os_climate(
-        raster,
-        OSClimateIngestPolicy(
-            h3_resolution=3,
-            family="gumbel_r",
-            producer="tests",
-            creation_version="1",
-        ),
-    )
-    table = stream.read_all()
-
-    assert set(table["curve_kind"].to_pylist()) == {"fitted"}
-
-
-def test_on_fit_failure_raise_aborts_on_constant_pixel() -> None:
-    raster = ZarrRaster(
-        FakeMixedReturnPeriodArray(),
-        RasterMetadata(
-            hazard_type="RiverineInundation",
-            indicator_id="flood_depth",
-            scenario="historical",
-            year=1980,
-            units="metres",
-            path="test/flood/mixed",
-        ),
-    )
-    policy = OSClimateIngestPolicy(
-        h3_resolution=3,
-        family="gumbel_r",
-        producer="tests",
-        creation_version="1",
-    )
-    with pytest.raises(ValueError, match="failed to fit source pixel"):
-        canonicalize_os_climate(raster, policy).read_all()
-
-
-def test_on_fit_failure_skip_drops_unfittable_pixels() -> None:
-    raster = ZarrRaster(
-        FakeMixedReturnPeriodArray(),
-        RasterMetadata(
-            hazard_type="RiverineInundation",
-            indicator_id="flood_depth",
-            scenario="historical",
-            year=1980,
-            units="metres",
-            path="test/flood/mixed",
-        ),
-    )
-    policy = OSClimateIngestPolicy(
-        h3_resolution=3,
-        family="gumbel_r",
-        producer="tests",
-        creation_version="1",
-        on_fit_failure="skip",
-    )
-    table = canonicalize_os_climate(raster, policy).read_all()
-
-    assert table.num_rows > 0
-    assert len(set(table["source_id"].to_pylist())) == 1
-
-
-def test_on_fit_failure_rejects_unknown_value() -> None:
-    with pytest.raises(ValueError, match="on_fit_failure"):
-        OSClimateIngestPolicy(
-            h3_resolution=3,
-            family="gumbel_r",
-            producer="tests",
-            creation_version="1",
-            on_fit_failure="ignore",  # type: ignore[arg-type]
-        )
 
 
 def test_os_climate_provider_default_connection_is_resource_tuned(

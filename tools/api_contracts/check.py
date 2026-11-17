@@ -52,6 +52,15 @@ PARAMETER_KINDS = {
     "keyword_only": inspect.Parameter.KEYWORD_ONLY,
 }
 EXPORT_KINDS = {"class", "enum", "exception", "protocol", "function"}
+REMOVED_CONTRACT_RESOURCES = (
+    "contracts/dataset",
+    "contracts/evaluation",
+    "contracts/api/legacy-baseline.json",
+    "contracts/api/manifest.json",
+    "contracts/taxonomy/manifest.json",
+    "contracts/taxonomy/seed.json",
+    "contracts/taxonomy/reconciliation.json",
+)
 
 
 class ContractError(ValueError):
@@ -168,7 +177,7 @@ def _signature(value: Mapping[str, Any], known: set[str], where: str) -> None:
             default = parameter["default"]
             if isinstance(default, dict):
                 require(
-                    set(default) in ({"enum"}, {"sentinel"}),
+                    set(default) in ({"enum"}, {"sentinel"}, {"tuple"}),
                     f"{where}.{name}: invalid structured default",
                 )
                 if "enum" in default:
@@ -178,6 +187,11 @@ def _signature(value: Mapping[str, Any], known: set[str], where: str) -> None:
                         f"{where}.{name}: invalid enum default",
                     )
                     require(reference in known, f"{where}.{name}: unknown enum default")
+                elif "tuple" in default:
+                    require(
+                        default["tuple"] == [],
+                        f"{where}.{name}: only an empty tuple default is supported",
+                    )
                 else:
                     require(
                         default["sentinel"] == "omitted",
@@ -301,8 +315,25 @@ def validate_contract(contract: dict[str, Any], release: dict[str, Any]) -> None
                 "members",
                 "nested_enums",
                 "generic_parameters",
+                "parameters",
+                "returns",
             },
             f"{name}: unknown declaration field",
+        )
+        if value["kind"] == "function":
+            require(
+                set(value) == {"kind", "parameters", "returns"},
+                f"{name}: invalid function declaration",
+            )
+            _signature(
+                {"parameters": value["parameters"], "returns": value["returns"]},
+                known,
+                name,
+            )
+            continue
+        require(
+            not {"parameters", "returns"} & set(value),
+            f"{name}: call signature belongs to a function",
         )
         if value["kind"] == "enum":
             members = value.get("members")
@@ -459,9 +490,9 @@ def _default_matches(actual: Any, expected: Any) -> bool:
                 isinstance(actual, Enum)
                 and f"{type(actual).__name__}.{actual.name}" == expected["enum"]
             )
+        if "tuple" in expected:
+            return isinstance(actual, tuple) and list(actual) == expected["tuple"]
         return actual is Ellipsis
-    if isinstance(expected, list):
-        return bool(actual == expected or actual == tuple(expected))
     return bool(type(actual) is type(expected) and actual == expected)
 
 
@@ -522,6 +553,37 @@ def import_runtime(package_root: Path | None = None) -> Any:
     return importlib.import_module("crc_sdk")
 
 
+def _packaged_removal_errors(
+    package: Traversable, contract: Mapping[str, Any], release: Mapping[str, Any]
+) -> list[str]:
+    errors = []
+    prefix = contract["canonical_module"] + "."
+    for module_name in contract["removals"]["modules"]:
+        if not module_name.startswith(prefix):
+            continue
+        parts = module_name.removeprefix(prefix).split(".")
+        directory = package.joinpath(*parts)
+        module = package.joinpath(*parts[:-1], parts[-1] + ".py")
+        if directory.is_dir() or module.is_file():
+            errors.append(f"{module_name}: removed public namespace remains packaged")
+    for path in REMOVED_CONTRACT_RESOURCES:
+        resource = package.joinpath(path)
+        if resource.is_file() or resource.is_dir():
+            errors.append(f"{path}: superseded contract resource remains packaged")
+    schemas = package.joinpath("contracts", "schemas")
+    if schemas.is_dir():
+        current = {
+            f"{name}-{version}.schema.json"
+            for name, version in release["formats"].items()
+        }
+        for resource in schemas.iterdir():
+            if resource.name.endswith(".json") and resource.name not in current:
+                errors.append(
+                    f"contracts/schemas/{resource.name}: undeclared schema artifact"
+                )
+    return errors
+
+
 def check_runtime(
     contract: Mapping[str, Any],
     release: Mapping[str, Any],
@@ -538,7 +600,7 @@ def check_runtime(
         installed_contract == contract and installed_release == release,
         "installed contract files differ from the source release declarations",
     )
-    errors: list[str] = []
+    errors = _packaged_removal_errors(files(package), contract, release)
     if package_root is not None and not Path(
         package.__file__ or ""
     ).resolve().is_relative_to(package_root):
@@ -595,6 +657,12 @@ def check_runtime(
                 key: item.value for key, item in value.__members__.items()
             } != declaration["members"]:
                 errors.append(f"{where}: enum members or values differ")
+            continue
+        if declaration["kind"] == "function":
+            if not inspect.isfunction(value):
+                errors.append(f"{where}: function implementation required")
+            else:
+                errors.extend(_check_runtime_signature(value, declaration, where))
             continue
         if not inspect.isclass(value):
             errors.append(f"{where}: class implementation required")

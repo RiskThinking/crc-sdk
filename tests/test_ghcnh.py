@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import calendar
 import io
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -10,10 +10,9 @@ import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
 import pytest
 
-from crc_sdk.providers.ghcnh import GHCNhCompleteness, fetch_daily, reduce_daily
-from crc_sdk.providers.isd import ISDCompleteness
-from crc_sdk.providers.isd import reduce_daily as reduce_isd
-from crc_sdk.workflows import BlockExtremaPolicy, GHCNhPlan, HazardDataset
+from crc_sdk._providers.ghcnh import GHCNhCompleteness, fetch_daily, reduce_daily
+from crc_sdk._providers.isd import ISDCompleteness
+from crc_sdk._providers.isd import reduce_daily as reduce_isd
 
 STATION = "USW00094846"
 
@@ -117,30 +116,6 @@ def test_common_daily_contract_with_isd(tmp_path: Path) -> None:
     assert isd.equals(ghcnh)
 
 
-def test_fluent_compatibility_and_identifiers() -> None:
-    plan = (
-        HazardDataset.ghcnh()
-        .for_stations([STATION])
-        .years(2000, 2024)
-        .quality()
-        .execution(workers=2)
-        .canonicalize()
-    )
-    assert isinstance(plan, GHCNhPlan)
-    details = plan.explain(format="json")
-    assert isinstance(details, dict)
-    assert details["hazard_name"] == "ghcnh_temperature_max"
-    assert details["completeness"]["quality_codes"] == ("", "1", "5")
-    assert plan.for_stations(["CAU60-00150"]).selected_stations == ("CAU60-00150",)
-    with pytest.raises(ValueError, match="GHCN"):
-        plan.for_stations(["72530094846"])
-    with pytest.raises(ValueError, match="USAF"):
-        HazardDataset.isd().for_stations([STATION])
-    with pytest.raises(ValueError, match="complete-year"):
-        plan.years(2020, datetime.now(UTC).year)
-    assert plan.years(2025, 2025).selected_years == (2025,)
-
-
 def fake_daily(station: str, year: int, *args: Any, **kwargs: Any) -> Any:
     rows = [
         {
@@ -163,41 +138,6 @@ def fake_daily(station: str, year: int, *args: Any, **kwargs: Any) -> Any:
     return pa.Table.from_pylist(rows), {"url": "https://example.test", "etag": "test"}
 
 
-def test_separate_cache_identity_both_tails_and_provenance(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from crc_sdk.connectors.parquet import read_hazard_metadata
-
-    monkeypatch.setattr("crc_sdk.providers.isd.fetch_daily", fake_daily)
-    monkeypatch.setattr("crc_sdk.providers.ghcnh.fetch_daily", fake_daily)
-    cache = tmp_path / "cache"
-    legacy = (
-        HazardDataset.isd().for_stations(["72530094846"]).years(2000, 2005).cache(cache)
-    )
-    assert legacy.prefetch().cache_misses == 6
-    for recipe in ("temperature_max", "temperature_min"):
-        plan = (
-            HazardDataset.ghcnh(recipe)
-            .for_stations([STATION])
-            .years(2000, 2005)
-            .cache(cache)
-            .canonicalize(policy=BlockExtremaPolicy.curated(minimum_years=4))
-        )
-        path = tmp_path / f"{recipe}.parquet"
-        plan.materialize(path)
-        rows = pq.ParquetFile(path).read().to_pylist()
-        assert rows[0]["source_id"] == f"noaa-ghcnh:{STATION}"
-        assert rows[0]["hazard_name"] == f"ghcnh_{recipe}"
-        assert len(list((cache / "daily").glob("*.parquet"))) == 12
-        metadata = read_hazard_metadata(path)
-        assert metadata.source is not None
-        assert metadata.source.provider == "noaa-ghcnh"
-        assert metadata.source.licence == "CC0-1.0"
-        assert metadata.source.version == "ghcnh-v1"
-        assert plan.cache(cache, mode="offline").prefetch().cache_hits == 6
-
-
 def test_conditional_reads_and_projection_fingerprint(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -211,14 +151,14 @@ def test_conditional_reads_and_projection_fingerprint(
             "Last-Modified": "test",
         }
 
-    monkeypatch.setattr("crc_sdk.providers.ghcnh.urlopen", lambda *a, **kw: Head())
+    monkeypatch.setattr("crc_sdk._providers.ghcnh.urlopen", lambda *a, **kw: Head())
     requests: list[dict[str, Any]] = []
 
     def open_remote(url: str, *args: Any, **kwargs: Any) -> Any:
         requests.append(kwargs)
         return io.BytesIO(raw)
 
-    monkeypatch.setattr("crc_sdk.providers.ghcnh.fsspec.open", open_remote)
+    monkeypatch.setattr("crc_sdk._providers.ghcnh.fsspec.open", open_remote)
     table, info = fetch_daily(
         STATION,
         2020,
@@ -275,9 +215,9 @@ def test_fsspec_range_read_errors_are_retried(
             raise aiohttp.ClientConnectionError("connection reset")
         return io.BytesIO(raw)
 
-    monkeypatch.setattr("crc_sdk.providers.ghcnh.urlopen", lambda *a, **kw: Head())
-    monkeypatch.setattr("crc_sdk.providers.ghcnh.fsspec.open", open_remote)
-    monkeypatch.setattr("crc_sdk.providers.ghcnh.time.sleep", lambda _: None)
+    monkeypatch.setattr("crc_sdk._providers.ghcnh.urlopen", lambda *a, **kw: Head())
+    monkeypatch.setattr("crc_sdk._providers.ghcnh.fsspec.open", open_remote)
+    monkeypatch.setattr("crc_sdk._providers.ghcnh.time.sleep", lambda _: None)
     table, _ = fetch_daily(
         STATION,
         2020,
@@ -307,8 +247,8 @@ def test_permanent_fsspec_errors_are_not_retried(
             status=403,
         )
 
-    monkeypatch.setattr("crc_sdk.providers.ghcnh.urlopen", lambda *a, **kw: Head())
-    monkeypatch.setattr("crc_sdk.providers.ghcnh.fsspec.open", open_remote)
+    monkeypatch.setattr("crc_sdk._providers.ghcnh.urlopen", lambda *a, **kw: Head())
+    monkeypatch.setattr("crc_sdk._providers.ghcnh.fsspec.open", open_remote)
     with pytest.raises(aiohttp.ClientResponseError):
         fetch_daily(
             STATION,

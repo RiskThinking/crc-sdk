@@ -1,45 +1,15 @@
 # CRC SDK documentation
 
-Start with the [project README](../README.md) for installation and a runnable
-quick start. Each page below answers one question; read only what you need.
-
-## Use the SDK
-
-| Page | Answers |
-| --- | --- |
-| [Core concepts](concepts.md) | How plans, cache modes, canonical datasets and return periods work |
-| [Python interface contract](api-reference.md) | Canonical imports, typed workflow interfaces and installed-package conformance |
-| [Portfolio evaluation and impacts](portfolio.md) | How to evaluate assets and apply damage functions |
-| [Fitting](fitting.md) | Which fit method to use, and how validation and diagnostics work |
-| [Bring your own data](bring-your-own-data.md) | How to canonicalize your own tables, Zarr arrays or GeoTIFFs |
-| [Runtime](runtime.md) | Extras, package layout, DuckDB tuning, private buckets, PMTiles |
-
-## Data sources
-
-| Page | Sources |
-| --- | --- |
-| [CRC Open](sources/crc-open.md) | Public pre-fitted curves (63 hazards) |
-| [JRC](sources/jrc.md) | EFAS/GloFAS river flood, EDO drought |
-| [ERA5](sources/era5.md) | Reanalysis annual extremes |
-| [CMIP6](sources/cmip6.md) | Native CMIP6 and NEX-GDDP-CMIP6 projections |
-| [Stations](sources/stations.md) | NOAA ISD and GHCNh temperature, ECCC design rainfall |
-| [Observations](sources/observations.md) | USGS, CHIRPS, IBTrACS, ECCC daily, HYDAT, NOAA water levels and sea level |
-| [Agriculture](sources/agriculture.md) | USDA Cropland Data Layer, Fields of The World |
-
-## Background
+Start at the [project README](../README.md), then choose the reference for your
+question:
 
 | Page | Covers |
 | --- | --- |
-| [Design decisions](design-decisions.md) | Ensemble identity, time windows, probability semantics, registry, spatial support |
-| [Data licences](data-licences.md) | How source terms are recorded, per-source summary |
-| [Development](development.md) | Setup, checks, CI, releases, contributor credits |
+| [Scientific declarations](scientific-data.md) | Open identities, typed measurements, periods, annual probabilities, and exact catalogs |
+| [Canonical datasets](datasets.md) | Dataset 2.0 rows, numerical variants, typed provenance, and validated storage |
+| [Python interface contract](api-reference.md) | Canonical imports, ownership, and installed-package checks |
+| [Source resource terms](data-licences.md) | License, attribution, retrieval time, and content identity |
+| [Development](development.md) | Paired checkout setup, checks, generated resources, and releases |
 
-## Related projects
-
-- [crc-framework](https://github.com/RiskThinking/crc-framework-rs/tree/main/docs):
-  distributions, fitting, impact contracts and risk metrics used by this SDK.
-- [crc-docs](https://github.com/RiskThinking/crc-docs): notebooks, pipelines
-  and AI skills that run end-to-end assessments with the SDK.
-
-API details live in docstrings; `help(HazardDataset.era5)` and similar are the
-authoritative reference for parameters.
+Numerical probability laws, fitting, and impacts are documented in the
+[framework Python guide](../../crc-framework-rs/docs/python.md).

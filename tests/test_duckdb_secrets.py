@@ -2,7 +2,7 @@ from pathlib import Path
 
 import duckdb
 
-from crc_sdk.connectors.duckdb import DuckDBConnection, sql_identifier, sql_quote
+from crc_sdk._connectors.duckdb import DuckDBConnection, sql_identifier, sql_quote
 
 
 def _secret_names(con: "duckdb.DuckDBPyConnection") -> set[str]:

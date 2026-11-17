@@ -1,6 +1,6 @@
 import pytest
 
-from crc_sdk.geometry.pmtiles.binaries import require_tile_join, require_tippecanoe
+from crc_sdk._geometry.pmtiles.binaries import require_tile_join, require_tippecanoe
 
 
 def test_require_tippecanoe_returns_resolved_path_when_present(

@@ -1,38 +1,29 @@
 from __future__ import annotations
 
 import csv
-import warnings
 from pathlib import Path
 from typing import Any
 
 import numpy as np
-import pyarrow as pa  # type: ignore[import-untyped]
-import pyarrow.parquet as pq  # type: ignore[import-untyped]
 import pytest
 
 zarr = pytest.importorskip("zarr")
 pytest.importorskip("h5netcdf")
 
-from crc_sdk.connectors import read_hazard_metadata  # noqa: E402
-from crc_sdk.connectors.blocks import BlockDefinition  # noqa: E402
-from crc_sdk.providers.cmip6 import (  # noqa: E402
-    _CALENDAR_ALIASES,
+from crc_sdk._connectors.blocks import BlockDefinition  # noqa: E402
+from crc_sdk._providers.cmip6 import (  # noqa: E402
     CATALOGUE_COLUMNS,
     CMIP6_ARCHIVES,
-    CMIP6_RECIPES,
     CFCalendar,
     CMIP6Archive,
     CMIP6Catalogue,
     CMIP6Dataset,
     CMIP6Provider,
     RestrictiveLicenceWarning,
-    cmip6_archive,
     cmip6_recipe,
     decode_time_ordinals,
     normalize_licence,
 )
-from crc_sdk.types import TemporalWindow  # noqa: E402
-from crc_sdk.workflows import BlockExtremaPolicy, HazardDataset  # noqa: E402
 
 YEARS = tuple(range(2015, 2027))
 LAT = np.array([-1.5, 0.0, 1.5])
@@ -230,19 +221,6 @@ def archive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> CMIP6Archive:
 # ---------------------------------------------------------------------------
 # Recipes and the catalogue
 # ---------------------------------------------------------------------------
-
-
-def test_recipe_catalogue() -> None:
-    assert set(CMIP6_RECIPES) == {"txx", "tnn", "rx1day", "rx5day"}
-    assert cmip6_recipe("Rx1day").variable == "pr"
-    assert cmip6_recipe("tnn").tail == "lower"
-    assert cmip6_recipe("txx").tail == "upper"
-    with pytest.raises(ValueError, match="unknown CMIP6 recipe"):
-        cmip6_recipe("fwi")
-    with pytest.raises(ValueError, match="unknown CMIP6 archive"):
-        cmip6_archive("nope")
-    with pytest.raises(ValueError, match="unknown CMIP6 recipe"):
-        HazardDataset.cmip6("fwi", model=MODEL, scenario="ssp585")
 
 
 def test_catalogue_resolves_one_dataset(archive: CMIP6Archive) -> None:
@@ -476,186 +454,6 @@ def test_days_are_placed_by_calendar_date_not_by_position(tmp_path: Path) -> Non
 # ---------------------------------------------------------------------------
 
 
-def _plan(tmp_path: Path, **policy: Any) -> Any:
-    return (
-        HazardDataset.cmip6("rx1day", model=MODEL, scenario="ssp585", archive="test")
-        .for_area(AREA)
-        .years(YEARS[0], YEARS[-1])
-        .cache(tmp_path / "cache")
-        .canonicalize(policy=BlockExtremaPolicy(minimum_years=8, **policy))
-    )
-
-
-def test_plan_materializes_with_provenance_and_reuses_cache(
-    archive: CMIP6Archive, tmp_path: Path
-) -> None:
-    plan = _plan(tmp_path, h3_resolution=3, diagnostics=tmp_path / "diag.parquet")
-    text = plan.explain()
-    assert "0 cached, 12 to fetch" in text
-    assert "not yet resolved" in text
-    assert not (tmp_path / "cache").exists()  # explain does no I/O
-
-    prefetched = plan.prefetch()
-    assert (prefetched.cache_hits, prefetched.cache_misses) == (0, 12)
-    assert prefetched.source_version == "20180701"
-    again = plan.prefetch()
-    assert (again.cache_hits, again.cache_misses) == (12, 0)
-    assert "GFDL-ESM4.ssp585" in str(plan.explain())
-
-    dataset = plan.materialize(tmp_path / "rx1day.parquet")
-    result = dataset.materialization
-    assert result is not None and result.source_cache_hits == 12
-
-    metadata = read_hazard_metadata(tmp_path / "rx1day.parquet")
-    assert metadata.source.licence == "CC-BY-4.0"
-    assert metadata.source.version == "20180701"
-    assert "NOAA GFDL" in (metadata.source.attribution or "")
-    window = metadata.temporal_window
-    assert window is not None
-    assert (window.start_year, window.end_year) == (YEARS[0], YEARS[-1])
-    assert window.calendar == "noleap"
-    assert window.minimum_complete_years == 8
-    ensemble = metadata.ensemble
-    assert ensemble is not None
-    assert ensemble.pooling == "single_member"
-    assert ensemble.models == (MODEL,) and ensemble.members == (MEMBER,)
-    assert ensemble.scenario == "ssp585"
-
-    table = pq.read_table(tmp_path / "rx1day.parquet")
-    assert set(table.column("pathway").to_pylist()) == {"ssp585"}
-    assert set(table.column("horizon").to_pylist()) == {(YEARS[0] + YEARS[-1]) // 2}
-    assert (tmp_path / "diag.parquet").is_file()
-
-    offline = plan.cache(tmp_path / "cache", mode="offline").prefetch()
-    assert offline.cache_hits == 12
-
-
-def test_annual_extremes_expose_the_fitted_sample(
-    archive: CMIP6Archive, tmp_path: Path
-) -> None:
-    plan = _plan(tmp_path, h3_resolution=3)
-    extremes = plan.annual_extremes()
-    assert extremes.num_rows == len(YEARS) * 3 * 3
-    assert set(extremes.column("year").to_pylist()) == set(YEARS)
-    by_year = dict(
-        zip(
-            extremes.column("year").to_pylist(),
-            extremes.column("value").to_pylist(),
-        )
-    )
-    # Row ordering is not promised, but every year's values must be its own.
-    assert min(by_year) == YEARS[0]
-    assert set(np.round(extremes.column("value").to_numpy(), 3)) == {
-        float(20 + index + row)
-        for index in range(len(YEARS))
-        for row in range(LAT.size)
-    }
-
-
-def test_pathway_and_horizon_separate_two_scenarios(
-    archive: CMIP6Archive, tmp_path: Path
-) -> None:
-    """Two pathways of one model produce joinable, distinguishable files."""
-    outputs = {}
-    for scenario in ("ssp585", "historical"):
-        plan = (
-            HazardDataset.cmip6(
-                "rx1day", model=MODEL, scenario=scenario, archive="test"
-            )
-            .for_area(AREA)
-            .years(YEARS[0], YEARS[-1])
-            .cache(tmp_path / "cache")
-            .canonicalize(policy=BlockExtremaPolicy(minimum_years=8, h3_resolution=3))
-        )
-        outputs[scenario] = plan.materialize(tmp_path / f"{scenario}.parquet")
-    for scenario, dataset in outputs.items():
-        table = pq.read_table(dataset.provider.source)
-        assert set(table.column("pathway").to_pylist()) == {scenario}
-    # Different DRS versions, so the two caches never share an annual extreme.
-    assert (
-        read_hazard_metadata(tmp_path / "historical.parquet").source.version
-        == "20190726"
-    )
-
-
-def test_stream_mode_materializes_without_a_cache(
-    archive: CMIP6Archive, tmp_path: Path
-) -> None:
-    plan = (
-        HazardDataset.cmip6("rx1day", model=MODEL, scenario="ssp585", archive="test")
-        .for_area(AREA)
-        .years(YEARS[0], YEARS[-1])
-        .canonicalize(policy=BlockExtremaPolicy(minimum_years=8, h3_resolution=3))
-    )
-    with pytest.raises(ValueError, match="prefetch"):
-        plan.prefetch()
-    with pytest.raises(ValueError, match="annual_extremes requires a cache"):
-        plan.annual_extremes()
-    dataset = plan.materialize(tmp_path / "out.parquet")
-    assert dataset.materialization is not None
-    assert dataset.materialization.canonical_rows > 0
-
-
-def test_offline_without_cache_fails_clearly(
-    archive: CMIP6Archive, tmp_path: Path
-) -> None:
-    plan = _plan(tmp_path).cache(tmp_path / "empty", mode="offline")
-    with pytest.raises(FileNotFoundError, match="prefetch"):
-        plan.prefetch()
-
-
-def test_minimum_years_and_years_outside_the_record(
-    archive: CMIP6Archive, tmp_path: Path
-) -> None:
-    short = (
-        HazardDataset.cmip6("rx1day", model=MODEL, scenario="ssp585", archive="test")
-        .for_area(AREA)
-        .years(2015, 2018)
-        .cache(tmp_path / "cache")
-        .canonicalize()
-    )
-    with pytest.raises(ValueError, match="at least 20"):
-        short.prefetch()
-    outside = (
-        HazardDataset.cmip6("rx1day", model=MODEL, scenario="ssp585", archive="test")
-        .for_area(AREA)
-        .years(2015, 2030)
-        .cache(tmp_path / "cache")
-        .canonicalize(policy=BlockExtremaPolicy(minimum_years=4, h3_resolution=3))
-    )
-    with pytest.raises(ValueError, match="outside the complete record"):
-        outside.prefetch()
-
-
-def test_a_different_member_does_not_reuse_another_cache(
-    archive: CMIP6Archive, tmp_path: Path
-) -> None:
-    _plan(tmp_path, h3_resolution=3).prefetch()
-    other = (
-        HazardDataset.cmip6(
-            "rx1day",
-            model=MODEL,
-            scenario="ssp585",
-            member="r2i1p1f1",
-            archive="test",
-        )
-        .for_area(AREA)
-        .years(YEARS[0], YEARS[-1])
-        .cache(tmp_path / "cache")
-        .canonicalize(policy=BlockExtremaPolicy(minimum_years=8, h3_resolution=3))
-    )
-    assert other.prefetch().cache_misses == 12
-
-
-def test_refresh_replaces_an_existing_output(
-    archive: CMIP6Archive, tmp_path: Path
-) -> None:
-    plan = _plan(tmp_path, h3_resolution=3)
-    first = plan.ensure_materialized()
-    refreshed = plan.cache(tmp_path / "cache", mode="refresh").ensure_materialized()
-    assert refreshed.provider.source == first.provider.source
-
-
 # ---------------------------------------------------------------------------
 # Licences (docs/data-licences.md)
 # ---------------------------------------------------------------------------
@@ -720,230 +518,11 @@ def test_an_unreadable_licence_is_not_assumed_open(
         assert provider.check_licence() == "unknown"
 
 
-def test_strict_licence_stops_the_plan_before_any_data_is_fetched(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _store_with_licence(
-        tmp_path, monkeypatch, "Creative Commons Attribution-ShareAlike 4.0"
-    )
-    plan = (
-        HazardDataset.cmip6(
-            "rx1day",
-            model=MODEL,
-            scenario="ssp585",
-            archive="licensed",
-            strict_licence=True,
-        )
-        .for_area(AREA)
-        .years(YEARS[0], YEARS[-1])
-        .cache(tmp_path / "cache")
-        .canonicalize(policy=BlockExtremaPolicy(minimum_years=8, h3_resolution=3))
-    )
-    with pytest.raises(ValueError, match="CC-BY-SA-4.0"):
-        plan.prefetch()
-    assert not (tmp_path / "cache" / "annual-extremes").exists()
-
-
-def test_the_recorded_licence_is_the_identifier_not_the_paragraph(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    paragraph = (
-        "CMIP6 model data produced by NOAA-GFDL is licensed under a Creative "
-        "Commons Attribution-ShareAlike 4.0 International License. Consult "
-        "https://pcmdi.llnl.gov/CMIP6/TermsOfUse for terms of use."
-    )
-    _store_with_licence(tmp_path, monkeypatch, paragraph)
-    plan = (
-        HazardDataset.cmip6(
-            "rx1day", model=MODEL, scenario="ssp585", archive="licensed"
-        )
-        .for_area(AREA)
-        .years(YEARS[0], YEARS[-1])
-        .cache(tmp_path / "cache")
-        .canonicalize(policy=BlockExtremaPolicy(minimum_years=8, h3_resolution=3))
-    )
-    with pytest.warns(RestrictiveLicenceWarning):
-        dataset = plan.materialize(tmp_path / "sa.parquet")
-    metadata = read_hazard_metadata(dataset.provider.source)
-    assert metadata.source.licence == "CC-BY-SA-4.0"
-    # The verbatim text stays in the cache manifest for audit.
-    manifest = (tmp_path / "cache" / "manifest.json").read_text()
-    assert "pcmdi.llnl.gov" in manifest
-    assert "Licence: CC-BY-SA-4.0" in str(plan.explain())
-
-
 # ---------------------------------------------------------------------------
 # Every supported calendar must survive the whole plan
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("label", sorted(_CALENDAR_ALIASES))
-def test_every_supported_calendar_has_a_window_spelling(label: str) -> None:
-    """`TemporalWindow` has a narrower calendar vocabulary than CF does.
-
-    `CFCalendar.name` is the model's own spelling and is not always one of
-    them, so the mapped `window_calendar` is what a window may be built from.
-    """
-    calendar = CFCalendar.parse(label)
-    window = TemporalWindow(
-        start_year=2021, end_year=2050, calendar=calendar.window_calendar
-    )
-    assert window.calendar == calendar.window_calendar
-
-
-@pytest.mark.parametrize(
-    ("calendar", "recorded"),
-    [
-        # Most CMIP6 models (MPI, EC-Earth, CNRM, IPSL, ACCESS) are Gregorian,
-        # whose CF name is not the one `TemporalWindow` spells.
-        ("standard", "gregorian"),
-        ("gregorian", "gregorian"),
-        ("noleap", "noleap"),
-        ("360_day", "360_day"),
-        ("all_leap", "unspecified"),
-    ],
-)
-def test_a_plan_materializes_whatever_calendar_the_model_runs(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, calendar: str, recorded: str
-) -> None:
-    store = _build_zarr(tmp_path / f"{calendar}.zarr", calendar=calendar)
-    catalogue = _write_catalogue(tmp_path / "cat.csv", [_row(store)])
-    monkeypatch.setitem(
-        CMIP6_ARCHIVES,
-        "calendars",
-        CMIP6Archive(
-            name="calendars", catalogue_url=str(catalogue), storage_options={}
-        ),
-    )
-    plan = (
-        HazardDataset.cmip6(
-            "rx1day", model=MODEL, scenario="ssp585", archive="calendars"
-        )
-        .for_area(AREA)
-        .years(YEARS[0], YEARS[-1])
-        .cache(tmp_path / "cache")
-        .canonicalize(policy=BlockExtremaPolicy(minimum_years=8, h3_resolution=3))
-    )
-    dataset = plan.materialize(tmp_path / f"{calendar}.parquet")
-    metadata = read_hazard_metadata(dataset.provider.source)
-    assert metadata.temporal_window is not None
-    assert metadata.temporal_window.calendar == recorded
-    # The model's own calendar name stays in the manifest, unmapped.
-    assert (
-        f'"calendar": "{CFCalendar.parse(calendar).name}"'
-        in (tmp_path / "cache" / "manifest.json").read_text()
-    )
-    # The wet day is found in its own year whatever the year's length.
-    values = sorted(set(np.round(plan.annual_extremes().column("value").to_numpy(), 3)))
-    assert values[0] == 20.0 and values[-1] == float(20 + len(YEARS) - 1 + LAT.size - 1)
-
-
 # ---------------------------------------------------------------------------
 # The licence policy applies to the output, not to opening the store
 # ---------------------------------------------------------------------------
-
-
-def _share_alike_plan(tmp_path: Path, *, strict: bool) -> Any:
-    return (
-        HazardDataset.cmip6(
-            "rx1day",
-            model=MODEL,
-            scenario="ssp585",
-            archive="licensed",
-            strict_licence=strict,
-        )
-        .for_area(AREA)
-        .years(YEARS[0], YEARS[-1])
-        .cache(tmp_path / "cache")
-        .canonicalize(policy=BlockExtremaPolicy(minimum_years=8, h3_resolution=3))
-    )
-
-
-@pytest.fixture()
-def warm_share_alike_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A cache and canonical file built by someone who accepted the licence."""
-    _store_with_licence(
-        tmp_path,
-        monkeypatch,
-        "Creative Commons Attribution-ShareAlike 4.0 International License",
-    )
-    lenient = _share_alike_plan(tmp_path, strict=False)
-    # Warming is not what is under test here, and the warning it raises is
-    # asserted on its own below.
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RestrictiveLicenceWarning)
-        lenient.prefetch()
-        lenient.ensure_materialized()
-    return tmp_path
-
-
-@pytest.mark.parametrize(
-    "call",
-    [
-        pytest.param(lambda plan: plan.prefetch(), id="prefetch"),
-        pytest.param(lambda plan: plan.annual_extremes(), id="annual_extremes"),
-        pytest.param(
-            lambda plan: plan.materialize(Path(plan.years.cache_dir) / "o.parquet"),
-            id="materialize",
-        ),
-        pytest.param(lambda plan: plan.ensure_materialized(), id="ensure_materialized"),
-        pytest.param(
-            lambda plan: (
-                plan.for_assets(
-                    pa.table({"asset_id": ["a"], "longitude": [0.0], "latitude": [0.0]})
-                )
-                .return_periods([2])
-                .write_parquet(Path(plan.years.cache_dir) / "assets.parquet")
-            ),
-            id="for_assets",
-        ),
-    ],
-)
-def test_a_warm_cache_is_not_a_way_around_strict_licence(
-    warm_share_alike_cache: Path, call: Any
-) -> None:
-    # Every year and the canonical file are already cached, so none of these
-    # reopens the store -- the policy has to come from what was recorded.
-    plan = _share_alike_plan(warm_share_alike_cache, strict=True)
-    with pytest.raises(ValueError, match="CC-BY-SA-4.0"):
-        call(plan)
-
-
-def test_reuse_keeps_warning_rather_than_going_quiet(
-    warm_share_alike_cache: Path,
-) -> None:
-    plan = _share_alike_plan(warm_share_alike_cache, strict=False)
-    with pytest.warns(RestrictiveLicenceWarning, match="beyond attribution"):
-        plan.prefetch()
-    with pytest.warns(RestrictiveLicenceWarning, match="beyond attribution"):
-        plan.ensure_materialized()
-
-
-def test_offline_reuse_enforces_without_touching_the_catalogue(
-    warm_share_alike_cache: Path,
-) -> None:
-    (warm_share_alike_cache / "licensed.csv").unlink()
-    offline = _share_alike_plan(warm_share_alike_cache, strict=True).cache(
-        warm_share_alike_cache / "cache", mode="offline"
-    )
-    with pytest.raises(ValueError, match="CC-BY-SA-4.0"):
-        offline.prefetch()
-
-
-def test_the_licence_choice_does_not_fork_the_output_path(
-    warm_share_alike_cache: Path,
-) -> None:
-    """Strict and lenient plans fit identical data, so they share one file."""
-    lenient = _share_alike_plan(warm_share_alike_cache, strict=False)
-    strict = _share_alike_plan(warm_share_alike_cache, strict=True)
-    assert lenient._automatic_output() == strict._automatic_output()
-
-
-def test_an_unknown_licence_is_enforced_on_reuse_too(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _store_with_licence(tmp_path, monkeypatch, "see our terms of use")
-    with pytest.warns(RestrictiveLicenceWarning, match="does not recognise"):
-        _share_alike_plan(tmp_path, strict=False).prefetch()
-    with pytest.raises(ValueError, match="does not recognise"):
-        _share_alike_plan(tmp_path, strict=True).prefetch()

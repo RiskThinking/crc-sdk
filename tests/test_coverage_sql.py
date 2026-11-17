@@ -2,9 +2,9 @@ from pathlib import Path
 
 import duckdb
 
-from crc_sdk.connectors.duckdb import ensure_extensions, sql_quote
-from crc_sdk.connectors.duckdb.connection import fetch_one_row
-from crc_sdk.geometry import (
+from crc_sdk._connectors.duckdb import ensure_extensions, sql_quote
+from crc_sdk._connectors.duckdb.connection import fetch_one_row
+from crc_sdk._geometry import (
     build_border_hexes_sql,
     build_coverage_sql,
     build_edge_hexes_sql,
@@ -172,7 +172,7 @@ def test_single_candidate_edge_hex_gets_partial_coverage() -> None:
 
 
 def test_materialize_edge_hexes_batches_without_full_hex_geoms() -> None:
-    from crc_sdk.geometry import materialize_edge_hexes
+    from crc_sdk._geometry import materialize_edge_hexes
 
     con = duckdb.connect()
     ensure_extensions(con, "spatial", "h3")
@@ -234,7 +234,7 @@ def test_materialize_edge_hexes_batches_without_full_hex_geoms() -> None:
 
 
 def test_recommend_parent_resolution() -> None:
-    from crc_sdk.geometry import recommend_parent_resolution
+    from crc_sdk._geometry import recommend_parent_resolution
 
     assert recommend_parent_resolution(5) is None
     assert recommend_parent_resolution(6) == 4
@@ -244,7 +244,7 @@ def test_recommend_parent_resolution() -> None:
 def test_hierarchical_coverage_interior_parent_skips_child_geoms(
     tmp_path: Path,
 ) -> None:
-    from crc_sdk.geometry import write_hierarchical_coverage
+    from crc_sdk._geometry import write_hierarchical_coverage
 
     con = duckdb.connect()
     ensure_extensions(con, "spatial", "h3")
@@ -292,7 +292,7 @@ def test_hierarchical_coverage_interior_parent_skips_child_geoms(
 def test_write_exploded_coverage_dispatches_hierarchical(
     tmp_path: Path,
 ) -> None:
-    from crc_sdk.geometry import write_exploded_coverage
+    from crc_sdk._geometry import write_exploded_coverage
 
     con = duckdb.connect()
     ensure_extensions(con, "spatial", "h3")
@@ -339,7 +339,7 @@ def test_hierarchical_coverage_keeps_contained_children_of_boundary_parent(
     tmp_path: Path,
 ) -> None:
     """Parent fails ST_Contains while its only candidate child is contained."""
-    from crc_sdk.geometry import write_hierarchical_coverage
+    from crc_sdk._geometry import write_hierarchical_coverage
 
     con = duckdb.connect()
     ensure_extensions(con, "spatial", "h3")
@@ -385,7 +385,7 @@ def test_hierarchical_coverage_keeps_contained_children_of_boundary_parent(
 
 
 def test_hierarchical_coverage_leaves_no_hex_geom_tables(tmp_path: Path) -> None:
-    from crc_sdk.geometry import write_hierarchical_coverage
+    from crc_sdk._geometry import write_hierarchical_coverage
 
     con = duckdb.connect()
     ensure_extensions(con, "spatial", "h3")
@@ -430,7 +430,7 @@ def test_hierarchical_coverage_leaves_no_hex_geom_tables(tmp_path: Path) -> None
 def test_hierarchical_coverage_boundary_parent_gets_partial_pct(
     tmp_path: Path,
 ) -> None:
-    from crc_sdk.geometry import write_hierarchical_coverage
+    from crc_sdk._geometry import write_hierarchical_coverage
 
     con = duckdb.connect()
     ensure_extensions(con, "spatial", "h3")
@@ -474,7 +474,7 @@ def test_hierarchical_coverage_boundary_parent_gets_partial_pct(
 def test_coverage_leaves_callers_tables_and_no_persistent_objects(
     tmp_path: Path,
 ) -> None:
-    from crc_sdk.geometry import write_exploded_coverage
+    from crc_sdk._geometry import write_exploded_coverage
 
     con = duckdb.connect(str(tmp_path / "user.duckdb"))
     ensure_extensions(con, "spatial", "h3")

@@ -1,0 +1,308 @@
+"""Generate canonical dataset schema and shared conformance fixtures."""
+
+from __future__ import annotations
+
+import argparse
+import json
+from copy import deepcopy
+from dataclasses import replace
+from pathlib import Path
+
+from crc_framework import (
+    Distribution,
+    DistributionFamily,
+    FitError,
+    QuantileCurve,
+    SampleEstimator,
+    SampleFit,
+    Tail,
+    TailCompletion,
+    fit_samples,
+)
+
+from crc_sdk._dataset_schema import (
+    DatasetMetadata,
+    ExecutionCounts,
+    ExecutionReport,
+    ResourceIdentity,
+    RetainedFailure,
+    SourceIdentity,
+    SpatialContract,
+    SupportKind,
+)
+from crc_sdk._declarations import (
+    DataSpec,
+    Period,
+    Probability,
+    Scenario,
+    SeriesSpec,
+    Variable,
+)
+from crc_sdk._schema import DatasetRow, dataset_to_json
+from crc_sdk._schema.contract import dataset_json_schema
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def fixture_cases() -> dict[str, object]:
+    variable = Variable("user:depth")
+    metadata = DatasetMetadata(
+        spec=DataSpec([variable], series=[SeriesSpec(variable)]),
+        spatial=SpatialContract(supports=(SupportKind.CELL,), index_resolution=4),
+        report=ExecutionReport(
+            True, True, counts=ExecutionCounts(requested=1, produced=1)
+        ),
+    )
+    row = DatasetRow(
+        variable.id,
+        "user:support",
+        594475228122316799,
+        curve=Distribution.point_mass(1),
+    )
+    minimal = json.loads(dataset_to_json([row], metadata))
+    accepted = [{"name": "optional-dimensions", "document": minimal}]
+    window = Period.window(2030, 2050)
+    scenario = Scenario("user:scenario", definition={"warming": 2})
+    series = SeriesSpec(
+        variable,
+        scenario=scenario,
+        period=window,
+        probability=Probability.annual(tail=Tail.UPPER),
+    )
+    declared = replace(metadata, spec=DataSpec([variable], series=[series]))
+    declared_row = replace(
+        row,
+        scenario_id=scenario.id,
+        period_id=window.id,
+        curve=QuantileCurve([0.9, 0.99], [0.5, 2]),
+    )
+    annual = json.loads(dataset_to_json([declared_row], declared))
+    accepted.append({"name": "annual-window", "document": annual})
+    curve = QuantileCurve([0.9, 0.99], [0.5, 2]).complete(
+        TailCompletion(lower=0, upper=4)
+    )
+    accepted.append(
+        {
+            "name": "explicit-completion",
+            "document": json.loads(
+                dataset_to_json([replace(row, curve=curve)], metadata)
+            ),
+        }
+    )
+    law = Distribution.parametric(DistributionFamily.GUMBEL_RIGHT, location=0, scale=1)
+    accepted.append(
+        {
+            "name": "hurdle",
+            "document": json.loads(
+                dataset_to_json(
+                    [
+                        replace(
+                            row, curve=Distribution.hurdle(law, atom_probability=0.25)
+                        )
+                    ],
+                    metadata,
+                )
+            ),
+        }
+    )
+    fit = fit_samples(
+        [1, 2, 3, 4, 5, 6, 7, 8],
+        SampleFit(
+            family=DistributionFamily.GUMBEL_RIGHT, estimator=SampleEstimator.L_MOMENTS
+        ),
+    )
+    fitted = json.loads(
+        dataset_to_json(
+            [replace(row, curve=fit.distribution, fit=fit.record)], metadata
+        )
+    )
+    accepted.append({"name": "authoritative-fit-record", "document": fitted})
+    try:
+        fit_samples([1] * 8, SampleFit(family=DistributionFamily.GUMBEL_RIGHT))
+    except FitError as error:
+        failure = RetainedFailure.from_error(error)
+    else:
+        raise AssertionError("constant MLE must fail explicitly")
+    failed_info = replace(
+        metadata,
+        report=ExecutionReport(
+            True, True, counts=ExecutionCounts(requested=1, produced=1, no_data=1)
+        ),
+    )
+    failed = json.loads(
+        dataset_to_json([replace(row, curve=None, failure=failure)], failed_info)
+    )
+    accepted.append({"name": "retained-fit-failure", "document": failed})
+    source_info = replace(
+        metadata,
+        source=SourceIdentity(
+            "provider:user",
+            "product:user",
+            resources=(
+                ResourceIdentity("s3://example/observations", "sha256:" + "a" * 64),
+            ),
+            member="member:1",
+        ),
+    )
+    accepted.append(
+        {
+            "name": "typed-source-resource",
+            "document": json.loads(dataset_to_json([row], source_info)),
+        }
+    )
+    empty_info = replace(metadata, report=ExecutionReport(True, True))
+    accepted.append(
+        {
+            "name": "empty-dataset",
+            "document": json.loads(dataset_to_json([], empty_info)),
+        }
+    )
+    rejected = []
+
+    def reject(name, document, structural):
+        rejected.append({"name": name, "structural": structural, "document": document})
+
+    value = deepcopy(minimal)
+    value["metadata"]["schema_version"] = "1.3"
+    reject("historical-dataset-version", value, True)
+    value = deepcopy(minimal)
+    value["metadata"]["value_unit"] = "m"
+    reject("removed-global-unit", value, True)
+    value = deepcopy(minimal)
+    value["rows"][0]["hazard_name"] = "depth"
+    reject("removed-row-alias", value, True)
+    value = deepcopy(minimal)
+    value["rows"][0]["curve"]["scale"] = 0
+    reject("inactive-point-mass-field", value, True)
+    value = deepcopy(minimal)
+    value["rows"][0]["geometry"] = None
+    reject("null-optional-geometry", value, True)
+    value = deepcopy(minimal)
+    value["rows"][0]["failure"] = failed["rows"][0]["failure"]
+    reject("curve-and-failure", value, True)
+    value = deepcopy(minimal)
+    value["rows"][0]["cell_id"] = 0
+    reject("invalid-h3-cell", value, False)
+    value = deepcopy(minimal)
+    value["rows"].append(deepcopy(value["rows"][0]))
+    value["metadata"]["report"]["counts"]["produced"] = 2
+    reject("duplicate-null-row-key", value, False)
+    value = deepcopy(minimal)
+    value["rows"][0]["scenario_id"] = "not-declared"
+    reject("dangling-row-scenario", value, False)
+    value = deepcopy(minimal)
+    value["metadata"]["spec"]["series"][0]["variable_id"] = "not-declared"
+    reject("dangling-series-variable", value, False)
+    value = deepcopy(annual)
+    value["metadata"]["spec"]["periods"][0]["start"] = 2020
+    reject("period-content-identity-mismatch", value, False)
+    value = deepcopy(minimal)
+    value["metadata"]["report"]["counts"]["produced"] = 2
+    reject("incorrect-produced-count", value, False)
+    value = deepcopy(minimal)
+    value["metadata"]["report"]["counts"]["no_data"] = 1
+    reject("incorrect-no-data-count", value, False)
+    value = deepcopy(fitted)
+    value["rows"][0]["curve"]["family"] = "gumbel_l"
+    reject("fit-family-mismatch", value, False)
+    value = deepcopy(accepted[6]["document"])
+    value["metadata"]["source"]["resources"][0]["sha256"] = "not-a-hash"
+    reject("invalid-resource-digest", value, True)
+    geometry_cases = json.loads(
+        (ROOT / "crc_sdk/contracts/fixtures/geometry-cases.json").read_text()
+    )
+    for case in geometry_cases:
+        document = deepcopy(minimal)
+        document["metadata"]["spatial"]["supports"] = case["supports"]
+        document["rows"] = []
+        count = len(case["geometries"])
+        document["metadata"]["report"]["counts"].update(requested=count, produced=count)
+        for index, geometry in enumerate(case["geometries"]):
+            value = deepcopy(minimal["rows"][0])
+            if index:
+                value["variable_id"] = f"second:{index}"
+                document["metadata"]["spec"]["variables"].append(
+                    {"id": value["variable_id"]}
+                )
+                document["metadata"]["spec"]["series"].append(
+                    {
+                        "variable_id": value["variable_id"],
+                        "scenario_id": None,
+                        "period_id": None,
+                    }
+                )
+            value["geometry"] = geometry
+            document["rows"].append(value)
+        item = {"name": case["name"], "document": document}
+        if case["valid"]:
+            accepted.append(item)
+        else:
+            item["structural"] = False
+            rejected.append(item)
+    value = deepcopy(minimal)
+    value["metadata"]["report"]["counts"]["produced"] = 1.0
+    value["metadata"]["spatial"]["index_resolution"] = 4.0
+    accepted.append({"name": "integral-json-number-spelling", "document": value})
+    source_document = next(
+        item["document"] for item in accepted if item["name"] == "typed-source-resource"
+    )
+    prose = deepcopy(source_document)
+    resource = prose["metadata"]["source"]["resources"][0]
+    resource["license"] = "  Source license text\n"
+    resource["attribution"] = "\nOriginal scientists\n"
+    prose["metadata"]["report"]["diagnostics"].append(
+        {
+            "code": "source.note",
+            "severity": "info",
+            "stage": "acquisition",
+            "message": "\nsource message  ",
+            "remedy": "  inspect source\n",
+        }
+    )
+    accepted.append({"name": "literal-source-and-diagnostic-prose", "document": prose})
+    timed = deepcopy(source_document)
+    timed["metadata"]["source"]["resources"][0]["retrieved_at"] = "2026-01-01t00:00:00z"
+    accepted.append({"name": "rfc3339-retrieval-time", "document": timed})
+    for name, timestamp in (
+        ("retrieval-space-separator", "2026-01-01 00:00:00+00:00"),
+        ("retrieval-missing-seconds", "2026-01-01T00:00+00:00"),
+        ("retrieval-week-date", "2026-W01-4T00:00:00+00:00"),
+    ):
+        value = deepcopy(source_document)
+        value["metadata"]["source"]["resources"][0]["retrieved_at"] = timestamp
+        reject(name, value, True)
+    return {"accepted": accepted, "rejected": rejected}
+
+
+def build() -> dict[str, bytes]:
+    values = {
+        "schemas/dataset-2.0.schema.json": dataset_json_schema(),
+        "fixtures/dataset-2.0.json": fixture_cases(),
+    }
+    return {
+        name: (json.dumps(value, indent=2, allow_nan=False) + "\n").encode()
+        for name, value in values.items()
+    }
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--check", action="store_true")
+    args = parser.parse_args()
+    for relative, content in build().items():
+        path = ROOT / "crc_sdk/contracts" / relative
+        if args.check:
+            if not path.exists() or path.read_bytes() != content:
+                raise SystemExit(f"stale generated dataset contract: {relative}")
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+    print(
+        "Dataset schema and shared fixtures verified"
+        if args.check
+        else "Dataset schema and shared fixtures generated"
+    )
+
+
+if __name__ == "__main__":
+    main()

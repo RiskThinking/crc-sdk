@@ -19,14 +19,19 @@ uv run ruff check .
 uv run ruff format --check .
 ```
 
-Without uv: `python -m venv .venv && .venv/bin/pip install -e ".[zarr,netcdf,raster,geometry,test]"`.
+Without uv: `python -m venv .venv && .venv/bin/pip install -e ".[zarr,netcdf,raster,test]"`.
 
-Tests are offline by default. Opt-in live checks:
-`CRC_OPEN_LIVE=1 uv run pytest -q tests/test_crc_open_public.py`.
+Tests use offline source fixtures. Generated dataset and catalog resources are
+checked together with the paired framework contracts:
+
+```sh
+uv run python tools/generate_dataset_contracts.py --check
+uv run pytest -q tests/test_dataset_schema.py tests/test_declarations.py tests/test_catalog.py
+```
 
 ## Conventions
 
-- Plans are immutable; builders and `explain()` must not do I/O.
+- Recipes are immutable; builders and `explain()` must not do I/O.
 - Optional dependencies are imported lazily and raise an `ImportError` naming
   the extra.
 - Every adapter records licence, attribution, retrieval time and checksums in

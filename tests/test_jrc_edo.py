@@ -7,10 +7,9 @@ import h5netcdf  # type: ignore[import-untyped]
 import numpy as np
 import pytest
 
-from crc_sdk.connectors import EDOIngestPolicy, canonicalize_edo_drought
-from crc_sdk.connectors.duckdb.netcdf import EDOAnnualMinimaCurveSource, NetCDFRaster
-from crc_sdk.connectors.duckdb.zarr import RasterMetadata
-from crc_sdk.providers.jrc_edo import SMI, EDOProvider
+from crc_sdk._connectors.duckdb.netcdf import EDOAnnualMinimaCurveSource, NetCDFRaster
+from crc_sdk._connectors.duckdb.zarr import RasterMetadata
+from crc_sdk._providers.jrc_edo import SMI, EDOProvider
 
 _LAT = np.array([1.0, 0.0], dtype=np.float64)
 _LON = np.array([10.0, 11.0], dtype=np.float64)
@@ -78,19 +77,6 @@ def _metadata(years: tuple[int, ...] = _YEARS) -> RasterMetadata:
     )
 
 
-def _policy(**overrides: object) -> EDOIngestPolicy:
-    defaults = dict(
-        h3_resolution=9,
-        family="gumbel_r",
-        tail="lower",
-        producer="tests",
-        creation_version="1",
-        on_fit_failure="skip",
-    )
-    defaults.update(overrides)
-    return EDOIngestPolicy(**defaults)  # type: ignore[arg-type]
-
-
 def test_grid_mismatch_raises(tmp_path: Path) -> None:
     rasters = _open_years(tmp_path, years=(2018, 2019))
     shifted_path = _write_year(tmp_path / "shifted.nc", 2020)
@@ -106,47 +92,6 @@ def test_grid_mismatch_raises(tmp_path: Path) -> None:
         EDOAnnualMinimaCurveSource(
             rasters=rasters, metadata=_metadata((2018, 2019, 2020))
         )
-
-
-def test_annual_minima_curve_fits_lower_tail(tmp_path: Path) -> None:
-    rasters = _open_years(tmp_path)
-    with EDOAnnualMinimaCurveSource(rasters=rasters, metadata=_metadata()) as source:
-        table = canonicalize_edo_drought(source, _policy()).read_all()
-
-    assert table.num_rows > 0
-    assert set(table["curve_kind"].to_pylist()) == {"fitted"}
-    assert set(table["hazard_name"].to_pylist()) == {"Drought"}
-    assert set(table["pathway"].to_pylist()) == {"historical"}
-    # Column 0's flat pixels (both rows) have zero variance across years
-    # and should not survive the fit; only column 1's two varying pixels
-    # (row 0 and its row-1 duplicate) should remain.
-    assert len(set(table["source_id"].to_pylist())) == 2
-
-
-def test_lower_tail_reconstructs_more_severe_value_at_higher_return_period(
-    tmp_path: Path,
-) -> None:
-    from crc_sdk.workflows import curve_quantiles_at, return_periods_to_probabilities
-
-    rasters = _open_years(tmp_path)
-    with EDOAnnualMinimaCurveSource(rasters=rasters, metadata=_metadata()) as source:
-        table = canonicalize_edo_drought(source, _policy()).read_all()
-
-    common, rare = return_periods_to_probabilities([2, 50], tail="lower")
-    common_values = curve_quantiles_at(table, common)
-    rare_values = curve_quantiles_at(table, rare)
-
-    rare_value, common_value = rare_values[0], common_values[0]
-    assert rare_value is not None and common_value is not None
-    # A rarer drought (higher return period) means a lower (more severe) SMI.
-    assert rare_value < common_value
-
-
-def test_on_fit_failure_raise_aborts_on_constant_pixel(tmp_path: Path) -> None:
-    rasters = _open_years(tmp_path)
-    with EDOAnnualMinimaCurveSource(rasters=rasters, metadata=_metadata()) as source:
-        with pytest.raises(ValueError, match="failed to fit source pixel"):
-            canonicalize_edo_drought(source, _policy(on_fit_failure="raise")).read_all()
 
 
 def test_missing_year_is_dropped_not_zero_filled(tmp_path: Path) -> None:
@@ -169,15 +114,9 @@ def test_missing_year_is_dropped_not_zero_filled(tmp_path: Path) -> None:
     assert all(curve.axis_values.size == 4 for curve in varying_pixels)
 
 
-def test_edo_ingest_policy_is_curve_fit_ingest_policy() -> None:
-    from crc_sdk.connectors import CurveFitIngestPolicy
-
-    assert EDOIngestPolicy is CurveFitIngestPolicy
-
-
 def test_provider_resolves_latest_configured_version(tmp_path: Path) -> None:
     provider = EDOProvider(SMI, work_dir=tmp_path)
-    with patch("crc_sdk.providers.jrc_edo.urlopen") as mock_urlopen:
+    with patch("crc_sdk._providers.jrc_edo.urlopen") as mock_urlopen:
         mock_urlopen.return_value.__enter__.return_value.read.return_value = (
             b'<a href="ver2-0-0/">old</a><a href="ver3-0-1/">current</a>'
         )
@@ -191,7 +130,7 @@ def test_provider_discovers_only_complete_year_files(tmp_path: Path) -> None:
         <a href="sminx_m_eul_20250101_20251221_t.nc">2025</a>
         <a href="sminx_m_eul_20260101_20260801_t.nc">partial</a>
     """
-    with patch("crc_sdk.providers.jrc_edo.urlopen") as mock_urlopen:
+    with patch("crc_sdk._providers.jrc_edo.urlopen") as mock_urlopen:
         mock_urlopen.return_value.__enter__.return_value.read.return_value = listing
         assert provider.complete_years() == (2024, 2025)
 
@@ -204,7 +143,7 @@ def test_year_url_uses_the_listed_end_dekad(tmp_path: Path) -> None:
         <a href="sminx_m_eul_20230101_20231231_t.nc">2023</a>
         <a href="sminx_m_eul_20240101_20241221_t.nc">2024</a>
     """
-    with patch("crc_sdk.providers.jrc_edo.urlopen") as mock_urlopen:
+    with patch("crc_sdk._providers.jrc_edo.urlopen") as mock_urlopen:
         mock_urlopen.return_value.__enter__.return_value.read.return_value = listing
         assert provider.complete_years() == (2023, 2024)
     request = mock_urlopen.call_args.args[0]

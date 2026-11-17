@@ -2,7 +2,7 @@ from pathlib import Path
 
 import duckdb
 
-from crc_sdk.geometry import (
+from crc_sdk._geometry import (
     LookupCatalog,
     write_lookup_contract,
     write_partitioned_lookup,
