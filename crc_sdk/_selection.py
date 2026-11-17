@@ -18,6 +18,13 @@ from shapely import from_wkb  # type: ignore[import-untyped]
 from shapely.affinity import translate  # type: ignore[import-untyped]
 from shapely.geometry import box  # type: ignore[import-untyped]
 
+from ._aggregation import (
+    Sampling,
+    TemporalReduction,
+    TimestampPosition,
+    _date,
+    _position,
+)
 from ._dataset_schema import (
     IdentityKind,
     IdentityRename,
@@ -36,7 +43,7 @@ from ._declarations import (
     Variable,
     scientific_identity,
 )
-from ._inspection import Bounds, SeriesReference
+from ._inspection import Bounds, SeriesReference, StationReference
 from ._schema.dataset import DatasetRow
 
 if TYPE_CHECKING:
@@ -50,13 +57,17 @@ ScenarioSelector: TypeAlias = Scenario | str | Sequence[Scenario | str] | None
 PeriodSelector: TypeAlias = Period | Sequence[Period] | None
 SeriesSelector: TypeAlias = SeriesReference | Sequence[SeriesReference] | None
 IdentifierSelector: TypeAlias = str | Sequence[str] | None
-ConvertibleUnit: TypeAlias = (
+StationSelector: TypeAlias = (
+    StationReference | str | Sequence[StationReference | str] | None
+)
+Unit: TypeAlias = (
     crc_framework.LengthUnit
     | crc_framework.TimeUnit
     | crc_framework.RatioUnit
     | crc_framework.TemperatureUnit
     | crc_framework.SpeedUnit
     | crc_framework.PrecipitationRateUnit
+    | crc_framework.DegreeDayUnit
 )
 
 SeriesKey: TypeAlias = tuple[str, str | None, str | None]
@@ -103,11 +114,18 @@ def _identities(
     return tuple(result)
 
 
-def _stations(value: IdentifierSelector) -> tuple[str, ...] | None:
+def _stations(value: StationSelector) -> tuple[str, ...] | None:
     if value is None:
         return None
-    values = (value,) if isinstance(value, str) else _sequence(value)
-    return tuple(_identifier(item, "station id") for item in values)
+    values = (
+        (value,) if isinstance(value, (str, StationReference)) else _sequence(value)
+    )
+    return tuple(
+        _identifier(
+            item.id if isinstance(item, StationReference) else item, "station id"
+        )
+        for item in values
+    )
 
 
 def _reference_document(
@@ -130,6 +148,8 @@ def _reference_document(
                 "id": value.release.id,
                 "sha256": value.release.sha256,
             }
+        if value.probability is not None:
+            result["probability"] = value.probability._document()
         return result
     return {"id": value.id, "science": scientific_identity(value)}
 
@@ -161,7 +181,7 @@ class SelectionState:
         periods: PeriodSelector | types.EllipsisType = ...,
         series: SeriesSelector | types.EllipsisType = ...,
         area: Bounds | None | types.EllipsisType = ...,
-        stations: IdentifierSelector | types.EllipsisType = ...,
+        stations: StationSelector | types.EllipsisType = ...,
         time: Period | None | types.EllipsisType = ...,
     ) -> SelectionState:
         if area is not ... and area is not None and not isinstance(area, Bounds):
@@ -234,6 +254,7 @@ class SelectionState:
                     (item.variable, reference.variable),
                     (item.scenario, reference.scenario),
                     (item.period, reference.period),
+                    (item.probability, reference.probability),
                 ):
                     if actual is not None and requested is not None:
                         if scientific_identity(actual) != scientific_identity(
@@ -344,14 +365,27 @@ class ResolvedSelection:
             }
         )
 
-    def matches_record(self, row: Mapping[str, object]) -> bool:
+    def matches_record(
+        self, row: Mapping[str, object], *, sampling: Sampling | None = None
+    ) -> bool:
         key = (row.get("variable_id"), row.get("scenario_id"), row.get("period_id"))
         if key not in self.keys:
             return False
-        if self.stations is not None and row.get("support_id") not in self.stations:
+        if (
+            self.stations is not None
+            and (row.get("station_id") or row.get("support_id")) not in self.stations
+        ):
             return False
-        if self.time is not None and not _in_time(row.get("time"), self.time):
-            return False
+        if self.time is not None:
+            time = row.get("time")
+            coordinate = row.get("coordinate")
+            if isinstance(coordinate, Mapping) and coordinate.get("kind") == "time":
+                time = coordinate.get("time")
+            if sampling is not None and sampling.timestamp is TimestampPosition.END:
+                ordinal, _ = _position(str(time), sampling)
+                time = _date(ordinal, sampling.calendar)[0]
+            if not _in_time(time, self.time):
+                return False
         return self.area is None or support_intersects(
             self.area,
             geometry=cast(bytes | None, row.get("geometry")),
@@ -616,6 +650,18 @@ def selected_metadata(metadata: MetadataT, selected: ResolvedSelection) -> Metad
     scenarios = {item.id for item in selected.spec.scenarios}
     retained: list[Transformation] = []
     for step in reversed(metadata.provenance):
+        if isinstance(step, TemporalReduction):
+            retained.append(
+                replace(
+                    step,
+                    measurements=tuple(
+                        change
+                        for change in step.measurements
+                        if change.variable_id in variables
+                    ),
+                )
+            )
+            continue
         if isinstance(step, ObservationTimeSelection):
             retained.append(step)
             continue
@@ -666,6 +712,8 @@ _UNITS: dict[str, tuple[str, float, float]] = {
     "km/h": ("speed", 1.0 / 3.6, 0.0),
     "mm/day": ("precipitation_rate", 1.0 / 86400.0, 0.0),
     "mm/h": ("precipitation_rate", 1.0 / 3600.0, 0.0),
+    "K.d": ("degree_days", 1.0, 0.0),
+    "degC.d": ("degree_days", 1.0, 0.0),
 }
 _UNIT_TYPES = (
     crc_framework.LengthUnit,
@@ -674,6 +722,7 @@ _UNIT_TYPES = (
     crc_framework.TemperatureUnit,
     crc_framework.SpeedUnit,
     crc_framework.PrecipitationRateUnit,
+    crc_framework.DegreeDayUnit,
 )
 
 
@@ -681,7 +730,7 @@ def conversion_spec(
     spec: DataSpec,
     *,
     variable: Variable | str,
-    unit: ConvertibleUnit,
+    unit: Unit,
 ) -> tuple[DataSpec, UnitConversion | None]:
     if not isinstance(unit, _UNIT_TYPES):
         raise TypeError("unit must be a typed framework unit")
@@ -765,7 +814,7 @@ def conversion_metadata(
     metadata: MetadataT,
     *,
     variable: Variable | str,
-    unit: ConvertibleUnit,
+    unit: Unit,
 ) -> tuple[MetadataT, UnitConversion | None]:
     spec, conversion = conversion_spec(metadata.spec, variable=variable, unit=unit)
     return (

@@ -15,12 +15,13 @@ import json
 import re
 import sys
 import tomllib
+import types
 from collections.abc import Mapping
 from enum import Enum
 from importlib.resources import files
 from importlib.resources.abc import Traversable
 from pathlib import Path
-from typing import Any, get_args, get_origin
+from typing import Any, ForwardRef, Literal, TypeVar, Union, get_args, get_origin
 
 ROOT = Path(__file__).resolve().parents[2]
 CONTRACTS = ROOT / "crc_sdk" / "contracts" / "api"
@@ -45,6 +46,7 @@ BUILTINS = {
     "AbstractContextManager",
     "Enum",
     "Path",
+    "Literal",
 }
 PARAMETER_KINDS = {
     "positional_only": inspect.Parameter.POSITIONAL_ONLY,
@@ -470,18 +472,48 @@ def check_versions(release: Mapping[str, Any], root: Path = ROOT) -> None:
 def _normalized_annotation(value: Any) -> str:
     if value is inspect.Signature.empty:
         return "<missing>"
+    if isinstance(value, ForwardRef):
+        value = value.__forward_arg__
     if isinstance(value, str):
         return (
             re.sub(r"\s+", "", value)
             .replace("typing.", "")
+            .replace("typing_extensions.", "")
+            .replace("cf.", "")
             .replace("crc_framework.", "")
             .replace("crc_sdk.", "")
             .replace("pa.", "pyarrow.")
             .replace("datetime.datetime", "datetime")
         )
-    if value is None:
+    if value is None or value is type(None):
         return "None"
-    return re.sub(r"\s+", "", inspect.formatannotation(value)).replace("typing.", "")
+    if value is Ellipsis:
+        return "..."
+    if isinstance(value, TypeVar):
+        return value.__name__
+    if isinstance(value, Enum):
+        return f"{type(value).__qualname__}.{value.name}"
+    origin = get_origin(value)
+    arguments = get_args(value)
+    if origin is Literal:
+        return "Literal[" + ",".join(_normalized_annotation(v) for v in arguments) + "]"
+    if origin in (Union, types.UnionType):
+        return "|".join(_normalized_annotation(v) for v in arguments)
+    if origin is not None:
+        name = getattr(value, "_name", None) or getattr(origin, "__qualname__", None)
+        if isinstance(name, str):
+            return (
+                name
+                + "["
+                + ",".join(_normalized_annotation(v) for v in arguments)
+                + "]"
+            )
+    if isinstance(value, type):
+        if value.__module__ == "builtins" or value.__module__.startswith(
+            ("crc_sdk", "crc_framework")
+        ):
+            return value.__qualname__
+    return _normalized_annotation(inspect.formatannotation(value))
 
 
 def _default_matches(actual: Any, expected: Any) -> bool:
@@ -489,7 +521,7 @@ def _default_matches(actual: Any, expected: Any) -> bool:
         if "enum" in expected:
             return (
                 isinstance(actual, Enum)
-                and f"{type(actual).__name__}.{actual.name}" == expected["enum"]
+                and f"{type(actual).__qualname__}.{actual.name}" == expected["enum"]
             )
         if "tuple" in expected:
             return isinstance(actual, tuple) and list(actual) == expected["tuple"]
@@ -507,14 +539,23 @@ def _specialized_annotation(value: Any, bindings: Mapping[str, str]) -> str:
 def _generic_bindings(owner: type) -> dict[str, str]:
     bindings: dict[str, str] = {}
     for base in owner.__mro__:
-        for declaration in getattr(base, "__orig_bases__", ()):
+        for declaration in vars(base).get("__orig_bases__", ()):
             origin = get_origin(declaration)
             for variable, argument in zip(
                 getattr(origin, "__parameters__", ()), get_args(declaration)
             ):
                 name = getattr(variable, "__name__", str(variable))
-                value = getattr(argument, "__name__", str(argument))
-                bindings[name] = bindings.get(value, value)
+                value = _specialized_annotation(argument, bindings)
+                if value != name:
+                    bindings[name] = value
+    for _ in range(len(bindings)):
+        updated = {
+            name: _specialized_annotation(value, bindings)
+            for name, value in bindings.items()
+        }
+        if updated == bindings:
+            break
+        bindings = updated
     return bindings
 
 

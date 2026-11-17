@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .._aggregation import temporal_reduction_schema
 from .._declarations import _schema_definitions
 
 NUMERICAL_SCHEMA = "https://climateriskcommons.org/schemas/numerical/1.0"
@@ -227,6 +228,11 @@ def dataset_json_schema() -> dict[str, object]:
         ["code", "severity", "stage", "message", "record"],
     )
     definitions["diagnostic"] = {"oneOf": [diagnostic, fitting_diagnostic]}
+    transformation = definitions["transformation"]
+    assert isinstance(transformation, dict)
+    variants = transformation["oneOf"]
+    assert isinstance(variants, list)
+    variants.append(temporal_reduction_schema())
     row = _record(
         {
             "variable_id": identifier,

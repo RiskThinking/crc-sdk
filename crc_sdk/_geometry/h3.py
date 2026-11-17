@@ -267,25 +267,38 @@ def cell_polygon(cell_index: int) -> Any:
     split at +/-180 degrees, not as a polygon wrapping the other way around
     the globe.
     """
-    h3, Polygon, _ = _libraries()
-    boundary = h3.cell_to_boundary(h3.int_to_str(cell_index))
-    points = [(longitude, latitude) for latitude, longitude in boundary]
-    longitudes = [longitude for longitude, _ in points]
-    if max(longitudes) - min(longitudes) <= 180.0:
-        return Polygon(points)
+    h3, Polygon, unary_union = _libraries()
+    index = h3.int_to_str(cell_index)
+    boundary = h3.cell_to_boundary(index)
+    points: list[tuple[float, float]] = []
+    for latitude, longitude in boundary:
+        if points:
+            longitude += 360 * round((points[-1][0] - longitude) / 360)
+        points.append((longitude, latitude))
+    resolution = h3.get_resolution(index)
+    north = h3.latlng_to_cell(90, 0, resolution) == index
+    south = h3.latlng_to_cell(-90, 0, resolution) == index
+    if north or south:
+        first_lng, first_lat = points[0]
+        closing_lng = first_lng + 360 * round((points[-1][0] - first_lng) / 360)
+        pole = 90.0 if north else -90.0
+        points.extend(
+            [(closing_lng, first_lat), (closing_lng, pole), (first_lng, pole)]
+        )
+    polygon = Polygon(points)
     from shapely.affinity import translate  # type: ignore[import-untyped]
-    from shapely.geometry import MultiPolygon, box
+    from shapely.geometry import box
 
-    shifted = Polygon([(lng + 360.0 if lng < 0.0 else lng, lat) for lng, lat in points])
-    east = shifted.intersection(box(-180.0, -90.0, 180.0, 90.0))
-    west = translate(shifted.intersection(box(180.0, -90.0, 540.0, 90.0)), -360.0)
-    parts = [
-        part
-        for piece in (east, west)
-        for part in getattr(piece, "geoms", [piece])
-        if isinstance(part, Polygon) and not part.is_empty
-    ]
-    return MultiPolygon(parts)
+    world = box(-180, -90, 180, 90)
+    parts: list[Any] = []
+    for offset in (-720, -360, 0, 360, 720):
+        piece = translate(polygon, xoff=offset).intersection(world)
+        parts.extend(
+            part
+            for part in getattr(piece, "geoms", [piece])
+            if isinstance(part, Polygon) and not part.is_empty and part.area > 0
+        )
+    return unary_union(parts)
 
 
 def antimeridian_safe_sql(geometry: str) -> str:

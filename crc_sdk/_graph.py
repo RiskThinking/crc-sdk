@@ -65,6 +65,7 @@ class NodeStream(Generic[MetadataT]):
     report: Callable[[], ExecutionReport] | None = None
     final_metadata: Callable[[], MetadataT] | None = None
     close: Callable[[], None] | None = None
+    checked: bool = False
 
 
 class Node(ABC, Generic[MetadataT]):
@@ -288,11 +289,16 @@ class ExecutionScope:
         self._open_failures: dict[str, BaseException] = {}
         self._opening: set[str] = set()
         self._pins: dict[str, Path] = {}
+        self._source_memo: dict[
+            tuple[str, str | None], tuple[Path, ResourceIdentity, int]
+        ] = {}
+        self._asset_results: dict[str, object] = {}
         self._local_identities: dict[str, ResourceIdentity] = {}
         self._connection: duckdb.DuckDBPyConnection | None = None
         self._resources = ExitStack()
         self._closed = False
         self._entered = False
+        self._callback_error: BaseException | None = None
 
     def __enter__(self) -> Self:
         self._active()
@@ -344,7 +350,11 @@ class ExecutionScope:
         self._active()
         event = ProgressEvent(stage, completed, total)
         if self.runtime._progress is not None:
-            self.runtime._progress(event)
+            try:
+                self.runtime._progress(event)
+            except BaseException as error:
+                self._callback_error = error
+                raise
 
     def enter_context(self, resource: AbstractContextManager[ResourceT]) -> ResourceT:
         self._active()
@@ -375,6 +385,10 @@ class ExecutionScope:
             stream = node.open(self)
             if not isinstance(stream, NodeStream):
                 raise TypeError("Node.open must return NodeStream")
+            from ._source_io import SourceNode
+
+            if isinstance(node, SourceNode):
+                stream = node.checked(self, stream)
             directory = (
                 self.directory / "nodes" / hashlib.sha256(key.encode()).hexdigest()
             )

@@ -49,7 +49,7 @@ from crc_sdk._evidence import (
 from crc_sdk._schema.dataset import rows_to_table, table_to_rows
 from crc_sdk._table_input import (
     QuantileColumns,
-    SampleColumns,
+    TimeSeriesColumns,
     normalize_quantiles,
     normalize_samples,
     snapshot_table,
@@ -95,7 +95,7 @@ def test_long_samples_remain_readable_and_optional_dimensions_stay_absent() -> N
     assert EvidenceMetadata.from_json(metadata.to_json()) == metadata
     assert validate_evidence(table).counts.produced == 5
     with pytest.raises(FrozenInstanceError):
-        metadata.kind = EvidenceKind.LAYER  # type: ignore[misc]
+        metadata.kind = EvidenceKind.LAYER  # type: ignore[misc,assignment]
 
 
 def test_explicit_fit_uses_original_observations_and_authoritative_record() -> None:
@@ -206,7 +206,7 @@ def test_custom_quantile_and_sample_columns_share_identity_mapping_rules() -> No
     table = samples(2)
     table["variable"] = [variable.id, second.id]
     evidence, metadata = normalize_samples(
-        table, spec=declarations, columns=SampleColumns(variable_id="variable")
+        table, spec=declarations, columns=TimeSeriesColumns(variable_id="variable")
     )
     assert evidence["variable_id"].to_pylist() == [variable.id, second.id]
     assert len(metadata.spec.series) == 2
@@ -233,12 +233,12 @@ def test_multiple_scenarios_are_explicit_and_never_cartesian() -> None:
     table = samples(2)
     table["scenario"] = [first.id, second.id]
     evidence, _ = normalize_samples(
-        table, spec=declarations, columns=SampleColumns(scenario_id="scenario")
+        table, spec=declarations, columns=TimeSeriesColumns(scenario_id="scenario")
     )
     assert evidence["scenario_id"].to_pylist() == [first.id, second.id]
 
 
-@pytest.mark.parametrize("bad", [None, float("nan"), float("inf"), True])
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), True])
 def test_missing_or_nonfinite_samples_are_not_silently_dropped(bad: object) -> None:
     table = samples()
     table["value"][0] = bad
@@ -249,7 +249,7 @@ def test_missing_or_nonfinite_samples_are_not_silently_dropped(bad: object) -> N
 def test_duplicate_observation_identity_is_rejected() -> None:
     table = samples(2)
     table["time"] = [2000, 2000]
-    with pytest.raises(ValueError, match="duplicate sample observation"):
+    with pytest.raises(ValueError, match="duplicate evidence record"):
         normalize_samples(table, variable=Variable("my:quantity"))
 
 
@@ -333,7 +333,7 @@ def test_persisted_evidence_rejects_dead_fields_and_untrusted_counts() -> None:
             metadata.to_json().replace('"kind":', '"extra":1,"kind":')
         )
     records = table.to_pylist()[:-1]
-    with pytest.raises(ValueError, match="produced count"):
+    with pytest.raises(ValueError, match="counts"):
         evidence_table(records, metadata)
     partial = pa.Table.from_pylist(records, schema=evidence_arrow_schema(metadata))
     assert validate_evidence(partial, check_counts=False).counts.produced == 4

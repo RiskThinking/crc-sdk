@@ -1,20 +1,10 @@
-"""ECCC's published short-duration rainfall rates and station archives."""
+"""ECCC rainfall IDF constants and strict station-text decoding."""
 
 from __future__ import annotations
 
-import hashlib
-import io
 import math
 import re
-import shutil
-import tempfile
-import zipfile
-from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
-from typing import Any, cast
-from urllib.request import urlopen
-
-from ._http import http_request
+from typing import Any
 
 ROOT = "https://collaboration.cmc.ec.gc.ca/cmc/climate/Engineer_Climate/IDF"
 LICENCE = "OGL-Canada-2.0"
@@ -34,148 +24,6 @@ DURATIONS = {
     "12h": 720,
     "24h": 1440,
 }
-
-
-def archive_url(version: str, province: str) -> str:
-    if province not in PROVINCES:
-        raise ValueError(f"province must be one of {sorted(PROVINCES)}")
-    if version == "3.40":
-        return f"{ROOT}/idf_v3-40_2025-12-5.zip"
-    if version == "3.20":
-        if province in {"MB", "NS", "PE"}:
-            raise ValueError(f"release 3.20 has no {province} archive")
-        return (
-            f"{ROOT}/IDF_archive/idf_v-3.20_2021_3_26/IDF_Files_Fichiers/"
-            f"IDF_v-3.20_2021_03_26_{province}.zip"
-        )
-    raise ValueError("supported ECCC IDF releases are 3.20 and 3.40")
-
-
-class _RangeReader(io.RawIOBase):
-    """Seekable, validator-pinned HTTPS reads for ZIP central directories."""
-
-    #: Minimum bytes fetched per HTTP range request. zipfile issues many tiny
-    #: reads (30-byte local headers, names, 4 KiB data chunks); without a
-    #: read-ahead block every one of them was its own round trip.
-    BLOCK_BYTES = 1024 * 1024
-
-    def __init__(self, url: str) -> None:
-        super().__init__()
-        self.url = url
-        self.position = 0
-        self._block_start = 0
-        self._block = b""
-        with urlopen(http_request(url, method="HEAD"), timeout=60) as response:
-            self.size = int(response.headers["Content-Length"])
-            self.etag = response.headers.get("ETag")
-            self.last_modified = response.headers.get("Last-Modified")
-
-    def seekable(self) -> bool:
-        return True
-
-    def readable(self) -> bool:
-        return True
-
-    def tell(self) -> int:
-        return self.position
-
-    def seek(self, offset: int, whence: int = 0) -> int:
-        if whence not in (0, 1, 2):
-            raise ValueError("invalid ZIP seek origin")
-        position = offset + (0, self.position, self.size)[whence]
-        if position < 0:
-            raise ValueError("invalid ZIP seek")
-        self.position = position
-        return position
-
-    def read(self, size: int = -1) -> bytes:
-        end = self.size if size < 0 else min(self.position + size, self.size)
-        if end <= self.position:
-            return b""
-        block_end = self._block_start + len(self._block)
-        if not (self._block_start <= self.position and end <= block_end):
-            fetch_end = min(self.size, max(end, self.position + self.BLOCK_BYTES))
-            self._block = self._fetch(self.position, fetch_end)
-            self._block_start = self.position
-        offset = self.position - self._block_start
-        data = self._block[offset : offset + end - self.position]
-        self.position = end
-        return data
-
-    def _fetch(self, start: int, end: int) -> bytes:
-        """One validator-pinned range request for ``[start, end)``."""
-        headers = {"Range": f"bytes={start}-{end - 1}"}
-        if self.etag:
-            headers["If-Match"] = self.etag
-        elif self.last_modified:
-            headers["If-Unmodified-Since"] = self.last_modified
-        with urlopen(http_request(self.url, headers=headers), timeout=60) as response:
-            expected = f"bytes {start}-{end - 1}/{self.size}"
-            if (
-                response.status != 206
-                or response.headers.get("Content-Range") != expected
-            ):
-                raise RuntimeError("ECCC archive requires HTTP byte-range support")
-            data = response.read(end - start + 1)
-        if len(data) != end - start:
-            raise RuntimeError("incomplete ECCC archive range")
-        return cast(bytes, data)
-
-
-@contextmanager
-def _province_archive(
-    reader: _RangeReader, version: str, province: str
-) -> Iterator[tuple[zipfile.ZipFile, str]]:
-    with zipfile.ZipFile(reader) as outer:
-        if version == "3.20":
-            yield outer, ""
-        else:
-            member = f"idf_v3-40_2025-12-5/IDF_Files_Fichiers/{province}.zip"
-            with tempfile.TemporaryFile() as scratch:
-                with outer.open(member) as source:
-                    shutil.copyfileobj(source, scratch, length=1024 * 1024)
-                scratch.seek(0)
-                with zipfile.ZipFile(scratch) as inner:
-                    yield inner, member + "!"
-
-
-def fetch_stations(
-    version: str, province: str, stations: Sequence[str]
-) -> Iterator[tuple[str, bytes, dict[str, Any]]]:
-    """Yield selected raw station files; an empty selection reads the province."""
-    url = archive_url(version, province)
-    with (
-        _RangeReader(url) as reader,
-        _province_archive(reader, version, province) as pair,
-    ):
-        archive, prefix = pair
-        members: dict[str, str] = {}
-        for name in archive.namelist():
-            match = re.search(rf"_{province}_([A-Z0-9]{{7}})_.+\.txt$", name, re.I)
-            if match:
-                station = match[1].upper()
-                if station in members:
-                    raise ValueError(f"ambiguous ECCC station {station}")
-                members[station] = name
-        missing = set(stations) - members.keys()
-        if missing:
-            raise ValueError(
-                f"ECCC {province} release {version} has no stations {sorted(missing)}"
-            )
-        for station in sorted(stations or members):
-            member = members[station]
-            raw = archive.read(member)
-            yield (
-                station,
-                raw,
-                {
-                    "url": url,
-                    "member": prefix + member,
-                    "etag": reader.etag,
-                    "last_modified": reader.last_modified,
-                    "checksum": hashlib.sha256(raw).hexdigest(),
-                },
-            )
 
 
 def parse_station(raw: bytes, station: str, province: str) -> dict[str, Any]:

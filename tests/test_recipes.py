@@ -6,6 +6,7 @@ import hashlib
 import json
 from dataclasses import replace
 from pathlib import Path
+from typing import Literal
 
 import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
@@ -22,7 +23,17 @@ from crc_framework import (
     Tail,
 )
 
-from crc_sdk import _recipes
+from crc_sdk import (
+    EDO,
+    ERA5,
+    CRCOpen,
+    Layer,
+    NOAASeaLevel,
+    Observations,
+    Projections,
+    USDACropland,
+    _recipes,
+)
 from crc_sdk._dataset_schema import (
     ExecutionCounts,
     ExecutionReport,
@@ -40,12 +51,19 @@ from crc_sdk._declarations import (
     Variable,
 )
 from crc_sdk._errors import CapabilityError, ValidationError
-from crc_sdk._evidence import EvidenceMetadata, evidence_arrow_schema, fit_sample_table
+from crc_sdk._evidence import (
+    EvidenceKind,
+    EvidenceMetadata,
+    evidence_arrow_schema,
+    fit_sample_table,
+)
 from crc_sdk._graph import ExecutionScope, Node, NodeStream
-from crc_sdk._inspection import Bounds
+from crc_sdk._inspection import Bounds, Inspection
 from crc_sdk._recipes import CanonicalReader, Dataset, Samples
 from crc_sdk._runtime import Runtime
 from crc_sdk._schema import metadata_from_table, table_to_rows
+from crc_sdk._selection import SelectionState
+from crc_sdk._source_io import SourceNode
 from crc_sdk._table_input import QuantileColumns, normalize_samples
 
 
@@ -63,6 +81,81 @@ def sample_recipe() -> Samples:
     return Samples.from_table(
         raw_samples(), variable=Variable("my:rainfall", measurement=Ratio())
     )
+
+
+@pytest.mark.parametrize(
+    ("source", "kind"),
+    [
+        (CRCOpen(), Dataset),
+        (ERA5(), Samples),
+        (EDO(), Observations),
+        (NOAASeaLevel(), Projections),
+        (USDACropland(), Layer),
+    ],
+)
+def test_scientific_transforms_return_the_canonical_data_kind(
+    source: Dataset | Samples | Observations | Projections | Layer,
+    kind: type[Dataset]
+    | type[Samples]
+    | type[Observations]
+    | type[Projections]
+    | type[Layer],
+) -> None:
+    assert type(source.declare()) is kind
+    assert type(source.rename(variables={"source:value": "company:value"})) is kind
+    assert (
+        type(source.convert_units(variable="source:value", unit=LengthUnit.METRE))
+        is kind
+    )
+
+
+def test_inherited_user_input_constructors_return_canonical_kinds() -> None:
+    assert (
+        type(ERA5.from_table(raw_samples(), variable=Variable("user:rain"))) is Samples
+    )
+    supplied = CRCOpen.from_quantiles(
+        {
+            "support_id": ["a", "a"],
+            "longitude": [0, 0],
+            "latitude": [0, 0],
+            "probability": [0.9, 0.99],
+            "value": [1, 2],
+        },
+        variable=Variable("user:depth"),
+    )
+    assert type(supplied) is Dataset
+
+
+def test_transformed_and_fitted_inspection_uses_declared_source_metadata() -> None:
+    metadata = sample_recipe().read().metadata
+
+    class InspectedSource(SourceNode[EvidenceMetadata[Literal[EvidenceKind.SAMPLES]]]):
+        key = "inspection-without-data"
+        state = SelectionState()
+
+        def selected(self, state: SelectionState) -> InspectedSource:
+            return self
+
+        def inspection(self, scope: ExecutionScope) -> Inspection:
+            return Inspection(schema=evidence_arrow_schema(metadata))
+
+        def open(
+            self, scope: ExecutionScope
+        ) -> NodeStream[EvidenceMetadata[Literal[EvidenceKind.SAMPLES]]]:
+            raise AssertionError("inspection opened source data")
+
+    recipe = Samples._create(InspectedSource(), operations=())
+    transformed = recipe.convert_units(
+        variable="my:rainfall",
+        unit=RatioUnit.PERCENT,
+    ).rename(variables={"my:rainfall": "company:value"})
+    inspection = transformed.fit(
+        SampleFit(family=DistributionFamily.GUMBEL_RIGHT),
+    ).inspect()
+    assert inspection.series[0].variable.id == "company:value"
+    assert inspection.series[0].measurement == Ratio(unit=RatioUnit.PERCENT)
+    assert inspection.metadata is not None
+    assert len(inspection.metadata.provenance) == 2
 
 
 def fit_specification() -> SampleFit:
@@ -123,10 +216,12 @@ def test_explicit_execution_reuses_source_and_fit_for_all_terminals(
     source = samples._node
     calls = {"source": 0, "fit": 0}
 
-    class Counted(Node[EvidenceMetadata]):
+    class Counted(Node[EvidenceMetadata[Literal[EvidenceKind.SAMPLES]]]):
         key = source.key
 
-        def open(self, scope: ExecutionScope) -> NodeStream[EvidenceMetadata]:
+        def open(
+            self, scope: ExecutionScope
+        ) -> NodeStream[EvidenceMetadata[Literal[EvidenceKind.SAMPLES]]]:
             calls["source"] += 1
             return source.open(scope)
 

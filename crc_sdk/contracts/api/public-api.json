@@ -259,6 +259,12 @@
             "ANNUAL_MAXIMUM_FIVE_DAY_PRECIPITATION": "annual_maximum_five_day_precipitation"
           }
         }
+      },
+      "methods": {
+        "observations": {
+          "parameters": [],
+          "returns": "Observations"
+        }
       }
     },
     "CRCOpen": {
@@ -269,6 +275,12 @@
             "name": "release",
             "kind": "keyword_only",
             "annotation": "ReleaseReference | None",
+            "default": null
+          },
+          {
+            "name": "catalog",
+            "kind": "keyword_only",
+            "annotation": "LocalPath | None",
             "default": null
           }
         ],
@@ -721,7 +733,7 @@
               "default": null
             }
           ],
-          "returns": "Self"
+          "returns": "Dataset"
         },
         "validate": {
           "parameters": [
@@ -753,7 +765,7 @@
               "annotation": "LocalPath"
             }
           ],
-          "returns": "Self",
+          "returns": "Dataset",
           "binding": "class"
         },
         "select": {
@@ -834,7 +846,7 @@
               "default": null
             }
           ],
-          "returns": "Self"
+          "returns": "Dataset"
         },
         "rename": {
           "parameters": [
@@ -851,7 +863,7 @@
               "default": null
             }
           ],
-          "returns": "Self"
+          "returns": "Dataset"
         },
         "convert_units": {
           "parameters": [
@@ -866,7 +878,7 @@
               "annotation": "Unit"
             }
           ],
-          "returns": "Self"
+          "returns": "Dataset"
         },
         "fit": {
           "parameters": [
@@ -1219,8 +1231,7 @@
       "methods": {
         "to_json": {
           "parameters": [],
-          "returns": "str",
-          "binding": "instance"
+          "returns": "str"
         },
         "from_json": {
           "parameters": [
@@ -1289,13 +1300,13 @@
           {
             "name": "duration",
             "kind": "keyword_only",
-            "annotation": "datetime.timedelta | None",
+            "annotation": "crc_framework.Duration | None",
             "default": null
           },
           {
             "name": "province",
             "kind": "keyword_only",
-            "annotation": "str | None",
+            "annotation": "ECCCIDF.Province | None",
             "default": null
           },
           {
@@ -1309,7 +1320,64 @@
       },
       "inherits": [
         "Dataset"
-      ]
+      ],
+      "methods": {
+        "confidence_intervals": {
+          "parameters": [],
+          "returns": "Projections"
+        }
+      },
+      "nested_enums": {
+        "Province": {
+          "kind": "enum",
+          "members": {
+            "ALBERTA": "AB",
+            "BRITISH_COLUMBIA": "BC",
+            "MANITOBA": "MB",
+            "NEW_BRUNSWICK": "NB",
+            "NEWFOUNDLAND_AND_LABRADOR": "NL",
+            "NOVA_SCOTIA": "NS",
+            "NORTHWEST_TERRITORIES": "NT",
+            "NUNAVUT": "NU",
+            "ONTARIO": "ON",
+            "PRINCE_EDWARD_ISLAND": "PE",
+            "QUEBEC": "QC",
+            "SASKATCHEWAN": "SK",
+            "YUKON": "YT"
+          }
+        }
+      }
+    },
+    "EDO": {
+      "kind": "class",
+      "constructor": {
+        "parameters": [
+          {
+            "name": "product",
+            "kind": "keyword_only",
+            "annotation": "EDO.Product | None",
+            "default": null
+          },
+          {
+            "name": "release",
+            "kind": "keyword_only",
+            "annotation": "ReleaseReference | None",
+            "default": null
+          }
+        ],
+        "returns": "Self"
+      },
+      "inherits": [
+        "Observations"
+      ],
+      "nested_enums": {
+        "Product": {
+          "kind": "enum",
+          "members": {
+            "SOIL_MOISTURE_INDEX": "soil_moisture_index"
+          }
+        }
+      }
     },
     "ERA5": {
       "kind": "class",
@@ -1348,6 +1416,12 @@
             "ANNUAL_MAXIMUM_DAILY_PRECIPITATION": "annual_maximum_daily_precipitation",
             "ANNUAL_MAXIMUM_FIVE_DAY_PRECIPITATION": "annual_maximum_five_day_precipitation"
           }
+        }
+      },
+      "methods": {
+        "observations": {
+          "parameters": [],
+          "returns": "Observations"
         }
       }
     },
@@ -1661,10 +1735,11 @@
         "schema_version": "str",
         "source": "SourceIdentity | None",
         "report": "ExecutionReport",
-        "kind": "EvidenceKind",
+        "kind": "KindT",
         "spec": "DataSpec",
         "spatial": "SpatialContract",
-        "provenance": "tuple[Transformation, ...]"
+        "provenance": "tuple[Transformation, ...]",
+        "sampling": "Sampling | None"
       },
       "methods": {
         "to_json": {
@@ -1682,7 +1757,10 @@
           "returns": "EvidenceMetadata",
           "binding": "class"
         }
-      }
+      },
+      "generic_parameters": [
+        "KindT"
+      ]
     },
     "Execution": {
       "kind": "class",
@@ -1850,7 +1928,7 @@
           {
             "name": "indicator",
             "kind": "keyword_only",
-            "annotation": "IndicatorReference | None",
+            "annotation": "GHCNh.Indicator | IndicatorReference | None",
             "default": null
           },
           {
@@ -1870,7 +1948,22 @@
       },
       "inherits": [
         "Samples"
-      ]
+      ],
+      "methods": {
+        "observations": {
+          "parameters": [],
+          "returns": "Observations"
+        }
+      },
+      "nested_enums": {
+        "Indicator": {
+          "kind": "enum",
+          "members": {
+            "ANNUAL_MAXIMUM_DAILY_MAXIMUM_TEMPERATURE": "annual_maximum_daily_maximum_temperature",
+            "ANNUAL_MINIMUM_DAILY_MINIMUM_TEMPERATURE": "annual_minimum_daily_minimum_temperature"
+          }
+        }
+      }
     },
     "GeometryColumn": {
       "kind": "class",
@@ -1913,8 +2006,10 @@
           {
             "name": "agency",
             "kind": "keyword_only",
-            "annotation": "str | None",
-            "default": null
+            "annotation": "IBTrACS.Agency",
+            "default": {
+              "enum": "IBTrACS.Agency.USA"
+            }
           },
           {
             "name": "release",
@@ -1927,7 +2022,24 @@
       },
       "inherits": [
         "Observations"
-      ]
+      ],
+      "nested_enums": {
+        "Agency": {
+          "kind": "enum",
+          "members": {
+            "USA": "USA",
+            "TOKYO": "TOKYO",
+            "CMA": "CMA",
+            "HKO": "HKO",
+            "NEWDELHI": "NEWDELHI",
+            "REUNION": "REUNION",
+            "BOM": "BOM",
+            "NADI": "NADI",
+            "WELLINGTON": "WELLINGTON",
+            "WMO": "WMO"
+          }
+        }
+      }
     },
     "ISD": {
       "kind": "class",
@@ -1936,7 +2048,7 @@
           {
             "name": "indicator",
             "kind": "keyword_only",
-            "annotation": "IndicatorReference | None",
+            "annotation": "ISD.Indicator | IndicatorReference | None",
             "default": null
           },
           {
@@ -1956,7 +2068,22 @@
       },
       "inherits": [
         "Samples"
-      ]
+      ],
+      "methods": {
+        "observations": {
+          "parameters": [],
+          "returns": "Observations"
+        }
+      },
+      "nested_enums": {
+        "Indicator": {
+          "kind": "enum",
+          "members": {
+            "ANNUAL_MAXIMUM_DAILY_MAXIMUM_TEMPERATURE": "annual_maximum_daily_maximum_temperature",
+            "ANNUAL_MINIMUM_DAILY_MINIMUM_TEMPERATURE": "annual_minimum_daily_minimum_temperature"
+          }
+        }
+      }
     },
     "IdentityKind": {
       "kind": "enum",
@@ -1990,7 +2117,9 @@
         "releases": "tuple[ReleaseReference, ...]",
         "capabilities": "tuple[Capability, ...]",
         "requirements": "tuple[Requirement, ...]",
-        "source": "SourceIdentity | None"
+        "source": "SourceIdentity | None",
+        "stations": "tuple[StationReference, ...]",
+        "metadata": "DatasetMetadata | EvidenceMetadata | None"
       }
     },
     "JRC": {
@@ -2020,8 +2149,7 @@
           "kind": "enum",
           "members": {
             "EFAS": "efas",
-            "GLOFAS": "glofas",
-            "SOIL_MOISTURE_DROUGHT": "soil_moisture_drought"
+            "GLOFAS": "glofas"
           }
         }
       }
@@ -2066,7 +2194,7 @@
               "default": null
             }
           ],
-          "returns": "ReadResult[EvidenceMetadata]"
+          "returns": "ReadResult[EvidenceMetadata[Literal[EvidenceKind.LAYER]]]"
         },
         "batches": {
           "parameters": [
@@ -2083,7 +2211,7 @@
               "default": null
             }
           ],
-          "returns": "BatchStream[EvidenceMetadata]"
+          "returns": "BatchStream[EvidenceMetadata[Literal[EvidenceKind.LAYER]]]"
         },
         "write": {
           "parameters": [
@@ -2105,7 +2233,7 @@
               "default": null
             }
           ],
-          "returns": "Self"
+          "returns": "Layer"
         },
         "validate": {
           "parameters": [
@@ -2127,7 +2255,7 @@
               "default": null
             }
           ],
-          "returns": "Execution[EvidenceMetadata]"
+          "returns": "Execution[EvidenceMetadata[Literal[EvidenceKind.LAYER]]]"
         },
         "open": {
           "parameters": [
@@ -2137,7 +2265,7 @@
               "annotation": "LocalPath"
             }
           ],
-          "returns": "Self",
+          "returns": "Layer",
           "binding": "class"
         },
         "select": {
@@ -2146,6 +2274,22 @@
               "name": "variables",
               "kind": "keyword_only",
               "annotation": "VariableSelector | types.EllipsisType",
+              "default": {
+                "sentinel": "omitted"
+              }
+            },
+            {
+              "name": "periods",
+              "kind": "keyword_only",
+              "annotation": "PeriodSelector | types.EllipsisType",
+              "default": {
+                "sentinel": "omitted"
+              }
+            },
+            {
+              "name": "series",
+              "kind": "keyword_only",
+              "annotation": "SeriesSelector | types.EllipsisType",
               "default": {
                 "sentinel": "omitted"
               }
@@ -2194,7 +2338,7 @@
               "default": null
             }
           ],
-          "returns": "Self"
+          "returns": "Layer"
         },
         "rename": {
           "parameters": [
@@ -2211,7 +2355,7 @@
               "default": null
             }
           ],
-          "returns": "Self"
+          "returns": "Layer"
         },
         "convert_units": {
           "parameters": [
@@ -2226,13 +2370,155 @@
               "annotation": "Unit"
             }
           ],
-          "returns": "Self"
+          "returns": "Layer"
+        },
+        "from_table": {
+          "parameters": [
+            {
+              "name": "table",
+              "kind": "positional_or_keyword",
+              "annotation": "TableInput"
+            },
+            {
+              "name": "variable",
+              "kind": "keyword_only",
+              "annotation": "Variable | None",
+              "default": null
+            },
+            {
+              "name": "scenario",
+              "kind": "keyword_only",
+              "annotation": "Scenario | None",
+              "default": null
+            },
+            {
+              "name": "period",
+              "kind": "keyword_only",
+              "annotation": "Period | None",
+              "default": null
+            },
+            {
+              "name": "spec",
+              "kind": "keyword_only",
+              "annotation": "DataSpec | None",
+              "default": null
+            },
+            {
+              "name": "columns",
+              "kind": "keyword_only",
+              "annotation": "LayerColumns | None",
+              "default": null
+            }
+          ],
+          "returns": "Layer",
+          "binding": "class"
         }
       },
       "properties": {
         "path": "Path | None",
-        "metadata": "EvidenceMetadata | None",
+        "metadata": "EvidenceMetadata[Literal[EvidenceKind.LAYER]] | None",
         "report": "ExecutionReport | None"
+      }
+    },
+    "LayerColumns": {
+      "kind": "class",
+      "constructor": {
+        "parameters": [
+          {
+            "name": "support_id",
+            "kind": "keyword_only",
+            "annotation": "str",
+            "default": "support_id"
+          },
+          {
+            "name": "longitude",
+            "kind": "keyword_only",
+            "annotation": "str | None",
+            "default": null
+          },
+          {
+            "name": "latitude",
+            "kind": "keyword_only",
+            "annotation": "str | None",
+            "default": null
+          },
+          {
+            "name": "geometry",
+            "kind": "keyword_only",
+            "annotation": "str | None",
+            "default": null
+          },
+          {
+            "name": "value",
+            "kind": "keyword_only",
+            "annotation": "str | None",
+            "default": "value"
+          },
+          {
+            "name": "label",
+            "kind": "keyword_only",
+            "annotation": "str | None",
+            "default": null
+          },
+          {
+            "name": "variable_id",
+            "kind": "keyword_only",
+            "annotation": "str | None",
+            "default": null
+          },
+          {
+            "name": "scenario_id",
+            "kind": "keyword_only",
+            "annotation": "str | None",
+            "default": null
+          },
+          {
+            "name": "period_id",
+            "kind": "keyword_only",
+            "annotation": "str | None",
+            "default": null
+          }
+        ],
+        "returns": "Self"
+      },
+      "properties": {
+        "support_id": "str",
+        "longitude": "str | None",
+        "latitude": "str | None",
+        "geometry": "str | None",
+        "value": "str | None",
+        "label": "str | None",
+        "variable_id": "str | None",
+        "scenario_id": "str | None",
+        "period_id": "str | None"
+      }
+    },
+    "MeasurementChange": {
+      "kind": "class",
+      "constructor": {
+        "parameters": [
+          {
+            "name": "variable_id",
+            "kind": "keyword_only",
+            "annotation": "str"
+          },
+          {
+            "name": "input",
+            "kind": "keyword_only",
+            "annotation": "crc_framework.Measurement"
+          },
+          {
+            "name": "output",
+            "kind": "keyword_only",
+            "annotation": "crc_framework.Measurement"
+          }
+        ],
+        "returns": "Self"
+      },
+      "properties": {
+        "variable_id": "str",
+        "input": "crc_framework.Measurement",
+        "output": "crc_framework.Measurement"
       }
     },
     "NEX": {
@@ -2291,6 +2577,12 @@
             "ANNUAL_MAXIMUM_FIVE_DAY_PRECIPITATION": "annual_maximum_five_day_precipitation"
           }
         }
+      },
+      "methods": {
+        "observations": {
+          "parameters": [],
+          "returns": "Observations"
+        }
       }
     },
     "NOAASeaLevel": {
@@ -2330,6 +2622,10 @@
         "levels": {
           "parameters": [],
           "returns": "Dataset"
+        },
+        "confidence_intervals": {
+          "parameters": [],
+          "returns": "Projections"
         }
       }
     },
@@ -2379,7 +2675,7 @@
               "default": null
             }
           ],
-          "returns": "ReadResult[EvidenceMetadata]"
+          "returns": "ReadResult[EvidenceMetadata[Literal[EvidenceKind.OBSERVATIONS]]]"
         },
         "batches": {
           "parameters": [
@@ -2396,7 +2692,7 @@
               "default": null
             }
           ],
-          "returns": "BatchStream[EvidenceMetadata]"
+          "returns": "BatchStream[EvidenceMetadata[Literal[EvidenceKind.OBSERVATIONS]]]"
         },
         "write": {
           "parameters": [
@@ -2418,7 +2714,7 @@
               "default": null
             }
           ],
-          "returns": "Self"
+          "returns": "Observations"
         },
         "validate": {
           "parameters": [
@@ -2440,7 +2736,7 @@
               "default": null
             }
           ],
-          "returns": "Execution[EvidenceMetadata]"
+          "returns": "Execution[EvidenceMetadata[Literal[EvidenceKind.OBSERVATIONS]]]"
         },
         "open": {
           "parameters": [
@@ -2450,7 +2746,7 @@
               "annotation": "LocalPath"
             }
           ],
-          "returns": "Self",
+          "returns": "Observations",
           "binding": "class"
         },
         "select": {
@@ -2459,6 +2755,14 @@
               "name": "variables",
               "kind": "keyword_only",
               "annotation": "VariableSelector | types.EllipsisType",
+              "default": {
+                "sentinel": "omitted"
+              }
+            },
+            {
+              "name": "series",
+              "kind": "keyword_only",
+              "annotation": "SeriesSelector | types.EllipsisType",
               "default": {
                 "sentinel": "omitted"
               }
@@ -2474,7 +2778,7 @@
             {
               "name": "stations",
               "kind": "keyword_only",
-              "annotation": "IdentifierSelector | types.EllipsisType",
+              "annotation": "StationSelector | types.EllipsisType",
               "default": {
                 "sentinel": "omitted"
               }
@@ -2523,7 +2827,7 @@
               "default": null
             }
           ],
-          "returns": "Self"
+          "returns": "Observations"
         },
         "rename": {
           "parameters": [
@@ -2540,7 +2844,7 @@
               "default": null
             }
           ],
-          "returns": "Self"
+          "returns": "Observations"
         },
         "convert_units": {
           "parameters": [
@@ -2555,7 +2859,7 @@
               "annotation": "Unit"
             }
           ],
-          "returns": "Self"
+          "returns": "Observations"
         },
         "aggregate": {
           "parameters": [
@@ -2566,11 +2870,64 @@
             }
           ],
           "returns": "Samples | Observations"
+        },
+        "from_table": {
+          "parameters": [
+            {
+              "name": "table",
+              "kind": "positional_or_keyword",
+              "annotation": "TableInput"
+            },
+            {
+              "name": "variable",
+              "kind": "keyword_only",
+              "annotation": "Variable | None",
+              "default": null
+            },
+            {
+              "name": "probability",
+              "kind": "keyword_only",
+              "annotation": "Probability | None",
+              "default": null
+            },
+            {
+              "name": "scenario",
+              "kind": "keyword_only",
+              "annotation": "Scenario | None",
+              "default": null
+            },
+            {
+              "name": "period",
+              "kind": "keyword_only",
+              "annotation": "Period | None",
+              "default": null
+            },
+            {
+              "name": "spec",
+              "kind": "keyword_only",
+              "annotation": "DataSpec | None",
+              "default": null
+            },
+            {
+              "name": "columns",
+              "kind": "keyword_only",
+              "annotation": "TimeSeriesColumns | None",
+              "default": null
+            },
+            {
+              "name": "sampling",
+              "kind": "keyword_only",
+              "annotation": "Sampling | None",
+              "default": null
+            }
+          ],
+          "returns": "Observations",
+          "binding": "class"
         }
       },
       "properties": {
         "path": "Path | None",
-        "metadata": "EvidenceMetadata | None",
+        "metadata": "EvidenceMetadata[Literal[EvidenceKind.OBSERVATIONS]] | None",
         "report": "ExecutionReport | None"
       }
     },
@@ -2709,6 +3066,114 @@
         "total": "int | None"
       }
     },
+    "ProjectionColumns": {
+      "kind": "class",
+      "constructor": {
+        "parameters": [
+          {
+            "name": "support_id",
+            "kind": "keyword_only",
+            "annotation": "str",
+            "default": "support_id"
+          },
+          {
+            "name": "longitude",
+            "kind": "keyword_only",
+            "annotation": "str",
+            "default": "longitude"
+          },
+          {
+            "name": "latitude",
+            "kind": "keyword_only",
+            "annotation": "str",
+            "default": "latitude"
+          },
+          {
+            "name": "time",
+            "kind": "keyword_only",
+            "annotation": "str | None",
+            "default": null
+          },
+          {
+            "name": "return_period",
+            "kind": "keyword_only",
+            "annotation": "str | None",
+            "default": null
+          },
+          {
+            "name": "value",
+            "kind": "keyword_only",
+            "annotation": "str | None",
+            "default": "value"
+          },
+          {
+            "name": "probability",
+            "kind": "keyword_only",
+            "annotation": "str | None",
+            "default": null
+          },
+          {
+            "name": "lower",
+            "kind": "keyword_only",
+            "annotation": "str | None",
+            "default": null
+          },
+          {
+            "name": "upper",
+            "kind": "keyword_only",
+            "annotation": "str | None",
+            "default": null
+          },
+          {
+            "name": "confidence",
+            "kind": "keyword_only",
+            "annotation": "str | None",
+            "default": null
+          },
+          {
+            "name": "variable_id",
+            "kind": "keyword_only",
+            "annotation": "str | None",
+            "default": null
+          },
+          {
+            "name": "scenario_id",
+            "kind": "keyword_only",
+            "annotation": "str | None",
+            "default": null
+          },
+          {
+            "name": "period_id",
+            "kind": "keyword_only",
+            "annotation": "str | None",
+            "default": null
+          },
+          {
+            "name": "station_id",
+            "kind": "keyword_only",
+            "annotation": "str | None",
+            "default": null
+          }
+        ],
+        "returns": "Self"
+      },
+      "properties": {
+        "support_id": "str",
+        "longitude": "str",
+        "latitude": "str",
+        "time": "str | None",
+        "return_period": "str | None",
+        "value": "str | None",
+        "probability": "str | None",
+        "lower": "str | None",
+        "upper": "str | None",
+        "confidence": "str | None",
+        "variable_id": "str | None",
+        "scenario_id": "str | None",
+        "period_id": "str | None",
+        "station_id": "str | None"
+      }
+    },
     "Projections": {
       "kind": "class",
       "methods": {
@@ -2749,7 +3214,7 @@
               "default": null
             }
           ],
-          "returns": "ReadResult[EvidenceMetadata]"
+          "returns": "ReadResult[EvidenceMetadata[Literal[EvidenceKind.PROJECTIONS]]]"
         },
         "batches": {
           "parameters": [
@@ -2766,7 +3231,7 @@
               "default": null
             }
           ],
-          "returns": "BatchStream[EvidenceMetadata]"
+          "returns": "BatchStream[EvidenceMetadata[Literal[EvidenceKind.PROJECTIONS]]]"
         },
         "write": {
           "parameters": [
@@ -2788,7 +3253,7 @@
               "default": null
             }
           ],
-          "returns": "Self"
+          "returns": "Projections"
         },
         "validate": {
           "parameters": [
@@ -2810,7 +3275,7 @@
               "default": null
             }
           ],
-          "returns": "Execution[EvidenceMetadata]"
+          "returns": "Execution[EvidenceMetadata[Literal[EvidenceKind.PROJECTIONS]]]"
         },
         "open": {
           "parameters": [
@@ -2820,7 +3285,7 @@
               "annotation": "LocalPath"
             }
           ],
-          "returns": "Self",
+          "returns": "Projections",
           "binding": "class"
         },
         "select": {
@@ -2850,9 +3315,25 @@
               }
             },
             {
+              "name": "series",
+              "kind": "keyword_only",
+              "annotation": "SeriesSelector | types.EllipsisType",
+              "default": {
+                "sentinel": "omitted"
+              }
+            },
+            {
               "name": "area",
               "kind": "keyword_only",
               "annotation": "Bounds | None | types.EllipsisType",
+              "default": {
+                "sentinel": "omitted"
+              }
+            },
+            {
+              "name": "stations",
+              "kind": "keyword_only",
+              "annotation": "StationSelector | types.EllipsisType",
               "default": {
                 "sentinel": "omitted"
               }
@@ -2901,7 +3382,7 @@
               "default": null
             }
           ],
-          "returns": "Self"
+          "returns": "Projections"
         },
         "rename": {
           "parameters": [
@@ -2918,7 +3399,7 @@
               "default": null
             }
           ],
-          "returns": "Self"
+          "returns": "Projections"
         },
         "convert_units": {
           "parameters": [
@@ -2933,12 +3414,59 @@
               "annotation": "Unit"
             }
           ],
-          "returns": "Self"
+          "returns": "Projections"
+        },
+        "from_table": {
+          "parameters": [
+            {
+              "name": "table",
+              "kind": "positional_or_keyword",
+              "annotation": "TableInput"
+            },
+            {
+              "name": "variable",
+              "kind": "keyword_only",
+              "annotation": "Variable | None",
+              "default": null
+            },
+            {
+              "name": "probability",
+              "kind": "keyword_only",
+              "annotation": "Probability | None",
+              "default": null
+            },
+            {
+              "name": "scenario",
+              "kind": "keyword_only",
+              "annotation": "Scenario | None",
+              "default": null
+            },
+            {
+              "name": "period",
+              "kind": "keyword_only",
+              "annotation": "Period | None",
+              "default": null
+            },
+            {
+              "name": "spec",
+              "kind": "keyword_only",
+              "annotation": "DataSpec | None",
+              "default": null
+            },
+            {
+              "name": "columns",
+              "kind": "keyword_only",
+              "annotation": "ProjectionColumns | None",
+              "default": null
+            }
+          ],
+          "returns": "Projections",
+          "binding": "class"
         }
       },
       "properties": {
         "path": "Path | None",
-        "metadata": "EvidenceMetadata | None",
+        "metadata": "EvidenceMetadata[Literal[EvidenceKind.PROJECTIONS]] | None",
         "report": "ExecutionReport | None"
       }
     },
@@ -3056,6 +3584,19 @@
         "to_pandas": {
           "parameters": [],
           "returns": "pandas.DataFrame"
+        },
+        "aggregate": {
+          "parameters": [
+            {
+              "name": "spec",
+              "kind": "positional_or_keyword",
+              "annotation": "Aggregation"
+            }
+          ],
+          "returns": "Samples | Observations",
+          "available_for": [
+            "observations"
+          ]
         }
       },
       "properties": {
@@ -3066,6 +3607,17 @@
       "generic_parameters": [
         "MetadataT"
       ]
+    },
+    "ReductionKind": {
+      "kind": "enum",
+      "members": {
+        "DAILY_TOTAL": "daily_total",
+        "DAILY_MAXIMUM": "daily_maximum",
+        "DAILY_MINIMUM": "daily_minimum",
+        "ROLLING_TOTAL": "rolling_total",
+        "ANNUAL_MAXIMUM": "annual_maximum",
+        "ANNUAL_MINIMUM": "annual_minimum"
+      }
     },
     "ReleaseReference": {
       "kind": "class",
@@ -3143,72 +3695,6 @@
         "memory_limit": "str | int | None"
       }
     },
-    "SampleColumns": {
-      "kind": "class",
-      "constructor": {
-        "parameters": [
-          {
-            "name": "value",
-            "kind": "keyword_only",
-            "annotation": "str",
-            "default": "value"
-          },
-          {
-            "name": "time",
-            "kind": "keyword_only",
-            "annotation": "str",
-            "default": "time"
-          },
-          {
-            "name": "support_id",
-            "kind": "keyword_only",
-            "annotation": "str",
-            "default": "support_id"
-          },
-          {
-            "name": "longitude",
-            "kind": "keyword_only",
-            "annotation": "str",
-            "default": "longitude"
-          },
-          {
-            "name": "latitude",
-            "kind": "keyword_only",
-            "annotation": "str",
-            "default": "latitude"
-          },
-          {
-            "name": "variable_id",
-            "kind": "keyword_only",
-            "annotation": "str | None",
-            "default": null
-          },
-          {
-            "name": "scenario_id",
-            "kind": "keyword_only",
-            "annotation": "str | None",
-            "default": null
-          },
-          {
-            "name": "period_id",
-            "kind": "keyword_only",
-            "annotation": "str | None",
-            "default": null
-          }
-        ],
-        "returns": "Self"
-      },
-      "properties": {
-        "value": "str",
-        "time": "str",
-        "support_id": "str",
-        "longitude": "str",
-        "latitude": "str",
-        "variable_id": "str | None",
-        "scenario_id": "str | None",
-        "period_id": "str | None"
-      }
-    },
     "Samples": {
       "kind": "class",
       "methods": {
@@ -3249,7 +3735,7 @@
               "default": null
             }
           ],
-          "returns": "ReadResult[EvidenceMetadata]"
+          "returns": "ReadResult[EvidenceMetadata[Literal[EvidenceKind.SAMPLES]]]"
         },
         "batches": {
           "parameters": [
@@ -3266,7 +3752,7 @@
               "default": null
             }
           ],
-          "returns": "BatchStream[EvidenceMetadata]"
+          "returns": "BatchStream[EvidenceMetadata[Literal[EvidenceKind.SAMPLES]]]"
         },
         "write": {
           "parameters": [
@@ -3288,7 +3774,7 @@
               "default": null
             }
           ],
-          "returns": "Self"
+          "returns": "Samples"
         },
         "validate": {
           "parameters": [
@@ -3310,7 +3796,7 @@
               "default": null
             }
           ],
-          "returns": "Execution[EvidenceMetadata]"
+          "returns": "Execution[EvidenceMetadata[Literal[EvidenceKind.SAMPLES]]]"
         },
         "open": {
           "parameters": [
@@ -3320,7 +3806,7 @@
               "annotation": "LocalPath"
             }
           ],
-          "returns": "Self",
+          "returns": "Samples",
           "binding": "class"
         },
         "select": {
@@ -3350,6 +3836,14 @@
               }
             },
             {
+              "name": "series",
+              "kind": "keyword_only",
+              "annotation": "SeriesSelector | types.EllipsisType",
+              "default": {
+                "sentinel": "omitted"
+              }
+            },
+            {
               "name": "area",
               "kind": "keyword_only",
               "annotation": "Bounds | None | types.EllipsisType",
@@ -3360,7 +3854,7 @@
             {
               "name": "stations",
               "kind": "keyword_only",
-              "annotation": "IdentifierSelector | types.EllipsisType",
+              "annotation": "StationSelector | types.EllipsisType",
               "default": {
                 "sentinel": "omitted"
               }
@@ -3409,7 +3903,7 @@
               "default": null
             }
           ],
-          "returns": "Self"
+          "returns": "Samples"
         },
         "rename": {
           "parameters": [
@@ -3426,7 +3920,7 @@
               "default": null
             }
           ],
-          "returns": "Self"
+          "returns": "Samples"
         },
         "convert_units": {
           "parameters": [
@@ -3441,7 +3935,7 @@
               "annotation": "Unit"
             }
           ],
-          "returns": "Self"
+          "returns": "Samples"
         },
         "fit": {
           "parameters": [
@@ -3501,7 +3995,13 @@
             {
               "name": "columns",
               "kind": "keyword_only",
-              "annotation": "SampleColumns | None",
+              "annotation": "TimeSeriesColumns | None",
+              "default": null
+            },
+            {
+              "name": "sampling",
+              "kind": "keyword_only",
+              "annotation": "Sampling | None",
               "default": null
             }
           ],
@@ -3511,8 +4011,39 @@
       },
       "properties": {
         "path": "Path | None",
-        "metadata": "EvidenceMetadata | None",
+        "metadata": "EvidenceMetadata[Literal[EvidenceKind.SAMPLES]] | None",
         "report": "ExecutionReport | None"
+      }
+    },
+    "Sampling": {
+      "kind": "class",
+      "constructor": {
+        "parameters": [
+          {
+            "name": "calendar",
+            "kind": "keyword_only",
+            "annotation": "Calendar"
+          },
+          {
+            "name": "step",
+            "kind": "keyword_only",
+            "annotation": "crc_framework.Duration"
+          },
+          {
+            "name": "timestamp",
+            "kind": "keyword_only",
+            "annotation": "TimestampPosition",
+            "default": {
+              "enum": "TimestampPosition.START"
+            }
+          }
+        ],
+        "returns": "Self"
+      },
+      "properties": {
+        "calendar": "Calendar",
+        "step": "crc_framework.Duration",
+        "timestamp": "TimestampPosition"
       }
     },
     "Scenario": {
@@ -3559,7 +4090,8 @@
         "scenario": "Scenario | None",
         "period": "Period | None",
         "measurement": "crc_framework.Measurement | None",
-        "release": "ReleaseReference | None"
+        "release": "ReleaseReference | None",
+        "probability": "Probability | None"
       }
     },
     "SeriesSpec": {
@@ -3662,12 +4194,192 @@
         "WRITING": "writing"
       }
     },
+    "StationReference": {
+      "kind": "class",
+      "constructor": {
+        "parameters": [
+          {
+            "name": "id",
+            "kind": "positional_or_keyword",
+            "annotation": "str"
+          },
+          {
+            "name": "label",
+            "kind": "positional_or_keyword",
+            "annotation": "str"
+          },
+          {
+            "name": "longitude",
+            "kind": "positional_or_keyword",
+            "annotation": "float | None",
+            "default": null
+          },
+          {
+            "name": "latitude",
+            "kind": "positional_or_keyword",
+            "annotation": "float | None",
+            "default": null
+          },
+          {
+            "name": "period",
+            "kind": "positional_or_keyword",
+            "annotation": "Period | None",
+            "default": null
+          }
+        ],
+        "returns": "Self"
+      },
+      "properties": {
+        "id": "str",
+        "label": "str",
+        "longitude": "float | None",
+        "latitude": "float | None",
+        "period": "Period | None"
+      }
+    },
     "SupportKind": {
       "kind": "enum",
       "members": {
         "POINT": "point",
         "POLYGON": "polygon",
         "CELL": "cell"
+      }
+    },
+    "TemporalReduction": {
+      "kind": "class",
+      "constructor": {
+        "parameters": [
+          {
+            "name": "operation",
+            "kind": "keyword_only",
+            "annotation": "ReductionKind"
+          },
+          {
+            "name": "coverage",
+            "kind": "keyword_only",
+            "annotation": "Coverage"
+          },
+          {
+            "name": "input_sampling",
+            "kind": "keyword_only",
+            "annotation": "Sampling"
+          },
+          {
+            "name": "output_sampling",
+            "kind": "keyword_only",
+            "annotation": "Sampling"
+          },
+          {
+            "name": "measurements",
+            "kind": "keyword_only",
+            "annotation": "tuple[MeasurementChange, ...]",
+            "default": {
+              "tuple": []
+            }
+          },
+          {
+            "name": "window",
+            "kind": "keyword_only",
+            "annotation": "crc_framework.Duration | None",
+            "default": null
+          }
+        ],
+        "returns": "Self"
+      },
+      "properties": {
+        "operation": "ReductionKind",
+        "coverage": "Coverage",
+        "input_sampling": "Sampling",
+        "output_sampling": "Sampling",
+        "measurements": "tuple[MeasurementChange, ...]",
+        "window": "crc_framework.Duration | None"
+      }
+    },
+    "TimeSeriesColumns": {
+      "kind": "class",
+      "constructor": {
+        "parameters": [
+          {
+            "name": "value",
+            "kind": "keyword_only",
+            "annotation": "str",
+            "default": "value"
+          },
+          {
+            "name": "time",
+            "kind": "keyword_only",
+            "annotation": "str",
+            "default": "time"
+          },
+          {
+            "name": "support_id",
+            "kind": "keyword_only",
+            "annotation": "str",
+            "default": "support_id"
+          },
+          {
+            "name": "longitude",
+            "kind": "keyword_only",
+            "annotation": "str",
+            "default": "longitude"
+          },
+          {
+            "name": "latitude",
+            "kind": "keyword_only",
+            "annotation": "str",
+            "default": "latitude"
+          },
+          {
+            "name": "variable_id",
+            "kind": "keyword_only",
+            "annotation": "str | None",
+            "default": null
+          },
+          {
+            "name": "scenario_id",
+            "kind": "keyword_only",
+            "annotation": "str | None",
+            "default": null
+          },
+          {
+            "name": "period_id",
+            "kind": "keyword_only",
+            "annotation": "str | None",
+            "default": null
+          },
+          {
+            "name": "station_id",
+            "kind": "keyword_only",
+            "annotation": "str | None",
+            "default": null
+          },
+          {
+            "name": "group_id",
+            "kind": "keyword_only",
+            "annotation": "str | None",
+            "default": null
+          }
+        ],
+        "returns": "Self"
+      },
+      "properties": {
+        "value": "str",
+        "time": "str",
+        "support_id": "str",
+        "longitude": "str",
+        "latitude": "str",
+        "variable_id": "str | None",
+        "scenario_id": "str | None",
+        "period_id": "str | None",
+        "station_id": "str | None",
+        "group_id": "str | None"
+      }
+    },
+    "TimestampPosition": {
+      "kind": "enum",
+      "members": {
+        "START": "start",
+        "END": "end"
       }
     },
     "USDACropland": {
@@ -3786,8 +4498,9 @@
     "ArtifactMetadata": "DatasetMetadata | EvidenceMetadata | CollectionMetadata | EvaluationMetadata",
     "PersistedArtifact": "Dataset | Samples | Observations | Projections | Layer | EvaluationArtifact | DatasetCollection",
     "ScientificValue": "None | bool | int | float | str | Sequence[ScientificValue] | Mapping[str, ScientificValue]",
-    "Unit": "crc_framework.LengthUnit | crc_framework.TimeUnit | crc_framework.RatioUnit | crc_framework.TemperatureUnit | crc_framework.SpeedUnit | crc_framework.PrecipitationRateUnit",
-    "Transformation": "UnitConversion | IdentityRename | ObservationTimeSelection"
+    "Unit": "crc_framework.LengthUnit | crc_framework.TimeUnit | crc_framework.RatioUnit | crc_framework.TemperatureUnit | crc_framework.SpeedUnit | crc_framework.PrecipitationRateUnit | crc_framework.DegreeDayUnit",
+    "Transformation": "UnitConversion | IdentityRename | ObservationTimeSelection | TemporalReduction",
+    "StationSelector": "StationReference | str | Sequence[StationReference | str] | None"
   },
   "external_symbols": {
     "crc_framework": [
@@ -3812,10 +4525,12 @@
       "SpeedUnit",
       "Tail",
       "TemperatureUnit",
-      "TimeDuration",
       "TimeUnit",
       "DiagnosticSeverity",
-      "FitRecord"
+      "FitRecord",
+      "Duration",
+      "PrecipitationAmount",
+      "DegreeDayUnit"
     ]
   },
   "external_modules": [
@@ -3846,7 +4561,8 @@
     }
   },
   "generic_parameters": [
-    "MetadataT"
+    "MetadataT",
+    "KindT"
   ],
   "opaque_native_types": [
     "Capsule"
@@ -3907,7 +4623,8 @@
       "crc_sdk.fitting.CDFCurveFitPolicy",
       "crc_sdk.connectors.CurveFitIngestPolicy",
       "crc_sdk.Diagnostic",
-      "crc_sdk.Severity"
+      "crc_sdk.Severity",
+      "crc_sdk.SampleColumns"
     ],
     "modules": [
       "crc_sdk.api",
@@ -3987,7 +4704,7 @@
   ],
   "provider_indicators": {
     "ERA5": {
-      "source": "crc_sdk/providers/era5.py:ERA5_RECIPES",
+      "source": "crc_sdk/_climate_sampling.py:_reference",
       "members": {
         "ANNUAL_MAXIMUM_DAILY_MAXIMUM_TEMPERATURE": {
           "native_indicator": "txx",
@@ -4008,7 +4725,7 @@
       }
     },
     "CMIP6": {
-      "source": "crc_sdk/providers/cmip6.py:CMIP6_RECIPES",
+      "source": "crc_sdk/_climate_sampling.py:_reference",
       "members": {
         "ANNUAL_MAXIMUM_DAILY_MAXIMUM_TEMPERATURE": {
           "native_indicator": "txx",
@@ -4029,7 +4746,7 @@
       }
     },
     "NEX": {
-      "source": "crc_sdk/workflows/nex.py and CMIP6_RECIPES",
+      "source": "crc_sdk/_climate_sampling.py:_reference",
       "members": {
         "ANNUAL_MAXIMUM_DAILY_MAXIMUM_TEMPERATURE": {
           "native_indicator": "txx",
@@ -4056,7 +4773,7 @@
       "known_members_are_convenience_references": true,
       "discovery": "Inspection.series",
       "unknown_user_ids": "exact strings or typed references; catalog membership is not an enum requirement",
-      "source": "crc_sdk/registry.py:public_registry plus the inspected CRC Open release catalog",
+      "source": "crc_sdk/_crc_open.py and the inspected CRC Open release catalogue",
       "known_native_indicators": {
         "ANNUAL_MAXIMUM_DAILY_MAXIMUM_TEMPERATURE": "txx",
         "ANNUAL_MINIMUM_DAILY_MAXIMUM_TEMPERATURE": "txn",

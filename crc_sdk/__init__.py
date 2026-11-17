@@ -1,6 +1,22 @@
 """Scientific declarations and canonical Climate Risk Commons data."""
 
+from ._aggregation import (
+    AnnualMaximum,
+    AnnualMinimum,
+    Coverage,
+    DailyTotal,
+    MeasurementChange,
+    ReductionKind,
+    Sampling,
+    TemporalReduction,
+    TimestampPosition,
+)
+from ._assets import Assets, CellColumn, ColumnBinding, GeometryColumn, PointColumns
 from ._catalog import Catalog
+from ._climate_sampling import CMIP6, ERA5, NEX
+from ._climate_sources import ECCCIDF, EDO, JRC
+from ._crc_open import CRCOpen
+from ._cropland_source import USDACropland
 from ._dataset_schema import (
     DatasetMetadata,
     ExecutionCounts,
@@ -32,6 +48,7 @@ from ._declarations import (
 )
 from ._errors import CapabilityError, ValidationError
 from ._evidence import EvidenceKind, EvidenceMetadata, FitFailure
+from ._evidence_recipes import Layer, Observations, Projections
 from ._inspection import (
     Bounds,
     Capability,
@@ -41,60 +58,115 @@ from ._inspection import (
     Operation,
     Requirement,
     SeriesReference,
+    StationReference,
+)
+from ._layer_sources import CHIRPS, FieldsOfTheWorld
+from ._observed_sources import (
+    HYDAT,
+    ISD,
+    USGS,
+    ECCCDaily,
+    GHCNh,
+    IBTrACS,
+    NOAASeaLevel,
+    NOAAWaterLevels,
 )
 from ._recipes import CanonicalReader, Dataset, Samples
 from ._runtime import Cache, CacheMode, ProgressEvent, Runtime
-from ._table_input import QuantileColumns, SampleColumns
+from ._table_input import (
+    LayerColumns,
+    ProjectionColumns,
+    QuantileColumns,
+    TimeSeriesColumns,
+)
 from ._terminals import BatchStream, Execution, ReadResult
 
 __all__ = [
+    "AnnualMaximum",
+    "AnnualMinimum",
+    "Assets",
     "BatchStream",
     "Bounds",
+    "CHIRPS",
+    "CMIP6",
+    "CRCOpen",
     "Cache",
     "CacheMode",
     "Calendar",
-    "Catalog",
     "CanonicalReader",
     "Capability",
     "CapabilityError",
+    "Catalog",
+    "CellColumn",
+    "ColumnBinding",
+    "Coverage",
+    "DailyTotal",
     "DataSpec",
     "Dataset",
     "DatasetMetadata",
+    "ECCCDaily",
+    "ECCCIDF",
+    "EDO",
+    "ERA5",
     "EvidenceKind",
     "EvidenceMetadata",
     "Execution",
-    "ExecutionDiagnostic",
     "ExecutionCounts",
+    "ExecutionDiagnostic",
     "ExecutionReport",
     "Explanation",
+    "FieldsOfTheWorld",
     "FitFailure",
     "FittingDiagnostic",
+    "GHCNh",
+    "GeometryColumn",
+    "HYDAT",
+    "IBTrACS",
+    "ISD",
     "IdentityKind",
     "IdentityRename",
     "IndicatorReference",
     "Inspection",
-    "Operation",
+    "JRC",
+    "Layer",
+    "LayerColumns",
+    "MeasurementChange",
+    "NEX",
+    "NOAASeaLevel",
+    "NOAAWaterLevels",
     "ObservationTimeSelection",
+    "Observations",
+    "Operation",
     "Period",
     "PeriodKind",
+    "PointColumns",
     "Probability",
     "ProbabilityKind",
     "ProgressEvent",
+    "ProjectionColumns",
+    "Projections",
     "QuantileColumns",
     "ReadResult",
+    "ReductionKind",
     "ReleaseReference",
     "Requirement",
     "ResourceIdentity",
     "Runtime",
-    "SampleColumns",
     "Samples",
+    "Sampling",
     "Scenario",
     "SeriesReference",
     "SeriesSpec",
     "SourceIdentity",
     "SpatialContract",
     "Stage",
+    "StationReference",
     "SupportKind",
+    "TemporalReduction",
+    "TimeSeriesColumns",
+    "TimestampPosition",
+    "USDACropland",
+    "USGS",
     "UnitConversion",
     "ValidationError",
     "Variable",

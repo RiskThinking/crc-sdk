@@ -5,22 +5,30 @@ import numpy as np
 from crc_framework import (
     DepthAboveGround,
     DistributionFamily,
+    Duration,
     LengthUnit,
     SampleFit,
     Tail,
+    TimeUnit,
 )
 
 from crc_sdk import (
+    AnnualMaximum,
     Calendar,
     Catalog,
     Dataset,
     DataSpec,
+    GHCNh,
+    IBTrACS,
+    Observations,
     Period,
     Probability,
     Runtime,
     Samples,
+    Sampling,
     Scenario,
     SeriesSpec,
+    TimeSeriesColumns,
     Variable,
     scientific_identity,
 )
@@ -79,3 +87,18 @@ array_samples = Samples.from_table(
     variable=variable,
 )
 reveal_type(array_samples.read().metadata)
+
+# Native evidence carries its capability and scientific kind through terminals.
+
+station = GHCNh(indicator=GHCNh.Indicator.ANNUAL_MAXIMUM_DAILY_MAXIMUM_TEMPERATURE)
+reveal_type(station.read().metadata.kind)
+reveal_type(station.observations().read().metadata.kind)
+reveal_type(IBTrACS(agency=IBTrACS.Agency.USA).read().metadata.kind)
+observations = Observations.from_table(
+    sample_data,
+    variable=variable,
+    columns=TimeSeriesColumns(),
+    sampling=Sampling(calendar=Calendar.GREGORIAN, step=Duration(1, unit=TimeUnit.DAY)),
+)
+reveal_type(observations.aggregate(AnnualMaximum()).read().metadata.kind)
+reveal_type(observations.read().aggregate(AnnualMaximum()))

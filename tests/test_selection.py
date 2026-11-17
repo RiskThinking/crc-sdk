@@ -40,8 +40,8 @@ from crc_sdk._inspection import (
 )
 from crc_sdk._schema.dataset import DatasetRow, validate_rows
 from crc_sdk._selection import (
-    ConvertibleUnit,
     SelectionState,
+    Unit,
     conversion_metadata,
     conversion_row,
     conversion_spec,
@@ -411,7 +411,7 @@ def test_converted_fitted_law_retains_original_fit_and_parametric_source() -> No
     ],
 )
 def test_closed_unit_conversions_have_explicit_linear_meaning(
-    measurement: cf.Measurement, unit: ConvertibleUnit, expected: float
+    measurement: cf.Measurement, unit: Unit, expected: float
 ) -> None:
     variable = Variable("x", measurement=measurement)
     spec = DataSpec([variable], series=[SeriesSpec(variable)])

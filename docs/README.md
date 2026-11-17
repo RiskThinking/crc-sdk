@@ -8,6 +8,7 @@ question:
 | [Scientific declarations](scientific-data.md) | Open identities, typed measurements, periods, annual probabilities, and exact catalogs |
 | [Canonical datasets](datasets.md) | Dataset 2.0 rows, numerical variants, typed provenance, and validated storage |
 | [Execution and persistence](execution.md) | Automatic graph execution, fitting, selection, previews, streaming, caching, and atomic writes |
+| [Sources and native evidence](sources.md) | Provider capabilities, discovery, temporal reductions, user evidence, and assets |
 | [Python interface contract](api-reference.md) | Canonical imports, ownership, and installed-package checks |
 | [Source resource terms](data-licences.md) | License, attribution, retrieval time, and content identity |
 | [Development](development.md) | Paired checkout setup, checks, generated resources, and releases |

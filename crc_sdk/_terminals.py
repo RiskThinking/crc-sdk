@@ -11,15 +11,25 @@ import types
 from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Generic, Protocol, Self, TypeAlias, TypeVar
+from typing import (
+    TYPE_CHECKING,
+    Generic,
+    Literal,
+    Protocol,
+    Self,
+    TypeAlias,
+    TypeVar,
+    overload,
+)
 
 import crc_framework
 import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
 
+from ._aggregation import Aggregation, AnnualMaximum, AnnualMinimum, DailyTotal
 from ._dataset_schema import DatasetMetadata, ExecutionReport, Stage
 from ._errors import CapabilityError, ValidationError
-from ._evidence import EvidenceMetadata, FitFailure
+from ._evidence import EvidenceKind, EvidenceMetadata, FitFailure
 from ._graph import DataValidationError, ExecutionScope, Node
 from ._runtime import LocalPath, Runtime, _local_path, _memory_bytes, _positive
 from ._schema import dataset_arrow_schema
@@ -27,10 +37,11 @@ from ._schema import dataset_arrow_schema
 if TYPE_CHECKING:
     import pandas  # type: ignore[import-untyped]
 
+    from ._evidence_recipes import Layer, Observations, Projections
     from ._recipes import Dataset, Samples
 
 MetadataT = TypeVar("MetadataT", bound=DatasetMetadata | EvidenceMetadata)
-PersistedArtifact: TypeAlias = "Dataset | Samples"
+PersistedArtifact: TypeAlias = "Dataset | Samples | Observations | Projections | Layer"
 
 
 def _with_report(metadata: MetadataT, report: ExecutionReport) -> MetadataT:
@@ -67,7 +78,8 @@ class ReadResult(Generic[MetadataT]):
     report: ExecutionReport
 
     def fit(
-        self: ReadResult[DatasetMetadata] | ReadResult[EvidenceMetadata],
+        self: ReadResult[DatasetMetadata]
+        | ReadResult[EvidenceMetadata[Literal[EvidenceKind.SAMPLES]]],
         spec: crc_framework.FitSpec,
         *,
         on_failure: FitFailure = FitFailure.RAISE,
@@ -80,12 +92,48 @@ class ReadResult(Generic[MetadataT]):
         from ._recipes import Dataset, Samples
 
         if isinstance(self.metadata, EvidenceMetadata):
+            if self.metadata.kind is not EvidenceKind.SAMPLES:
+                raise CapabilityError(
+                    "Only genuine sample evidence can be fitted; "
+                    "aggregate raw observations first"
+                )
             return Samples._collected(self.table, self.metadata).fit(
                 spec, on_failure=on_failure
             )
         return Dataset._collected(self.table, self.metadata).fit(
             spec, on_failure=on_failure
         )
+
+    @overload
+    def aggregate(
+        self: ReadResult[EvidenceMetadata[Literal[EvidenceKind.OBSERVATIONS]]],
+        spec: DailyTotal,
+    ) -> Observations: ...
+
+    @overload
+    def aggregate(
+        self: ReadResult[EvidenceMetadata[Literal[EvidenceKind.OBSERVATIONS]]],
+        spec: AnnualMaximum | AnnualMinimum,
+    ) -> Samples: ...
+
+    @overload
+    def aggregate(
+        self: ReadResult[EvidenceMetadata[Literal[EvidenceKind.OBSERVATIONS]]],
+        spec: Aggregation,
+    ) -> Samples | Observations: ...
+
+    def aggregate(
+        self: ReadResult[EvidenceMetadata[Literal[EvidenceKind.OBSERVATIONS]]],
+        spec: Aggregation,
+    ) -> Samples | Observations:
+        if not self.report.complete:
+            raise CapabilityError(
+                "A bounded preview is incomplete evidence. "
+                "Call read() without a limit before aggregation."
+            )
+        from ._evidence_recipes import Observations
+
+        return Observations._collected(self.table, self.metadata).aggregate(spec)
 
     def to_pandas(self) -> pandas.DataFrame:
         frame = self.table.to_pandas()

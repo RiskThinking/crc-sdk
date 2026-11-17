@@ -28,7 +28,6 @@ import numpy as np
 
 from crc_sdk._connectors.blocks import (
     STRIP_BYTES,
-    BlockExtremaCurveSource,
     BlockSpec,
     BlockStatistic,
     _index_range,
@@ -40,7 +39,7 @@ from crc_sdk._connectors.blocks import (
 from ._pixel_scan import H3PixelScan, PixelScan, check_strip_bytes, h3_scan_resolution
 from .connection import DuckDBConnection, default_work_dir
 from .geotiff import _materialize_local
-from .zarr import Bounds, Point, RasterMetadata
+from .zarr import Bounds, Point
 
 
 def _require_netcdf_extra() -> None:
@@ -454,39 +453,3 @@ class NetCDFBlockReader:
 
 #: EDO's annual block is the whole file: its minimum over the dekads.
 _EDO_SPEC = BlockSpec(statistic=BlockStatistic.minimum())
-
-
-class EDOAnnualMinimaCurveSource(BlockExtremaCurveSource):
-    """Presents N years of EDO dekadal SMI as one annual-block-minima curve source.
-
-    Each year's SMI file is opened once (one `NetCDFRaster` per year, at
-    `time_index=0` -- used here only to validate/describe the shared grid,
-    not to restrict which time steps get read); for a bounded AOI, each
-    year's whole dekadal time series is read for that window in one strided
-    read per strip, then reduced to that year's per-pixel minimum. One
-    block-minima "curve" knot per requested year is fed through the same
-    `canonicalize_curve_source` (`crc_sdk._connectors.adapters`) JRC flood
-    and OS-Climate both use, via `crc_sdk._connectors.jrc_edo.canonicalize_edo_drought`
-    -- just with empirical (Gringorten) plotting-position return periods
-    instead of literal return-period rasters or quantile samples.
-
-    A thin, EDO-flavoured constructor over `BlockExtremaCurveSource` with a
-    `NetCDFBlockReader` -- the regression anchor for the generic source.
-    """
-
-    def __init__(
-        self,
-        rasters: dict[int, NetCDFRaster],
-        metadata: RasterMetadata,
-        strip_bytes: int = STRIP_BYTES,
-    ) -> None:
-        self.rasters = rasters
-        super().__init__(
-            reader=NetCDFBlockReader(rasters, spec=_EDO_SPEC),
-            metadata=metadata,
-            tail="lower",
-            strip_bytes=strip_bytes,
-        )
-
-    def __enter__(self) -> EDOAnnualMinimaCurveSource:
-        return self
