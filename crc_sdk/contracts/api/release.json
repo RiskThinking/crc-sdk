@@ -1,0 +1,17 @@
+{
+  "schema_version": "1.0",
+  "packages": {
+    "framework": "1.0.0",
+    "sdk": "1.0.0",
+    "framework_requirement": "crc-framework>=1.0.0,<2"
+  },
+  "formats": {
+    "dataset": "2.0",
+    "evaluation": "2.0",
+    "collection": "1.0",
+    "taxonomy": "1.0",
+    "numerical": "1.0",
+    "impact": "2.0",
+    "evidence": "1.0"
+  }
+}

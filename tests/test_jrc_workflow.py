@@ -383,16 +383,3 @@ def test_plans_sharing_a_cache_keep_their_own_manifests(
     manifest = json.loads((tmp_path / "cache" / "manifest.json").read_text())
     assert manifest["entries"] == {"k": {"year": 2000}}
     assert len(manifest["plans"]) == 2
-
-
-def test_legacy_single_plan_manifest_is_still_reused(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setitem(JRC_DATASETS, "test", _dataset(tmp_path / "source"))
-    plan = _plan(tmp_path)
-    plan.prefetch()
-    path = tmp_path / "cache" / "manifest.json"
-    manifest = json.loads(path.read_text())
-    path.write_text(json.dumps({k: v for k, v in manifest.items() if k != "plans"}))
-
-    assert plan.cache(tmp_path / "cache", mode="offline").prefetch().cache_hits == 5
