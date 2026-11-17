@@ -57,6 +57,10 @@ saved handle has a path and can be reopened by that type's `open` method. A save
 collection is a portable directory bundle containing its selected dependencies.
 Only local atomic publication is supported.
 
+An explicit `execute(runtime=...)` scope owns one runtime. Its `read`, `batches`,
+`validate`, and `write` methods reuse that scope. `explain(runtime=...)` describes
+effective cache and resource settings without I/O.
+
 ## Verify declarations and installed packages
 
 ```sh

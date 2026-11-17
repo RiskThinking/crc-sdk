@@ -1,6 +1,6 @@
 # CRC SDK
 
-Scientific declarations, exact catalogs, and canonical datasets for
+Scientific data, modelling workflows, and canonical datasets for
 [Climate Risk Commons](https://github.com/RiskThinking/crc-docs).
 
 The SDK owns data identity, temporal and spatial declarations, provenance, and
@@ -52,6 +52,8 @@ an impact or fit implicitly.
   measurements, and exact catalogs.
 - [Canonical datasets](docs/datasets.md): current rows, numerical variants,
   provenance, spatial support, and storage validation.
+- [Execution and persistence](docs/execution.md): automatic upstream execution,
+  explicit fitting, previews, reusable executions, streaming, and atomic writes.
 - [Python interface contract](docs/api-reference.md): canonical imports and
   installed-package enforcement.
 - [Development](docs/development.md): setup, checks, generated contracts, and

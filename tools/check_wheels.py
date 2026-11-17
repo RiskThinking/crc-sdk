@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.metadata
 import json
 import sys
+import tempfile
 from importlib.resources import files
 from pathlib import Path
 
@@ -56,9 +57,40 @@ def main() -> None:
         raise SystemExit(
             f"SDK wheel has an incorrect framework requirement: {requirement}"
         )
+    for source, target in (
+        ("schemas/dataset-2.0.schema.json", "dataset/dataset-2.0.schema.json"),
+        ("fixtures/dataset-2.0.json", "dataset/fixtures.json"),
+        ("taxonomy/taxonomy-1.0.schema.json", "taxonomy/taxonomy-1.0.schema.json"),
+        ("taxonomy/fixtures.json", "taxonomy/fixtures.json"),
+    ):
+        if (
+            files("crc_sdk").joinpath("contracts", source).read_bytes()
+            != files("crc_framework").joinpath("contracts", target).read_bytes()
+        ):
+            raise SystemExit(f"installed data contracts disagree: {source}")
+
+    variable = crc_sdk.Variable("user:installed-depth")
+    dataset = crc_sdk.Dataset.from_quantiles(
+        {
+            "support_id": ["a", "a"],
+            "longitude": [0, 0],
+            "latitude": [0, 0],
+            "probability": [0.1, 0.9],
+            "value": [1, 2],
+        },
+        variable=variable,
+    )
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "dataset.parquet"
+        with dataset.execute() as execution:
+            assert execution.validate().valid
+            assert execution.read().table.num_rows == 1
+            saved = execution.write(path)
+        assert saved.read().report.complete
+        assert crc_sdk.Dataset.open(path).read().report.valid
     print(
         f"Installed framework {versions['framework']} and SDK {versions['sdk']}: "
-        "versions, dependency floor, and packaged contracts verified"
+        "versions, shared contracts, execution, and persistence verified"
     )
 
 

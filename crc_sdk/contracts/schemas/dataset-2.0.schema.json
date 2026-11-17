@@ -368,62 +368,118 @@
       "additionalProperties": false
     },
     "diagnostic": {
-      "type": "object",
-      "properties": {
-        "code": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+            },
+            "severity": {
+              "enum": [
+                "error",
+                "warning",
+                "info"
+              ]
+            },
+            "stage": {
+              "enum": [
+                "acquisition",
+                "decoding",
+                "selection",
+                "reduction",
+                "fitting",
+                "joining",
+                "evaluation",
+                "validation",
+                "writing"
+              ]
+            },
+            "message": {
+              "type": "string",
+              "minLength": 1
+            },
+            "source": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+            },
+            "support_id": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+            },
+            "query_value": {
+              "type": "number"
+            },
+            "remedy": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "code",
+            "severity",
+            "stage",
+            "message"
+          ],
+          "additionalProperties": false
         },
-        "severity": {
-          "enum": [
-            "error",
-            "warning",
-            "info"
-          ]
-        },
-        "stage": {
-          "enum": [
-            "acquisition",
-            "decoding",
-            "selection",
-            "reduction",
-            "fitting",
-            "joining",
-            "evaluation",
-            "validation",
-            "writing"
-          ]
-        },
-        "message": {
-          "type": "string",
-          "minLength": 1
-        },
-        "source": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
-        },
-        "support_id": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
-        },
-        "query_value": {
-          "type": "number"
-        },
-        "remedy": {
-          "type": "string",
-          "minLength": 1
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+            },
+            "severity": {
+              "enum": [
+                "error",
+                "warning",
+                "info"
+              ]
+            },
+            "stage": {
+              "const": "fitting"
+            },
+            "message": {
+              "type": "string",
+              "minLength": 1
+            },
+            "source": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+            },
+            "support_id": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+            },
+            "query_value": {
+              "type": "number"
+            },
+            "remedy": {
+              "type": "string",
+              "minLength": 1
+            },
+            "record": {
+              "$ref": "https://climateriskcommons.org/schemas/fitting/1.0"
+            }
+          },
+          "required": [
+            "code",
+            "severity",
+            "stage",
+            "message",
+            "record"
+          ],
+          "additionalProperties": false
         }
-      },
-      "required": [
-        "code",
-        "severity",
-        "stage",
-        "message"
-      ],
-      "additionalProperties": false
+      ]
     },
     "counts": {
       "type": "object",
@@ -508,7 +564,36 @@
         "diagnostics",
         "source_identities"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "valid": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "complete": {
+                "const": true
+              },
+              "diagnostics": {
+                "not": {
+                  "contains": {
+                    "properties": {
+                      "severity": {
+                        "const": "error"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
     },
     "spatial": {
       "type": "object",
@@ -609,6 +694,33 @@
             "kind",
             "dimension",
             "mapping"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "observation_time_selection"
+            },
+            "time": {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/period"
+                },
+                {
+                  "properties": {
+                    "kind": {
+                      "const": "window"
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "time"
           ],
           "additionalProperties": false
         }

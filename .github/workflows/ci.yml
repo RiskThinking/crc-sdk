@@ -53,6 +53,9 @@ jobs:
       - name: Verify declared release and Python contracts
         run: |
           .venv/bin/python tools/api_contracts/check.py
+          .venv/bin/python tools/generate_dataset_contracts.py --check
+          .venv/bin/python tools/generate_evidence_contracts.py --check
+          .venv/bin/python ../crc-framework-rs/tools/sync_data_contracts.py --sdk . --check
           .venv/bin/python ../crc-framework-rs/tools/api_contracts/check.py
       - name: Ruff
         run: |

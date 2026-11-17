@@ -9,6 +9,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from crc_framework import (
+    DiagnosticSeverity,
     Distribution,
     DistributionFamily,
     FitError,
@@ -24,10 +25,13 @@ from crc_sdk._dataset_schema import (
     DatasetMetadata,
     ExecutionCounts,
     ExecutionReport,
+    FittingDiagnostic,
+    ObservationTimeSelection,
     ResourceIdentity,
     RetainedFailure,
     SourceIdentity,
     SpatialContract,
+    Stage,
     SupportKind,
 )
 from crc_sdk._declarations import (
@@ -133,6 +137,28 @@ def fixture_cases() -> dict[str, object]:
         dataset_to_json([replace(row, curve=None, failure=failure)], failed_info)
     )
     accepted.append({"name": "retained-fit-failure", "document": failed})
+    diagnostic_info = replace(
+        failed_info,
+        report=replace(
+            failed_info.report,
+            diagnostics=(
+                FittingDiagnostic(
+                    code=failure.code,
+                    severity=DiagnosticSeverity.WARNING,
+                    stage=Stage.FITTING,
+                    message=failure.message,
+                    support_id=row.support_id,
+                    record=failure.record,
+                ),
+            ),
+        ),
+    )
+    fitting_diagnostic = json.loads(
+        dataset_to_json([replace(row, curve=None, failure=failure)], diagnostic_info)
+    )
+    accepted.append(
+        {"name": "fitting-failure-diagnostic", "document": fitting_diagnostic}
+    )
     source_info = replace(
         metadata,
         source=SourceIdentity(
@@ -155,6 +181,15 @@ def fixture_cases() -> dict[str, object]:
         {
             "name": "empty-dataset",
             "document": json.loads(dataset_to_json([], empty_info)),
+        }
+    )
+    time_info = replace(
+        metadata, provenance=(ObservationTimeSelection(time=Period.window(1980, 2010)),)
+    )
+    accepted.append(
+        {
+            "name": "observation-time-selection",
+            "document": json.loads(dataset_to_json([row], time_info)),
         }
     )
     rejected = []
@@ -202,10 +237,22 @@ def fixture_cases() -> dict[str, object]:
     value = deepcopy(minimal)
     value["metadata"]["report"]["counts"]["no_data"] = 1
     reject("incorrect-no-data-count", value, False)
+    value = deepcopy(minimal)
+    value["metadata"]["report"]["complete"] = False
+    reject("incomplete-valid-report", value, True)
+    value = deepcopy(accepted[-1]["document"])
+    value["metadata"]["provenance"][0]["time"]["start"] = 1981
+    reject("time-selection-content-identity-mismatch", value, False)
     value = deepcopy(fitted)
     value["rows"][0]["curve"]["family"] = "gumbel_l"
     reject("fit-family-mismatch", value, False)
-    value = deepcopy(accepted[6]["document"])
+    value = deepcopy(fitting_diagnostic)
+    value["metadata"]["report"]["diagnostics"][0]["stage"] = "decoding"
+    reject("fitting-diagnostic-wrong-stage", value, True)
+    value = deepcopy(fitting_diagnostic)
+    value["metadata"]["report"]["diagnostics"][0]["record"]["evidence_count"] += 1
+    reject("fitting-diagnostic-invalid-trace", value, False)
+    value = json.loads(dataset_to_json([row], source_info))
     value["metadata"]["source"]["resources"][0]["sha256"] = "not-a-hash"
     reject("invalid-resource-digest", value, True)
     geometry_cases = json.loads(

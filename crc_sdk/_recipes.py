@@ -1,0 +1,1588 @@
+"""Immutable dataset and sample recipes backed by one execution graph."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import sqlite3
+import tempfile
+import types
+from abc import ABC, abstractmethod
+from collections.abc import Iterator, Mapping
+from contextlib import AbstractContextManager
+from dataclasses import replace
+from enum import Enum
+from pathlib import Path
+from typing import Generic, Self, TypeAlias, TypeVar, cast
+
+import crc_framework
+import pyarrow as pa  # type: ignore[import-untyped]
+import pyarrow.parquet as pq  # type: ignore[import-untyped]
+from shapely import from_wkb  # type: ignore[import-untyped]
+
+from ._dataset_schema import (
+    DatasetMetadata,
+    ExecutionCounts,
+    ExecutionDiagnostic,
+    ExecutionReport,
+    FittingDiagnostic,
+    SourceIdentity,
+    Stage,
+)
+from ._declaration_updates import refine_spec
+from ._declarations import (
+    DataSpec,
+    Period,
+    Probability,
+    Scenario,
+    Variable,
+    scientific_identity,
+)
+from ._errors import CapabilityError, ValidationError
+from ._evidence import (
+    EvidenceKind,
+    EvidenceMetadata,
+    FitFailure,
+    _SampleFitError,
+    fit_sample_table,
+    metadata_from_evidence_table,
+    validate_evidence,
+)
+from ._graph import DataValidationError, ExecutionScope, Node, NodeStream
+from ._inspection import (
+    Bounds,
+    Capability,
+    Explanation,
+    Inspection,
+    Operation,
+    SeriesReference,
+)
+from ._runtime import LocalPath, Runtime, _local_path, _memory_bytes
+from ._schema import (
+    DatasetRow,
+    dataset_arrow_schema,
+    metadata_from_table,
+    rows_to_table,
+    table_to_rows,
+)
+from ._selection import (
+    IdentifierSelector,
+    PeriodSelector,
+    ScenarioSelector,
+    SelectionState,
+    SeriesSelector,
+    VariableSelector,
+    conversion_metadata,
+    conversion_row,
+    rename_metadata,
+    rename_row,
+    selected_metadata,
+)
+from ._table_input import (
+    QuantileColumns,
+    SampleColumns,
+    TableInput,
+    normalize_quantiles,
+    normalize_samples,
+)
+from ._terminals import (
+    BatchStream,
+    Execution,
+    ReadResult,
+    _publication_path,
+    _schema,
+    _with_report,
+)
+
+Metadata: TypeAlias = DatasetMetadata | EvidenceMetadata
+MetadataT = TypeVar("MetadataT", bound=Metadata)
+Unit: TypeAlias = (
+    crc_framework.LengthUnit
+    | crc_framework.TimeUnit
+    | crc_framework.RatioUnit
+    | crc_framework.TemperatureUnit
+    | crc_framework.SpeedUnit
+    | crc_framework.PrecipitationRateUnit
+)
+
+
+def _key(operation: str, *values: object) -> str:
+    return (
+        operation
+        + ":sha256:"
+        + hashlib.sha256(
+            json.dumps(
+                values,
+                sort_keys=True,
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+    )
+
+
+def _spec_document(spec: DataSpec) -> list[dict[str, object]]:
+    return sorted(
+        [
+            {
+                "identity": [
+                    item.variable.id,
+                    None if item.scenario is None else item.scenario.id,
+                    None if item.period is None else item.period.id,
+                ],
+                "science": scientific_identity(item),
+            }
+            for item in spec.series
+        ],
+        key=lambda item: json.dumps(item, sort_keys=True),
+    )
+
+
+def _table_key(table: pa.Table) -> str:
+    sink = pa.BufferOutputStream()
+    values = table.replace_schema_metadata(None).combine_chunks()
+    with pa.ipc.new_stream(sink, values.schema) as writer:
+        writer.write_table(values)
+    return hashlib.sha256(sink.getvalue()).hexdigest()
+
+
+def _invalid(
+    error: ValueError | TypeError, *, stage: Stage = Stage.VALIDATION
+) -> DataValidationError:
+    return DataValidationError(
+        (
+            ExecutionDiagnostic(
+                "invalid_scientific_data",
+                crc_framework.DiagnosticSeverity.ERROR,
+                stage,
+                str(error),
+            ),
+        )
+    )
+
+
+def _fit_invalid(
+    error: crc_framework.FitError,
+    *,
+    source: str | None = None,
+    support_id: str | None = None,
+    variable_id: str | None = None,
+) -> DataValidationError:
+    return DataValidationError(
+        (
+            FittingDiagnostic(
+                error.code,
+                crc_framework.DiagnosticSeverity.ERROR,
+                Stage.FITTING,
+                error.message
+                if variable_id is None
+                else f"variable {variable_id!r}: {error.message}",
+                source=source,
+                support_id=support_id,
+                record=error.record,
+            ),
+        )
+    )
+
+
+class CanonicalReader(ABC):
+    """A stable canonical source, explicitly distinct from a lazy recipe.
+
+    Implementations own the bytes they inspect and iterate. Recipe classes do
+    not inherit this contract and cannot qualify through method names alone.
+    """
+
+    @abstractmethod
+    def inspect(self) -> DatasetMetadata:
+        raise NotImplementedError
+
+    @abstractmethod
+    def batches(
+        self, *, batch_rows: int = 65536
+    ) -> AbstractContextManager[Iterator[pa.RecordBatch]]:
+        raise NotImplementedError
+
+
+class _Checked:
+    """Incremental global invariants, with identity indexes owned on disk."""
+
+    def __init__(
+        self,
+        scope: ExecutionScope,
+        metadata: DatasetMetadata | EvidenceMetadata,
+    ) -> None:
+        self.scope = scope
+        self.metadata = metadata
+        self.produced = 0
+        self.no_data = 0
+        descriptor, filename = tempfile.mkstemp(
+            prefix="identity-", suffix=".sqlite", dir=scope.directory
+        )
+        import os
+
+        os.close(descriptor)
+        self.db = sqlite3.connect(filename)
+        self.db.execute("CREATE TABLE row_keys (identity TEXT PRIMARY KEY)")
+        self.db.execute(
+            "CREATE TABLE supports (id TEXT PRIMARY KEY, geometry BLOB, cell TEXT)"
+        )
+        scope.callback(self.db.close)
+
+    def _remember(
+        self, identity: str, support_id: str, geometry: bytes | None, cell_id: int
+    ) -> None:
+        try:
+            self.db.execute("INSERT INTO row_keys VALUES (?)", (identity,))
+        except sqlite3.IntegrityError as error:
+            raise ValueError(f"duplicate scientific row key: {identity}") from error
+        found = self.db.execute(
+            "SELECT geometry,cell FROM supports WHERE id=?", (support_id,)
+        ).fetchone()
+        cell = str(cell_id) if geometry is None else None
+        if found is None:
+            self.db.execute(
+                "INSERT INTO supports VALUES (?,?,?)", (support_id, geometry, cell)
+            )
+        elif found != (geometry, cell):
+            old_geometry, old_cell = found
+            if (
+                old_cell != cell
+                or old_geometry is None
+                or geometry is None
+                or not from_wkb(old_geometry).equals(from_wkb(geometry))
+            ):
+                raise ValueError(
+                    f"support_id {support_id!r} identifies conflicting source geometry"
+                )
+
+    def check(self, batch: pa.RecordBatch) -> pa.RecordBatch:
+        planned = replace(
+            self.metadata,
+            report=replace(
+                self.metadata.report,
+                complete=False,
+                valid=False if self.metadata.report.valid is False else None,
+            ),
+        )
+        table = pa.Table.from_batches([batch]).replace_schema_metadata(
+            _schema(planned).metadata
+        )
+        retained = 0
+        try:
+            if isinstance(planned, DatasetMetadata):
+                rows = table_to_rows(table)
+                for row in rows:
+                    identity = json.dumps(
+                        [
+                            row.variable_id,
+                            row.scenario_id,
+                            row.period_id,
+                            row.support_id,
+                            row.cell_id,
+                        ],
+                        ensure_ascii=False,
+                    )
+                    self._remember(identity, row.support_id, row.geometry, row.cell_id)
+                    retained += int(row.failure is not None)
+            else:
+                validate_evidence(table, planned, check_counts=False)
+                for record in table.to_pylist():
+                    identity = json.dumps(
+                        [
+                            record[name]
+                            for name in (
+                                "variable_id",
+                                "scenario_id",
+                                "period_id",
+                                "support_id",
+                                "cell_id",
+                                "time",
+                            )
+                        ],
+                        ensure_ascii=False,
+                    )
+                    self._remember(
+                        identity,
+                        record["support_id"],
+                        record["geometry"],
+                        record["cell_id"],
+                    )
+        except (ValueError, TypeError) as error:
+            raise _invalid(error) from error
+        self.produced += batch.num_rows
+        self.no_data += retained
+        self.scope.emit(Stage.VALIDATION, self.produced)
+        return batch.replace_schema_metadata(_schema(planned).metadata)
+
+    def report(self) -> ExecutionReport:
+        return ExecutionReport(
+            False,
+            None,
+            counts=ExecutionCounts(
+                requested=self.produced, produced=self.produced, no_data=self.no_data
+            ),
+        )
+
+
+def _checked_stream(
+    scope: ExecutionScope,
+    metadata: MetadataT,
+    batches: Iterator[pa.RecordBatch],
+) -> NodeStream[MetadataT]:
+    state = _Checked(scope, metadata)
+
+    def checked() -> Iterator[pa.RecordBatch]:
+        for batch in batches:
+            yield state.check(batch)
+
+    return NodeStream(_schema(metadata), metadata, checked(), report=state.report)
+
+
+def _sources(metadata: Metadata) -> tuple[SourceIdentity, ...]:
+    values = metadata.report.source_identities
+    if metadata.source is not None and metadata.source not in values:
+        values = (*values, metadata.source)
+    return values
+
+
+def _report_view(
+    shared: ExecutionReport,
+    *,
+    parent: ExecutionReport | None = None,
+    baseline: ExecutionReport | None = None,
+    source_known: bool = False,
+    source: SourceIdentity | None = None,
+) -> ExecutionReport:
+    inherited = ExecutionReport(True, True) if parent is None else parent
+    base = ExecutionReport(True, True) if baseline is None else baseline
+    diagnostics = list((*inherited.diagnostics, *base.diagnostics))
+    for diagnostic in shared.diagnostics:
+        if source_known and diagnostic.source is not None:
+            diagnostic = replace(
+                diagnostic, source=None if source is None else source.product
+            )
+        if diagnostic not in diagnostics:
+            diagnostics.append(diagnostic)
+    if (
+        baseline is not None
+        and shared.complete
+        and baseline.complete
+        and (
+            baseline.counts.produced != shared.counts.produced
+            or baseline.counts.no_data != shared.counts.no_data
+        )
+    ):
+        diagnostics.append(
+            ExecutionDiagnostic(
+                "stored_count_mismatch",
+                crc_framework.DiagnosticSeverity.ERROR,
+                Stage.VALIDATION,
+                "Stored complete report counts disagree with the consumed rows",
+            )
+        )
+    if base.valid is False and not any(
+        d.severity is crc_framework.DiagnosticSeverity.ERROR for d in diagnostics
+    ):
+        diagnostics.append(
+            ExecutionDiagnostic(
+                "source_declared_invalid",
+                crc_framework.DiagnosticSeverity.ERROR,
+                Stage.VALIDATION,
+                "The source report declares this scientific data invalid",
+            )
+        )
+    complete = (
+        shared.complete
+        and inherited.complete
+        and (baseline is None or baseline.complete)
+    )
+    invalid = (
+        shared.valid is False
+        or inherited.valid is False
+        or base.valid is False
+        or any(
+            d.severity is crc_framework.DiagnosticSeverity.ERROR for d in diagnostics
+        )
+    )
+    return ExecutionReport(
+        complete,
+        False if invalid else True if complete else None,
+        tuple(
+            diagnostic
+            for index, diagnostic in enumerate(diagnostics)
+            if diagnostic not in diagnostics[:index]
+        ),
+        shared.counts,
+        inherited.source_identities if baseline is None else baseline.source_identities,
+    )
+
+
+def _static_source(
+    scope: ExecutionScope, node: Node[MetadataT]
+) -> tuple[bool, SourceIdentity | None]:
+    if isinstance(node, _TableNode):
+        return True, node.metadata_value.source
+    if isinstance(node, _ParquetNode):
+        metadata = node.metadata_value or scope.computation_metadata(node)
+        return (False, None) if metadata is None else (True, metadata.source)
+    if isinstance(node, (_SelectionNode, _TransformNode, _FitNode)):
+        return _static_source(scope, node.parent)
+    return False, None
+
+
+class _ScientificNode(Node[MetadataT], Generic[MetadataT]):
+    def _view_batch(
+        self, scope: ExecutionScope, batch: pa.RecordBatch
+    ) -> pa.RecordBatch:
+        metadata = scope.metadata(self)
+        report = scope.report(self)
+        metadata = replace(
+            metadata,
+            report=replace(
+                report, complete=False, valid=False if report.valid is False else None
+            ),
+        )
+        return batch.replace_schema_metadata(_schema(metadata).metadata)
+
+
+class _TableNode(_ScientificNode[MetadataT]):
+    def __init__(self, table: pa.Table, metadata: MetadataT) -> None:
+        self.table = table
+        self.metadata_value: MetadataT = metadata
+        self.key = _key(
+            "table",
+            _table_key(table),
+            _spec_document(metadata.spec),
+            metadata.spatial._document(),
+        )
+
+    def _view_metadata(
+        self, scope: ExecutionScope, replay_metadata: MetadataT
+    ) -> MetadataT:
+        return replace(self.metadata_value, report=scope.report(self))
+
+    def _view_report(
+        self, scope: ExecutionScope, shared: ExecutionReport
+    ) -> ExecutionReport:
+        baseline = replace(
+            self.metadata_value.report, source_identities=_sources(self.metadata_value)
+        )
+        report = _report_view(shared, baseline=baseline)
+        return replace(
+            report,
+            counts=replace(
+                baseline.counts,
+                requested=max(shared.counts.produced, baseline.counts.requested),
+                produced=shared.counts.produced,
+                no_data=shared.counts.no_data,
+            ),
+        )
+
+    def open(self, scope: ExecutionScope) -> NodeStream[MetadataT]:
+        return _checked_stream(
+            scope,
+            self.metadata_value,
+            iter(self.table.to_batches(max_chunksize=scope.runtime.batch_rows)),
+        )
+
+
+class _ParquetNode(_ScientificNode[MetadataT]):
+    def __init__(
+        self,
+        path: Path,
+        metadata_type: type[MetadataT],
+        *,
+        digest: str | None = None,
+        metadata: MetadataT | None = None,
+    ) -> None:
+        self.metadata_value: MetadataT | None = metadata
+        self.path = path
+        self.metadata_type: type[MetadataT] = metadata_type
+        self.digest = digest
+        self.key = _key("parquet", str(path.absolute()), metadata_type.__name__, digest)
+
+    def _view_metadata(
+        self, scope: ExecutionScope, replay_metadata: MetadataT
+    ) -> MetadataT:
+        return replace(
+            self.metadata_value or replay_metadata, report=scope.report(self)
+        )
+
+    def _view_report(
+        self, scope: ExecutionScope, shared: ExecutionReport
+    ) -> ExecutionReport:
+        baseline = self.metadata_value or scope.computation_metadata(self)
+        if baseline is None:
+            return shared
+        report = replace(baseline.report, source_identities=_sources(baseline))
+        result = _report_view(shared, baseline=report)
+        # The original FD pin is an execution resource, separate from any
+        # upstream source identity already present in artifact metadata.
+        return replace(
+            result,
+            source_identities=tuple(
+                dict.fromkeys((*result.source_identities, *shared.source_identities))
+            ),
+        )
+
+    def open(self, scope: ExecutionScope) -> NodeStream[MetadataT]:
+        handle = None
+        discovery = None
+        if self.metadata_value is None:
+            handle = scope.enter_context(self.path.open("rb"))
+            try:
+                discovery = scope.enter_context(pq.ParquetFile(handle))
+                schema = discovery.schema_arrow
+                empty = pa.Table.from_batches([], schema=schema)
+                metadata = cast(
+                    MetadataT,
+                    metadata_from_table(empty)
+                    if self.metadata_type is DatasetMetadata
+                    else metadata_from_evidence_table(empty),
+                )
+                if not schema.equals(_schema(metadata), check_metadata=False):
+                    raise ValueError(
+                        "Persisted Arrow schema contradicts its declared artifact kind"
+                    )
+                if (
+                    isinstance(metadata, EvidenceMetadata)
+                    and metadata.kind is not EvidenceKind.SAMPLES
+                ):
+                    raise ValueError("Samples.open requires sample evidence")
+                if (
+                    metadata.report.complete
+                    and discovery.metadata.num_rows != metadata.report.counts.produced
+                ):
+                    raise ValueError(
+                        "Stored complete report count disagrees with the Parquet footer"
+                    )
+            except (ValueError, TypeError) as error:
+                raise _invalid(error) from error
+        else:
+            metadata = self.metadata_value
+            schema = _schema(metadata)
+        state = _Checked(scope, metadata)
+        resource_source: SourceIdentity | None = None
+
+        def batches() -> Iterator[pa.RecordBatch]:
+            nonlocal resource_source
+            if handle is None:
+                pinned, resource = scope.pin_local(
+                    self.path, expected_sha256=self.digest
+                )
+            else:
+                pinned, resource = scope.pin_handle(
+                    handle, uri=str(self.path), expected_sha256=self.digest
+                )
+            reader = scope.enter_context(pq.ParquetFile(pinned))
+            if (
+                not reader.schema_arrow.equals(schema, check_metadata=False)
+                or reader.schema_arrow.metadata != schema.metadata
+                or (
+                    discovery is not None
+                    and reader.metadata.num_rows != discovery.metadata.num_rows
+                )
+            ):
+                raise OSError(
+                    "The artifact changed after metadata discovery; no data was "
+                    "delivered under the earlier inspection"
+                )
+            resource_source = SourceIdentity(
+                provider="local",
+                product=self.metadata_type.__name__,
+                resources=(resource,),
+            )
+            for batch in reader.iter_batches(batch_size=scope.runtime.batch_rows):
+                yield state.check(batch)
+
+        def report() -> ExecutionReport:
+            return replace(
+                state.report(),
+                source_identities=() if resource_source is None else (resource_source,),
+            )
+
+        return NodeStream(schema, metadata, batches(), report=report)
+
+
+class _SelectionNode(_ScientificNode[MetadataT]):
+    def __init__(self, parent: Node[MetadataT], state: SelectionState) -> None:
+        self.parent: Node[MetadataT] = parent
+        self.state = state
+        self.key = _key("select", parent.key, state.document())
+
+    def _view_metadata(
+        self, scope: ExecutionScope, replay_metadata: MetadataT
+    ) -> MetadataT:
+        original = scope.metadata(self.parent)
+        metadata = selected_metadata(
+            original, self.state.resolve(original.spec, source=original.source)
+        )
+        return replace(metadata, report=scope.report(self))
+
+    def _view_report(
+        self, scope: ExecutionScope, shared: ExecutionReport
+    ) -> ExecutionReport:
+        parent = scope.report(self.parent)
+        metadata = scope.metadata(self.parent)
+        if self.state.resolve(metadata.spec, source=metadata.source).empty:
+            parent = replace(
+                parent, complete=True, valid=False if parent.valid is False else True
+            )
+        return _report_view(shared, parent=parent)
+
+    def open(self, scope: ExecutionScope) -> NodeStream[MetadataT]:
+        original = scope.metadata(self.parent)
+        resolved = self.state.resolve(original.spec, source=original.source)
+        known_supports = _support_inventory(self.parent)
+        if resolved.stations is not None and known_supports is not None:
+            missing = set(resolved.stations) - known_supports
+            if missing:
+                raise ValueError(
+                    f"unknown requested station identities {sorted(missing)!r}"
+                )
+        metadata = selected_metadata(original, resolved)
+        metadata = _with_report(
+            metadata,
+            replace(
+                metadata.report, complete=False, valid=None, counts=ExecutionCounts()
+            ),
+        )
+
+        def batches() -> Iterator[pa.RecordBatch]:
+            if not resolved.keys or resolved.stations == ():
+                return
+            seen_stations: set[str] = set()
+            for batch in scope.iter_batches(self.parent):
+                if resolved.stations is not None:
+                    seen_stations.update(
+                        cast(
+                            list[str],
+                            batch.column(
+                                batch.schema.get_field_index("support_id")
+                            ).to_pylist(),
+                        )
+                    )
+                if isinstance(metadata, DatasetMetadata):
+                    table = pa.Table.from_batches([batch]).replace_schema_metadata(
+                        _schema(
+                            _with_report(
+                                original,
+                                replace(
+                                    original.report,
+                                    complete=False,
+                                    valid=False
+                                    if original.report.valid is False
+                                    else None,
+                                ),
+                            )
+                        ).metadata
+                    )
+                    rows = [
+                        row for row in table_to_rows(table) if resolved.matches(row)
+                    ]
+                    if rows:
+                        yield from rows_to_table(rows, metadata).to_batches()
+                else:
+                    records = [
+                        row for row in batch.to_pylist() if resolved.matches_record(row)
+                    ]
+                    if records:
+                        yield pa.RecordBatch.from_pylist(
+                            records, schema=_schema(metadata)
+                        )
+            if resolved.stations is not None:
+                missing = set(resolved.stations) - seen_stations
+                if missing:
+                    raise ValueError(
+                        f"unknown requested station identities {sorted(missing)!r}"
+                    )
+
+        stream = _checked_stream(scope, metadata, batches())
+        own_report = stream.report
+
+        def report() -> ExecutionReport:
+            assert own_report is not None
+            own = own_report()
+            parent = scope.computation_report(self.parent)
+            return replace(
+                own,
+                diagnostics=parent.diagnostics,
+                source_identities=parent.source_identities,
+            )
+
+        stream.report = report
+        return stream
+
+
+def _support_inventory(node: Node[MetadataT]) -> set[str] | None:
+    if isinstance(node, _TableNode):
+        return set(cast(list[str], node.table.column("support_id").to_pylist()))
+    if isinstance(node, _TransformNode):
+        return _support_inventory(node.parent)
+    return None
+
+
+def _fit_kind(spec: crc_framework.FitSpec, *, samples: bool) -> None:
+    expected = (
+        (crc_framework.SampleFit,)
+        if samples
+        else (
+            crc_framework.QuantileFit,
+            crc_framework.CensoredQuantileFit,
+            crc_framework.HurdleQuantileFit,
+        )
+    )
+    candidates = (
+        spec.candidates if isinstance(spec, crc_framework.ModelSelection) else (spec,)
+    )
+    if not all(isinstance(candidate, expected) for candidate in candidates):
+        kind = "sample" if samples else "quantile"
+        raise TypeError(f"{kind} evidence requires {kind} fitting specifications")
+
+
+class _FitNode(_ScientificNode[DatasetMetadata], Generic[MetadataT]):
+    def __init__(
+        self,
+        parent: Node[MetadataT],
+        specification: crc_framework.FitSpec,
+        failure: FitFailure,
+    ) -> None:
+        if not isinstance(specification, crc_framework.FitSpec):
+            raise TypeError("spec must be a framework FitSpec")
+        if not isinstance(failure, FitFailure):
+            raise TypeError("on_failure must be FitFailure")
+        self.parent: Node[MetadataT] = parent
+        self.specification = specification
+        self.failure = failure
+        self.key = _key("fit", parent.key, specification.to_json(), failure.value)
+
+    def selected(self, state: SelectionState) -> _FitNode[MetadataT]:
+        return _FitNode(
+            _SelectionNode(self.parent, state), self.specification, self.failure
+        )
+
+    def _view_metadata(
+        self, scope: ExecutionScope, replay_metadata: DatasetMetadata
+    ) -> DatasetMetadata:
+        parent = scope.metadata(self.parent)
+        return DatasetMetadata(
+            spec=parent.spec,
+            spatial=parent.spatial,
+            report=scope.report(self),
+            source=parent.source,
+            provenance=parent.provenance,
+        )
+
+    def _view_report(
+        self, scope: ExecutionScope, shared: ExecutionReport
+    ) -> ExecutionReport:
+        known, source = _static_source(scope, self.parent)
+        return _report_view(
+            shared, parent=scope.report(self.parent), source_known=known, source=source
+        )
+
+    def open(self, scope: ExecutionScope) -> NodeStream[DatasetMetadata]:
+        original = scope.metadata(self.parent)
+        metadata = DatasetMetadata(
+            spec=original.spec,
+            spatial=original.spatial,
+            report=ExecutionReport(False, None),
+            source=original.source,
+            provenance=original.provenance,
+        )
+        result_metadata = metadata
+
+        def batches() -> Iterator[pa.RecordBatch]:
+            nonlocal result_metadata
+            parts: list[pa.RecordBatch] = []
+            size = 0
+            budget = _memory_bytes(scope.runtime.memory_limit)
+            for batch in scope.iter_batches(self.parent):
+                size += batch.nbytes
+                if budget is not None and size > budget:
+                    raise MemoryError(
+                        "Selected fitting evidence exceeds Runtime(memory_limit=...). "
+                        "Narrow select() or increase the limit."
+                    )
+                parts.append(batch)
+            parent_report = scope.computation_report(self.parent)
+            actual = _with_report(scope.metadata(self.parent), parent_report)
+            table = pa.Table.from_batches(
+                parts, schema=_schema(actual)
+            ).replace_schema_metadata(_schema(actual).metadata)
+            if table.num_rows == 0:
+                result_metadata = replace(
+                    metadata,
+                    report=ExecutionReport(
+                        True,
+                        True,
+                        parent_report.diagnostics,
+                        ExecutionCounts(),
+                        parent_report.source_identities,
+                    ),
+                )
+                return
+            scope.emit(Stage.FITTING, 0)
+            if isinstance(actual, EvidenceMetadata):
+                try:
+                    rows, result_metadata = fit_sample_table(
+                        table, actual, self.specification, on_failure=self.failure
+                    )
+                except crc_framework.FitError as error:
+                    raise _fit_invalid(
+                        error,
+                        source=error.source
+                        if isinstance(error, _SampleFitError)
+                        else None
+                        if actual.source is None
+                        else actual.source.product,
+                        support_id=error.support_id
+                        if isinstance(error, _SampleFitError)
+                        else None,
+                        variable_id=error.variable_id
+                        if isinstance(error, _SampleFitError)
+                        else None,
+                    ) from error
+            else:
+                rows, result_metadata = _fit_quantiles(
+                    table, actual, self.specification, self.failure
+                )
+            scope.emit(Stage.FITTING, len(rows), len(rows))
+            yield from rows_to_table(rows, result_metadata).to_batches(
+                max_chunksize=scope.runtime.batch_rows
+            )
+
+        return NodeStream(
+            dataset_arrow_schema(metadata),
+            metadata,
+            batches(),
+            report=lambda: result_metadata.report,
+            final_metadata=lambda: result_metadata,
+        )
+
+
+def _fit_quantiles(
+    table: pa.Table,
+    metadata: DatasetMetadata,
+    spec: crc_framework.FitSpec,
+    failure: FitFailure,
+) -> tuple[tuple[DatasetRow, ...], DatasetMetadata]:
+    from ._dataset_schema import RetainedFailure
+
+    if not isinstance(
+        spec,
+        (
+            crc_framework.QuantileFit,
+            crc_framework.CensoredQuantileFit,
+            crc_framework.HurdleQuantileFit,
+            crc_framework.ModelSelection,
+        ),
+    ):
+        raise TypeError("quantile evidence requires a quantile fitting specification")
+    if isinstance(spec, crc_framework.ModelSelection) and any(
+        isinstance(candidate, crc_framework.SampleFit) for candidate in spec.candidates
+    ):
+        raise TypeError("quantile model selection requires quantile fitting candidates")
+    rows = table_to_rows(table)
+    result: list[DatasetRow] = []
+    diagnostics = list(metadata.report.diagnostics)
+    skipped = no_data = 0
+    for row in rows:
+        if not isinstance(row.curve, crc_framework.QuantileCurve):
+            raise CapabilityError(
+                "fit() requires supplied quantile evidence. "
+                "Existing distributions are already models."
+            )
+        try:
+            fitted = crc_framework.fit_quantiles(row.curve, spec)
+            result.append(replace(row, curve=fitted.distribution, fit=fitted.record))
+        except crc_framework.FitError as error:
+            if failure is FitFailure.RAISE:
+                raise _fit_invalid(
+                    error,
+                    source=None if metadata.source is None else metadata.source.product,
+                    support_id=row.support_id,
+                    variable_id=row.variable_id,
+                ) from error
+            diagnostics.append(
+                FittingDiagnostic(
+                    error.code,
+                    crc_framework.DiagnosticSeverity.WARNING,
+                    Stage.FITTING,
+                    f"variable {row.variable_id!r}: {error.message}",
+                    source=None if metadata.source is None else metadata.source.product,
+                    support_id=row.support_id,
+                    record=error.record,
+                )
+            )
+            if failure is FitFailure.SKIP:
+                skipped += 1
+            else:
+                no_data += 1
+                result.append(
+                    replace(
+                        row,
+                        curve=None,
+                        fit=None,
+                        failure=RetainedFailure.from_error(error),
+                    )
+                )
+    report = ExecutionReport(
+        True,
+        True,
+        tuple(diagnostics),
+        ExecutionCounts(
+            requested=len(rows), produced=len(result), skipped=skipped, no_data=no_data
+        ),
+        metadata.report.source_identities,
+    )
+    return tuple(result), replace(metadata, report=report)
+
+
+class _TransformNode(_ScientificNode[MetadataT]):
+    def __init__(
+        self, parent: Node[MetadataT], operation: str, arguments: Mapping[str, object]
+    ) -> None:
+        self.parent: Node[MetadataT] = parent
+        self.operation = operation
+        copied: dict[str, object] = {}
+        key_arguments: dict[str, object] = {}
+        for name, value in arguments.items():
+            if isinstance(value, Mapping):
+                value = dict(value)
+                key_arguments[name] = value
+                copied[name] = types.MappingProxyType(value)
+            else:
+                copied[name] = value
+                if isinstance(value, Variable):
+                    key_arguments[name] = {
+                        "id": value.id,
+                        "science": scientific_identity(value),
+                    }
+                elif isinstance(value, DataSpec):
+                    key_arguments[name] = _spec_document(value)
+                elif isinstance(value, (Scenario, Period, Probability)):
+                    key_arguments[name] = {
+                        "id": getattr(value, "id", None),
+                        "science": scientific_identity(value),
+                    }
+                elif isinstance(value, Enum):
+                    key_arguments[name] = value.value
+                else:
+                    key_arguments[name] = value
+        self.arguments = types.MappingProxyType(copied)
+        self.key = _key(operation, parent.key, key_arguments)
+
+    def _metadata_view(self, original: MetadataT) -> MetadataT:
+        if self.operation == "rename":
+            return rename_metadata(
+                original,
+                variables=cast(Mapping[str, str] | None, self.arguments["variables"]),
+                scenarios=cast(Mapping[str, str] | None, self.arguments["scenarios"]),
+            )
+        if self.operation == "declare":
+            spec, _ = refine_spec(
+                original.spec,
+                variable=cast(Variable | None, self.arguments["variable"]),
+                scenario=cast(Scenario | None, self.arguments["scenario"]),
+                period=cast(Period | None, self.arguments["period"]),
+                probability=cast(Probability | None, self.arguments["probability"]),
+                spec=cast(DataSpec | None, self.arguments["spec"]),
+            )
+            return replace(original, spec=spec)
+        return conversion_metadata(
+            original,
+            variable=cast(Variable | str, self.arguments["variable"]),
+            unit=cast(Unit, self.arguments["unit"]),
+        )[0]
+
+    def _view_metadata(
+        self, scope: ExecutionScope, replay_metadata: MetadataT
+    ) -> MetadataT:
+        return replace(
+            self._metadata_view(scope.metadata(self.parent)), report=scope.report(self)
+        )
+
+    def _view_report(
+        self, scope: ExecutionScope, shared: ExecutionReport
+    ) -> ExecutionReport:
+        return _report_view(shared, parent=scope.report(self.parent))
+
+    def open(self, scope: ExecutionScope) -> NodeStream[MetadataT]:
+        original = scope.metadata(self.parent)
+        if self.operation == "declare":
+            spec, identities = refine_spec(
+                original.spec,
+                variable=cast(Variable | None, self.arguments["variable"]),
+                scenario=cast(Scenario | None, self.arguments["scenario"]),
+                period=cast(Period | None, self.arguments["period"]),
+                probability=cast(Probability | None, self.arguments["probability"]),
+                spec=cast(DataSpec | None, self.arguments["spec"]),
+            )
+            metadata = replace(original, spec=spec)
+
+            def transform(row: DatasetRow) -> DatasetRow:
+                variable, scenario, period = identities[
+                    (row.variable_id, row.scenario_id, row.period_id)
+                ]
+                return replace(
+                    row, variable_id=variable, scenario_id=scenario, period_id=period
+                )
+
+            def record(value: dict[str, object]) -> dict[str, object]:
+                variable, scenario, period = identities[
+                    (
+                        cast(str, value["variable_id"]),
+                        cast(str | None, value["scenario_id"]),
+                        cast(str | None, value["period_id"]),
+                    )
+                ]
+                return {
+                    **value,
+                    "variable_id": variable,
+                    "scenario_id": scenario,
+                    "period_id": period,
+                }
+        elif self.operation == "rename":
+            variables = cast(Mapping[str, str] | None, self.arguments["variables"])
+            scenarios = cast(Mapping[str, str] | None, self.arguments["scenarios"])
+            metadata = rename_metadata(
+                original, variables=variables, scenarios=scenarios
+            )
+
+            def transform(row: DatasetRow) -> DatasetRow:
+                return rename_row(row, variables=variables, scenarios=scenarios)
+
+            def record(value: dict[str, object]) -> dict[str, object]:
+                return {
+                    **value,
+                    "variable_id": (variables or {}).get(
+                        cast(str, value["variable_id"]), value["variable_id"]
+                    ),
+                    "scenario_id": (scenarios or {}).get(
+                        cast(str, value["scenario_id"]), value["scenario_id"]
+                    ),
+                }
+        else:
+            requested_variable = cast(Variable | str, self.arguments["variable"])
+            variable = (
+                requested_variable.id
+                if isinstance(requested_variable, Variable)
+                else requested_variable
+            )
+            unit = cast(Unit, self.arguments["unit"])
+            metadata, conversion = conversion_metadata(
+                original, variable=requested_variable, unit=unit
+            )
+            before = next(
+                v.measurement for v in original.spec.variables if v.id == variable
+            )
+            after = next(
+                v.measurement for v in metadata.spec.variables if v.id == variable
+            )
+
+            def transform(row: DatasetRow) -> DatasetRow:
+                if conversion is None:
+                    return row
+                assert before is not None and after is not None
+                return conversion_row(row, conversion, input=before, output=after)
+
+            def record(value: dict[str, object]) -> dict[str, object]:
+                if conversion is None or value["variable_id"] != variable:
+                    return value
+                return {
+                    **value,
+                    "value": float(cast(float, value["value"])) * conversion.scale
+                    + conversion.offset,
+                }
+
+        metadata = _with_report(
+            metadata, replace(metadata.report, complete=False, valid=None)
+        )
+
+        def batches() -> Iterator[pa.RecordBatch]:
+            for batch in scope.iter_batches(self.parent):
+                if isinstance(original, DatasetMetadata):
+                    table = pa.Table.from_batches([batch]).replace_schema_metadata(
+                        _schema(
+                            _with_report(
+                                original,
+                                replace(
+                                    original.report,
+                                    complete=False,
+                                    valid=False
+                                    if original.report.valid is False
+                                    else None,
+                                ),
+                            )
+                        ).metadata
+                    )
+                    yield from rows_to_table(
+                        [transform(row) for row in table_to_rows(table)],
+                        cast(DatasetMetadata, metadata),
+                    ).to_batches()
+                else:
+                    yield pa.RecordBatch.from_pylist(
+                        [record(v) for v in batch.to_pylist()], schema=_schema(metadata)
+                    )
+
+        stream = _checked_stream(scope, metadata, batches())
+        own = stream.report
+
+        def report() -> ExecutionReport:
+            assert own is not None
+            local = own()
+            parent = scope.computation_report(self.parent)
+            return replace(
+                local,
+                diagnostics=parent.diagnostics,
+                source_identities=parent.source_identities,
+                counts=replace(
+                    parent.counts,
+                    produced=local.counts.produced,
+                    no_data=local.counts.no_data,
+                ),
+            )
+
+        stream.report = report
+        return stream
+
+
+class _RecipeBase(Generic[MetadataT]):
+    __slots__ = ("_base", "_selection", "_operations", "_path", "_metadata")
+    _base: Node[MetadataT]
+    _selection: SelectionState
+    _operations: tuple[Operation, ...]
+    _path: Path | None
+    _metadata: MetadataT | None
+
+    def __setattr__(self, name: str, value: object) -> None:
+        raise AttributeError(
+            "Recipes are immutable; use a builder to create a new recipe"
+        )
+
+    def __init__(self) -> None:
+        raise TypeError("Use an input constructor or open()")
+
+    @classmethod
+    def _create(
+        cls,
+        node: Node[MetadataT],
+        *,
+        operations: tuple[Operation, ...],
+        selection: SelectionState | None = None,
+        path: Path | None = None,
+        metadata: MetadataT | None = None,
+    ) -> Self:
+        value = object.__new__(cls)
+        object.__setattr__(value, "_base", node)
+        object.__setattr__(
+            value, "_selection", SelectionState() if selection is None else selection
+        )
+        object.__setattr__(value, "_operations", operations)
+        object.__setattr__(value, "_path", path)
+        object.__setattr__(value, "_metadata", metadata)
+        return value
+
+    @property
+    def _node(self) -> Node[MetadataT]:
+        if self._selection == SelectionState():
+            return self._base
+        if isinstance(self._base, _FitNode):
+            return cast(Node[MetadataT], self._base.selected(self._selection))
+        return _SelectionNode(self._base, self._selection)
+
+    @property
+    def path(self) -> Path | None:
+        return self._path
+
+    @property
+    def metadata(self) -> MetadataT | None:
+        if self._metadata is not None or self._path is None:
+            return self._metadata
+        with ExecutionScope() as scope:
+            metadata = scope.metadata(self._base)
+            if isinstance(self._base, _ParquetNode):
+                reader = cast(_ParquetNode[MetadataT], self._base)
+                return reader.metadata_value or scope.computation_metadata(reader)
+            return metadata
+
+    @property
+    def report(self) -> ExecutionReport | None:
+        metadata = self.metadata
+        return None if metadata is None else metadata.report
+
+    def explain(self, *, runtime: Runtime | None = None) -> Explanation:
+        config = Runtime() if runtime is None else runtime
+        if not isinstance(config, Runtime):
+            raise TypeError("runtime must be Runtime")
+        return Explanation(
+            operations=self._operations,
+            requirements=(),
+            cache=config.cache,
+            source=None if self._metadata is None else self._metadata.source,
+            workers=config.workers,
+            batch_rows=config.batch_rows,
+            memory_limit=config.memory_limit,
+        )
+
+    def inspect(self, *, runtime: Runtime | None = None) -> Inspection:
+        with ExecutionScope(runtime) as scope:
+            try:
+                metadata = scope.metadata(self._node)
+            except DataValidationError as error:
+                raise ValidationError(report=scope.report(self._node)) from error
+            return Inspection(
+                schema=_schema(metadata),
+                series=tuple(
+                    SeriesReference(
+                        s.variable,
+                        scenario=s.scenario,
+                        period=s.period,
+                        release=None
+                        if metadata.source is None
+                        else metadata.source.release,
+                    )
+                    for s in metadata.spec.series
+                ),
+                capabilities=(
+                    Capability.INSPECT,
+                    Capability.READ,
+                    Capability.BATCHES,
+                    Capability.WRITE,
+                    Capability.FIT,
+                ),
+                source=metadata.source,
+            )
+
+    def read(
+        self, *, limit: int | None = None, runtime: Runtime | None = None
+    ) -> ReadResult[MetadataT]:
+        from ._terminals import _limit
+
+        _limit(limit)
+        with self.execute(runtime=runtime) as execution:
+            return execution.read(limit=limit)
+
+    def batches(
+        self, *, batch_rows: int | None = None, runtime: Runtime | None = None
+    ) -> BatchStream[MetadataT]:
+        return BatchStream(ExecutionScope(runtime), self._node, batch_rows=batch_rows)
+
+    def validate(self, *, runtime: Runtime | None = None) -> ExecutionReport:
+        with self.execute(runtime=runtime) as execution:
+            return execution.validate()
+
+    def execute(self, *, runtime: Runtime | None = None) -> Execution[MetadataT]:
+        return Execution(self, runtime=runtime)
+
+    def write(
+        self,
+        path: LocalPath,
+        *,
+        overwrite: bool = False,
+        runtime: Runtime | None = None,
+    ) -> Self:
+        _publication_path(path, overwrite)
+        with self.execute(runtime=runtime) as execution:
+            return cast(Self, execution.write(path, overwrite=overwrite))
+
+    def _saved(self, path: Path, metadata: MetadataT, digest: str) -> Dataset | Samples:
+        return cast(
+            Dataset | Samples,
+            type(self)._create(
+                _ParquetNode(path, type(metadata), digest=digest, metadata=metadata),
+                operations=(
+                    Operation(Stage.DECODING, "Read the pinned saved artifact"),
+                ),
+                path=path,
+                metadata=metadata,
+            ),
+        )
+
+    def declare(
+        self,
+        *,
+        variable: Variable | None = None,
+        scenario: Scenario | None = None,
+        period: Period | None = None,
+        probability: Probability | None = None,
+        spec: DataSpec | None = None,
+    ) -> Self:
+        for name, value, expected in (
+            ("variable", variable, Variable),
+            ("scenario", scenario, Scenario),
+            ("period", period, Period),
+            ("probability", probability, Probability),
+            ("spec", spec, DataSpec),
+        ):
+            if value is not None and not isinstance(value, expected):
+                raise TypeError(f"{name} must be {expected.__name__} or None")
+        if spec is not None and any(
+            value is not None for value in (variable, scenario, period, probability)
+        ):
+            raise ValueError("declare() accepts either spec or direct declarations")
+        if all(
+            value is None for value in (variable, scenario, period, probability, spec)
+        ):
+            return self
+        node = _TransformNode(
+            self._node,
+            "declare",
+            {
+                "variable": variable,
+                "scenario": scenario,
+                "period": period,
+                "probability": probability,
+                "spec": spec,
+            },
+        )
+        return type(self)._create(
+            node,
+            operations=(
+                *self._operations,
+                Operation(
+                    Stage.SELECTION, "Declare previously unknown scientific meaning"
+                ),
+            ),
+        )
+
+    def rename(
+        self,
+        *,
+        variables: Mapping[str, str] | None = None,
+        scenarios: Mapping[str, str] | None = None,
+    ) -> Self:
+        mappings = {
+            "variables": None if variables is None else dict(variables),
+            "scenarios": None if scenarios is None else dict(scenarios),
+        }
+        return type(self)._create(
+            _TransformNode(self._node, "rename", mappings),
+            operations=(
+                *self._operations,
+                Operation(Stage.SELECTION, "Rename exact scientific identities"),
+            ),
+        )
+
+    def convert_units(self, *, variable: Variable | str, unit: Unit) -> Self:
+        units = (
+            crc_framework.LengthUnit,
+            crc_framework.TimeUnit,
+            crc_framework.RatioUnit,
+            crc_framework.TemperatureUnit,
+            crc_framework.SpeedUnit,
+            crc_framework.PrecipitationRateUnit,
+        )
+        if not isinstance(unit, units):
+            raise TypeError("unit must be a framework unit enum")
+        if not isinstance(variable, (Variable, str)):
+            raise TypeError("variable must be Variable or str")
+        node = _TransformNode(
+            self._node, "convert_units", {"variable": variable, "unit": unit}
+        )
+        return type(self)._create(
+            node,
+            operations=(
+                *self._operations,
+                Operation(
+                    Stage.SELECTION, "Convert declared units and numerical values"
+                ),
+            ),
+        )
+
+
+class Dataset(_RecipeBase[DatasetMetadata]):
+    __slots__ = ()
+
+    @classmethod
+    def open(cls, path: LocalPath) -> Self:
+        destination = _local_path(path)
+        return cls._create(
+            _ParquetNode(destination, DatasetMetadata),
+            operations=(
+                Operation(Stage.DECODING, "Read a canonical dataset snapshot"),
+            ),
+            path=destination,
+        )
+
+    @classmethod
+    def _collected(cls, table: pa.Table, metadata: DatasetMetadata) -> Dataset:
+        return cls._create(
+            _TableNode(table, metadata),
+            operations=(
+                Operation(Stage.DECODING, "Read owned collected dataset values"),
+            ),
+            metadata=metadata,
+        )
+
+    @classmethod
+    def from_quantiles(
+        cls,
+        table: TableInput,
+        *,
+        variable: Variable | None = None,
+        probability: Probability | None = None,
+        scenario: Scenario | None = None,
+        period: Period | None = None,
+        spec: DataSpec | None = None,
+        columns: QuantileColumns | None = None,
+    ) -> Dataset:
+        rows, metadata = normalize_quantiles(
+            table,
+            variable=variable,
+            probability=probability,
+            scenario=scenario,
+            period=period,
+            spec=spec,
+            columns=columns,
+        )
+        return cls._create(
+            _TableNode(rows_to_table(rows, metadata), metadata),
+            operations=(
+                Operation(Stage.DECODING, "Use supplied quantile evidence directly"),
+            ),
+        )
+
+    def select(
+        self,
+        *,
+        variables: VariableSelector | types.EllipsisType = ...,
+        scenarios: ScenarioSelector | types.EllipsisType = ...,
+        periods: PeriodSelector | types.EllipsisType = ...,
+        series: SeriesSelector | types.EllipsisType = ...,
+        area: Bounds | None | types.EllipsisType = ...,
+    ) -> Self:
+        state = self._selection.updated(
+            variables=variables,
+            scenarios=scenarios,
+            periods=periods,
+            series=series,
+            area=area,
+        )
+        return type(self)._create(
+            self._base,
+            selection=state,
+            operations=(
+                *self._operations,
+                Operation(
+                    Stage.SELECTION,
+                    "Select exact series and actual source support: "
+                    + json.dumps(state.document(), ensure_ascii=False, sort_keys=True),
+                ),
+            ),
+        )
+
+    def fit(
+        self, spec: crc_framework.FitSpec, *, on_failure: FitFailure = FitFailure.RAISE
+    ) -> Dataset:
+        _fit_kind(spec, samples=False)
+        return Dataset._create(
+            _FitNode(self._base, spec, on_failure),
+            selection=self._selection,
+            operations=(
+                *self._operations,
+                Operation(
+                    Stage.FITTING,
+                    "Fit explicitly selected quantile evidence (blocking)",
+                ),
+            ),
+        )
+
+
+class Samples(_RecipeBase[EvidenceMetadata]):
+    __slots__ = ()
+
+    @classmethod
+    def open(cls, path: LocalPath) -> Self:
+        destination = _local_path(path)
+        return cls._create(
+            _ParquetNode(destination, EvidenceMetadata),
+            operations=(Operation(Stage.DECODING, "Read a sample evidence snapshot"),),
+            path=destination,
+        )
+
+    @classmethod
+    def _collected(cls, table: pa.Table, metadata: EvidenceMetadata) -> Samples:
+        return cls._create(
+            _TableNode(table, metadata),
+            operations=(
+                Operation(Stage.DECODING, "Read owned collected sample values"),
+            ),
+            metadata=metadata,
+        )
+
+    @classmethod
+    def from_table(
+        cls,
+        table: TableInput,
+        *,
+        variable: Variable | None = None,
+        probability: Probability | None = None,
+        scenario: Scenario | None = None,
+        period: Period | None = None,
+        spec: DataSpec | None = None,
+        columns: SampleColumns | None = None,
+    ) -> Samples:
+        normalized, metadata = normalize_samples(
+            table,
+            variable=variable,
+            probability=probability,
+            scenario=scenario,
+            period=period,
+            spec=spec,
+            columns=columns,
+        )
+        return cls._create(
+            _TableNode(normalized, metadata),
+            operations=(
+                Operation(Stage.DECODING, "Use owned long-form sample evidence"),
+            ),
+        )
+
+    def select(
+        self,
+        *,
+        variables: VariableSelector | types.EllipsisType = ...,
+        scenarios: ScenarioSelector | types.EllipsisType = ...,
+        periods: PeriodSelector | types.EllipsisType = ...,
+        area: Bounds | None | types.EllipsisType = ...,
+        stations: IdentifierSelector | types.EllipsisType = ...,
+        time: Period | None | types.EllipsisType = ...,
+    ) -> Self:
+        state = self._selection.updated(
+            variables=variables,
+            scenarios=scenarios,
+            periods=periods,
+            area=area,
+            stations=stations,
+            time=time,
+        )
+        return type(self)._create(
+            self._base,
+            selection=state,
+            operations=(
+                *self._operations,
+                Operation(
+                    Stage.SELECTION,
+                    "Select sample identities, source support and observation time: "
+                    + json.dumps(state.document(), ensure_ascii=False, sort_keys=True),
+                ),
+            ),
+        )
+
+    def fit(
+        self, spec: crc_framework.FitSpec, *, on_failure: FitFailure = FitFailure.RAISE
+    ) -> Dataset:
+        _fit_kind(spec, samples=True)
+        return Dataset._create(
+            _FitNode(self._base, spec, on_failure),
+            selection=self._selection,
+            operations=(
+                *self._operations,
+                Operation(
+                    Stage.FITTING, "Fit explicitly selected genuine samples (blocking)"
+                ),
+            ),
+        )
