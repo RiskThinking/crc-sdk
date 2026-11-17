@@ -18,7 +18,7 @@ from .geotiff import (
     JRCReturnPeriodRaster,
     trim_cache_dir,
 )
-from .netcdf import EDOAnnualMinimaCurveSource, NetCDFH3Scan, NetCDFRaster, NetCDFScan
+from .netcdf import NetCDFH3Scan, NetCDFRaster, NetCDFScan
 from .stream import ArrowBatchSource, DuckDBPipeline, DuckDBRelationSource
 from .zarr import Bounds, Point, RasterCurve, RasterMetadata, ZarrRaster, ZarrScan
 
@@ -28,7 +28,6 @@ __all__ = [
     "DuckDBConnection",
     "DuckDBPipeline",
     "DuckDBRelationSource",
-    "EDOAnnualMinimaCurveSource",
     "GeoTiffH3Scan",
     "GeoTiffRaster",
     "GeoTiffScan",

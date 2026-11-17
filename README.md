@@ -15,8 +15,8 @@ python -m pip install crc-sdk
 ```
 
 Python 3.11 or later is required. H3 and geometry validation are part of the core
-package. Source-format extras include `raster`, `netcdf`, `zarr`, and
-`agriculture`; source readers import those dependencies only when needed.
+package. Source-format extras are `raster`, `netcdf`, and `zarr`.
+Source readers import those dependencies only when needed.
 
 ## Declare the science you know
 
@@ -54,6 +54,8 @@ an impact or fit implicitly.
   provenance, spatial support, and storage validation.
 - [Execution and persistence](docs/execution.md): automatic upstream execution,
   explicit fitting, previews, reusable executions, streaming, and atomic writes.
+- [Sources and native evidence](docs/sources.md): typed providers, temporal
+  aggregation, user evidence, and explicit asset inputs.
 - [Python interface contract](docs/api-reference.md): canonical imports and
   installed-package enforcement.
 - [Development](docs/development.md): setup, checks, generated contracts, and

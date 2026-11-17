@@ -13,13 +13,14 @@ from contextlib import AbstractContextManager
 from dataclasses import replace
 from enum import Enum
 from pathlib import Path
-from typing import Generic, Self, TypeAlias, TypeVar, cast
+from typing import Generic, Literal, Self, TypeAlias, TypeVar, cast
 
 import crc_framework
 import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
 from shapely import from_wkb  # type: ignore[import-untyped]
 
+from ._aggregation import Sampling
 from ._dataset_schema import (
     DatasetMetadata,
     ExecutionCounts,
@@ -44,6 +45,7 @@ from ._evidence import (
     EvidenceMetadata,
     FitFailure,
     _SampleFitError,
+    evidence_row_key,
     fit_sample_table,
     metadata_from_evidence_table,
     validate_evidence,
@@ -55,6 +57,7 @@ from ._inspection import (
     Explanation,
     Inspection,
     Operation,
+    Requirement,
     SeriesReference,
 )
 from ._runtime import LocalPath, Runtime, _local_path, _memory_bytes
@@ -66,11 +69,12 @@ from ._schema import (
     table_to_rows,
 )
 from ._selection import (
-    IdentifierSelector,
     PeriodSelector,
     ScenarioSelector,
     SelectionState,
     SeriesSelector,
+    StationSelector,
+    Unit,
     VariableSelector,
     conversion_metadata,
     conversion_row,
@@ -78,16 +82,18 @@ from ._selection import (
     rename_row,
     selected_metadata,
 )
+from ._source_io import SourceNode
 from ._table_input import (
     QuantileColumns,
-    SampleColumns,
     TableInput,
+    TimeSeriesColumns,
     normalize_quantiles,
     normalize_samples,
 )
 from ._terminals import (
     BatchStream,
     Execution,
+    PersistedArtifact,
     ReadResult,
     _publication_path,
     _schema,
@@ -96,14 +102,7 @@ from ._terminals import (
 
 Metadata: TypeAlias = DatasetMetadata | EvidenceMetadata
 MetadataT = TypeVar("MetadataT", bound=Metadata)
-Unit: TypeAlias = (
-    crc_framework.LengthUnit
-    | crc_framework.TimeUnit
-    | crc_framework.RatioUnit
-    | crc_framework.TemperatureUnit
-    | crc_framework.SpeedUnit
-    | crc_framework.PrecipitationRateUnit
-)
+CanonicalT = TypeVar("CanonicalT")
 
 
 def _key(operation: str, *values: object) -> str:
@@ -289,19 +288,9 @@ class _Checked:
                 validate_evidence(table, planned, check_counts=False)
                 for record in table.to_pylist():
                     identity = json.dumps(
-                        [
-                            record[name]
-                            for name in (
-                                "variable_id",
-                                "scenario_id",
-                                "period_id",
-                                "support_id",
-                                "cell_id",
-                                "time",
-                            )
-                        ],
-                        ensure_ascii=False,
+                        evidence_row_key(record, planned.kind), ensure_ascii=False
                     )
+                    retained += int(record.get("failure") is not None)
                     self._remember(
                         identity,
                         record["support_id"],
@@ -336,7 +325,9 @@ def _checked_stream(
         for batch in batches:
             yield state.check(batch)
 
-    return NodeStream(_schema(metadata), metadata, checked(), report=state.report)
+    return NodeStream(
+        _schema(metadata), metadata, checked(), report=state.report, checked=True
+    )
 
 
 def _sources(metadata: Metadata) -> tuple[SourceIdentity, ...]:
@@ -413,7 +404,13 @@ def _report_view(
             for index, diagnostic in enumerate(diagnostics)
             if diagnostic not in diagnostics[:index]
         ),
-        shared.counts,
+        shared.counts
+        if baseline is None
+        else replace(
+            baseline.counts,
+            produced=shared.counts.produced,
+            no_data=shared.counts.no_data,
+        ),
         inherited.source_identities if baseline is None else baseline.source_identities,
     )
 
@@ -454,6 +451,10 @@ class _TableNode(_ScientificNode[MetadataT]):
             "table",
             _table_key(table),
             _spec_document(metadata.spec),
+            None if isinstance(metadata, DatasetMetadata) else metadata.kind.value,
+            None
+            if isinstance(metadata, DatasetMetadata) or metadata.sampling is None
+            else metadata.sampling._document(),
             metadata.spatial._document(),
         )
 
@@ -495,12 +496,20 @@ class _ParquetNode(_ScientificNode[MetadataT]):
         *,
         digest: str | None = None,
         metadata: MetadataT | None = None,
+        expected_kind: EvidenceKind = EvidenceKind.SAMPLES,
     ) -> None:
+        self.expected_kind = expected_kind
         self.metadata_value: MetadataT | None = metadata
         self.path = path
         self.metadata_type: type[MetadataT] = metadata_type
         self.digest = digest
-        self.key = _key("parquet", str(path.absolute()), metadata_type.__name__, digest)
+        self.key = _key(
+            "parquet",
+            str(path.absolute()),
+            metadata_type.__name__,
+            digest,
+            expected_kind.value,
+        )
 
     def _view_metadata(
         self, scope: ExecutionScope, replay_metadata: MetadataT
@@ -547,9 +556,11 @@ class _ParquetNode(_ScientificNode[MetadataT]):
                     )
                 if (
                     isinstance(metadata, EvidenceMetadata)
-                    and metadata.kind is not EvidenceKind.SAMPLES
+                    and metadata.kind is not self.expected_kind
                 ):
-                    raise ValueError("Samples.open requires sample evidence")
+                    raise ValueError(
+                        f"This reader requires {self.expected_kind.value} evidence"
+                    )
                 if (
                     metadata.report.complete
                     and discovery.metadata.num_rows != metadata.report.counts.produced
@@ -593,6 +604,8 @@ class _ParquetNode(_ScientificNode[MetadataT]):
                 product=self.metadata_type.__name__,
                 resources=(resource,),
             )
+            if reader.num_row_groups == 0:
+                return
             for batch in reader.iter_batches(batch_size=scope.runtime.batch_rows):
                 yield state.check(batch)
 
@@ -656,12 +669,8 @@ class _SelectionNode(_ScientificNode[MetadataT]):
             for batch in scope.iter_batches(self.parent):
                 if resolved.stations is not None:
                     seen_stations.update(
-                        cast(
-                            list[str],
-                            batch.column(
-                                batch.schema.get_field_index("support_id")
-                            ).to_pylist(),
-                        )
+                        str(record.get("station_id") or record["support_id"])
+                        for record in batch.to_pylist()
                     )
                 if isinstance(metadata, DatasetMetadata):
                     table = pa.Table.from_batches([batch]).replace_schema_metadata(
@@ -685,7 +694,14 @@ class _SelectionNode(_ScientificNode[MetadataT]):
                         yield from rows_to_table(rows, metadata).to_batches()
                 else:
                     records = [
-                        row for row in batch.to_pylist() if resolved.matches_record(row)
+                        row
+                        for row in batch.to_pylist()
+                        if resolved.matches_record(
+                            row,
+                            sampling=original.sampling
+                            if isinstance(original, EvidenceMetadata)
+                            else None,
+                        )
                     ]
                     if records:
                         yield pa.RecordBatch.from_pylist(
@@ -717,7 +733,10 @@ class _SelectionNode(_ScientificNode[MetadataT]):
 
 def _support_inventory(node: Node[MetadataT]) -> set[str] | None:
     if isinstance(node, _TableNode):
-        return set(cast(list[str], node.table.column("support_id").to_pylist()))
+        return {
+            str(record.get("station_id") or record["support_id"])
+            for record in node.table.to_pylist()
+        }
     if isinstance(node, _TransformNode):
         return _support_inventory(node.parent)
     return None
@@ -759,7 +778,7 @@ class _FitNode(_ScientificNode[DatasetMetadata], Generic[MetadataT]):
 
     def selected(self, state: SelectionState) -> _FitNode[MetadataT]:
         return _FitNode(
-            _SelectionNode(self.parent, state), self.specification, self.failure
+            _select_node(self.parent, state), self.specification, self.failure
         )
 
     def _view_metadata(
@@ -1091,11 +1110,23 @@ class _TransformNode(_ScientificNode[MetadataT]):
             def record(value: dict[str, object]) -> dict[str, object]:
                 if conversion is None or value["variable_id"] != variable:
                     return value
-                return {
-                    **value,
-                    "value": float(cast(float, value["value"])) * conversion.scale
-                    + conversion.offset,
-                }
+                result = dict(value)
+                if value["value"] is not None:
+                    result["value"] = (
+                        float(cast(float, value["value"])) * conversion.scale
+                        + conversion.offset
+                    )
+                interval = value.get("interval")
+                if isinstance(interval, Mapping):
+                    result["interval"] = {
+                        **interval,
+                        **{
+                            name: float(cast(float, interval[name])) * conversion.scale
+                            + conversion.offset
+                            for name in ("lower", "upper")
+                        },
+                    }
+                return result
 
         metadata = _with_report(
             metadata, replace(metadata.report, complete=False, valid=None)
@@ -1149,7 +1180,102 @@ class _TransformNode(_ScientificNode[MetadataT]):
         return stream
 
 
-class _RecipeBase(Generic[MetadataT]):
+def _bounded_node(parent: Node[MetadataT], state: SelectionState) -> Node[MetadataT]:
+    """Supply source requirements without replacing earlier scientific selections."""
+    from ._evidence_recipes import _AggregationNode
+
+    if isinstance(parent, SourceNode):
+        selected = replace(
+            parent.state,
+            area=parent.state.area if parent.state.area is not None else state.area,
+            time=parent.state.time if parent.state.time is not None else state.time,
+            stations=parent.state.stations
+            if parent.state.stations is not None
+            else state.stations,
+        )
+        return parent.selected(selected)
+    if isinstance(parent, _TransformNode):
+        return _TransformNode(
+            _bounded_node(parent.parent, state), parent.operation, parent.arguments
+        )
+    if isinstance(parent, _SelectionNode):
+        return _SelectionNode(_bounded_node(parent.parent, state), parent.state)
+    if isinstance(parent, _AggregationNode):
+        return cast(
+            Node[MetadataT],
+            _AggregationNode(
+                _bounded_node(parent.parent, state),
+                parent.specification,
+                parent.selection,
+            ),
+        )
+    if isinstance(parent, _FitNode):
+        return cast(
+            Node[MetadataT],
+            _FitNode(
+                _bounded_node(parent.parent, state),
+                parent.specification,
+                parent.failure,
+            ),
+        )
+    return parent
+
+
+def _select_node(parent: Node[MetadataT], state: SelectionState) -> Node[MetadataT]:
+    from ._evidence_recipes import _AggregationNode
+
+    if isinstance(parent, _AggregationNode):
+        if parent.selection != SelectionState():
+            return _SelectionNode(
+                _bounded_node(cast(Node[MetadataT], parent), state), state
+            )
+        return cast(Node[MetadataT], parent.selected(state))
+    if isinstance(parent, SourceNode):
+        if parent.state != SelectionState():
+            return _SelectionNode(_bounded_node(parent, state), state)
+        return parent.selected(state)
+    if isinstance(parent, _FitNode):
+        return cast(Node[MetadataT], parent.selected(state))
+    return _SelectionNode(_bounded_node(parent, state), state)
+
+
+def _inspection_view(
+    node: Node[object], source: Node[object], metadata: Metadata
+) -> Metadata | None:
+    """Project declared source science through the graph without opening its data."""
+    from ._aggregation import aggregation_metadata
+    from ._evidence_recipes import _AggregationNode
+
+    if node is source:
+        return metadata
+    parent = getattr(node, "parent", None)
+    if not isinstance(parent, Node):
+        return None
+    previous = _inspection_view(parent, source, metadata)
+    if previous is None:
+        return None
+    if isinstance(node, _TransformNode):
+        return cast(Metadata, node._metadata_view(previous))
+    if isinstance(node, _SelectionNode):
+        resolved = node.state.resolve(previous.spec, source=previous.source)
+        return selected_metadata(previous, resolved)
+    if isinstance(node, _FitNode):
+        return DatasetMetadata(
+            spec=previous.spec,
+            spatial=previous.spatial,
+            source=previous.source,
+            provenance=previous.provenance,
+            report=ExecutionReport(False, None),
+        )
+    if isinstance(node, _AggregationNode) and isinstance(previous, EvidenceMetadata):
+        reduced = aggregation_metadata(previous, node.specification)
+        return selected_metadata(
+            reduced, node.selection.resolve(reduced.spec, source=reduced.source)
+        )
+    return None
+
+
+class _RecipeBase(Generic[MetadataT, CanonicalT]):
     __slots__ = ("_base", "_selection", "_operations", "_path", "_metadata")
     _base: Node[MetadataT]
     _selection: SelectionState
@@ -1189,9 +1315,7 @@ class _RecipeBase(Generic[MetadataT]):
     def _node(self) -> Node[MetadataT]:
         if self._selection == SelectionState():
             return self._base
-        if isinstance(self._base, _FitNode):
-            return cast(Node[MetadataT], self._base.selected(self._selection))
-        return _SelectionNode(self._base, self._selection)
+        return _select_node(self._base, self._selection)
 
     @property
     def path(self) -> Path | None:
@@ -1217,9 +1341,17 @@ class _RecipeBase(Generic[MetadataT]):
         config = Runtime() if runtime is None else runtime
         if not isinstance(config, Runtime):
             raise TypeError("runtime must be Runtime")
+        node: Node[object] | None = cast(Node[object], self._node)
+        requirements: tuple[Requirement, ...] = ()
+        while node is not None:
+            if isinstance(node, SourceNode):
+                requirements = node.requirements()
+                break
+            parent = getattr(node, "parent", None)
+            node = parent if isinstance(parent, Node) else None
         return Explanation(
             operations=self._operations,
-            requirements=(),
+            requirements=requirements,
             cache=config.cache,
             source=None if self._metadata is None else self._metadata.source,
             workers=config.workers,
@@ -1229,31 +1361,79 @@ class _RecipeBase(Generic[MetadataT]):
 
     def inspect(self, *, runtime: Runtime | None = None) -> Inspection:
         with ExecutionScope(runtime) as scope:
+            node = self._node
+            source: Node[object] | None = cast(Node[object], node)
+            details: Inspection | None = None
+            while source is not None:
+                if isinstance(source, SourceNode):
+                    try:
+                        details = source.inspection(scope)
+                    except DataValidationError as error:
+                        raise ValidationError(
+                            report=ExecutionReport(
+                                False,
+                                False,
+                                diagnostics=error.diagnostics,
+                            )
+                        ) from error
+                    break
+                parent = getattr(source, "parent", None)
+                source = parent if isinstance(parent, Node) else None
+            if details is not None and (
+                details.schema is None
+                or node is source
+                or isinstance(source, SourceNode)
+                and source.requirements()
+            ):
+                return details
             try:
-                metadata = scope.metadata(self._node)
+                declared = None if details is None else details.metadata
+                projected = (
+                    None
+                    if declared is None or source is None
+                    else _inspection_view(cast(Node[object], node), source, declared)
+                )
+                metadata: Metadata = (
+                    scope.metadata(node) if projected is None else projected
+                )
             except DataValidationError as error:
-                raise ValidationError(report=scope.report(self._node)) from error
+                raise ValidationError(report=scope.report(node)) from error
+            capabilities: tuple[Capability, ...] = (
+                Capability.INSPECT,
+                Capability.READ,
+                Capability.BATCHES,
+                Capability.WRITE,
+            )
+            if (
+                isinstance(metadata, DatasetMetadata)
+                or metadata.kind is EvidenceKind.SAMPLES
+            ):
+                capabilities += (Capability.FIT,)
+            elif (
+                metadata.kind is EvidenceKind.OBSERVATIONS
+                and metadata.sampling is not None
+            ):
+                capabilities += (Capability.AGGREGATE,)
             return Inspection(
                 schema=_schema(metadata),
                 series=tuple(
                     SeriesReference(
-                        s.variable,
-                        scenario=s.scenario,
-                        period=s.period,
+                        item.variable,
+                        scenario=item.scenario,
+                        period=item.period,
+                        probability=item.probability,
                         release=None
                         if metadata.source is None
                         else metadata.source.release,
                     )
-                    for s in metadata.spec.series
+                    for item in metadata.spec.series
                 ),
-                capabilities=(
-                    Capability.INSPECT,
-                    Capability.READ,
-                    Capability.BATCHES,
-                    Capability.WRITE,
-                    Capability.FIT,
-                ),
+                capabilities=capabilities,
+                requirements=() if details is None else details.requirements,
                 source=metadata.source,
+                indicators=() if details is None else details.indicators,
+                releases=() if details is None else details.releases,
+                stations=() if details is None else details.stations,
             )
 
     def read(
@@ -1283,22 +1463,52 @@ class _RecipeBase(Generic[MetadataT]):
         *,
         overwrite: bool = False,
         runtime: Runtime | None = None,
-    ) -> Self:
+    ) -> PersistedArtifact:
         _publication_path(path, overwrite)
         with self.execute(runtime=runtime) as execution:
-            return cast(Self, execution.write(path, overwrite=overwrite))
+            return execution.write(path, overwrite=overwrite)
 
-    def _saved(self, path: Path, metadata: MetadataT, digest: str) -> Dataset | Samples:
-        return cast(
-            Dataset | Samples,
-            type(self)._create(
-                _ParquetNode(path, type(metadata), digest=digest, metadata=metadata),
-                operations=(
-                    Operation(Stage.DECODING, "Read the pinned saved artifact"),
-                ),
-                path=path,
+    def _saved(self, path: Path, metadata: MetadataT, digest: str) -> PersistedArtifact:
+        from ._evidence_recipes import Layer, Observations, Projections
+
+        if isinstance(metadata, DatasetMetadata):
+            recipe: type[_RecipeBase[MetadataT, CanonicalT]] = cast(
+                type[_RecipeBase[MetadataT, CanonicalT]], Dataset
+            )
+        else:
+            recipe = cast(
+                type[_RecipeBase[MetadataT, CanonicalT]],
+                {
+                    EvidenceKind.SAMPLES: Samples,
+                    EvidenceKind.OBSERVATIONS: Observations,
+                    EvidenceKind.PROJECTIONS: Projections,
+                    EvidenceKind.LAYER: Layer,
+                }[metadata.kind],
+            )
+        saved = recipe._create(
+            _ParquetNode[MetadataT](
+                path,
+                type(metadata),
+                digest=digest,
                 metadata=metadata,
+                expected_kind=EvidenceKind.SAMPLES
+                if isinstance(metadata, DatasetMetadata)
+                else metadata.kind,
             ),
+            operations=(Operation(Stage.DECODING, "Read the pinned saved artifact"),),
+            path=path,
+            metadata=metadata,
+        )
+        return cast(PersistedArtifact, saved)
+
+    def _canonical_type(self) -> type[_RecipeBase[MetadataT, CanonicalT]]:
+        raise NotImplementedError
+
+    def _derived(
+        self, node: Node[MetadataT], *, operations: tuple[Operation, ...]
+    ) -> CanonicalT:
+        return cast(
+            CanonicalT, self._canonical_type()._create(node, operations=operations)
         )
 
     def declare(
@@ -1309,7 +1519,7 @@ class _RecipeBase(Generic[MetadataT]):
         period: Period | None = None,
         probability: Probability | None = None,
         spec: DataSpec | None = None,
-    ) -> Self:
+    ) -> CanonicalT:
         for name, value, expected in (
             ("variable", variable, Variable),
             ("scenario", scenario, Scenario),
@@ -1326,7 +1536,7 @@ class _RecipeBase(Generic[MetadataT]):
         if all(
             value is None for value in (variable, scenario, period, probability, spec)
         ):
-            return self
+            return self._derived(self._node, operations=self._operations)
         node = _TransformNode(
             self._node,
             "declare",
@@ -1338,7 +1548,7 @@ class _RecipeBase(Generic[MetadataT]):
                 "spec": spec,
             },
         )
-        return type(self)._create(
+        return self._derived(
             node,
             operations=(
                 *self._operations,
@@ -1353,12 +1563,12 @@ class _RecipeBase(Generic[MetadataT]):
         *,
         variables: Mapping[str, str] | None = None,
         scenarios: Mapping[str, str] | None = None,
-    ) -> Self:
+    ) -> CanonicalT:
         mappings = {
             "variables": None if variables is None else dict(variables),
             "scenarios": None if scenarios is None else dict(scenarios),
         }
-        return type(self)._create(
+        return self._derived(
             _TransformNode(self._node, "rename", mappings),
             operations=(
                 *self._operations,
@@ -1366,7 +1576,7 @@ class _RecipeBase(Generic[MetadataT]):
             ),
         )
 
-    def convert_units(self, *, variable: Variable | str, unit: Unit) -> Self:
+    def convert_units(self, *, variable: Variable | str, unit: Unit) -> CanonicalT:
         units = (
             crc_framework.LengthUnit,
             crc_framework.TimeUnit,
@@ -1374,6 +1584,7 @@ class _RecipeBase(Generic[MetadataT]):
             crc_framework.TemperatureUnit,
             crc_framework.SpeedUnit,
             crc_framework.PrecipitationRateUnit,
+            crc_framework.DegreeDayUnit,
         )
         if not isinstance(unit, units):
             raise TypeError("unit must be a framework unit enum")
@@ -1382,7 +1593,7 @@ class _RecipeBase(Generic[MetadataT]):
         node = _TransformNode(
             self._node, "convert_units", {"variable": variable, "unit": unit}
         )
-        return type(self)._create(
+        return self._derived(
             node,
             operations=(
                 *self._operations,
@@ -1393,13 +1604,50 @@ class _RecipeBase(Generic[MetadataT]):
         )
 
 
-class Dataset(_RecipeBase[DatasetMetadata]):
+class Dataset(_RecipeBase[DatasetMetadata, "Dataset"]):
     __slots__ = ()
 
+    def _canonical_type(self) -> type[Dataset]:
+        return Dataset
+
     @classmethod
-    def open(cls, path: LocalPath) -> Self:
+    def from_raster(
+        cls,
+        rasters: Mapping[float, LocalPath],
+        *,
+        variable: Variable,
+        probability: Probability,
+        scenario: Scenario | None = None,
+        period: Period | None = None,
+    ) -> Dataset:
+        from ._raster_input import raster_node
+
+        return Dataset._create(
+            raster_node(
+                rasters,
+                variable=variable,
+                probability=probability,
+                scenario=scenario,
+                period=period,
+            ),
+            operations=(
+                Operation(Stage.DECODING, "Read supplied quantile raster pixels"),
+            ),
+        )
+
+    def write(
+        self,
+        path: LocalPath,
+        *,
+        overwrite: bool = False,
+        runtime: Runtime | None = None,
+    ) -> Dataset:
+        return cast(Dataset, super().write(path, overwrite=overwrite, runtime=runtime))
+
+    @classmethod
+    def open(cls, path: LocalPath) -> Dataset:
         destination = _local_path(path)
-        return cls._create(
+        return Dataset._create(
             _ParquetNode(destination, DatasetMetadata),
             operations=(
                 Operation(Stage.DECODING, "Read a canonical dataset snapshot"),
@@ -1409,7 +1657,7 @@ class Dataset(_RecipeBase[DatasetMetadata]):
 
     @classmethod
     def _collected(cls, table: pa.Table, metadata: DatasetMetadata) -> Dataset:
-        return cls._create(
+        return Dataset._create(
             _TableNode(table, metadata),
             operations=(
                 Operation(Stage.DECODING, "Read owned collected dataset values"),
@@ -1438,7 +1686,7 @@ class Dataset(_RecipeBase[DatasetMetadata]):
             spec=spec,
             columns=columns,
         )
-        return cls._create(
+        return Dataset._create(
             _TableNode(rows_to_table(rows, metadata), metadata),
             operations=(
                 Operation(Stage.DECODING, "Use supplied quantile evidence directly"),
@@ -1491,21 +1739,35 @@ class Dataset(_RecipeBase[DatasetMetadata]):
         )
 
 
-class Samples(_RecipeBase[EvidenceMetadata]):
+class Samples(_RecipeBase[EvidenceMetadata[Literal[EvidenceKind.SAMPLES]], "Samples"]):
     __slots__ = ()
 
+    def _canonical_type(self) -> type[Samples]:
+        return Samples
+
+    def write(
+        self,
+        path: LocalPath,
+        *,
+        overwrite: bool = False,
+        runtime: Runtime | None = None,
+    ) -> Samples:
+        return cast(Samples, super().write(path, overwrite=overwrite, runtime=runtime))
+
     @classmethod
-    def open(cls, path: LocalPath) -> Self:
+    def open(cls, path: LocalPath) -> Samples:
         destination = _local_path(path)
-        return cls._create(
+        return Samples._create(
             _ParquetNode(destination, EvidenceMetadata),
             operations=(Operation(Stage.DECODING, "Read a sample evidence snapshot"),),
             path=destination,
         )
 
     @classmethod
-    def _collected(cls, table: pa.Table, metadata: EvidenceMetadata) -> Samples:
-        return cls._create(
+    def _collected(
+        cls, table: pa.Table, metadata: EvidenceMetadata[Literal[EvidenceKind.SAMPLES]]
+    ) -> Samples:
+        return Samples._create(
             _TableNode(table, metadata),
             operations=(
                 Operation(Stage.DECODING, "Read owned collected sample values"),
@@ -1523,7 +1785,8 @@ class Samples(_RecipeBase[EvidenceMetadata]):
         scenario: Scenario | None = None,
         period: Period | None = None,
         spec: DataSpec | None = None,
-        columns: SampleColumns | None = None,
+        columns: TimeSeriesColumns | None = None,
+        sampling: Sampling | None = None,
     ) -> Samples:
         normalized, metadata = normalize_samples(
             table,
@@ -1533,8 +1796,9 @@ class Samples(_RecipeBase[EvidenceMetadata]):
             period=period,
             spec=spec,
             columns=columns,
+            sampling=sampling,
         )
-        return cls._create(
+        return Samples._create(
             _TableNode(normalized, metadata),
             operations=(
                 Operation(Stage.DECODING, "Use owned long-form sample evidence"),
@@ -1547,14 +1811,16 @@ class Samples(_RecipeBase[EvidenceMetadata]):
         variables: VariableSelector | types.EllipsisType = ...,
         scenarios: ScenarioSelector | types.EllipsisType = ...,
         periods: PeriodSelector | types.EllipsisType = ...,
+        series: SeriesSelector | types.EllipsisType = ...,
         area: Bounds | None | types.EllipsisType = ...,
-        stations: IdentifierSelector | types.EllipsisType = ...,
+        stations: StationSelector | types.EllipsisType = ...,
         time: Period | None | types.EllipsisType = ...,
     ) -> Self:
         state = self._selection.updated(
             variables=variables,
             scenarios=scenarios,
             periods=periods,
+            series=series,
             area=area,
             stations=stations,
             time=time,

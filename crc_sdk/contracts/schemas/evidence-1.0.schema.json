@@ -32,6 +32,57 @@
         "projections",
         "layer"
       ]
+    },
+    "sampling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "calendar",
+        "step",
+        "timestamp"
+      ],
+      "properties": {
+        "calendar": {
+          "enum": [
+            "gregorian",
+            "no_leap",
+            "360_day",
+            "all_leap",
+            "julian",
+            "proleptic_gregorian"
+          ]
+        },
+        "timestamp": {
+          "enum": [
+            "start",
+            "end"
+          ]
+        },
+        "step": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "value",
+            "unit"
+          ],
+          "properties": {
+            "value": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "maximum": 1.7976931348623157e+308
+            },
+            "unit": {
+              "enum": [
+                "s",
+                "h",
+                "d",
+                "month",
+                "yr"
+              ]
+            }
+          }
+        }
+      }
     }
   },
   "required": [
@@ -727,6 +778,181 @@
             "time"
           ],
           "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "operation",
+            "coverage",
+            "input_sampling",
+            "output_sampling"
+          ],
+          "properties": {
+            "kind": {
+              "const": "temporal_reduction"
+            },
+            "operation": {
+              "enum": [
+                "daily_total",
+                "daily_maximum",
+                "daily_minimum",
+                "rolling_total",
+                "annual_maximum",
+                "annual_minimum"
+              ]
+            },
+            "coverage": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "maximum": 1
+            },
+            "input_sampling": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "calendar",
+                "step",
+                "timestamp"
+              ],
+              "properties": {
+                "calendar": {
+                  "enum": [
+                    "gregorian",
+                    "no_leap",
+                    "360_day",
+                    "all_leap",
+                    "julian",
+                    "proleptic_gregorian"
+                  ]
+                },
+                "timestamp": {
+                  "enum": [
+                    "start",
+                    "end"
+                  ]
+                },
+                "step": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "value",
+                    "unit"
+                  ],
+                  "properties": {
+                    "value": {
+                      "type": "number",
+                      "exclusiveMinimum": 0,
+                      "maximum": 1.7976931348623157e+308
+                    },
+                    "unit": {
+                      "enum": [
+                        "s",
+                        "h",
+                        "d",
+                        "month",
+                        "yr"
+                      ]
+                    }
+                  }
+                }
+              }
+            },
+            "output_sampling": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "calendar",
+                "step",
+                "timestamp"
+              ],
+              "properties": {
+                "calendar": {
+                  "enum": [
+                    "gregorian",
+                    "no_leap",
+                    "360_day",
+                    "all_leap",
+                    "julian",
+                    "proleptic_gregorian"
+                  ]
+                },
+                "timestamp": {
+                  "enum": [
+                    "start",
+                    "end"
+                  ]
+                },
+                "step": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "value",
+                    "unit"
+                  ],
+                  "properties": {
+                    "value": {
+                      "type": "number",
+                      "exclusiveMinimum": 0,
+                      "maximum": 1.7976931348623157e+308
+                    },
+                    "unit": {
+                      "enum": [
+                        "s",
+                        "h",
+                        "d",
+                        "month",
+                        "yr"
+                      ]
+                    }
+                  }
+                }
+              }
+            },
+            "window": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "value",
+                "unit"
+              ],
+              "properties": {
+                "value": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "unit": {
+                  "const": "d"
+                }
+              }
+            },
+            "measurements": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "variable_id",
+                  "input",
+                  "output"
+                ],
+                "properties": {
+                  "variable_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+                  },
+                  "input": {
+                    "$ref": "https://climateriskcommons.org/schemas/measurement-1.0.schema.json"
+                  },
+                  "output": {
+                    "$ref": "https://climateriskcommons.org/schemas/measurement-1.0.schema.json"
+                  }
+                }
+              }
+            }
+          }
         }
       ]
     },

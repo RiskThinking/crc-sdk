@@ -18,18 +18,16 @@ classifiers = [
 ]
 dependencies = [
     "crc-framework>=1.0.0,<2",
-    "pydantic>=2,<3",
     "numpy>=1.23",
+    "typing-extensions>=4.12",
     "jsonschema>=4.18,<5",
     "rfc3339-validator>=0.1.4",
     "h3>=4.2",
     "shapely>=2",
-    "duckdb>=1,<2",
+    "duckdb>=1.4,<2",
     "pyarrow>=18",
     "psutil>=5",
     "fsspec>=2024",
-    "s3fs>=2024",
-    "gcsfs>=2024",
 ]
 
 [project.urls]
@@ -39,16 +37,7 @@ Issues = "https://github.com/RiskThinking/crc-sdk/issues"
 
 [project.optional-dependencies]
 zarr = [
-    "zarr>=2.18,<4",
-]
-agriculture = [
-    "icechunk>=2.1,<3; python_version >= '3.12'",
-    "zarr>=3,<4; python_version >= '3.12'",
-    "pyproj>=3.6; python_version >= '3.12'",
-]
-icechunk = [
-    "icechunk>=2.1,<3; python_version >= '3.12'",
-    "zarr>=3,<4; python_version >= '3.12'",
+    "zarr>=3.1,<4",
 ]
 raster = [
     "rasterio>=1.4",

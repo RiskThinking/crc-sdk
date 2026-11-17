@@ -14,6 +14,8 @@ from ._dataset_schema import ReleaseReference, SourceIdentity, Stage, _identifie
 from ._declarations import Period, Probability, Scenario, Variable
 
 if TYPE_CHECKING:
+    from ._dataset_schema import DatasetMetadata
+    from ._evidence import EvidenceMetadata
     from ._runtime import Cache
 
 
@@ -80,6 +82,7 @@ class SeriesReference:
     scenario: Scenario | None = None
     period: Period | None = None
     release: ReleaseReference | None = None
+    probability: Probability | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.variable, Variable):
@@ -88,6 +91,7 @@ class SeriesReference:
             ("scenario", Scenario),
             ("period", Period),
             ("release", ReleaseReference),
+            ("probability", Probability),
         ):
             value = getattr(self, name)
             if value is not None and not isinstance(value, expected):
@@ -119,6 +123,31 @@ class IndicatorReference:
 
 
 @dataclass(frozen=True, slots=True)
+class StationReference:
+    id: str
+    label: str
+    longitude: float | None = None
+    latitude: float | None = None
+    period: Period | None = None
+
+    def __post_init__(self) -> None:
+        _identifier(self.id, "station.id")
+        _text(self.label, "station.label")
+        if (self.longitude is None) != (self.latitude is None):
+            raise ValueError("station longitude and latitude must be supplied together")
+        if self.longitude is not None:
+            assert self.latitude is not None
+            Bounds(
+                west=self.longitude,
+                east=self.longitude,
+                south=self.latitude,
+                north=self.latitude,
+            )
+        if self.period is not None and not isinstance(self.period, Period):
+            raise TypeError("station period must be Period or None")
+
+
+@dataclass(frozen=True, slots=True)
 class Inspection:
     schema: pa.Schema | None = None
     series: tuple[SeriesReference, ...] = ()
@@ -127,6 +156,22 @@ class Inspection:
     capabilities: tuple[Capability, ...] = ()
     requirements: tuple[Requirement, ...] = ()
     source: SourceIdentity | None = None
+    stations: tuple[StationReference, ...] = ()
+
+    @property
+    def metadata(self) -> DatasetMetadata | EvidenceMetadata | None:
+        """Typed science, sampling, and transformations declared by the source."""
+        from ._dataset_schema import DatasetMetadata
+        from ._evidence import EvidenceMetadata
+
+        if self.schema is None:
+            return None
+        headers = self.schema.metadata or {}
+        if b"crc.dataset" in headers:
+            return DatasetMetadata.from_json(headers[b"crc.dataset"].decode())
+        if b"crc.evidence" in headers:
+            return EvidenceMetadata.from_json(headers[b"crc.evidence"].decode())
+        return None
 
     def __post_init__(self) -> None:
         if self.schema is not None and not isinstance(self.schema, pa.Schema):
@@ -137,6 +182,7 @@ class Inspection:
             ("releases", ReleaseReference),
             ("capabilities", Capability),
             ("requirements", Requirement),
+            ("stations", StationReference),
         ):
             values = getattr(self, name)
             if not isinstance(values, tuple) or not all(

@@ -9,18 +9,32 @@ from dataclasses import replace
 from pathlib import Path
 
 from crc_framework import (
+    Aggregation,
     DiagnosticSeverity,
     Distribution,
     DistributionFamily,
+    Duration,
     FitError,
+    LengthUnit,
+    PrecipitationAmount,
+    PrecipitationRate,
+    PrecipitationRateUnit,
     QuantileCurve,
     SampleEstimator,
     SampleFit,
     Tail,
     TailCompletion,
+    TimeUnit,
     fit_samples,
 )
 
+from crc_sdk._aggregation import (
+    Coverage,
+    MeasurementChange,
+    ReductionKind,
+    Sampling,
+    TemporalReduction,
+)
 from crc_sdk._dataset_schema import (
     DatasetMetadata,
     ExecutionCounts,
@@ -33,8 +47,10 @@ from crc_sdk._dataset_schema import (
     SpatialContract,
     Stage,
     SupportKind,
+    UnitConversion,
 )
 from crc_sdk._declarations import (
+    Calendar,
     DataSpec,
     Period,
     Probability,
@@ -192,11 +208,88 @@ def fixture_cases() -> dict[str, object]:
             "document": json.loads(dataset_to_json([row], time_info)),
         }
     )
+    rate = PrecipitationRate(
+        unit=PrecipitationRateUnit.MILLIMETRES_PER_DAY,
+        accumulation_duration=Duration(1, unit=TimeUnit.DAY),
+        aggregation=Aggregation.MEAN,
+    )
+    daily_amount = PrecipitationAmount(
+        unit=LengthUnit.MILLIMETRE,
+        accumulation_duration=Duration(1, unit=TimeUnit.DAY),
+    )
+    five_day_amount = PrecipitationAmount(
+        unit=LengthUnit.MILLIMETRE,
+        accumulation_duration=Duration(5, unit=TimeUnit.DAY),
+    )
+    sampling = Sampling(calendar=Calendar.DAYS_360, step=Duration(1, unit=TimeUnit.DAY))
+    reduced_variable = Variable(variable.id, measurement=five_day_amount)
+    reduced_info = replace(
+        metadata,
+        spec=DataSpec([reduced_variable], series=[SeriesSpec(reduced_variable)]),
+        provenance=(
+            UnitConversion(
+                variable_id=variable.id,
+                source_unit="kg m-2 s-1",
+                target_unit="mm/day",
+                scale=86400,
+            ),
+            TemporalReduction(
+                operation=ReductionKind.DAILY_TOTAL,
+                coverage=Coverage.complete(),
+                input_sampling=sampling,
+                output_sampling=sampling,
+                measurements=(
+                    MeasurementChange(
+                        variable_id=variable.id, input=rate, output=daily_amount
+                    ),
+                ),
+            ),
+            TemporalReduction(
+                operation=ReductionKind.ROLLING_TOTAL,
+                coverage=Coverage.complete(),
+                input_sampling=sampling,
+                output_sampling=sampling,
+                measurements=(
+                    MeasurementChange(
+                        variable_id=variable.id,
+                        input=daily_amount,
+                        output=five_day_amount,
+                    ),
+                ),
+                window=Duration(5, unit=TimeUnit.DAY),
+            ),
+        ),
+    )
+    reduced = json.loads(dataset_to_json([row], reduced_info))
+    accepted.append(
+        {"name": "temporal-precipitation-measurement-lineage", "document": reduced}
+    )
     rejected = []
 
     def reject(name, document, structural):
         rejected.append({"name": name, "structural": structural, "document": document})
 
+    value = deepcopy(reduced)
+    value["metadata"]["provenance"][-1]["measurements"][0]["output"][
+        "accumulation_duration"
+    ]["value"] = 1
+    reject("temporal-output-measurement-mismatch", value, False)
+    value = deepcopy(reduced)
+    value["metadata"]["provenance"][1]["input_sampling"]["step"] = {
+        "value": 1,
+        "unit": "yr",
+    }
+    reject("temporal-input-cadence", value, False)
+    value = deepcopy(reduced)
+    value["metadata"]["provenance"][-1]["output_sampling"]["calendar"] = "gregorian"
+    reject("temporal-calendar-change", value, False)
+    value = deepcopy(reduced)
+    value["metadata"]["provenance"][-1].pop("window")
+    reject("temporal-invalid-window", value, False)
+    value = deepcopy(reduced)
+    change = value["metadata"]["provenance"][-1]["measurements"][0]
+    value["metadata"]["provenance"][-1]["measurements"].append(deepcopy(change))
+    reject("temporal-duplicate-measurement-variable", value, False)
     value = deepcopy(minimal)
     value["metadata"]["schema_version"] = "1.3"
     reject("historical-dataset-version", value, True)
@@ -240,7 +333,7 @@ def fixture_cases() -> dict[str, object]:
     value = deepcopy(minimal)
     value["metadata"]["report"]["complete"] = False
     reject("incomplete-valid-report", value, True)
-    value = deepcopy(accepted[-1]["document"])
+    value = json.loads(dataset_to_json([row], time_info))
     value["metadata"]["provenance"][0]["time"]["start"] = 1981
     reject("time-selection-content-identity-mismatch", value, False)
     value = deepcopy(fitted)

@@ -7,9 +7,10 @@ import importlib.util
 import json
 import subprocess
 import sys
+from enum import Enum
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, Literal, TypeVar
 
 import pytest
 
@@ -24,6 +25,39 @@ class _GenericRecipe(Generic[ResultT]):
 
 class _StringRecipe(_GenericRecipe[str]):
     pass
+
+
+class _EvidenceKind(Enum):
+    SAMPLES = "samples"
+    OBSERVATIONS = "observations"
+
+
+KindT = TypeVar("KindT")
+ItemT = TypeVar("ItemT")
+
+
+class _TypedEvidence(Generic[KindT]):
+    pass
+
+
+class _LiteralRecipe(_GenericRecipe[_TypedEvidence[Literal[_EvidenceKind.SAMPLES]]]):
+    pass
+
+
+class _NestedRecipe(_GenericRecipe[tuple[ItemT, ...]], Generic[ItemT]):
+    pass
+
+
+class _NestedStringRecipe(_NestedRecipe[str]):
+    pass
+
+
+class _Provider:
+    class Product(Enum):
+        OBSERVATIONS = "observations"
+
+    def __init__(self, *, product: _Provider.Product = Product.OBSERVATIONS) -> None:
+        self.product = product
 
 
 @pytest.fixture(scope="module")
@@ -419,3 +453,123 @@ def test_sequence_defaults_are_immutable_exact_tuples(checker: ModuleType) -> No
     assert checker._default_matches((), {"tuple": []})
     assert not checker._default_matches([], {"tuple": []})
     assert not checker._default_matches(None, {"tuple": []})
+
+
+def test_nested_literal_generic_parameters_keep_the_evidence_kind(
+    checker: ModuleType,
+) -> None:
+    bindings = checker._generic_bindings(_LiteralRecipe)
+    assert bindings["ResultT"] == "_TypedEvidence[Literal[_EvidenceKind.SAMPLES]]"
+    assert (
+        checker._check_runtime_signature(
+            _LiteralRecipe.read,
+            {
+                "parameters": [],
+                "returns": "_TypedEvidence[Literal[_EvidenceKind.SAMPLES]]",
+            },
+            "LiteralRecipe.read",
+            bindings=bindings,
+        )
+        == []
+    )
+    assert checker._check_runtime_signature(
+        _LiteralRecipe.read,
+        {
+            "parameters": [],
+            "returns": "_TypedEvidence[Literal[_EvidenceKind.OBSERVATIONS]]",
+        },
+        "LiteralRecipe.read",
+        bindings=bindings,
+    ) == ["LiteralRecipe.read: return annotation differs"]
+
+
+def test_transitive_generic_bindings_keep_nested_parameters_and_ellipsis(
+    checker: ModuleType,
+) -> None:
+    bindings = checker._generic_bindings(_NestedStringRecipe)
+    assert bindings["ItemT"] == "str"
+    assert bindings["ResultT"] == "tuple[str,...]"
+    assert (
+        checker._check_runtime_signature(
+            _NestedStringRecipe.read,
+            {"parameters": [], "returns": "tuple[str, ...]"},
+            "NestedStringRecipe.read",
+            bindings=bindings,
+        )
+        == []
+    )
+
+
+def test_nested_enum_defaults_require_the_canonical_owner(checker: ModuleType) -> None:
+    assert checker._default_matches(
+        _Provider.Product.OBSERVATIONS, {"enum": "_Provider.Product.OBSERVATIONS"}
+    )
+    assert not checker._default_matches(
+        _Provider.Product.OBSERVATIONS, {"enum": "Other.Product.OBSERVATIONS"}
+    )
+    assert (
+        checker._check_runtime_signature(
+            _Provider,
+            {
+                "parameters": [
+                    {
+                        "name": "product",
+                        "kind": "keyword_only",
+                        "annotation": "_Provider.Product",
+                        "default": {"enum": "_Provider.Product.OBSERVATIONS"},
+                    }
+                ],
+                "returns": "Self",
+            },
+            "Provider",
+        )
+        == []
+    )
+
+
+def test_current_evidence_interfaces_declare_specific_kinds_and_canonical_artifacts(
+    checker: ModuleType,
+    declarations: tuple[dict[str, Any], dict[str, Any]],
+) -> None:
+    contract, release = declarations
+    checker.validate_contract(contract, release)
+    exports = contract["exports"]
+    assert "SampleColumns" not in exports
+    assert "TimeSeriesColumns" in exports
+    for name, kind in [
+        ("Samples", "SAMPLES"),
+        ("Observations", "OBSERVATIONS"),
+        ("Projections", "PROJECTIONS"),
+        ("Layer", "LAYER"),
+    ]:
+        assert (
+            exports[name]["methods"]["read"]["returns"]
+            == f"ReadResult[EvidenceMetadata[Literal[EvidenceKind.{kind}]]]"
+        )
+        assert exports[name]["methods"]["open"]["returns"] == name
+        assert exports[name]["methods"]["write"]["returns"] == name
+    assert (
+        exports["Inspection"]["properties"]["stations"]
+        == "tuple[StationReference, ...]"
+    )
+    assert (
+        exports["SeriesReference"]["properties"]["probability"] == "Probability | None"
+    )
+    assert exports["IBTrACS"]["constructor"]["parameters"][0]["default"] == {
+        "enum": "IBTrACS.Agency.USA"
+    }
+    assert exports["JRC"]["nested_enums"]["Product"]["members"] == {
+        "EFAS": "efas",
+        "GLOFAS": "glofas",
+    }
+    assert exports["EDO"]["inherits"] == ["Observations"]
+
+
+def test_literal_annotations_reference_typed_enum_choices(checker: ModuleType) -> None:
+    checker._annotation(
+        "EvidenceMetadata[Literal[EvidenceKind.SAMPLES]]",
+        {"EvidenceMetadata", "Literal", "EvidenceKind", "EvidenceKind.SAMPLES"},
+        "evidence",
+    )
+    with pytest.raises(checker.ContractError, match="typed choices"):
+        checker._annotation("Literal['samples']", {"Literal"}, "evidence")

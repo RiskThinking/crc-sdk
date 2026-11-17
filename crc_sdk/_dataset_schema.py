@@ -16,6 +16,7 @@ import crc_framework
 from crc_framework import FitError, FitRecord
 from rfc3339_validator import validate_rfc3339  # type: ignore[import-untyped]
 
+from ._aggregation import TemporalReduction, temporal_reduction_from_document
 from ._declarations import DataSpec, Period, PeriodKind, _data_spec, _period
 
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -532,10 +533,14 @@ class ObservationTimeSelection:
         return {"kind": "observation_time_selection", "time": self.time._document()}
 
 
-Transformation = UnitConversion | IdentityRename | ObservationTimeSelection
+Transformation = (
+    UnitConversion | IdentityRename | ObservationTimeSelection | TemporalReduction
+)
 
 
 def _transformation(value: object) -> Transformation:
+    if isinstance(value, dict) and value.get("kind") == "temporal_reduction":
+        return temporal_reduction_from_document(value)
     v = _object(
         value,
         {"kind"},
@@ -637,36 +642,65 @@ class DatasetMetadata:
         if self.source is not None and not isinstance(self.source, SourceIdentity):
             raise TypeError("source must be SourceIdentity")
         if not isinstance(self.provenance, tuple) or not all(
-            isinstance(p, (UnitConversion, IdentityRename, ObservationTimeSelection))
+            isinstance(
+                p,
+                (
+                    UnitConversion,
+                    IdentityRename,
+                    ObservationTimeSelection,
+                    TemporalReduction,
+                ),
+            )
             for p in self.provenance
         ):
             raise TypeError("provenance must contain typed immutable transformations")
-        units: dict[str, str | None] = {}
-        for variable in self.spec.variables:
-            unit = None if variable.measurement is None else variable.measurement.unit
-            units[variable.id] = unit.value if isinstance(unit, Enum) else unit
+        measurements: dict[str, dict[str, object] | None] = {
+            variable.id: None
+            if variable.measurement is None
+            else json.loads(variable.measurement.to_json())
+            for variable in self.spec.variables
+        }
         for step in reversed(self.provenance):
-            if isinstance(step, UnitConversion):
-                if step.variable_id not in units:
+            if isinstance(step, TemporalReduction):
+                for change in step.measurements:
+                    if change.variable_id not in measurements or measurements[
+                        change.variable_id
+                    ] != json.loads(change.output.to_json()):
+                        raise ValueError(
+                            "temporal reduction output contradicts "
+                            "the variable measurement"
+                        )
+                    measurements[change.variable_id] = json.loads(
+                        change.input.to_json()
+                    )
+            elif isinstance(step, UnitConversion):
+                if step.variable_id not in measurements:
                     raise ValueError(
                         "conversion provenance refers to an unknown variable"
                     )
-                if units[step.variable_id] != step.target_unit:
+                measurement = measurements[step.variable_id]
+                if measurement is None or measurement.get("unit") != step.target_unit:
                     raise ValueError(
                         "conversion target unit contradicts the variable measurement"
                     )
-                units[step.variable_id] = step.source_unit
+                measurements[step.variable_id] = {
+                    **measurement,
+                    "unit": step.source_unit,
+                }
             elif (
                 isinstance(step, IdentityRename)
                 and step.dimension is IdentityKind.VARIABLE
             ):
                 inverse = {new: old for old, new in step.mapping.items()}
-                before = {inverse.get(name, name): unit for name, unit in units.items()}
-                if len(before) != len(units):
+                before = {
+                    inverse.get(name, name): measurement
+                    for name, measurement in measurements.items()
+                }
+                if len(before) != len(measurements):
                     raise ValueError(
                         "rename provenance conflicts with participating identities"
                     )
-                units = before
+                measurements = before
 
     def _document(self) -> dict[str, object]:
         result: dict[str, object] = {

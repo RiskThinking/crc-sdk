@@ -14,7 +14,9 @@ does not re-export the framework's numerical interface.
 | Work | Canonical interface |
 | --- | --- |
 | Read a provider | Explicit constructors such as `ERA5`, `CRCOpen`, and `JRC` |
-| Supply genuine observations | `Samples.from_table` |
+| Supply statistical samples | `Samples.from_table` |
+| Supply native time observations | `Observations.from_table` |
+| Supply projections or spatial evidence | `Projections.from_table`, `Layer.from_table` |
 | Supply quantile curves | `Dataset.from_quantiles` |
 | Open canonical data | `Dataset.open` |
 | Compose scientific members | `DatasetCollection` |
@@ -45,6 +47,11 @@ Closed choices use enums such as `FitFailure`, `Calendar`, and provider-owned
 indicator enums. User variable IDs, scenario IDs, column names, paths, and
 response names remain ordinary data. Identifiers are exact nonempty strings
 without boundary whitespace; no case folding or alias lookup occurs implicitly.
+
+The [source guide](sources.md) describes provider-specific capabilities.
+`Sampling`, typed aggregation specifications, and `Coverage` make temporal
+reductions explicit. `TimeSeriesColumns`, `ProjectionColumns`, and `LayerColumns`
+map the corresponding input kind without unrelated placeholder fields.
 
 `read` returns `ReadResult` with its Arrow table, typed metadata, and immutable
 execution report. Completed sample results can be fitted without reacquiring

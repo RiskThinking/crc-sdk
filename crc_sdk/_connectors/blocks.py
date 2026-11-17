@@ -14,7 +14,7 @@ of rows and columns; everything remote and expensive (an hourly reanalysis
 store, say) happens inside `reduce_block`, and its small per-year result is
 what callers cache -- annual extremes, never the daily or hourly data. The
 curve source then streams those per-year arrays strip by strip, so peak memory
-is bounded by `strip_bytes` regardless of the grid size. `EDOAnnualMinimaCurveSource`
+is bounded by `strip_bytes` regardless of the grid size. The native decoder
 (`crc_sdk._connectors.duckdb.netcdf`) is this class with a NetCDF-backed reader.
 
 Statistical conventions (recorded for audit, never silently changed):

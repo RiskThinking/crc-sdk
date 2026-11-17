@@ -43,6 +43,32 @@ Inactive branches remain null. Recursive numerical children and fitting records
 use canonical JSON validated by the framework's exact loaders. Parquet round
 trips preserve those types and declarations.
 
+## Supply quantile rasters
+
+`Dataset.from_raster` accepts one same-grid, single-band raster per supplied
+non-exceedance probability. Each pixel retains its original footprint and
+quantile knots. The constructor describes work; terminals acquire verified
+snapshots and stream the selected pixels.
+
+```python
+from crc_framework import DepthAboveGround, LengthUnit, Tail
+from crc_sdk import Dataset, Probability, Variable
+
+depth = Dataset.from_raster(
+    {0.90: "depth-q90.tif", 0.99: "depth-q99.tif"},
+    variable=Variable(
+        "company:flood-depth",
+        measurement=DepthAboveGround(unit=LengthUnit.METRE),
+    ),
+    probability=Probability.annual(tail=Tail.UPPER),
+)
+```
+
+The probability keys are supplied data. All rasters must declare the same grid
+and coordinate system. No fitting or tail completion is implicit. A pixel with
+at least two valid knots retains those knots; insufficient pixels are counted
+as skipped with a diagnostic.
+
 ## Metadata and provenance
 
 Metadata contains variables, scenarios, actual periods, series probability

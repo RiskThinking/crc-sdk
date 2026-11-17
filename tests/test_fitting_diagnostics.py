@@ -142,3 +142,4 @@ def test_retained_fit_failures_keep_records_in_valid_reports_and_saved_artifacts
     ]
     assert len(matching) == 1 and matching[0].record == diagnostics[0].record
     assert reopened.report.complete and reopened.report.valid
+    assert reopened.report.counts == report.counts

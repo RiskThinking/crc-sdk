@@ -6,14 +6,16 @@ import struct
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
-from typing import Protocol, TypeAlias, cast, runtime_checkable
+from typing import Literal, Protocol, TypeAlias, cast, runtime_checkable
 
 import numpy as np
 import pyarrow as pa  # type: ignore[import-untyped]
 from crc_framework import QuantileCurve
 from h3.api import basic_int as h3  # type: ignore[import-untyped]
 from numpy.typing import NDArray
+from shapely import from_wkb  # type: ignore[import-untyped]
 
+from ._aggregation import Sampling
 from ._dataset_schema import (
     DatasetMetadata,
     ExecutionCounts,
@@ -32,7 +34,7 @@ from ._declarations import (
     Variable,
 )
 from ._evidence import EvidenceKind, EvidenceMetadata, _sample_time, evidence_table
-from ._schema.dataset import DatasetRow, validate_rows
+from ._schema.dataset import DatasetRow, _geometry, validate_rows
 
 Scalar: TypeAlias = str | int | float | bool | bytes | date | None
 
@@ -59,7 +61,7 @@ TableInput: TypeAlias = (
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class SampleColumns:
+class TimeSeriesColumns:
     value: str = "value"
     time: str = "time"
     support_id: str = "support_id"
@@ -68,6 +70,8 @@ class SampleColumns:
     variable_id: str | None = None
     scenario_id: str | None = None
     period_id: str | None = None
+    station_id: str | None = None
+    group_id: str | None = None
 
     def __post_init__(self) -> None:
         _columns(self)
@@ -88,7 +92,66 @@ class QuantileColumns:
         _columns(self)
 
 
-def _columns(record: SampleColumns | QuantileColumns) -> None:
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ProjectionColumns:
+    support_id: str = "support_id"
+    longitude: str = "longitude"
+    latitude: str = "latitude"
+    time: str | None = None
+    return_period: str | None = None
+    value: str | None = "value"
+    probability: str | None = None
+    lower: str | None = None
+    upper: str | None = None
+    confidence: str | None = None
+    variable_id: str | None = None
+    scenario_id: str | None = None
+    period_id: str | None = None
+    station_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.time is None and self.return_period is None:
+            object.__setattr__(self, "time", "time")
+        _columns(self)
+        if (self.time is None) == (self.return_period is None):
+            raise ValueError("map exactly one of time or return_period")
+        if any(
+            v is not None for v in (self.lower, self.upper, self.confidence)
+        ) and any(v is None for v in (self.lower, self.upper, self.confidence)):
+            raise ValueError("interval columns require lower, upper, and confidence")
+        if self.value is None and self.lower is None:
+            raise ValueError("map a point value, an interval, or both")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class LayerColumns:
+    support_id: str = "support_id"
+    longitude: str | None = None
+    latitude: str | None = None
+    geometry: str | None = None
+    value: str | None = "value"
+    label: str | None = None
+    variable_id: str | None = None
+    scenario_id: str | None = None
+    period_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.geometry is None:
+            if self.longitude is None:
+                object.__setattr__(self, "longitude", "longitude")
+            if self.latitude is None:
+                object.__setattr__(self, "latitude", "latitude")
+        _columns(self)
+        point = self.longitude is not None and self.latitude is not None
+        if point == (self.geometry is not None):
+            raise ValueError("map point coordinates or WKB geometry, exclusively")
+        if (self.longitude is None) != (self.latitude is None):
+            raise ValueError("longitude and latitude must be mapped together")
+
+
+def _columns(
+    record: TimeSeriesColumns | QuantileColumns | ProjectionColumns | LayerColumns,
+) -> None:
     names = [
         getattr(record, name)
         for name in record.__dataclass_fields__
@@ -224,8 +287,9 @@ def normalize_samples(
     scenario: Scenario | None = None,
     period: Period | None = None,
     spec: DataSpec | None = None,
-    columns: SampleColumns | None = None,
-) -> tuple[pa.Table, EvidenceMetadata]:
+    columns: TimeSeriesColumns | None = None,
+    sampling: Sampling | None = None,
+) -> tuple[pa.Table, EvidenceMetadata[Literal[EvidenceKind.SAMPLES]]]:
     declarations = input_spec(
         variable=variable,
         probability=probability,
@@ -233,9 +297,9 @@ def normalize_samples(
         period=period,
         spec=spec,
     )
-    columns = SampleColumns() if columns is None else columns
-    if not isinstance(columns, SampleColumns):
-        raise TypeError("columns must be SampleColumns")
+    columns = TimeSeriesColumns() if columns is None else columns
+    if not isinstance(columns, TimeSeriesColumns):
+        raise TypeError("columns must be TimeSeriesColumns")
     source = snapshot_table(table)
     _require_columns(
         source,
@@ -266,13 +330,240 @@ def normalize_samples(
                 "cell_id": cell,
                 "geometry": geometry,
                 "time": _sample_time(record[columns.time]),
-                "value": _number(record[columns.value], columns.value),
+                "value": None
+                if record[columns.value] is None
+                else _number(record[columns.value], columns.value),
+                "failure": {
+                    "code": "missing_observation",
+                    "message": "The supplied observation is missing",
+                }
+                if record[columns.value] is None
+                else None,
+                "station_id": None
+                if columns.station_id is None
+                else record[columns.station_id],
+                "group_id": None
+                if columns.group_id is None
+                else record[columns.group_id],
             }
         )
-    metadata = EvidenceMetadata(
+    metadata: EvidenceMetadata[Literal[EvidenceKind.SAMPLES]] = EvidenceMetadata(
         kind=EvidenceKind.SAMPLES,
+        sampling=sampling,
         spec=declarations,
         spatial=SpatialContract(supports=(SupportKind.POINT,), index_resolution=9),
+        report=ExecutionReport(
+            True,
+            True,
+            counts=ExecutionCounts(
+                requested=len(records),
+                produced=len(records),
+                no_data=sum(r["failure"] is not None for r in records),
+            ),
+        ),
+    )
+    return evidence_table(records, metadata), metadata
+
+
+def normalize_observations(
+    table: TableInput,
+    *,
+    variable: Variable | None = None,
+    probability: Probability | None = None,
+    scenario: Scenario | None = None,
+    period: Period | None = None,
+    spec: DataSpec | None = None,
+    columns: TimeSeriesColumns | None = None,
+    sampling: Sampling | None = None,
+) -> tuple[pa.Table, EvidenceMetadata[Literal[EvidenceKind.OBSERVATIONS]]]:
+    values, samples = normalize_samples(
+        table,
+        variable=variable,
+        probability=probability,
+        scenario=scenario,
+        period=period,
+        spec=spec,
+        columns=columns,
+        sampling=sampling,
+    )
+    metadata: EvidenceMetadata[Literal[EvidenceKind.OBSERVATIONS]] = EvidenceMetadata(
+        kind=EvidenceKind.OBSERVATIONS,
+        spec=samples.spec,
+        spatial=samples.spatial,
+        report=samples.report,
+        source=samples.source,
+        provenance=samples.provenance,
+        sampling=samples.sampling,
+    )
+    from ._evidence import evidence_arrow_schema
+
+    values = values.replace_schema_metadata(evidence_arrow_schema(metadata).metadata)
+    return values, metadata
+
+
+def normalize_projections(
+    table: TableInput,
+    *,
+    variable: Variable | None = None,
+    probability: Probability | None = None,
+    scenario: Scenario | None = None,
+    period: Period | None = None,
+    spec: DataSpec | None = None,
+    columns: ProjectionColumns | None = None,
+) -> tuple[pa.Table, EvidenceMetadata[Literal[EvidenceKind.PROJECTIONS]]]:
+    declarations = input_spec(
+        variable=variable,
+        probability=probability,
+        scenario=scenario,
+        period=period,
+        spec=spec,
+    )
+    columns = ProjectionColumns() if columns is None else columns
+    if not isinstance(columns, ProjectionColumns):
+        raise TypeError("columns must be ProjectionColumns")
+    source = snapshot_table(table)
+    _require_columns(
+        source,
+        [
+            getattr(columns, name)
+            for name in columns.__dataclass_fields__
+            if getattr(columns, name) is not None
+        ],
+    )
+    records: list[dict[str, object]] = []
+    for row in source.to_pylist():
+        identity = _series_identity(
+            row,
+            declarations,
+            columns.variable_id,
+            columns.scenario_id,
+            columns.period_id,
+        )
+        cell, geometry = _point(row, columns.longitude, columns.latitude)
+        coordinate = (
+            {"kind": "time", "time": _sample_time(row[columns.time])}
+            if columns.time is not None
+            else {
+                "kind": "return_period",
+                "years": _number(
+                    row[cast(str, columns.return_period)], "return_period"
+                ),
+            }
+        )
+        interval = (
+            None
+            if columns.lower is None
+            else {
+                "confidence": _number(row[cast(str, columns.confidence)], "confidence"),
+                "lower": _number(row[columns.lower], "lower"),
+                "upper": _number(row[cast(str, columns.upper)], "upper"),
+            }
+        )
+        records.append(
+            {
+                "variable_id": identity[0],
+                "scenario_id": identity[1],
+                "period_id": identity[2],
+                "support_id": _identifier(row[columns.support_id], columns.support_id),
+                "cell_id": cell,
+                "geometry": geometry,
+                "coordinate": coordinate,
+                "value": None
+                if columns.value is None
+                else _number(row[columns.value], columns.value),
+                "probability": None
+                if columns.probability is None
+                else _number(row[columns.probability], columns.probability),
+                "interval": interval,
+                "station_id": None
+                if columns.station_id is None
+                else row[columns.station_id],
+                "failure": None,
+            }
+        )
+    metadata: EvidenceMetadata[Literal[EvidenceKind.PROJECTIONS]] = EvidenceMetadata(
+        kind=EvidenceKind.PROJECTIONS,
+        spec=declarations,
+        spatial=SpatialContract(supports=(SupportKind.POINT,), index_resolution=9),
+        report=_report(len(records)),
+    )
+    return evidence_table(records, metadata), metadata
+
+
+def normalize_layer(
+    table: TableInput,
+    *,
+    variable: Variable | None = None,
+    scenario: Scenario | None = None,
+    period: Period | None = None,
+    spec: DataSpec | None = None,
+    columns: LayerColumns | None = None,
+) -> tuple[pa.Table, EvidenceMetadata[Literal[EvidenceKind.LAYER]]]:
+    declarations = input_spec(
+        variable=variable, scenario=scenario, period=period, spec=spec
+    )
+    columns = LayerColumns() if columns is None else columns
+    if not isinstance(columns, LayerColumns):
+        raise TypeError("columns must be LayerColumns")
+    source = snapshot_table(table)
+    _require_columns(
+        source,
+        [
+            getattr(columns, name)
+            for name in columns.__dataclass_fields__
+            if getattr(columns, name) is not None
+        ],
+    )
+    records: list[dict[str, object]] = []
+    supports: set[SupportKind] = set()
+    for row in source.to_pylist():
+        identity = _series_identity(
+            row,
+            declarations,
+            columns.variable_id,
+            columns.scenario_id,
+            columns.period_id,
+        )
+        if columns.geometry is None:
+            cell, geometry = _point(
+                row, cast(str, columns.longitude), cast(str, columns.latitude)
+            )
+            supports.add(SupportKind.POINT)
+        else:
+            geometry = row[columns.geometry]
+            if not isinstance(geometry, bytes):
+                raise TypeError("geometry columns contain WKB bytes")
+            supports.add(_geometry(geometry))
+            point = from_wkb(geometry).representative_point()
+            cell = h3.latlng_to_cell(point.y, point.x, 9)
+        records.append(
+            {
+                "variable_id": identity[0],
+                "scenario_id": identity[1],
+                "period_id": identity[2],
+                "support_id": _identifier(row[columns.support_id], columns.support_id),
+                "cell_id": cell,
+                "geometry": geometry,
+                "value": None
+                if columns.value is None
+                else _number(row[columns.value], columns.value),
+                "label": None if columns.label is None else row[columns.label],
+                "failure": None,
+            }
+        )
+    metadata: EvidenceMetadata[Literal[EvidenceKind.LAYER]] = EvidenceMetadata(
+        kind=EvidenceKind.LAYER,
+        spec=declarations,
+        spatial=SpatialContract(
+            supports=tuple(sorted(supports, key=lambda k: k.value))
+            if supports
+            else (
+                SupportKind.POLYGON
+                if columns.geometry is not None
+                else SupportKind.POINT,
+            ),
+            index_resolution=9,
+        ),
         report=_report(len(records)),
     )
     return evidence_table(records, metadata), metadata

@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from enum import Enum
-from typing import TypedDict, cast
+from typing import Generic, TypedDict, cast
 
 import pyarrow as pa  # type: ignore[import-untyped]
 from crc_framework import (
@@ -21,7 +21,9 @@ from crc_framework import (
 )
 from referencing.jsonschema import DRAFT202012
 from shapely import from_wkb  # type: ignore[import-untyped]
+from typing_extensions import TypeVar
 
+from ._aggregation import Sampling, sampling_from_document, sampling_schema
 from ._dataset_schema import (
     DatasetMetadata,
     ExecutionCounts,
@@ -44,7 +46,7 @@ from ._dataset_schema import (
     _spatial,
     _transformation,
 )
-from ._declarations import Calendar, DataSpec, _data_spec
+from ._declarations import Calendar, DataSpec, ProbabilityKind, _data_spec
 from ._schema.dataset import DatasetRow, _cell, _geometry, validate_rows
 
 _METADATA_KEY = b"crc.evidence"
@@ -124,6 +126,9 @@ class EvidenceKind(Enum):
     LAYER = "layer"
 
 
+KindT = TypeVar("KindT", bound=EvidenceKind, covariant=True, default=EvidenceKind)
+
+
 class FitFailure(Enum):
     RAISE = "raise"
     KEEP_NO_DATA = "keep_no_data"
@@ -161,6 +166,7 @@ def evidence_metadata_schema() -> dict[str, object]:
     properties["schema_version"] = {"const": "1.0"}
     properties["kind"] = {"enum": [kind.value for kind in EvidenceKind]}
     cast(list[str], metadata["required"]).append("kind")
+    properties["sampling"] = sampling_schema()
     required: set[str] = set()
 
     def references(schema: object) -> None:
@@ -186,13 +192,14 @@ def evidence_metadata_schema() -> dict[str, object]:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class EvidenceMetadata:
-    kind: EvidenceKind
+class EvidenceMetadata(Generic[KindT]):
+    kind: KindT
     spec: DataSpec
     spatial: SpatialContract
     report: ExecutionReport
     source: SourceIdentity | None = None
     provenance: tuple[Transformation, ...] = ()
+    sampling: Sampling | None = None
 
     @property
     def schema_version(self) -> str:
@@ -201,6 +208,25 @@ class EvidenceMetadata:
     def __post_init__(self) -> None:
         if not isinstance(self.kind, EvidenceKind):
             raise TypeError("kind must be EvidenceKind")
+        if self.sampling is not None:
+            if not isinstance(self.sampling, Sampling):
+                raise TypeError("sampling must be Sampling")
+            for series in self.spec.series:
+                if (
+                    series.period is not None
+                    and series.period.calendar is not None
+                    and series.period.calendar is not self.sampling.calendar
+                ):
+                    raise ValueError(
+                        "sampling calendar contradicts declared source calendar"
+                    )
+        if self.kind is EvidenceKind.PROJECTIONS and any(
+            s.probability is not None and s.probability.kind is ProbabilityKind.ANNUAL
+            for s in self.spec.series
+        ):
+            raise ValueError(
+                "projection evidence cannot claim annual exceedance probability"
+            )
         # Scientific declarations and transformation history have one validator.
         DatasetMetadata(
             spec=self.spec,
@@ -221,6 +247,8 @@ class EvidenceMetadata:
         }
         if self.source is not None:
             value["source"] = self.source._document()
+        if self.sampling is not None:
+            value["sampling"] = self.sampling._document()
         return _dump(value)
 
     @classmethod
@@ -228,7 +256,7 @@ class EvidenceMetadata:
         value = _object(
             _load(text),
             {"schema_version", "kind", "spec", "spatial", "report", "provenance"},
-            {"source"},
+            {"source", "sampling"},
         )
         if value["schema_version"] != "1.0":
             raise ValueError("expected evidence schema 1.0")
@@ -236,31 +264,87 @@ class EvidenceMetadata:
         if not isinstance(provenance, list):
             raise ValueError("provenance must be an array")
         return cls(
-            kind=EvidenceKind(value["kind"]),
+            kind=cast(KindT, EvidenceKind(value["kind"])),
             spec=_data_spec(value["spec"]),
             spatial=_spatial(value["spatial"]),
             report=_report(value["report"]),
             source=None if "source" not in value else _source(value["source"]),
             provenance=tuple(_transformation(p) for p in provenance),
+            sampling=None
+            if "sampling" not in value
+            else sampling_from_document(value["sampling"]),
         )
 
 
+_FAILURE_TYPE = pa.struct(
+    [
+        pa.field("code", pa.string(), nullable=False),
+        pa.field("message", pa.string(), nullable=False),
+    ]
+)
+_COVERAGE_TYPE = pa.struct(
+    [
+        pa.field("valid", pa.int64(), nullable=False),
+        pa.field("expected", pa.int64(), nullable=False),
+        pa.field("minimum_fraction", pa.float64(), nullable=False),
+    ]
+)
+_COORDINATE_TYPE = pa.struct(
+    [
+        pa.field("kind", pa.string(), nullable=False),
+        pa.field("time", pa.string()),
+        pa.field("years", pa.float64()),
+    ]
+)
+_INTERVAL_TYPE = pa.struct(
+    [
+        pa.field("confidence", pa.float64(), nullable=False),
+        pa.field("lower", pa.float64(), nullable=False),
+        pa.field("upper", pa.float64(), nullable=False),
+    ]
+)
+
+
 def evidence_arrow_schema(metadata: EvidenceMetadata | None = None) -> pa.Schema:
-    schema = pa.schema(
-        [
-            pa.field("variable_id", pa.string(), nullable=False),
-            pa.field("scenario_id", pa.string()),
-            pa.field("period_id", pa.string()),
-            pa.field("support_id", pa.string(), nullable=False),
-            pa.field("cell_id", pa.uint64(), nullable=False),
-            pa.field("geometry", pa.binary()),
+    kind = EvidenceKind.SAMPLES if metadata is None else metadata.kind
+    fields = [
+        pa.field("variable_id", pa.string(), nullable=False),
+        pa.field("scenario_id", pa.string()),
+        pa.field("period_id", pa.string()),
+        pa.field("support_id", pa.string(), nullable=False),
+        pa.field("cell_id", pa.uint64(), nullable=False),
+        pa.field("geometry", pa.binary()),
+    ]
+    if kind in (EvidenceKind.SAMPLES, EvidenceKind.OBSERVATIONS):
+        fields += [
             pa.field("time", pa.string(), nullable=False),
-            pa.field("value", pa.float64(), nullable=False),
+            pa.field("value", pa.float64()),
+            pa.field("station_id", pa.string()),
+            pa.field("group_id", pa.string()),
+            pa.field("failure", _FAILURE_TYPE),
+            pa.field("coverage", _COVERAGE_TYPE),
         ]
+    elif kind is EvidenceKind.PROJECTIONS:
+        fields += [
+            pa.field("coordinate", _COORDINATE_TYPE, nullable=False),
+            pa.field("probability", pa.float64()),
+            pa.field("value", pa.float64()),
+            pa.field("interval", _INTERVAL_TYPE),
+            pa.field("station_id", pa.string()),
+            pa.field("failure", _FAILURE_TYPE),
+        ]
+    else:
+        fields += [
+            pa.field("value", pa.float64()),
+            pa.field("label", pa.string()),
+            pa.field("failure", _FAILURE_TYPE),
+        ]
+    schema = pa.schema(fields)
+    return (
+        schema
+        if metadata is None
+        else schema.with_metadata({_METADATA_KEY: metadata.to_json().encode()})
     )
-    if metadata is not None:
-        return schema.with_metadata({_METADATA_KEY: metadata.to_json().encode()})
-    return schema
 
 
 def metadata_from_evidence_table(table: pa.Table) -> EvidenceMetadata:
@@ -273,12 +357,36 @@ def metadata_from_evidence_table(table: pa.Table) -> EvidenceMetadata:
 def evidence_table(
     records: Sequence[dict[str, object]], metadata: EvidenceMetadata
 ) -> pa.Table:
-    fields = set(evidence_arrow_schema().names)
-    if any(set(record) != fields for record in records):
-        raise ValueError("evidence records must contain exactly the canonical fields")
-    table = pa.Table.from_pylist(list(records), schema=evidence_arrow_schema(metadata))
+    schema = evidence_arrow_schema(metadata)
+    fields = set(schema.names)
+    required = {field.name for field in schema if not field.nullable}
+    if any(
+        not required <= record.keys() or record.keys() - fields for record in records
+    ):
+        raise ValueError(
+            "evidence records must contain exactly the applicable canonical fields"
+        )
+    table = pa.Table.from_pylist(list(records), schema=schema)
     validate_evidence(table, metadata)
     return table
+
+
+def evidence_row_key(
+    record: Mapping[str, object], kind: EvidenceKind
+) -> tuple[object, ...]:
+    common = tuple(record[name] for name in _IDENTITY)
+    if kind in (EvidenceKind.SAMPLES, EvidenceKind.OBSERVATIONS):
+        return (*common, record["time"])
+    if kind is EvidenceKind.PROJECTIONS:
+        coordinate = cast(Mapping[str, object], record["coordinate"])
+        return (
+            *common,
+            coordinate["kind"],
+            coordinate.get("time"),
+            coordinate.get("years"),
+            record["probability"],
+        )
+    return common
 
 
 def validate_evidence(
@@ -289,14 +397,14 @@ def validate_evidence(
 ) -> ExecutionReport:
     if not isinstance(table, pa.Table):
         raise TypeError("evidence must be an Arrow Table")
-    if not table.schema.equals(evidence_arrow_schema(), check_metadata=False):
-        raise ValueError("Arrow fields do not match canonical evidence schema 1.0")
     stored = metadata_from_evidence_table(table)
     if metadata is not None and stored.to_json() != metadata.to_json():
         raise ValueError("supplied and stored evidence metadata disagree")
     metadata = stored
-    if metadata.kind is not EvidenceKind.SAMPLES:
-        raise ValueError("this evidence layout contains samples")
+    if not table.schema.equals(evidence_arrow_schema(metadata), check_metadata=False):
+        raise ValueError(
+            "Arrow fields do not match the declared canonical evidence kind"
+        )
     series = {
         (
             s.variable.id,
@@ -307,59 +415,150 @@ def validate_evidence(
     }
     keys: set[tuple[object, ...]] = set()
     supports: dict[str, tuple[bytes | None, int | None]] = {}
+    missing = 0
     for record in table.to_pylist():
-        for field in ("variable_id", "support_id", "time"):
-            _identifier(record[field], field)
-        for field in ("scenario_id", "period_id"):
-            if record[field] is not None:
-                _identifier(record[field], field)
+        for name in ("variable_id", "support_id"):
+            _identifier(record[name], name)
+        for name in ("scenario_id", "period_id", "station_id", "group_id"):
+            if record.get(name) is not None:
+                _identifier(record[name], name)
         identity = tuple(record[name] for name in _IDENTITY[:3])
         if identity not in series:
-            raise ValueError(f"sample refers to an undeclared series: {identity!r}")
+            raise ValueError(f"evidence refers to an undeclared series: {identity!r}")
         declared_period = series[identity].period
-        calendar = None if declared_period is None else declared_period.calendar
-        if _sample_time(record["time"], calendar) != record["time"]:
-            raise ValueError("sample time must use canonical uppercase T and Z")
+        calendar = None if metadata.sampling is None else metadata.sampling.calendar
+        if declared_period is not None and declared_period.calendar is not None:
+            calendar = declared_period.calendar
+        if metadata.kind in (EvidenceKind.SAMPLES, EvidenceKind.OBSERVATIONS):
+            if _sample_time(record["time"], calendar) != record["time"]:
+                raise ValueError("evidence time must use canonical uppercase T and Z")
+        elif metadata.kind is EvidenceKind.PROJECTIONS:
+            coordinate = record["coordinate"]
+            if coordinate is None or coordinate["kind"] not in (
+                "time",
+                "return_period",
+            ):
+                raise ValueError(
+                    "projection requires a typed time or return-period coordinate"
+                )
+            if coordinate["kind"] == "time":
+                if coordinate["years"] is not None or coordinate["time"] is None:
+                    raise ValueError(
+                        "time projection coordinate has inactive return-period fields"
+                    )
+                _sample_time(coordinate["time"], calendar)
+            elif (
+                coordinate["time"] is not None
+                or _number(coordinate["years"], "return period") <= 0
+            ):
+                raise ValueError(
+                    "return-period projection coordinate requires positive years only"
+                )
+            probability = record["probability"]
+            if (
+                probability is not None
+                and not 0 <= _number(probability, "probability") <= 1
+            ):
+                raise ValueError("projection probability must lie in [0, 1]")
+            interval = record["interval"]
+            if interval is not None:
+                if not 0 < _number(interval["confidence"], "confidence") < 1:
+                    raise ValueError("interval confidence must lie in (0, 1)")
+                if _number(interval["lower"], "lower") > _number(
+                    interval["upper"], "upper"
+                ):
+                    raise ValueError("interval bounds must be ordered")
         cell = _cell(record["cell_id"])
-        if metadata.spatial.index_resolution is not None and (
-            (cell >> 52) & 15 != metadata.spatial.index_resolution
+        if (
+            metadata.spatial.index_resolution is not None
+            and (cell >> 52) & 15 != metadata.spatial.index_resolution
         ):
             raise ValueError("cell_id resolution contradicts the spatial contract")
         geometry = record["geometry"]
-        kind = SupportKind.CELL if geometry is None else _geometry(geometry)
-        if kind not in metadata.spatial.supports:
+        support_kind = SupportKind.CELL if geometry is None else _geometry(geometry)
+        if support_kind not in metadata.spatial.supports:
             raise ValueError("geometry contradicts the declared spatial support")
         support = (geometry, cell if geometry is None else None)
         previous = supports.setdefault(record["support_id"], support)
         if previous != support:
-            previous_geometry, previous_cell = previous
             if (
-                previous_geometry is None
+                previous[0] is None
                 or geometry is None
-                or previous_cell != support[1]
-                or not from_wkb(previous_geometry).equals(from_wkb(geometry))
+                or previous[1] != support[1]
+                or not from_wkb(previous[0]).equals(from_wkb(geometry))
             ):
                 raise ValueError(
                     "one support_id cannot identify different source supports"
                 )
-        key = tuple(record[name] for name in _IDENTITY) + (record["time"],)
+        key = evidence_row_key(record, metadata.kind)
         if key in keys:
-            raise ValueError(f"duplicate sample observation: {key!r}")
+            raise ValueError(f"duplicate evidence record: {key!r}")
         keys.add(key)
-        _number(record["value"], "sample value")
+        value, failure = record["value"], record["failure"]
+        if value is not None:
+            _number(value, "evidence value")
+        if failure is not None:
+            if (
+                value is not None
+                or metadata.kind is EvidenceKind.PROJECTIONS
+                and record["interval"] is not None
+            ):
+                raise ValueError("failed evidence cannot contain a value or interval")
+            _identifier(failure["code"], "failure.code")
+            if not isinstance(failure["message"], str) or not failure["message"]:
+                raise ValueError("failure.message must be nonempty text")
+            missing += 1
+        elif value is None and metadata.kind not in (
+            EvidenceKind.LAYER,
+            EvidenceKind.PROJECTIONS,
+        ):
+            raise ValueError("missing numeric evidence requires an explicit failure")
+        elif (
+            value is None
+            and metadata.kind is EvidenceKind.PROJECTIONS
+            and record["interval"] is None
+        ):
+            raise ValueError(
+                "projection requires a value, interval, or retained failure"
+            )
+        quality = record.get("coverage")
+        if quality is not None:
+            if (
+                type(quality["valid"]) is not int
+                or type(quality["expected"]) is not int
+                or not 0 <= quality["valid"] <= quality["expected"]
+                or quality["expected"] == 0
+            ):
+                raise ValueError(
+                    "coverage counts must satisfy 0 <= valid <= expected "
+                    "and expected > 0"
+                )
+            fraction = _number(quality["minimum_fraction"], "minimum_fraction")
+            if not 0 < fraction <= 1:
+                raise ValueError("minimum coverage fraction must lie in (0, 1]")
+            if value is not None and (
+                quality["valid"] != quality["expected"]
+                if fraction == 1.0
+                else quality["valid"] / quality["expected"] < fraction
+            ):
+                raise ValueError(
+                    "numeric evidence does not meet its recorded completeness rule"
+                )
     if check_counts and metadata.report.complete:
-        if metadata.report.counts.produced != table.num_rows:
-            raise ValueError("complete evidence produced count disagrees with its rows")
+        if (
+            metadata.report.counts.produced != table.num_rows
+            or metadata.report.counts.no_data != missing
+        ):
+            raise ValueError("complete evidence counts disagree with its rows")
     return ExecutionReport(
-        complete=True,
-        valid=metadata.report.valid is not False
+        True,
+        metadata.report.valid is not False
         and not any(
-            diagnostic.severity is DiagnosticSeverity.ERROR
-            for diagnostic in metadata.report.diagnostics
+            d.severity is DiagnosticSeverity.ERROR for d in metadata.report.diagnostics
         ),
-        diagnostics=metadata.report.diagnostics,
-        counts=ExecutionCounts(requested=table.num_rows, produced=table.num_rows),
-        source_identities=metadata.report.source_identities,
+        metadata.report.diagnostics,
+        replace(metadata.report.counts, produced=table.num_rows, no_data=missing),
+        metadata.report.source_identities,
     )
 
 
@@ -370,6 +569,10 @@ def fit_sample_table(
     *,
     on_failure: FitFailure = FitFailure.RAISE,
 ) -> tuple[tuple[DatasetRow, ...], DatasetMetadata]:
+    if metadata.kind is not EvidenceKind.SAMPLES:
+        raise TypeError(
+            "fitting requires sample evidence; aggregate raw observations first"
+        )
     if not metadata.report.complete:
         raise ValueError(
             "an incomplete sample preview cannot be fitted; collect the full selection "
@@ -404,11 +607,19 @@ def fit_sample_table(
         }
         try:
             result = fit_samples(
-                [cast(float, record["value"]) for record in records], specification
+                [
+                    cast(float, record["value"])
+                    for record in records
+                    if record["value"] is not None and record["failure"] is None
+                ],
+                specification,
             )
-            rows.append(
-                DatasetRow(**common, curve=result.distribution, fit=result.record)
+            record = replace(
+                result.record,
+                evidence_count=len(records),
+                excluded_count=len(records) - result.record.used_count,
             )
+            rows.append(DatasetRow(**common, curve=result.distribution, fit=record))
             diagnostics.extend(
                 ExecutionDiagnostic(
                     code=d.code,
@@ -420,7 +631,17 @@ def fit_sample_table(
                 )
                 for d in result.diagnostics
             )
-        except FitError as error:
+        except FitError as original_error:
+            error = FitError(
+                original_error.message,
+                record=replace(
+                    original_error.record,
+                    evidence_count=len(records),
+                    excluded_count=len(records) - original_error.record.used_count,
+                ),
+                diagnostics=original_error.diagnostics,
+            )
+            error.code = original_error.code
             if on_failure is FitFailure.RAISE:
                 raise _SampleFitError(
                     error,
