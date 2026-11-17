@@ -20,7 +20,7 @@ from enum import Enum
 from importlib.resources import files
 from importlib.resources.abc import Traversable
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args, get_origin
 
 ROOT = Path(__file__).resolve().parents[2]
 CONTRACTS = ROOT / "crc_sdk" / "contracts" / "api"
@@ -477,6 +477,7 @@ def _normalized_annotation(value: Any) -> str:
             .replace("crc_framework.", "")
             .replace("crc_sdk.", "")
             .replace("pa.", "pyarrow.")
+            .replace("datetime.datetime", "datetime")
         )
     if value is None:
         return "None"
@@ -496,8 +497,33 @@ def _default_matches(actual: Any, expected: Any) -> bool:
     return bool(type(actual) is type(expected) and actual == expected)
 
 
+def _specialized_annotation(value: Any, bindings: Mapping[str, str]) -> str:
+    annotation = _normalized_annotation(value)
+    for name, replacement in bindings.items():
+        annotation = re.sub(rf"\b{re.escape(name)}\b", replacement, annotation)
+    return annotation
+
+
+def _generic_bindings(owner: type) -> dict[str, str]:
+    bindings: dict[str, str] = {}
+    for base in owner.__mro__:
+        for declaration in getattr(base, "__orig_bases__", ()):
+            origin = get_origin(declaration)
+            for variable, argument in zip(
+                getattr(origin, "__parameters__", ()), get_args(declaration)
+            ):
+                name = getattr(variable, "__name__", str(variable))
+                value = getattr(argument, "__name__", str(argument))
+                bindings[name] = bindings.get(value, value)
+    return bindings
+
+
 def _check_runtime_signature(
-    value: Any, expected: Mapping[str, Any], where: str
+    value: Any,
+    expected: Mapping[str, Any],
+    where: str,
+    *,
+    bindings: Mapping[str, str] | None = None,
 ) -> list[str]:
     errors = []
     try:
@@ -516,9 +542,9 @@ def _check_runtime_signature(
     for parameter, declaration in zip(parameters, expected_parameters, strict=True):
         if parameter.kind != PARAMETER_KINDS[declaration["kind"]]:
             errors.append(f"{where}.{parameter.name}: parameter kind differs")
-        if _normalized_annotation(parameter.annotation) != _normalized_annotation(
-            declaration["annotation"]
-        ):
+        if _specialized_annotation(
+            parameter.annotation, bindings or {}
+        ) != _normalized_annotation(declaration["annotation"]):
             errors.append(f"{where}.{parameter.name}: annotation differs")
         if "default" in declaration:
             if not _default_matches(parameter.default, declaration["default"]):
@@ -529,8 +555,8 @@ def _check_runtime_signature(
         None,
         "None",
     }
-    if not constructor_return and _normalized_annotation(
-        actual.return_annotation
+    if not constructor_return and _specialized_annotation(
+        actual.return_annotation, bindings or {}
     ) != _normalized_annotation(expected["returns"]):
         errors.append(f"{where}: return annotation differs")
     return errors
@@ -678,6 +704,7 @@ def check_runtime(
                 _check_runtime_signature(value, declaration["constructor"], where)
             )
         methods, properties = expanded_members(contract["exports"], name)
+        bindings = _generic_bindings(value)
         for method_name, signature in methods.items():
             method_value = getattr(value, method_name, None)
             if not callable(method_value):
@@ -695,7 +722,7 @@ def check_runtime(
                 errors.append(f"{where}.{method_name}: binding differs")
             errors.extend(
                 _check_runtime_signature(
-                    method_value, signature, f"{where}.{method_name}"
+                    method_value, signature, f"{where}.{method_name}", bindings=bindings
                 )
             )
         annotations: dict[str, Any] = {}
@@ -706,7 +733,7 @@ def check_runtime(
             actual_type = annotations.get(property_name, inspect.Signature.empty)
             if isinstance(descriptor, property) and descriptor.fget is not None:
                 actual_type = inspect.signature(descriptor.fget).return_annotation
-            if _normalized_annotation(actual_type) != _normalized_annotation(
+            if _specialized_annotation(actual_type, bindings) != _normalized_annotation(
                 annotation
             ):
                 errors.append(f"{where}.{property_name}: property/field type differs")

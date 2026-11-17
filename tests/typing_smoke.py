@@ -1,5 +1,7 @@
+from datetime import date
 from typing import reveal_type
 
+import numpy as np
 from crc_framework import (
     DepthAboveGround,
     DistributionFamily,
@@ -11,9 +13,12 @@ from crc_framework import (
 from crc_sdk import (
     Calendar,
     Catalog,
+    Dataset,
     DataSpec,
     Period,
     Probability,
+    Runtime,
+    Samples,
     Scenario,
     SeriesSpec,
     Variable,
@@ -38,3 +43,39 @@ catalog = Catalog(
 )
 reveal_type(catalog.variable(variable.id))
 reveal_type(SampleFit(family=DistributionFamily.GUMBEL_RIGHT))
+
+quantile_data = {
+    "support_id": ["a", "a"],
+    "longitude": [0.0, 0.0],
+    "latitude": [0.0, 0.0],
+    "probability": [0.1, 0.9],
+    "value": [1.0, 2.0],
+}
+dataset = Dataset.from_quantiles(quantile_data, variable=variable)
+reveal_type(dataset.read().metadata)
+reveal_type(dataset.batches().metadata)
+with dataset.execute(runtime=Runtime()) as execution:
+    reveal_type(execution.read().metadata)
+
+sample_data = {
+    "support_id": ["a"] * 3,
+    "longitude": [0.0] * 3,
+    "latitude": [0.0] * 3,
+    "time": [2000, 2001, 2002],
+    "value": [1.0, 2.0, 4.0],
+}
+samples = Samples.from_table(sample_data, variable=variable)
+reveal_type(samples.read().metadata)
+reveal_type(samples.read().fit(SampleFit(family=DistributionFamily.GUMBEL_RIGHT)))
+
+array_samples = Samples.from_table(
+    {
+        "support_id": np.array(["a", "a", "a"]),
+        "longitude": np.zeros(3),
+        "latitude": np.zeros(3),
+        "time": [date(2000, 1, 1), date(2001, 1, 1), date(2002, 1, 1)],
+        "value": np.array([1.0, 2.0, 4.0]),
+    },
+    variable=variable,
+)
+reveal_type(array_samples.read().metadata)

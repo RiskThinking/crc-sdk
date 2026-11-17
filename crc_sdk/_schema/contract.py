@@ -171,6 +171,18 @@ def dataset_json_schema() -> dict[str, object]:
                         },
                         ["kind", "dimension", "mapping"],
                     ),
+                    _record(
+                        {
+                            "kind": {"const": "observation_time_selection"},
+                            "time": {
+                                "allOf": [
+                                    {"$ref": "#/$defs/period"},
+                                    {"properties": {"kind": {"const": "window"}}},
+                                ]
+                            },
+                        },
+                        ["kind", "time"],
+                    ),
                 ]
             },
             "failure": _record(
@@ -202,6 +214,19 @@ def dataset_json_schema() -> dict[str, object]:
             ),
         }
     )
+    diagnostic = definitions["diagnostic"]
+    assert isinstance(diagnostic, dict)
+    diagnostic_properties = diagnostic["properties"]
+    assert isinstance(diagnostic_properties, dict)
+    fitting_diagnostic = _record(
+        {
+            **diagnostic_properties,
+            "stage": {"const": "fitting"},
+            "record": {"$ref": FITTING_SCHEMA},
+        },
+        ["code", "severity", "stage", "message", "record"],
+    )
+    definitions["diagnostic"] = {"oneOf": [diagnostic, fitting_diagnostic]}
     row = _record(
         {
             "variable_id": identifier,
@@ -245,6 +270,23 @@ def dataset_json_schema() -> dict[str, object]:
         },
     ]
     definitions["row"] = row
+    report = definitions["report"]
+    assert isinstance(report, dict)
+    report["allOf"] = [
+        {
+            "if": {"properties": {"valid": {"const": True}}},
+            "then": {
+                "properties": {
+                    "complete": {"const": True},
+                    "diagnostics": {
+                        "not": {
+                            "contains": {"properties": {"severity": {"const": "error"}}}
+                        }
+                    },
+                }
+            },
+        }
+    ]
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$id": "https://climateriskcommons.org/schemas/dataset/2.0",

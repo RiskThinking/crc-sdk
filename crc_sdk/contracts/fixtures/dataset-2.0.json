@@ -532,6 +532,164 @@
       }
     },
     {
+      "name": "fitting-failure-diagnostic",
+      "document": {
+        "metadata": {
+          "provenance": [],
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 0,
+              "no_data": 1,
+              "produced": 1,
+              "requested": 1,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [
+              {
+                "code": "fit.no_converged_candidate",
+                "message": "samples fitting failed: samples/gumbel_r: unsupported operation: gumbel_r has no feasible likelihood fit under the supplied constraints",
+                "record": {
+                  "attempts": [
+                    {
+                      "diagnostics": [
+                        {
+                          "code": "fit.failed",
+                          "details": {},
+                          "message": "unsupported operation: gumbel_r has no feasible likelihood fit under the supplied constraints",
+                          "path": "",
+                          "severity": "error"
+                        }
+                      ],
+                      "reason": "unsupported operation: gumbel_r has no feasible likelihood fit under the supplied constraints",
+                      "specification": {
+                        "constraints": null,
+                        "estimator": "mle",
+                        "fallbacks": [],
+                        "family": "gumbel_r",
+                        "kind": "samples",
+                        "minimum_samples": 3
+                      },
+                      "status": "failed"
+                    }
+                  ],
+                  "converged": false,
+                  "engine_version": "crc-framework/1.0.0",
+                  "estimator": null,
+                  "evidence_count": 8,
+                  "evidence_support": [
+                    1.0,
+                    1.0
+                  ],
+                  "excluded_count": 0,
+                  "selected_attempt": null,
+                  "specification": {
+                    "constraints": null,
+                    "estimator": "mle",
+                    "fallbacks": [],
+                    "family": "gumbel_r",
+                    "kind": "samples",
+                    "minimum_samples": 3
+                  },
+                  "used_count": 8,
+                  "weights": null
+                },
+                "severity": "warning",
+                "stage": "fitting",
+                "support_id": "user:support"
+              }
+            ],
+            "source_identities": [],
+            "valid": true
+          },
+          "schema_version": "2.0",
+          "spatial": {
+            "index_resolution": 4,
+            "supports": [
+              "cell"
+            ]
+          },
+          "spec": {
+            "periods": [],
+            "scenarios": [],
+            "series": [
+              {
+                "period_id": null,
+                "scenario_id": null,
+                "variable_id": "user:depth"
+              }
+            ],
+            "variables": [
+              {
+                "id": "user:depth"
+              }
+            ]
+          }
+        },
+        "rows": [
+          {
+            "cell_id": 594475228122316799,
+            "failure": {
+              "code": "fit.no_converged_candidate",
+              "message": "samples fitting failed: samples/gumbel_r: unsupported operation: gumbel_r has no feasible likelihood fit under the supplied constraints",
+              "record": {
+                "attempts": [
+                  {
+                    "diagnostics": [
+                      {
+                        "code": "fit.failed",
+                        "details": {},
+                        "message": "unsupported operation: gumbel_r has no feasible likelihood fit under the supplied constraints",
+                        "path": "",
+                        "severity": "error"
+                      }
+                    ],
+                    "reason": "unsupported operation: gumbel_r has no feasible likelihood fit under the supplied constraints",
+                    "specification": {
+                      "constraints": null,
+                      "estimator": "mle",
+                      "fallbacks": [],
+                      "family": "gumbel_r",
+                      "kind": "samples",
+                      "minimum_samples": 3
+                    },
+                    "status": "failed"
+                  }
+                ],
+                "converged": false,
+                "engine_version": "crc-framework/1.0.0",
+                "estimator": null,
+                "evidence_count": 8,
+                "evidence_support": [
+                  1.0,
+                  1.0
+                ],
+                "excluded_count": 0,
+                "selected_attempt": null,
+                "specification": {
+                  "constraints": null,
+                  "estimator": "mle",
+                  "fallbacks": [],
+                  "family": "gumbel_r",
+                  "kind": "samples",
+                  "minimum_samples": 3
+                },
+                "used_count": 8,
+                "weights": null
+              }
+            },
+            "period_id": null,
+            "scenario_id": null,
+            "support_id": "user:support",
+            "variable_id": "user:depth"
+          }
+        ]
+      }
+    },
+    {
       "name": "typed-source-resource",
       "document": {
         "metadata": {
@@ -650,6 +808,78 @@
           }
         },
         "rows": []
+      }
+    },
+    {
+      "name": "observation-time-selection",
+      "document": {
+        "metadata": {
+          "provenance": [
+            {
+              "kind": "observation_time_selection",
+              "time": {
+                "end": 2010,
+                "id": "period:8b00c9cd0e868926d85a89458d2b67dd4417d4d9869ac63fdcc93d530e0b978e",
+                "kind": "window",
+                "start": 1980
+              }
+            }
+          ],
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 0,
+              "no_data": 0,
+              "produced": 1,
+              "requested": 1,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [],
+            "source_identities": [],
+            "valid": true
+          },
+          "schema_version": "2.0",
+          "spatial": {
+            "index_resolution": 4,
+            "supports": [
+              "cell"
+            ]
+          },
+          "spec": {
+            "periods": [],
+            "scenarios": [],
+            "series": [
+              {
+                "period_id": null,
+                "scenario_id": null,
+                "variable_id": "user:depth"
+              }
+            ],
+            "variables": [
+              {
+                "id": "user:depth"
+              }
+            ]
+          }
+        },
+        "rows": [
+          {
+            "cell_id": 594475228122316799,
+            "curve": {
+              "kind": "point_mass",
+              "object": "distribution",
+              "schema_version": "1.0",
+              "value": 1.0
+            },
+            "period_id": null,
+            "scenario_id": null,
+            "support_id": "user:support",
+            "variable_id": "user:depth"
+          }
+        ]
       }
     },
     {
@@ -2120,6 +2350,142 @@
       }
     },
     {
+      "name": "incomplete-valid-report",
+      "structural": true,
+      "document": {
+        "metadata": {
+          "provenance": [],
+          "report": {
+            "complete": false,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 0,
+              "no_data": 0,
+              "produced": 1,
+              "requested": 1,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [],
+            "source_identities": [],
+            "valid": true
+          },
+          "schema_version": "2.0",
+          "spatial": {
+            "index_resolution": 4,
+            "supports": [
+              "cell"
+            ]
+          },
+          "spec": {
+            "periods": [],
+            "scenarios": [],
+            "series": [
+              {
+                "period_id": null,
+                "scenario_id": null,
+                "variable_id": "user:depth"
+              }
+            ],
+            "variables": [
+              {
+                "id": "user:depth"
+              }
+            ]
+          }
+        },
+        "rows": [
+          {
+            "cell_id": 594475228122316799,
+            "curve": {
+              "kind": "point_mass",
+              "object": "distribution",
+              "schema_version": "1.0",
+              "value": 1.0
+            },
+            "period_id": null,
+            "scenario_id": null,
+            "support_id": "user:support",
+            "variable_id": "user:depth"
+          }
+        ]
+      }
+    },
+    {
+      "name": "time-selection-content-identity-mismatch",
+      "structural": false,
+      "document": {
+        "metadata": {
+          "provenance": [
+            {
+              "kind": "observation_time_selection",
+              "time": {
+                "end": 2010,
+                "id": "period:8b00c9cd0e868926d85a89458d2b67dd4417d4d9869ac63fdcc93d530e0b978e",
+                "kind": "window",
+                "start": 1981
+              }
+            }
+          ],
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 0,
+              "no_data": 0,
+              "produced": 1,
+              "requested": 1,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [],
+            "source_identities": [],
+            "valid": true
+          },
+          "schema_version": "2.0",
+          "spatial": {
+            "index_resolution": 4,
+            "supports": [
+              "cell"
+            ]
+          },
+          "spec": {
+            "periods": [],
+            "scenarios": [],
+            "series": [
+              {
+                "period_id": null,
+                "scenario_id": null,
+                "variable_id": "user:depth"
+              }
+            ],
+            "variables": [
+              {
+                "id": "user:depth"
+              }
+            ]
+          }
+        },
+        "rows": [
+          {
+            "cell_id": 594475228122316799,
+            "curve": {
+              "kind": "point_mass",
+              "object": "distribution",
+              "schema_version": "1.0",
+              "value": 1.0
+            },
+            "period_id": null,
+            "scenario_id": null,
+            "support_id": "user:support",
+            "variable_id": "user:depth"
+          }
+        ]
+      }
+    },
+    {
       "name": "fit-family-mismatch",
       "structural": false,
       "document": {
@@ -2227,6 +2593,324 @@
               },
               "used_count": 8,
               "weights": null
+            },
+            "period_id": null,
+            "scenario_id": null,
+            "support_id": "user:support",
+            "variable_id": "user:depth"
+          }
+        ]
+      }
+    },
+    {
+      "name": "fitting-diagnostic-wrong-stage",
+      "structural": true,
+      "document": {
+        "metadata": {
+          "provenance": [],
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 0,
+              "no_data": 1,
+              "produced": 1,
+              "requested": 1,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [
+              {
+                "code": "fit.no_converged_candidate",
+                "message": "samples fitting failed: samples/gumbel_r: unsupported operation: gumbel_r has no feasible likelihood fit under the supplied constraints",
+                "record": {
+                  "attempts": [
+                    {
+                      "diagnostics": [
+                        {
+                          "code": "fit.failed",
+                          "details": {},
+                          "message": "unsupported operation: gumbel_r has no feasible likelihood fit under the supplied constraints",
+                          "path": "",
+                          "severity": "error"
+                        }
+                      ],
+                      "reason": "unsupported operation: gumbel_r has no feasible likelihood fit under the supplied constraints",
+                      "specification": {
+                        "constraints": null,
+                        "estimator": "mle",
+                        "fallbacks": [],
+                        "family": "gumbel_r",
+                        "kind": "samples",
+                        "minimum_samples": 3
+                      },
+                      "status": "failed"
+                    }
+                  ],
+                  "converged": false,
+                  "engine_version": "crc-framework/1.0.0",
+                  "estimator": null,
+                  "evidence_count": 8,
+                  "evidence_support": [
+                    1.0,
+                    1.0
+                  ],
+                  "excluded_count": 0,
+                  "selected_attempt": null,
+                  "specification": {
+                    "constraints": null,
+                    "estimator": "mle",
+                    "fallbacks": [],
+                    "family": "gumbel_r",
+                    "kind": "samples",
+                    "minimum_samples": 3
+                  },
+                  "used_count": 8,
+                  "weights": null
+                },
+                "severity": "warning",
+                "stage": "decoding",
+                "support_id": "user:support"
+              }
+            ],
+            "source_identities": [],
+            "valid": true
+          },
+          "schema_version": "2.0",
+          "spatial": {
+            "index_resolution": 4,
+            "supports": [
+              "cell"
+            ]
+          },
+          "spec": {
+            "periods": [],
+            "scenarios": [],
+            "series": [
+              {
+                "period_id": null,
+                "scenario_id": null,
+                "variable_id": "user:depth"
+              }
+            ],
+            "variables": [
+              {
+                "id": "user:depth"
+              }
+            ]
+          }
+        },
+        "rows": [
+          {
+            "cell_id": 594475228122316799,
+            "failure": {
+              "code": "fit.no_converged_candidate",
+              "message": "samples fitting failed: samples/gumbel_r: unsupported operation: gumbel_r has no feasible likelihood fit under the supplied constraints",
+              "record": {
+                "attempts": [
+                  {
+                    "diagnostics": [
+                      {
+                        "code": "fit.failed",
+                        "details": {},
+                        "message": "unsupported operation: gumbel_r has no feasible likelihood fit under the supplied constraints",
+                        "path": "",
+                        "severity": "error"
+                      }
+                    ],
+                    "reason": "unsupported operation: gumbel_r has no feasible likelihood fit under the supplied constraints",
+                    "specification": {
+                      "constraints": null,
+                      "estimator": "mle",
+                      "fallbacks": [],
+                      "family": "gumbel_r",
+                      "kind": "samples",
+                      "minimum_samples": 3
+                    },
+                    "status": "failed"
+                  }
+                ],
+                "converged": false,
+                "engine_version": "crc-framework/1.0.0",
+                "estimator": null,
+                "evidence_count": 8,
+                "evidence_support": [
+                  1.0,
+                  1.0
+                ],
+                "excluded_count": 0,
+                "selected_attempt": null,
+                "specification": {
+                  "constraints": null,
+                  "estimator": "mle",
+                  "fallbacks": [],
+                  "family": "gumbel_r",
+                  "kind": "samples",
+                  "minimum_samples": 3
+                },
+                "used_count": 8,
+                "weights": null
+              }
+            },
+            "period_id": null,
+            "scenario_id": null,
+            "support_id": "user:support",
+            "variable_id": "user:depth"
+          }
+        ]
+      }
+    },
+    {
+      "name": "fitting-diagnostic-invalid-trace",
+      "structural": false,
+      "document": {
+        "metadata": {
+          "provenance": [],
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 0,
+              "no_data": 1,
+              "produced": 1,
+              "requested": 1,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [
+              {
+                "code": "fit.no_converged_candidate",
+                "message": "samples fitting failed: samples/gumbel_r: unsupported operation: gumbel_r has no feasible likelihood fit under the supplied constraints",
+                "record": {
+                  "attempts": [
+                    {
+                      "diagnostics": [
+                        {
+                          "code": "fit.failed",
+                          "details": {},
+                          "message": "unsupported operation: gumbel_r has no feasible likelihood fit under the supplied constraints",
+                          "path": "",
+                          "severity": "error"
+                        }
+                      ],
+                      "reason": "unsupported operation: gumbel_r has no feasible likelihood fit under the supplied constraints",
+                      "specification": {
+                        "constraints": null,
+                        "estimator": "mle",
+                        "fallbacks": [],
+                        "family": "gumbel_r",
+                        "kind": "samples",
+                        "minimum_samples": 3
+                      },
+                      "status": "failed"
+                    }
+                  ],
+                  "converged": false,
+                  "engine_version": "crc-framework/1.0.0",
+                  "estimator": null,
+                  "evidence_count": 9,
+                  "evidence_support": [
+                    1.0,
+                    1.0
+                  ],
+                  "excluded_count": 0,
+                  "selected_attempt": null,
+                  "specification": {
+                    "constraints": null,
+                    "estimator": "mle",
+                    "fallbacks": [],
+                    "family": "gumbel_r",
+                    "kind": "samples",
+                    "minimum_samples": 3
+                  },
+                  "used_count": 8,
+                  "weights": null
+                },
+                "severity": "warning",
+                "stage": "fitting",
+                "support_id": "user:support"
+              }
+            ],
+            "source_identities": [],
+            "valid": true
+          },
+          "schema_version": "2.0",
+          "spatial": {
+            "index_resolution": 4,
+            "supports": [
+              "cell"
+            ]
+          },
+          "spec": {
+            "periods": [],
+            "scenarios": [],
+            "series": [
+              {
+                "period_id": null,
+                "scenario_id": null,
+                "variable_id": "user:depth"
+              }
+            ],
+            "variables": [
+              {
+                "id": "user:depth"
+              }
+            ]
+          }
+        },
+        "rows": [
+          {
+            "cell_id": 594475228122316799,
+            "failure": {
+              "code": "fit.no_converged_candidate",
+              "message": "samples fitting failed: samples/gumbel_r: unsupported operation: gumbel_r has no feasible likelihood fit under the supplied constraints",
+              "record": {
+                "attempts": [
+                  {
+                    "diagnostics": [
+                      {
+                        "code": "fit.failed",
+                        "details": {},
+                        "message": "unsupported operation: gumbel_r has no feasible likelihood fit under the supplied constraints",
+                        "path": "",
+                        "severity": "error"
+                      }
+                    ],
+                    "reason": "unsupported operation: gumbel_r has no feasible likelihood fit under the supplied constraints",
+                    "specification": {
+                      "constraints": null,
+                      "estimator": "mle",
+                      "fallbacks": [],
+                      "family": "gumbel_r",
+                      "kind": "samples",
+                      "minimum_samples": 3
+                    },
+                    "status": "failed"
+                  }
+                ],
+                "converged": false,
+                "engine_version": "crc-framework/1.0.0",
+                "estimator": null,
+                "evidence_count": 8,
+                "evidence_support": [
+                  1.0,
+                  1.0
+                ],
+                "excluded_count": 0,
+                "selected_attempt": null,
+                "specification": {
+                  "constraints": null,
+                  "estimator": "mle",
+                  "fallbacks": [],
+                  "family": "gumbel_r",
+                  "kind": "samples",
+                  "minimum_samples": 3
+                },
+                "used_count": 8,
+                "weights": null
+              }
             },
             "period_id": null,
             "scenario_id": null,

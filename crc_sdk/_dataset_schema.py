@@ -16,7 +16,7 @@ import crc_framework
 from crc_framework import FitError, FitRecord
 from rfc3339_validator import validate_rfc3339  # type: ignore[import-untyped]
 
-from ._declarations import DataSpec, _data_spec
+from ._declarations import DataSpec, Period, PeriodKind, _data_spec, _period
 
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 
@@ -301,6 +301,26 @@ class ExecutionDiagnostic:
 
 
 @dataclass(frozen=True, slots=True)
+class FittingDiagnostic(ExecutionDiagnostic):
+    record: FitRecord = field(kw_only=True)
+
+    def __post_init__(self) -> None:
+        ExecutionDiagnostic.__post_init__(self)
+        if self.stage is not Stage.FITTING:
+            raise ValueError("fitting diagnostics require Stage.FITTING")
+        if not isinstance(self.record, FitRecord):
+            raise TypeError("record must be a framework FitRecord")
+        # FitRecord's wire decoder validates its complete trace and freezes all
+        # nested diagnostics, including records manually constructed by callers.
+        object.__setattr__(self, "record", FitRecord.from_json(self.record.to_json()))
+
+    def _document(self) -> dict[str, object]:
+        value = ExecutionDiagnostic._document(self)
+        value["record"] = _load(self.record.to_json())
+        return value
+
+
+@dataclass(frozen=True, slots=True)
 class ExecutionCounts:
     requested: int = 0
     produced: int = 0
@@ -331,6 +351,8 @@ class ExecutionReport:
         _boolean(self.complete, "complete")
         if self.valid is not None:
             _boolean(self.valid, "valid")
+        if self.valid is True and not self.complete:
+            raise ValueError("valid can be true only after complete validation")
         if not isinstance(self.counts, ExecutionCounts):
             raise TypeError("counts must be ExecutionCounts")
         for name, cls in (
@@ -362,9 +384,9 @@ def _diagnostic(value: object) -> ExecutionDiagnostic:
     v = _object(
         value,
         {"code", "severity", "stage", "message"},
-        {"source", "support_id", "query_value", "remedy"},
+        {"source", "support_id", "query_value", "remedy", "record"},
     )
-    return ExecutionDiagnostic(
+    arguments = (
         _identifier(v["code"], "code"),
         crc_framework.DiagnosticSeverity(v["severity"]),
         Stage(v["stage"]),
@@ -374,6 +396,11 @@ def _diagnostic(value: object) -> ExecutionDiagnostic:
         None if "query_value" not in v else _number(v["query_value"], "query_value"),
         _text(v["remedy"], "remedy") if "remedy" in v else None,
     )
+    if "record" in v:
+        return FittingDiagnostic(
+            *arguments, record=FitRecord.from_json(_dump(v["record"]))
+        )
+    return ExecutionDiagnostic(*arguments)
 
 
 def _report(value: object) -> ExecutionReport:
@@ -493,7 +520,19 @@ class UnitConversion:
         }
 
 
-Transformation = UnitConversion | IdentityRename
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ObservationTimeSelection:
+    time: Period
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.time, Period) or self.time.kind is not PeriodKind.WINDOW:
+            raise ValueError("observation time selection requires a Period.window")
+
+    def _document(self) -> dict[str, object]:
+        return {"kind": "observation_time_selection", "time": self.time._document()}
+
+
+Transformation = UnitConversion | IdentityRename | ObservationTimeSelection
 
 
 def _transformation(value: object) -> Transformation:
@@ -508,6 +547,7 @@ def _transformation(value: object) -> Transformation:
             "target_unit",
             "scale",
             "offset",
+            "time",
         },
     )
     if v["kind"] == "rename":
@@ -530,6 +570,9 @@ def _transformation(value: object) -> Transformation:
             scale=_number(v["scale"], "scale"),
             offset=_number(v["offset"], "offset"),
         )
+    if v["kind"] == "observation_time_selection":
+        _object(v, {"kind", "time"})
+        return ObservationTimeSelection(time=_period(v["time"]))
     raise ValueError("unknown transformation kind")
 
 
@@ -594,7 +637,8 @@ class DatasetMetadata:
         if self.source is not None and not isinstance(self.source, SourceIdentity):
             raise TypeError("source must be SourceIdentity")
         if not isinstance(self.provenance, tuple) or not all(
-            isinstance(p, (UnitConversion, IdentityRename)) for p in self.provenance
+            isinstance(p, (UnitConversion, IdentityRename, ObservationTimeSelection))
+            for p in self.provenance
         ):
             raise TypeError("provenance must contain typed immutable transformations")
         units: dict[str, str | None] = {}
@@ -612,7 +656,10 @@ class DatasetMetadata:
                         "conversion target unit contradicts the variable measurement"
                     )
                 units[step.variable_id] = step.source_unit
-            elif step.dimension is IdentityKind.VARIABLE:
+            elif (
+                isinstance(step, IdentityRename)
+                and step.dimension is IdentityKind.VARIABLE
+            ):
                 inverse = {new: old for old, new in step.mapping.items()}
                 before = {inverse.get(name, name): unit for name, unit in units.items()}
                 if len(before) != len(units):

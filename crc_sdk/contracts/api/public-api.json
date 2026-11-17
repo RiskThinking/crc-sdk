@@ -376,7 +376,7 @@
       }
     },
     "CanonicalReader": {
-      "kind": "protocol",
+      "kind": "class",
       "methods": {
         "inspect": {
           "parameters": [],
@@ -657,7 +657,14 @@
           "returns": "Inspection"
         },
         "explain": {
-          "parameters": [],
+          "parameters": [
+            {
+              "name": "runtime",
+              "kind": "keyword_only",
+              "annotation": "Runtime | None",
+              "default": null
+            }
+          ],
           "returns": "Explanation"
         },
         "read": {
@@ -856,7 +863,7 @@
             {
               "name": "unit",
               "kind": "keyword_only",
-              "annotation": "crc_framework.LengthUnit | crc_framework.TimeUnit | crc_framework.RatioUnit | crc_framework.TemperatureUnit | crc_framework.SpeedUnit | crc_framework.PrecipitationRateUnit"
+              "annotation": "Unit"
             }
           ],
           "returns": "Self"
@@ -1007,7 +1014,14 @@
           "returns": "Inspection"
         },
         "explain": {
-          "parameters": [],
+          "parameters": [
+            {
+              "name": "runtime",
+              "kind": "keyword_only",
+              "annotation": "Runtime | None",
+              "default": null
+            }
+          ],
           "returns": "Explanation"
         },
         "read": {
@@ -1200,7 +1214,7 @@
         "spatial": "SpatialContract",
         "source": "SourceIdentity | None",
         "report": "ExecutionReport",
-        "provenance": "tuple[UnitConversion | IdentityRename, ...]"
+        "provenance": "tuple[Transformation, ...]"
       },
       "methods": {
         "to_json": {
@@ -1352,7 +1366,14 @@
           "returns": "Inspection"
         },
         "explain": {
-          "parameters": [],
+          "parameters": [
+            {
+              "name": "runtime",
+              "kind": "keyword_only",
+              "annotation": "Runtime | None",
+              "default": null
+            }
+          ],
           "returns": "Explanation"
         },
         "read": {
@@ -1625,12 +1646,42 @@
         "report": "ExecutionReport"
       }
     },
+    "EvidenceKind": {
+      "kind": "enum",
+      "members": {
+        "SAMPLES": "samples",
+        "OBSERVATIONS": "observations",
+        "PROJECTIONS": "projections",
+        "LAYER": "layer"
+      }
+    },
     "EvidenceMetadata": {
       "kind": "class",
       "properties": {
         "schema_version": "str",
         "source": "SourceIdentity | None",
-        "report": "ExecutionReport"
+        "report": "ExecutionReport",
+        "kind": "EvidenceKind",
+        "spec": "DataSpec",
+        "spatial": "SpatialContract",
+        "provenance": "tuple[Transformation, ...]"
+      },
+      "methods": {
+        "to_json": {
+          "parameters": [],
+          "returns": "str"
+        },
+        "from_json": {
+          "parameters": [
+            {
+              "name": "text",
+              "kind": "positional_or_keyword",
+              "annotation": "str"
+            }
+          ],
+          "returns": "EvidenceMetadata",
+          "binding": "class"
+        }
       }
     },
     "Execution": {
@@ -1643,12 +1694,6 @@
               "kind": "keyword_only",
               "annotation": "int | None",
               "default": null
-            },
-            {
-              "name": "runtime",
-              "kind": "keyword_only",
-              "annotation": "Runtime | None",
-              "default": null
             }
           ],
           "returns": "ReadResult[MetadataT]"
@@ -1659,12 +1704,6 @@
               "name": "batch_rows",
               "kind": "keyword_only",
               "annotation": "int | None",
-              "default": null
-            },
-            {
-              "name": "runtime",
-              "kind": "keyword_only",
-              "annotation": "Runtime | None",
               "default": null
             }
           ],
@@ -1682,25 +1721,12 @@
               "kind": "keyword_only",
               "annotation": "bool",
               "default": false
-            },
-            {
-              "name": "runtime",
-              "kind": "keyword_only",
-              "annotation": "Runtime | None",
-              "default": null
             }
           ],
           "returns": "PersistedArtifact"
         },
         "validate": {
-          "parameters": [
-            {
-              "name": "runtime",
-              "kind": "keyword_only",
-              "annotation": "Runtime | None",
-              "default": null
-            }
-          ],
+          "parameters": [],
           "returns": "ExecutionReport"
         },
         "__enter__": {
@@ -1777,7 +1803,10 @@
         "operations": "tuple[Operation, ...]",
         "requirements": "tuple[Requirement, ...]",
         "cache": "Cache",
-        "source": "SourceIdentity | None"
+        "source": "SourceIdentity | None",
+        "workers": "int",
+        "batch_rows": "int",
+        "memory_limit": "str | int | None"
       }
     },
     "FieldsOfTheWorld": {
@@ -1803,6 +1832,15 @@
         "RAISE": "raise",
         "KEEP_NO_DATA": "keep_no_data",
         "SKIP": "skip"
+      }
+    },
+    "FittingDiagnostic": {
+      "kind": "class",
+      "inherits": [
+        "ExecutionDiagnostic"
+      ],
+      "properties": {
+        "record": "crc_framework.FitRecord"
       }
     },
     "GHCNh": {
@@ -2003,7 +2041,14 @@
           "returns": "Inspection"
         },
         "explain": {
-          "parameters": [],
+          "parameters": [
+            {
+              "name": "runtime",
+              "kind": "keyword_only",
+              "annotation": "Runtime | None",
+              "default": null
+            }
+          ],
           "returns": "Explanation"
         },
         "read": {
@@ -2178,7 +2223,7 @@
             {
               "name": "unit",
               "kind": "keyword_only",
-              "annotation": "crc_framework.LengthUnit | crc_framework.TimeUnit | crc_framework.RatioUnit | crc_framework.TemperatureUnit | crc_framework.SpeedUnit | crc_framework.PrecipitationRateUnit"
+              "annotation": "Unit"
             }
           ],
           "returns": "Self"
@@ -2288,6 +2333,12 @@
         }
       }
     },
+    "ObservationTimeSelection": {
+      "kind": "class",
+      "properties": {
+        "time": "Period"
+      }
+    },
     "Observations": {
       "kind": "class",
       "methods": {
@@ -2303,7 +2354,14 @@
           "returns": "Inspection"
         },
         "explain": {
-          "parameters": [],
+          "parameters": [
+            {
+              "name": "runtime",
+              "kind": "keyword_only",
+              "annotation": "Runtime | None",
+              "default": null
+            }
+          ],
           "returns": "Explanation"
         },
         "read": {
@@ -2494,7 +2552,7 @@
             {
               "name": "unit",
               "kind": "keyword_only",
-              "annotation": "crc_framework.LengthUnit | crc_framework.TimeUnit | crc_framework.RatioUnit | crc_framework.TemperatureUnit | crc_framework.SpeedUnit | crc_framework.PrecipitationRateUnit"
+              "annotation": "Unit"
             }
           ],
           "returns": "Self"
@@ -2666,7 +2724,14 @@
           "returns": "Inspection"
         },
         "explain": {
-          "parameters": [],
+          "parameters": [
+            {
+              "name": "runtime",
+              "kind": "keyword_only",
+              "annotation": "Runtime | None",
+              "default": null
+            }
+          ],
           "returns": "Explanation"
         },
         "read": {
@@ -2865,7 +2930,7 @@
             {
               "name": "unit",
               "kind": "keyword_only",
-              "annotation": "crc_framework.LengthUnit | crc_framework.TimeUnit | crc_framework.RatioUnit | crc_framework.TemperatureUnit | crc_framework.SpeedUnit | crc_framework.PrecipitationRateUnit"
+              "annotation": "Unit"
             }
           ],
           "returns": "Self"
@@ -2987,6 +3052,10 @@
             "dataset",
             "collection"
           ]
+        },
+        "to_pandas": {
+          "parameters": [],
+          "returns": "pandas.DataFrame"
         }
       },
       "properties": {
@@ -3107,6 +3176,24 @@
             "kind": "keyword_only",
             "annotation": "str",
             "default": "latitude"
+          },
+          {
+            "name": "variable_id",
+            "kind": "keyword_only",
+            "annotation": "str | None",
+            "default": null
+          },
+          {
+            "name": "scenario_id",
+            "kind": "keyword_only",
+            "annotation": "str | None",
+            "default": null
+          },
+          {
+            "name": "period_id",
+            "kind": "keyword_only",
+            "annotation": "str | None",
+            "default": null
           }
         ],
         "returns": "Self"
@@ -3116,7 +3203,10 @@
         "time": "str",
         "support_id": "str",
         "longitude": "str",
-        "latitude": "str"
+        "latitude": "str",
+        "variable_id": "str | None",
+        "scenario_id": "str | None",
+        "period_id": "str | None"
       }
     },
     "Samples": {
@@ -3134,7 +3224,14 @@
           "returns": "Inspection"
         },
         "explain": {
-          "parameters": [],
+          "parameters": [
+            {
+              "name": "runtime",
+              "kind": "keyword_only",
+              "annotation": "Runtime | None",
+              "default": null
+            }
+          ],
           "returns": "Explanation"
         },
         "read": {
@@ -3341,7 +3438,7 @@
             {
               "name": "unit",
               "kind": "keyword_only",
-              "annotation": "crc_framework.LengthUnit | crc_framework.TimeUnit | crc_framework.RatioUnit | crc_framework.TemperatureUnit | crc_framework.SpeedUnit | crc_framework.PrecipitationRateUnit"
+              "annotation": "Unit"
             }
           ],
           "returns": "Self"
@@ -3676,8 +3773,8 @@
     }
   },
   "type_aliases": {
-    "Scalar": "str | int | float | bool | bytes | None",
-    "TableInput": "Mapping[str, Sequence[Scalar]] | pyarrow.Table | pyarrow.RecordBatch | pandas.DataFrame | ArrowInterchange",
+    "Scalar": "str | int | float | bool | bytes | datetime.date | None",
+    "TableInput": "Mapping[str, Sequence[Scalar] | numpy.typing.NDArray[numpy.generic]] | pyarrow.Table | pyarrow.RecordBatch | pandas.DataFrame | ArrowInterchange",
     "LocalPath": "str | os.PathLike[str]",
     "AssetLocation": "PointColumns | CellColumn | GeometryColumn",
     "VariableSelector": "Variable | str | CRCOpen.Variable | Sequence[Variable | str | CRCOpen.Variable] | None",
@@ -3688,11 +3785,12 @@
     "Aggregation": "DailyTotal | AnnualMaximum | AnnualMinimum",
     "ArtifactMetadata": "DatasetMetadata | EvidenceMetadata | CollectionMetadata | EvaluationMetadata",
     "PersistedArtifact": "Dataset | Samples | Observations | Projections | Layer | EvaluationArtifact | DatasetCollection",
-    "ScientificValue": "None | bool | int | float | str | Sequence[ScientificValue] | Mapping[str, ScientificValue]"
+    "ScientificValue": "None | bool | int | float | str | Sequence[ScientificValue] | Mapping[str, ScientificValue]",
+    "Unit": "crc_framework.LengthUnit | crc_framework.TimeUnit | crc_framework.RatioUnit | crc_framework.TemperatureUnit | crc_framework.SpeedUnit | crc_framework.PrecipitationRateUnit",
+    "Transformation": "UnitConversion | IdentityRename | ObservationTimeSelection"
   },
   "external_symbols": {
     "crc_framework": [
-      "BuildingType",
       "CensoredQuantileFit",
       "DepthAboveGround",
       "Distribution",
@@ -3716,7 +3814,8 @@
       "TemperatureUnit",
       "TimeDuration",
       "TimeUnit",
-      "DiagnosticSeverity"
+      "DiagnosticSeverity",
+      "FitRecord"
     ]
   },
   "external_modules": [
@@ -3725,7 +3824,9 @@
     "os",
     "types",
     "datetime",
-    "duckdb"
+    "duckdb",
+    "numpy",
+    "numpy.typing"
   ],
   "input_protocols": {
     "ArrowInterchange": {
@@ -3879,7 +3980,10 @@
     "datetime.datetime",
     "datetime.timedelta",
     "duckdb.DuckDBPyConnection",
-    "types.EllipsisType"
+    "types.EllipsisType",
+    "datetime.date",
+    "numpy.typing.NDArray",
+    "numpy.generic"
   ],
   "provider_indicators": {
     "ERA5": {

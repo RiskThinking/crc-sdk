@@ -9,11 +9,21 @@ import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, Generic, TypeVar
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+ResultT = TypeVar("ResultT")
+
+
+class _GenericRecipe(Generic[ResultT]):
+    def read(self) -> ResultT:
+        raise NotImplementedError
+
+
+class _StringRecipe(_GenericRecipe[str]):
+    pass
 
 
 @pytest.fixture(scope="module")
@@ -42,6 +52,29 @@ def test_release_contract_is_consistent(
     assert "Dataset" in contract["exports"]
     assert "Samples" in contract["exports"]
     assert "Measurement" not in contract["exports"]
+
+
+def test_inherited_generic_contracts_check_the_specialized_type(
+    checker: ModuleType,
+) -> None:
+    bindings = checker._generic_bindings(_StringRecipe)
+    assert (
+        checker._check_runtime_signature(
+            _StringRecipe.read,
+            {"parameters": [], "returns": "str"},
+            "StringRecipe.read",
+            bindings=bindings,
+        )
+        == []
+    )
+    assert "return annotation differs" in " ".join(
+        checker._check_runtime_signature(
+            _StringRecipe.read,
+            {"parameters": [], "returns": "int"},
+            "StringRecipe.read",
+            bindings=bindings,
+        )
+    )
 
 
 def test_declaration_validation_does_not_import_the_sdk(
