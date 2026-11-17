@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "crc-sdk"
-version = "0.11.2"
+version = "1.0.0"
 description = "Python SDK for Climate Risk Commons data access and workflows"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -17,7 +17,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "crc-framework>=0.6.0,<0.7",
+    "crc-framework>=1.0.0,<2",
     "pydantic>=2,<3",
     "duckdb>=1,<2",
     "pyarrow>=14",
@@ -67,7 +67,10 @@ where = ["."]
 include = ["crc_sdk*"]
 
 [tool.setuptools.package-data]
-crc_sdk = ["py.typed"]
+crc_sdk = ["py.typed", "contracts/api/*.json"]
+
+[tool.uv.sources]
+crc-framework = { path = "../crc-framework-rs", editable = true }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

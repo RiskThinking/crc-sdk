@@ -1,6 +1,4 @@
-"""Schema 1.3 metadata additions stay backward compatible."""
-
-import json
+"""Source metadata, temporal validation, and registry behavior."""
 
 import pytest
 from pydantic import ValidationError
@@ -11,7 +9,6 @@ from crc_sdk.registry import (
     HazardSpec,
     public_registry,
 )
-from crc_sdk.schema import CANONICAL_HAZARD_SCHEMA_VERSION, hazard_fields_for_version
 from crc_sdk.types import (
     EnsembleDescriptor,
     HazardDatasetMetadata,
@@ -31,11 +28,6 @@ def _metadata(**overrides: object) -> HazardDatasetMetadata:
     }
     values.update(overrides)
     return HazardDatasetMetadata(**values)  # type: ignore[arg-type]
-
-
-def test_1_3_has_the_1_2_physical_columns() -> None:
-    assert CANONICAL_HAZARD_SCHEMA_VERSION == "1.3"
-    assert hazard_fields_for_version("1.3") == hazard_fields_for_version("1.2")
 
 
 def test_1_3_round_trips_every_new_field() -> None:
@@ -67,22 +59,6 @@ def test_1_3_round_trips_every_new_field() -> None:
         restored.temporal_window is not None
         and restored.temporal_window.horizon == 2050
     )
-
-
-def test_existing_1_2_metadata_reads_unchanged() -> None:
-    legacy = json.loads(_metadata(schema_version="1.2").to_json_bytes())
-    for key in (
-        "probability_semantics",
-        "source_return_period_convention",
-        "temporal_window",
-        "ensemble",
-    ):
-        del legacy[key]
-    for key in ("licence", "attribution", "retrieved_at", "checksum"):
-        del legacy["source"][key]
-    restored = HazardDatasetMetadata.model_validate_json(json.dumps(legacy))
-    assert restored.schema_version == "1.2"
-    assert restored.temporal_window is None and restored.ensemble is None
 
 
 def test_new_fields_require_schema_1_3() -> None:

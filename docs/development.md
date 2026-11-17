@@ -4,8 +4,15 @@
 
 ## Setup and checks
 
+Development resolves `crc-framework` from the sibling checkout
+`../crc-framework-rs`. Check out the matching framework source there before
+installing the SDK environment. The `tool.uv.sources` entry is a development
+source override only; built SDK wheels retain the declared
+`crc-framework>=1.0.0,<2` dependency and do not contain a filesystem dependency.
+
 ```sh
-uv sync --all-extras
+uv sync --locked --all-extras
+uv run python tools/api_contracts/check.py
 uv run pytest
 uv run mypy
 uv run ruff check .
@@ -26,26 +33,37 @@ Tests are offline by default. Opt-in live checks:
   canonical metadata or its cache manifest.
 - Numerical algorithms belong in [crc-framework](https://github.com/RiskThinking/crc-framework-rs);
   this package handles data access, orchestration and contracts.
+- The [Python interface contract](api-reference.md) is authoritative. Remove
+  superseded interfaces rather than retaining aliases, deprecated wrappers, or
+  historical parser paths. Framework types have their canonical imports in
+  `crc_framework`.
+- Closed library choices use enums; user identifiers and data names remain
+  open. Ordinary workflows require no preparation gate or invented metadata.
 
 ## CI
 
 `.github/workflows/ci.yml` runs on pushes to `main` and pull requests:
 
 - lint on Python 3.12: `ruff check`, `ruff format --check` and `mypy`;
-- tests on Python 3.11–3.14 with the locked dependencies (3.14 is
+- tests on Python 3.11–3.14 with the locked dependencies and paired framework
+  source (3.14 is
   non-blocking while native wheels catch up);
-- tests against the minimum supported crc-framework;
-- a clean install of the built wheel, plus a Windows job.
+- paired editable and wheel installation checks;
+- clean installs of the built SDK and framework wheels, plus a Windows job.
 
 ## Releases
 
-1. Bump `version` in `pyproject.toml` (and the `crc-framework` range if
-   needed); run `uv lock`.
+1. Apply the package and schema versions from
+   `crc_sdk/contracts/api/release.json` to `pyproject.toml`, generated contracts,
+   lockfiles, and release checks. Superseded unshipped definitions are replaced
+   in place; their existence is not a reason for an additional version bump.
+   Run `uv lock` after changing dependencies.
 2. Merge, then create a GitHub release with tag `v<version>` (for example
    `v1.0.0` or `v1.1.0a1`). Prerelease tags are marked automatically.
 3. `release.yaml` reruns CI, checks the tag matches the package version, builds
-   one universal wheel and an sdist, attaches them to the release and publishes
-   to PyPI.
+   one universal wheel and an sdist, and requires
+   `tools/api_contracts/check.py --runtime` against the installed wheel before
+   publication. Declaration checks do not prove the implementation is complete.
 
 ## Contributor credits
 

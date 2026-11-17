@@ -12,6 +12,8 @@ jobs:
     uses: ./.github/workflows/ci.yml
     permissions:
       contents: read
+    secrets:
+      CRC_COMPAT_TOKEN: ${{ secrets.CRC_COMPAT_TOKEN }}
 
   deploy:
     name: Release
@@ -35,11 +37,20 @@ jobs:
           uv run --no-project --python 3.12 python -c 'import os, tomllib; version=tomllib.load(open("pyproject.toml", "rb"))["project"]["version"]; expected="v" + version; actual=os.environ["RELEASE_REF_NAME"]; assert os.environ["RELEASE_REF_TYPE"] == "tag" and actual == expected, f"Release must run from tag {expected}; got {actual}"'
 
       - name: Build
-        run: uv build
+        run: uv build --no-sources
 
       - name: Verify release distributions
         run: |
           uv run --no-project --python 3.12 python -c 'from pathlib import Path; wheels=list(Path("dist").glob("*-py3-none-any.whl")); sdists=list(Path("dist").glob("*.tar.gz")); assert len(wheels) == 1 and len(sdists) == 1, "Expected one universal wheel and one source distribution"; print("Release distributions:", *wheels, *sdists)'
+
+      - name: Install release wheel with its published framework dependency
+        run: |
+          uv venv --python 3.12 "$RUNNER_TEMP/contract-venv"
+          uv pip install --python "$RUNNER_TEMP/contract-venv/bin/python" dist/*.whl
+
+      - name: Verify installed runtime before publication
+        working-directory: ${{ runner.temp }}
+        run: '"$RUNNER_TEMP/contract-venv/bin/python" -I "$GITHUB_WORKSPACE/tools/api_contracts/check.py" --runtime'
 
       - name: Determine prerelease
         id: prerelease
