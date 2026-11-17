@@ -19,6 +19,10 @@ classifiers = [
 dependencies = [
     "crc-framework>=1.0.0,<2",
     "pydantic>=2,<3",
+    "jsonschema>=4.18,<5",
+    "rfc3339-validator>=0.1.4",
+    "h3>=4.2",
+    "shapely>=2",
     "duckdb>=1,<2",
     "pyarrow>=14",
     "psutil>=5",
@@ -52,11 +56,8 @@ netcdf = [
     "h5netcdf>=1.3",
     "h5py>=3",
 ]
-geometry = [
-    "h3>=4.2",
-    "shapely>=2",
-]
 test = [
+    "types-jsonschema",
     "mypy>=1.10",
     "pytest>=8",
     "ruff>=0.5",
@@ -67,7 +68,13 @@ where = ["."]
 include = ["crc_sdk*"]
 
 [tool.setuptools.package-data]
-crc_sdk = ["py.typed", "contracts/api/*.json"]
+crc_sdk = [
+    "py.typed",
+    "contracts/api/*.json",
+    "contracts/schemas/*.json",
+    "contracts/fixtures/*.json",
+    "contracts/taxonomy/*.json",
+]
 
 [tool.uv.sources]
 crc-framework = { path = "../crc-framework-rs", editable = true }

@@ -1,0 +1,200 @@
+{
+  "schema_version": "1.0",
+  "accepted": [
+    {
+      "name": "open-empty",
+      "document": {
+        "namespace": "customer",
+        "presets": {},
+        "revision": "v1",
+        "scenarios": [],
+        "schema_version": "1.0",
+        "variables": []
+      }
+    },
+    {
+      "name": "custom-science",
+      "document": {
+        "namespace": "customer",
+        "presets": {
+          "censored": {
+            "censor_location": 0,
+            "constraints": null,
+            "family": "genextreme",
+            "kind": "censored_quantiles",
+            "minimum_knots": 4,
+            "residual_scale_floor_ratio": 0.001
+          },
+          "hurdle": {
+            "atom_location": 0.0,
+            "atom_probability": 0.5,
+            "constraints": null,
+            "family": "gumbel_r",
+            "kind": "hurdle_quantiles",
+            "minimum_knots": 4
+          },
+          "quantiles": {
+            "constraints": null,
+            "family": "gumbel_r",
+            "kind": "quantiles",
+            "minimum_knots": 4,
+            "weights": null
+          },
+          "sample": {
+            "constraints": null,
+            "estimator": "mle",
+            "fallbacks": [],
+            "family": "gumbel_r",
+            "kind": "samples",
+            "minimum_samples": 3
+          },
+          "selection": {
+            "candidates": [
+              {
+                "constraints": null,
+                "estimator": "mle",
+                "fallbacks": [],
+                "family": "gumbel_r",
+                "kind": "samples",
+                "minimum_samples": 3
+              },
+              {
+                "constraints": null,
+                "estimator": "mle",
+                "fallbacks": [],
+                "family": "gumbel_l",
+                "kind": "samples",
+                "minimum_samples": 3
+              }
+            ],
+            "criterion": "ks",
+            "kind": "model_selection"
+          }
+        },
+        "revision": "v1",
+        "scenarios": [
+          {
+            "definition": {
+              "delta": 1.5
+            },
+            "id": "custom scenario"
+          }
+        ],
+        "schema_version": "1.0",
+        "variables": [
+          {
+            "id": "用户:custom",
+            "measurement": {
+              "fields": {
+                "duration": 2
+              },
+              "kind": "measurement",
+              "quantity": "user quantity",
+              "unit": "user unit"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "rejected": [
+    {
+      "name": "historical-alias-table",
+      "document": {
+        "namespace": "customer",
+        "presets": {},
+        "revision": "v1",
+        "scenarios": [],
+        "schema_version": "1.0",
+        "variables": [],
+        "aliases": {}
+      }
+    },
+    {
+      "name": "unsupported-version",
+      "document": {
+        "namespace": "customer",
+        "presets": {},
+        "revision": "v1",
+        "scenarios": [],
+        "schema_version": "2.0",
+        "variables": []
+      }
+    },
+    {
+      "name": "boundary-whitespace",
+      "document": {
+        "namespace": " customer",
+        "presets": {},
+        "revision": "v1",
+        "scenarios": [],
+        "schema_version": "1.0",
+        "variables": []
+      }
+    },
+    {
+      "name": "unknown-variable-field",
+      "document": {
+        "namespace": "customer",
+        "presets": {},
+        "revision": "v1",
+        "scenarios": [],
+        "schema_version": "1.0",
+        "variables": [
+          {
+            "id": "v",
+            "hazard_name": "rx1day"
+          }
+        ]
+      }
+    },
+    {
+      "name": "unknown-scenario-field",
+      "document": {
+        "namespace": "customer",
+        "presets": {},
+        "revision": "v1",
+        "scenarios": [
+          {
+            "id": "s",
+            "pathway": "historical"
+          }
+        ],
+        "schema_version": "1.0",
+        "variables": []
+      }
+    },
+    {
+      "name": "irrelevant-null-label",
+      "document": {
+        "namespace": "customer",
+        "presets": {},
+        "revision": "v1",
+        "scenarios": [],
+        "schema_version": "1.0",
+        "variables": [
+          {
+            "id": "v",
+            "label": null
+          }
+        ]
+      }
+    },
+    {
+      "name": "unknown-fitting-family",
+      "document": {
+        "namespace": "customer",
+        "presets": {
+          "fit": {
+            "kind": "samples",
+            "family": "auto"
+          }
+        },
+        "revision": "v1",
+        "scenarios": [],
+        "schema_version": "1.0",
+        "variables": []
+      }
+    }
+  ]
+}

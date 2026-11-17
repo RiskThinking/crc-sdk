@@ -5,8 +5,8 @@ from typing import Any
 
 import pytest
 
-from crc_sdk.connectors.duckdb import connection as connection_module
-from crc_sdk.connectors.duckdb.connection import (
+from crc_sdk._connectors.duckdb import connection as connection_module
+from crc_sdk._connectors.duckdb.connection import (
     DuckDBConnection,
     RuntimeResources,
     _bytes_per_thread,

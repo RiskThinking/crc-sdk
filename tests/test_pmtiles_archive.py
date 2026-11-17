@@ -4,9 +4,9 @@ from pathlib import Path
 import duckdb
 import pytest
 
-import crc_sdk.geometry.pmtiles._build as crc_sdk_build
-from crc_sdk.geometry.pmtiles import POINTS, POLYGONS, PMTilesBuild
-from crc_sdk.geometry.pmtiles.budget import TilingBudget, check_tiling_budget
+import crc_sdk._geometry.pmtiles._build as crc_sdk_build
+from crc_sdk._geometry.pmtiles import POINTS, POLYGONS, PMTilesBuild
+from crc_sdk._geometry.pmtiles.budget import TilingBudget, check_tiling_budget
 
 pytestmark = pytest.mark.skipif(
     shutil.which("tippecanoe") is None,
@@ -194,7 +194,7 @@ def test_write_raises_before_spawning_tippecanoe_when_budget_is_exceeded(
         )
 
     monkeypatch.setattr(
-        "crc_sdk.geometry.pmtiles._build.TilingBudget.detect",
+        "crc_sdk._geometry.pmtiles._build.TilingBudget.detect",
         staticmethod(_tiny_budget),
     )
     with pytest.raises(ValueError, match="scratch disk"):
@@ -225,7 +225,7 @@ def test_with_resources_forwards_scratch_fraction_to_tiling_budget(
         return real_detect(*args, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(
-        "crc_sdk.geometry.pmtiles._build.TilingBudget.detect",
+        "crc_sdk._geometry.pmtiles._build.TilingBudget.detect",
         staticmethod(_capturing_detect),
     )
     (
@@ -283,7 +283,7 @@ def test_zooms_accepts_tuple_range_and_set(tmp_path: Path) -> None:
 
 
 def test_tippecanoe_threads_default_to_detected_cpu_count(tmp_path: Path) -> None:
-    from crc_sdk.connectors.duckdb import detected_cpu_count
+    from crc_sdk._connectors.duckdb import detected_cpu_count
 
     source = tmp_path / "points.parquet"
     _write_points(source, count=3)

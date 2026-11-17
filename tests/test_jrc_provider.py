@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from crc_sdk.providers.jrc import EFAS, GLOFAS, JRCProvider, JRCRasterDataset
+from crc_sdk._providers.jrc import EFAS, GLOFAS, JRCProvider, JRCRasterDataset
 
 _FAKE_TILE_INDEX = {
     "features": [
@@ -83,7 +83,7 @@ def test_dataset_rejects_empty_fields() -> None:
 def test_tiles_for_resolves_intersecting_tiles_only(tmp_path: Path) -> None:
     provider = JRCProvider(GLOFAS, work_dir=tmp_path)
     with (
-        patch("crc_sdk.providers.jrc.urlopen") as mock_urlopen,
+        patch("crc_sdk._providers.jrc.urlopen") as mock_urlopen,
         patch("json.load", return_value=_FAKE_TILE_INDEX),
     ):
         mock_urlopen.return_value.__enter__.return_value = object()
@@ -97,7 +97,7 @@ def test_tiles_for_resolves_intersecting_tiles_only(tmp_path: Path) -> None:
 def test_tile_index_is_fetched_once_and_cached(tmp_path: Path) -> None:
     provider = JRCProvider(GLOFAS, work_dir=tmp_path)
     with (
-        patch("crc_sdk.providers.jrc.urlopen") as mock_urlopen,
+        patch("crc_sdk._providers.jrc.urlopen") as mock_urlopen,
         patch("json.load", return_value=_FAKE_TILE_INDEX),
     ):
         mock_urlopen.return_value.__enter__.return_value = object()
@@ -122,7 +122,7 @@ def test_continental_aoi_is_one_resource_without_tile_index(tmp_path: Path) -> N
 
 def test_latest_version_is_read_from_release_readme(tmp_path: Path) -> None:
     provider = JRCProvider(EFAS, work_dir=tmp_path)
-    response = patch("crc_sdk.providers.jrc.urlopen")
+    response = patch("crc_sdk._providers.jrc.urlopen")
     with response as mock_urlopen:
         mock_urlopen.return_value.__enter__.return_value.read.return_value = (
             b"G01. Dataset version 3.1.1\n"

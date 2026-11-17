@@ -5,8 +5,8 @@ from typing import Any
 import numpy as np
 import pytest
 
-from crc_sdk.connectors.agriculture import FTWFields, USDACropland
-from crc_sdk.connectors.duckdb import DuckDBConnection
+from crc_sdk._connectors.agriculture import FTWFields, USDACropland
+from crc_sdk._connectors.duckdb import DuckDBConnection
 
 
 class _Array:
@@ -53,7 +53,7 @@ def test_usda_cdl_reads_only_selected_aoi_years_in_batches(
         "y": _Array([2.5, 1.5, 0.5]),
     }
     monkeypatch.setattr(
-        "crc_sdk.connectors.agriculture._open_cdl_group",
+        "crc_sdk._connectors.agriculture._open_cdl_group",
         lambda _: (group, object(), object(), _Pyproj(), object()),
     )
     scan = (
@@ -98,7 +98,7 @@ def test_usda_explicit_background_class_is_retained(
         "y": _Array([2.5, 1.5, 0.5]),
     }
     monkeypatch.setattr(
-        "crc_sdk.connectors.agriculture._open_cdl_group",
+        "crc_sdk._connectors.agriculture._open_cdl_group",
         lambda _: (group, object(), object(), _Pyproj(), object()),
     )
     scan = (

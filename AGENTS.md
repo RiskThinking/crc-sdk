@@ -16,9 +16,10 @@ Numerical algorithms live in the `crc-framework` dependency
 
 ## Layout
 
-`crc_sdk/workflows` (user-facing plans) → `providers` (discovery, licences) →
-`connectors` (format readers, canonical I/O, DuckDB) → `fitting`, `impacts`,
-`geometry`, `types`, `schema`. Tests mirror modules under `tests/`.
+`_declarations` and `_catalog` define science and exact identity. `_dataset_schema`
+and `_schema` validate artifact metadata, canonical rows, Arrow and Parquet.
+`_providers`, `_connectors`, and `_geometry` contain private source-decoding and
+spatial algorithms. Canonical public imports live at `crc_sdk`.
 
 ## Checks
 

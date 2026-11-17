@@ -369,7 +369,10 @@
       "members": {
         "GREGORIAN": "gregorian",
         "NO_LEAP": "no_leap",
-        "DAYS_360": "360_day"
+        "DAYS_360": "360_day",
+        "ALL_LEAP": "all_leap",
+        "JULIAN": "julian",
+        "PROLEPTIC_GREGORIAN": "proleptic_gregorian"
       }
     },
     "CanonicalReader": {
@@ -435,13 +438,17 @@
             "name": "variables",
             "kind": "keyword_only",
             "annotation": "Sequence[Variable]",
-            "default": []
+            "default": {
+              "tuple": []
+            }
           },
           {
             "name": "scenarios",
             "kind": "keyword_only",
             "annotation": "Sequence[Scenario]",
-            "default": []
+            "default": {
+              "tuple": []
+            }
           },
           {
             "name": "presets",
@@ -517,7 +524,10 @@
       "properties": {
         "namespace": "str",
         "revision": "str",
-        "sha256": "str"
+        "sha256": "str",
+        "variables": "tuple[Variable, ...]",
+        "scenarios": "tuple[Scenario, ...]",
+        "presets": "Mapping[str, crc_framework.FitSpec]"
       }
     },
     "CellColumn": {
@@ -610,13 +620,17 @@
             "name": "scenarios",
             "kind": "keyword_only",
             "annotation": "Sequence[Scenario]",
-            "default": []
+            "default": {
+              "tuple": []
+            }
           },
           {
             "name": "periods",
             "kind": "keyword_only",
             "annotation": "Sequence[Period]",
-            "default": []
+            "default": {
+              "tuple": []
+            }
           }
         ],
         "returns": "Self"
@@ -1182,21 +1196,29 @@
       "kind": "class",
       "properties": {
         "schema_version": "str",
+        "spec": "DataSpec",
+        "spatial": "SpatialContract",
         "source": "SourceIdentity | None",
-        "report": "ExecutionReport"
-      }
-    },
-    "Diagnostic": {
-      "kind": "class",
-      "properties": {
-        "code": "str",
-        "severity": "Severity",
-        "stage": "Stage",
-        "message": "str",
-        "source": "str | None",
-        "support_id": "str | None",
-        "query_value": "float | None",
-        "remedy": "str | None"
+        "report": "ExecutionReport",
+        "provenance": "tuple[UnitConversion | IdentityRename, ...]"
+      },
+      "methods": {
+        "to_json": {
+          "parameters": [],
+          "returns": "str",
+          "binding": "instance"
+        },
+        "from_json": {
+          "parameters": [
+            {
+              "name": "text",
+              "kind": "positional_or_keyword",
+              "annotation": "str"
+            }
+          ],
+          "returns": "DatasetMetadata",
+          "binding": "class"
+        }
       }
     },
     "Distance": {
@@ -1726,12 +1748,25 @@
         "incomplete_years": "int"
       }
     },
+    "ExecutionDiagnostic": {
+      "kind": "class",
+      "properties": {
+        "code": "str",
+        "severity": "crc_framework.DiagnosticSeverity",
+        "stage": "Stage",
+        "message": "str",
+        "source": "str | None",
+        "support_id": "str | None",
+        "query_value": "float | None",
+        "remedy": "str | None"
+      }
+    },
     "ExecutionReport": {
       "kind": "class",
       "properties": {
         "complete": "bool",
         "valid": "bool | None",
-        "diagnostics": "tuple[Diagnostic, ...]",
+        "diagnostics": "tuple[ExecutionDiagnostic, ...]",
         "counts": "ExecutionCounts",
         "source_identities": "tuple[SourceIdentity, ...]"
       }
@@ -1884,6 +1919,20 @@
       "inherits": [
         "Samples"
       ]
+    },
+    "IdentityKind": {
+      "kind": "enum",
+      "members": {
+        "VARIABLE": "variable",
+        "SCENARIO": "scenario"
+      }
+    },
+    "IdentityRename": {
+      "kind": "class",
+      "properties": {
+        "dimension": "IdentityKind",
+        "mapping": "Mapping[str, str]"
+      }
     },
     "IndicatorReference": {
       "kind": "class",
@@ -3379,6 +3428,18 @@
             "annotation": "str"
           },
           {
+            "name": "definition",
+            "kind": "keyword_only",
+            "annotation": "Mapping[str, ScientificValue] | None",
+            "default": null
+          },
+          {
+            "name": "schema",
+            "kind": "keyword_only",
+            "annotation": "Mapping[str, ScientificValue] | None",
+            "default": null
+          },
+          {
             "name": "label",
             "kind": "keyword_only",
             "annotation": "str | None",
@@ -3389,7 +3450,9 @@
       },
       "properties": {
         "id": "str",
-        "label": "str | None"
+        "label": "str | None",
+        "definition": "Mapping[str, ScientificValue] | None",
+        "schema": "Mapping[str, ScientificValue] | None"
       }
     },
     "SeriesReference": {
@@ -3439,21 +3502,21 @@
         "probability": "Probability | None"
       }
     },
-    "Severity": {
-      "kind": "enum",
-      "members": {
-        "ERROR": "error",
-        "WARNING": "warning",
-        "INFO": "info"
-      }
-    },
     "SourceIdentity": {
       "kind": "class",
       "properties": {
         "provider": "str",
         "product": "str",
+        "member": "str | None",
         "release": "ReleaseReference | None",
         "resources": "tuple[ResourceIdentity, ...]"
+      }
+    },
+    "SpatialContract": {
+      "kind": "class",
+      "properties": {
+        "supports": "tuple[SupportKind, ...]",
+        "index_resolution": "int | None"
       }
     },
     "SpatialMatch": {
@@ -3502,6 +3565,14 @@
         "WRITING": "writing"
       }
     },
+    "SupportKind": {
+      "kind": "enum",
+      "members": {
+        "POINT": "point",
+        "POLYGON": "polygon",
+        "CELL": "cell"
+      }
+    },
     "USDACropland": {
       "kind": "class",
       "constructor": {
@@ -3535,6 +3606,16 @@
       "inherits": [
         "Observations"
       ]
+    },
+    "UnitConversion": {
+      "kind": "class",
+      "properties": {
+        "variable_id": "str",
+        "source_unit": "str",
+        "target_unit": "str",
+        "scale": "float",
+        "offset": "float"
+      }
     },
     "ValidationError": {
       "kind": "exception",
@@ -3581,6 +3662,17 @@
         "measurement": "crc_framework.Measurement | None",
         "label": "str | None"
       }
+    },
+    "scientific_identity": {
+      "kind": "function",
+      "parameters": [
+        {
+          "name": "value",
+          "kind": "positional_or_keyword",
+          "annotation": "Variable | Scenario | Period | Probability | SeriesSpec | crc_framework.Measurement"
+        }
+      ],
+      "returns": "str"
     }
   },
   "type_aliases": {
@@ -3595,7 +3687,8 @@
     "IdentifierSelector": "str | Sequence[str] | None",
     "Aggregation": "DailyTotal | AnnualMaximum | AnnualMinimum",
     "ArtifactMetadata": "DatasetMetadata | EvidenceMetadata | CollectionMetadata | EvaluationMetadata",
-    "PersistedArtifact": "Dataset | Samples | Observations | Projections | Layer | EvaluationArtifact | DatasetCollection"
+    "PersistedArtifact": "Dataset | Samples | Observations | Projections | Layer | EvaluationArtifact | DatasetCollection",
+    "ScientificValue": "None | bool | int | float | str | Sequence[ScientificValue] | Mapping[str, ScientificValue]"
   },
   "external_symbols": {
     "crc_framework": [
@@ -3622,7 +3715,8 @@
       "Tail",
       "TemperatureUnit",
       "TimeDuration",
-      "TimeUnit"
+      "TimeUnit",
+      "DiagnosticSeverity"
     ]
   },
   "external_modules": [
@@ -3710,7 +3804,9 @@
       "crc_sdk.types.HazardQuery",
       "crc_sdk.types.HazardDatasetMetadata",
       "crc_sdk.fitting.CDFCurveFitPolicy",
-      "crc_sdk.connectors.CurveFitIngestPolicy"
+      "crc_sdk.connectors.CurveFitIngestPolicy",
+      "crc_sdk.Diagnostic",
+      "crc_sdk.Severity"
     ],
     "modules": [
       "crc_sdk.api",

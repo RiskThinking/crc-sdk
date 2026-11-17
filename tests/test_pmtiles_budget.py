@@ -3,7 +3,7 @@ from pathlib import Path
 import duckdb
 import pytest
 
-from crc_sdk.geometry.pmtiles.budget import (
+from crc_sdk._geometry.pmtiles.budget import (
     DEFAULT_TEMP_TO_INPUT_FACTOR,
     TilingBudget,
     check_tiling_budget,
@@ -110,7 +110,7 @@ def _fix_free_disk(monkeypatch: pytest.MonkeyPatch, free_bytes: int) -> None:
     the wrong (small) size both a 25% and a 90% fraction floor to the same
     ``_MIN_SAFE_SCRATCH_BYTES``, masking any difference the fraction makes.
     """
-    import crc_sdk.geometry.pmtiles.budget as budget_module
+    import crc_sdk._geometry.pmtiles.budget as budget_module
 
     monkeypatch.setattr(budget_module, "_disk_free_bytes", lambda path: free_bytes)
 
@@ -141,7 +141,7 @@ def test_tiling_budget_detect_ignores_invalid_scratch_fraction_env_override(
 def test_tiling_budget_detect_uses_full_cpu_count_by_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from crc_sdk.connectors.duckdb import detected_cpu_count
+    from crc_sdk._connectors.duckdb import detected_cpu_count
 
     monkeypatch.delenv("CRC_TIPPECANOE_THREADS", raising=False)
     monkeypatch.delenv("CRC_DUCKDB_THREADS", raising=False)

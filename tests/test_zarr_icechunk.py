@@ -7,7 +7,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from crc_sdk.connectors.duckdb.zarr import RasterMetadata, ZarrRaster
+from crc_sdk._connectors.duckdb.zarr import RasterMetadata, ZarrRaster
 
 icechunk = pytest.importorskip("icechunk")
 zarr = pytest.importorskip("zarr")

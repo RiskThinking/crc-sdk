@@ -8,9 +8,8 @@ import pytest
 import rasterio  # type: ignore[import-untyped]
 from rasterio.transform import from_origin  # type: ignore[import-untyped]
 
-from crc_sdk.connectors import HurdleFitPolicy, JRCIngestPolicy, canonicalize_jrc_flood
-from crc_sdk.connectors.duckdb.geotiff import JRCReturnPeriodRaster
-from crc_sdk.connectors.duckdb.zarr import RasterMetadata
+from crc_sdk._connectors.duckdb.geotiff import JRCReturnPeriodRaster
+from crc_sdk._connectors.duckdb.zarr import RasterMetadata
 
 # One row, two columns: column 0 is flat/unfittable (constant across every
 # return period, like a pixel that never floods within the tile), column 1
@@ -89,69 +88,3 @@ class _ReadSpy:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._dataset, name)
-
-
-def test_iter_curves_is_lazy_until_consumed(tmp_path: Path) -> None:
-    urls = _write_tile(tmp_path)
-    source = JRCReturnPeriodRaster.open(urls, _metadata())
-    try:
-        read_calls = {period: 0 for period in _RETURN_PERIODS}
-        for period, raster in source._rasters.items():
-            real_dataset = raster._dataset
-            raster._dataset = _ReadSpy(real_dataset, read_calls, period)
-
-        policy = JRCIngestPolicy(
-            h3_resolution=9,
-            family="gumbel_r",
-            producer="tests",
-            creation_version="1",
-            on_fit_failure="skip",
-        )
-        stream = canonicalize_jrc_flood(source, policy)
-        assert all(count == 0 for count in read_calls.values())
-
-        table = stream.read_all()
-        assert table.num_rows > 0
-        assert any(count > 0 for count in read_calls.values())
-    finally:
-        source.close()
-
-
-def test_canonicalize_jrc_flood_fits_hurdle_curve(tmp_path: Path) -> None:
-    urls = _write_tile(tmp_path)
-    with JRCReturnPeriodRaster.open(urls, _metadata()) as source:
-        policy = JRCIngestPolicy(
-            h3_resolution=9,
-            family="gumbel_r",
-            producer="tests",
-            creation_version="1",
-            hurdle=HurdleFitPolicy(atom_probability=0.5, atom_location=0.0),
-            on_fit_failure="skip",
-        )
-        table = canonicalize_jrc_flood(source, policy).read_all()
-
-    assert table.num_rows > 0
-    assert set(table["curve_kind"].to_pylist()) == {"hurdle"}
-    assert set(table["hazard_name"].to_pylist()) == {"RiverineInundation"}
-    assert set(table["pathway"].to_pylist()) == {"historical"}
-    # The flat/all-zero pixel has zero variance and should not survive the fit.
-    assert len(set(table["source_id"].to_pylist())) == 1
-
-
-def test_on_fit_failure_raise_aborts_on_constant_pixel(tmp_path: Path) -> None:
-    urls = _write_tile(tmp_path)
-    with JRCReturnPeriodRaster.open(urls, _metadata()) as source:
-        policy = JRCIngestPolicy(
-            h3_resolution=9,
-            family="gumbel_r",
-            producer="tests",
-            creation_version="1",
-        )
-        with pytest.raises(ValueError, match="failed to fit source pixel"):
-            canonicalize_jrc_flood(source, policy).read_all()
-
-
-def test_jrc_ingest_policy_is_curve_fit_ingest_policy() -> None:
-    from crc_sdk.connectors import CurveFitIngestPolicy
-
-    assert JRCIngestPolicy is CurveFitIngestPolicy

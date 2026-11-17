@@ -5,8 +5,8 @@ from typing import Any
 import duckdb
 import pytest
 
-from crc_sdk.connectors.duckdb.connection import fetch_one_row
-from crc_sdk.geometry.pmtiles._geojson_sql import (
+from crc_sdk._connectors.duckdb.connection import fetch_one_row
+from crc_sdk._geometry.pmtiles._geojson_sql import (
     LayerSource,
     build_combined_query,
     build_layer_query,
@@ -118,7 +118,7 @@ def test_build_layer_query_reprojects_the_cast_expression_not_the_raw_column(
     non-native column; ``geo_metadata`` is mocked only to supply the CRS
     that column's own file doesn't carry.
     """
-    import crc_sdk.geometry.pmtiles._geojson_sql as geojson_sql
+    import crc_sdk._geometry.pmtiles._geojson_sql as geojson_sql
 
     con = _connection()
     path = tmp_path / "utm.parquet"
