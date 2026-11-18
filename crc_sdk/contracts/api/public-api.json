@@ -704,6 +704,50 @@
         "name": "str"
       }
     },
+    "ContextualImpact": {
+      "kind": "class",
+      "constructor": {
+        "parameters": [
+          {
+            "name": "cases",
+            "kind": "positional_or_keyword",
+            "annotation": "Sequence[tuple[ResponseContext, crc_framework.Impact]]"
+          }
+        ],
+        "returns": "Self"
+      },
+      "methods": {
+        "from_json": {
+          "parameters": [
+            {
+              "name": "text",
+              "kind": "positional_or_keyword",
+              "annotation": "str"
+            }
+          ],
+          "returns": "ContextualImpact",
+          "binding": "class"
+        },
+        "resolve": {
+          "parameters": [
+            {
+              "name": "context",
+              "kind": "positional_or_keyword",
+              "annotation": "ResponseContext"
+            }
+          ],
+          "returns": "crc_framework.Impact"
+        },
+        "to_json": {
+          "parameters": [],
+          "returns": "str"
+        }
+      },
+      "properties": {
+        "requirements": "crc_framework.ImpactRequirements",
+        "sha256": "str"
+      }
+    },
     "Coverage": {
       "kind": "class",
       "methods": {
@@ -886,7 +930,7 @@
               "default": null
             }
           ],
-          "returns": "Execution[DatasetMetadata]"
+          "returns": "Execution[DatasetMetadata, Dataset]"
         },
         "open": {
           "parameters": [
@@ -1107,7 +1151,8 @@
             {
               "name": "probability",
               "kind": "keyword_only",
-              "annotation": "Probability"
+              "annotation": "Probability | None",
+              "default": null
             },
             {
               "name": "scenario",
@@ -1243,7 +1288,7 @@
               "default": null
             }
           ],
-          "returns": "Execution[CollectionMetadata]"
+          "returns": "Execution[CollectionMetadata, DatasetCollection]"
         },
         "open": {
           "parameters": [
@@ -1657,7 +1702,7 @@
               "default": null
             }
           ],
-          "returns": "Execution[EvaluationMetadata]"
+          "returns": "Execution[EvaluationMetadata, EvaluationArtifact]"
         },
         "select": {
           "parameters": [
@@ -1750,7 +1795,7 @@
             {
               "name": "model",
               "kind": "positional_or_keyword",
-              "annotation": "crc_framework.Impact | crc_framework.ImpactReference"
+              "annotation": "crc_framework.Impact | crc_framework.ImpactReference | ContextualImpact"
             },
             {
               "name": "variable",
@@ -1970,6 +2015,12 @@
             "name": "asset_ids",
             "kind": "keyword_only",
             "annotation": "tuple[str | int, ...]"
+          },
+          {
+            "name": "context",
+            "kind": "keyword_only",
+            "annotation": "crc_framework.ImpactContext | None",
+            "default": null
           }
         ],
         "returns": "Self"
@@ -1978,6 +2029,7 @@
         "response_id": "str",
         "impact": "crc_framework.Impact",
         "asset_ids": "tuple[str | int, ...]",
+        "context": "crc_framework.ImpactContext | None",
         "id": "str"
       }
     },
@@ -1998,7 +2050,7 @@
           {
             "name": "model",
             "kind": "positional_or_keyword",
-            "annotation": "crc_framework.Impact | crc_framework.ImpactReference"
+            "annotation": "crc_framework.Impact | crc_framework.ImpactReference | ContextualImpact"
           },
           {
             "name": "context",
@@ -2012,7 +2064,7 @@
       "properties": {
         "name": "str",
         "variable_id": "str",
-        "model": "crc_framework.Impact | crc_framework.ImpactReference",
+        "model": "crc_framework.Impact | crc_framework.ImpactReference | ContextualImpact",
         "context": "crc_framework.ImpactContext | None",
         "output": "crc_framework.Measurement"
       }
@@ -2098,7 +2150,7 @@
               "default": false
             }
           ],
-          "returns": "PersistedArtifact"
+          "returns": "ArtifactT"
         },
         "validate": {
           "parameters": [],
@@ -2133,7 +2185,8 @@
         "report": "ExecutionReport"
       },
       "generic_parameters": [
-        "MetadataT"
+        "MetadataT",
+        "ArtifactT"
       ]
     },
     "ExecutionCounts": {
@@ -2552,7 +2605,7 @@
               "default": null
             }
           ],
-          "returns": "Execution[EvidenceMetadata[Literal[EvidenceKind.LAYER]]]"
+          "returns": "Execution[EvidenceMetadata[Literal[EvidenceKind.LAYER]], Layer]"
         },
         "open": {
           "parameters": [
@@ -3033,7 +3086,7 @@
               "default": null
             }
           ],
-          "returns": "Execution[EvidenceMetadata[Literal[EvidenceKind.OBSERVATIONS]]]"
+          "returns": "Execution[EvidenceMetadata[Literal[EvidenceKind.OBSERVATIONS]], Observations]"
         },
         "open": {
           "parameters": [
@@ -3572,7 +3625,7 @@
               "default": null
             }
           ],
-          "returns": "Execution[EvidenceMetadata[Literal[EvidenceKind.PROJECTIONS]]]"
+          "returns": "Execution[EvidenceMetadata[Literal[EvidenceKind.PROJECTIONS]], Projections]"
         },
         "open": {
           "parameters": [
@@ -3949,6 +4002,29 @@
         "retrieved_at": "datetime.datetime | None"
       }
     },
+    "ResponseContext": {
+      "kind": "class",
+      "methods": {
+        "from_json": {
+          "parameters": [
+            {
+              "name": "text",
+              "kind": "positional_or_keyword",
+              "annotation": "str"
+            }
+          ],
+          "returns": "ResponseContext",
+          "binding": "class"
+        },
+        "to_json": {
+          "parameters": [],
+          "returns": "str"
+        }
+      },
+      "properties": {
+        "schema": "Mapping[str, ScientificValue]"
+      }
+    },
     "Runtime": {
       "kind": "class",
       "constructor": {
@@ -4100,7 +4176,7 @@
               "default": null
             }
           ],
-          "returns": "Execution[EvidenceMetadata[Literal[EvidenceKind.SAMPLES]]]"
+          "returns": "Execution[EvidenceMetadata[Literal[EvidenceKind.SAMPLES]], Samples]"
         },
         "open": {
           "parameters": [
@@ -4395,7 +4471,9 @@
         "period": "Period | None",
         "measurement": "crc_framework.Measurement | None",
         "release": "ReleaseReference | None",
-        "probability": "Probability | None"
+        "probability": "Probability | None",
+        "model": "str | None",
+        "member": "str | None"
       }
     },
     "SeriesSpec": {
@@ -4441,6 +4519,7 @@
         "provider": "str",
         "product": "str",
         "member": "str | None",
+        "model": "str | None",
         "release": "ReleaseReference | None",
         "resources": "tuple[ResourceIdentity, ...]"
       }
@@ -4456,7 +4535,14 @@
       "kind": "class",
       "methods": {
         "covering": {
-          "parameters": [],
+          "parameters": [
+            {
+              "name": "preferred_supports",
+              "kind": "keyword_only",
+              "annotation": "Sequence[str]",
+              "default": {"tuple": []}
+            }
+          ],
           "returns": "SpatialMatch",
           "binding": "class"
         },
@@ -4474,7 +4560,8 @@
       },
       "properties": {
         "kind": "SpatialMatchKind",
-        "max_distance": "Distance | None"
+        "max_distance": "Distance | None",
+        "preferred_supports": "tuple[str, ...]"
       }
     },
     "SpatialMatchKind": {
@@ -4811,7 +4898,6 @@
     "IdentifierSelector": "str | Sequence[str] | None",
     "Aggregation": "DailyTotal | AnnualMaximum | AnnualMinimum",
     "ArtifactMetadata": "DatasetMetadata | EvidenceMetadata | CollectionMetadata | EvaluationMetadata",
-    "PersistedArtifact": "Dataset | Samples | Observations | Projections | Layer | EvaluationArtifact | DatasetCollection",
     "ScientificValue": "None | bool | int | float | str | Sequence[ScientificValue] | Mapping[str, ScientificValue]",
     "Unit": "crc_framework.LengthUnit | crc_framework.TimeUnit | crc_framework.RatioUnit | crc_framework.TemperatureUnit | crc_framework.SpeedUnit | crc_framework.PrecipitationRateUnit | crc_framework.DegreeDayUnit",
     "Transformation": "UnitConversion | IdentityRename | ObservationTimeSelection | TemporalReduction",
@@ -4828,6 +4914,7 @@
       "Impact",
       "ImpactContext",
       "ImpactReference",
+      "ImpactRequirements",
       "InundationContext",
       "LengthUnit",
       "Measurement",
@@ -4877,6 +4964,7 @@
   },
   "generic_parameters": [
     "MetadataT",
+    "ArtifactT",
     "KindT"
   ],
   "opaque_native_types": [

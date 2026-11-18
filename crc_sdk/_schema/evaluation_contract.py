@@ -38,6 +38,20 @@ def evaluation_json_schema() -> dict[str, object]:
     def science_ref(name: str) -> dict[str, object]:
         return {"$ref": _SCIENCE + name + ".schema.json"}
 
+    def response_context(value: object) -> dict[str, object]:
+        return _record(
+            {
+                "kind": {"const": "response_context"},
+                "values": {
+                    "type": "object",
+                    "minProperties": 1,
+                    "propertyNames": identifier,
+                    "additionalProperties": value,
+                },
+            },
+            ["kind", "values"],
+        )
+
     definitions: dict[str, object] = {
         "query": {
             "oneOf": [
@@ -53,25 +67,56 @@ def evaluation_json_schema() -> dict[str, object]:
             },
             ["member_id", "resource_id", "metadata"],
         ),
-        "response": _record(
-            {
-                "name": identifier,
-                "variable_id": identifier,
-                "model": {
-                    "oneOf": [
-                        science_ref("impact-2.0"),
-                        science_ref("impact-reference-2.0"),
-                    ]
-                },
-                "context": science_ref("impact-context-1.0"),
-            },
-            ["name", "variable_id", "model"],
+        "case_context": response_context(identifier),
+        "response_context": response_context(
+            {"anyOf": [identifier, _record({"column": identifier}, ["column"])]}
         ),
+        "contextual_impact": _record(
+            {
+                "kind": {"const": "contextual"},
+                "cases": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": _record(
+                        {
+                            "context": {"$ref": "#/$defs/case_context"},
+                            "impact": science_ref("impact-2.0"),
+                        },
+                        ["context", "impact"],
+                    ),
+                },
+            },
+            ["kind", "cases"],
+        ),
+        "response": {
+            **_record(
+                {
+                    "name": identifier,
+                    "variable_id": identifier,
+                    "model": {
+                        "oneOf": [
+                            science_ref("impact-2.0"),
+                            science_ref("impact-reference-2.0"),
+                            {"$ref": "#/$defs/contextual_impact"},
+                        ]
+                    },
+                    "context": {"type": "object"},
+                },
+                ["name", "variable_id", "model"],
+            ),
+            "if": {"properties": {"model": {"$ref": "#/$defs/contextual_impact"}}},
+            "then": {
+                "required": ["context"],
+                "properties": {"context": {"$ref": "#/$defs/response_context"}},
+            },
+            "else": {"properties": {"context": science_ref("impact-context-1.0")}},
+        },
         "resolution": _record(
             {
                 "id": digest,
                 "response_id": identifier,
                 "impact": science_ref("impact-2.0"),
+                "context": {"$ref": "#/$defs/case_context"},
                 "asset_ids": {
                     "type": "array",
                     "minItems": 1,
@@ -83,7 +128,18 @@ def evaluation_json_schema() -> dict[str, object]:
         ),
         "spatial": {
             "oneOf": [
-                _record({"kind": {"const": "covering"}}, ["kind"]),
+                _record(
+                    {
+                        "kind": {"const": "covering"},
+                        "preferred_supports": {
+                            "type": "array",
+                            "items": identifier,
+                            "minItems": 1,
+                            "uniqueItems": True,
+                        },
+                    },
+                    ["kind"],
+                ),
                 _record(
                     {
                         "kind": {"const": "nearest"},

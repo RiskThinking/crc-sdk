@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import math
 import sqlite3
 from collections.abc import Iterable, Mapping
@@ -11,11 +12,12 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, TypeAlias, cast
+from typing import TypeAlias, cast
 
 import crc_framework as cf
 import pyarrow as pa  # type: ignore[import-untyped]
 
+from ._contextual_impact import ContextualImpact, ResponseContext
 from ._dataset_schema import (
     DatasetMetadata,
     ExecutionReport,
@@ -42,17 +44,23 @@ from ._declarations import (
     scientific_identity,
 )
 from ._errors import CapabilityError
-from ._evaluation_responses import bind_response, response_context
+from ._evaluation_responses import (
+    Model,
+    _wire_context_values,
+    bind_response,
+    response_context,
+)
+from ._evaluation_spatial import (
+    SpatialMatch,
+    SpatialMatchKind,
+    spatial_match_from_document,
+)
 from ._selection import SeriesKey, _series_key
-
-if TYPE_CHECKING:
-    from ._evaluation_spatial import SpatialMatch
 
 _METADATA_KEY = b"crc.evaluation"
 AssetId: TypeAlias = str | int
 _SourceKey: TypeAlias = tuple[str | None, str | None]
 _EvaluationSeries: TypeAlias = tuple[str | None, SeriesKey]
-_Model: TypeAlias = cf.Impact | cf.ImpactReference
 
 _UNMATCHED = frozenset({"no_covering_support", "outside_max_distance"})
 
@@ -162,7 +170,7 @@ class EvaluationResponse:
 
     name: str
     variable_id: str
-    model: cf.Impact | cf.ImpactReference
+    model: cf.Impact | cf.ImpactReference | ContextualImpact
     context: cf.ImpactContext | None = None
 
     def __post_init__(self) -> None:
@@ -201,6 +209,7 @@ class EvaluationResolution:
     response_id: str
     impact: cf.Impact
     asset_ids: tuple[str | int, ...] = field(kw_only=True)
+    context: cf.ImpactContext | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         _identifier(self.response_id, "response_id")
@@ -211,10 +220,34 @@ class EvaluationResolution:
         ids = tuple(_asset_id(item) for item in self.asset_ids)
         if not ids or len(set(ids)) != len(ids):
             raise ValueError("resolution requires nonempty, unique asset IDs")
+        configured = self.context
+        if configured is not None and not isinstance(configured, cf.ImpactContext):
+            raise TypeError("resolution context requires an ImpactContext")
+        if isinstance(configured, ResponseContext):
+            actual: cf.ImpactContext | None = ResponseContext.from_json(
+                configured.to_json()
+            )
+        else:
+            provenance = _load(self.impact.to_json()).get("provenance")
+            actual = (
+                None
+                if provenance is None
+                else cf.ImpactContext.from_json(
+                    _dump(_object(provenance, {"model", "context"})["context"])
+                )
+            )
+            if configured is not None and (
+                actual is None or configured.to_json() != actual.to_json()
+            ):
+                raise ValueError("resolution context contradicts the framework Impact")
+        object.__setattr__(self, "context", actual)
 
     @property
     def id(self) -> str:
-        return self.impact.sha256
+        return _resolution_id(
+            self.impact,
+            self.context if isinstance(self.context, ResponseContext) else None,
+        )
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, EvaluationResolution) and (
@@ -224,12 +257,22 @@ class EvaluationResolution:
         )
 
     def _document(self) -> dict[str, object]:
-        return {
+        document: dict[str, object] = {
             "response_id": self.response_id,
             "id": self.id,
             "impact": _load(self.impact.to_json()),
             "asset_ids": self.asset_ids,
         }
+        if isinstance(self.context, ResponseContext):
+            document["context"] = _load(self.context.to_json())
+        return document
+
+
+def _resolution_id(impact: cf.Impact, context: ResponseContext | None) -> str:
+    if context is None:
+        return impact.sha256
+    evidence = _dump({"impact": impact.sha256, "context": _load(context.to_json())})
+    return "sha256:" + hashlib.sha256(evidence.encode()).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -308,8 +351,6 @@ class EvaluationRow:
 
 
 def _covering() -> SpatialMatch:
-    from ._evaluation_spatial import SpatialMatch
-
     return SpatialMatch.covering()
 
 
@@ -361,21 +402,38 @@ def _resolution_context(
     resolution: EvaluationResolution, response: EvaluationResponse
 ) -> dict[str, object]:
     model = response.model
-    if not isinstance(model, cf.ImpactReference):
+    if isinstance(model, cf.Impact):
         raise ValueError("resolved Impact responses do not need resolution records")
-    document = _load(resolution.impact.to_json())
-    provenance = _object(document.get("provenance"), {"model", "context"})
-    if _dump(provenance["model"]) != model.to_json():
-        raise ValueError(f"resolution does not belong to response {response.name!r}")
     requirements = model.requirements
     if (
         resolution.impact.input != requirements.input
         or resolution.impact.output != requirements.output
     ):
         raise ValueError(f"calibration contradicts response {response.name!r}")
-    resolved = _load(_dump(provenance["context"]))
+    if isinstance(model, ContextualImpact):
+        if not isinstance(resolution.context, ResponseContext):
+            raise ValueError(
+                f"resolution requires actual context for {response.name!r}"
+            )
+        if model.resolve(resolution.context).sha256 != resolution.impact.sha256:
+            raise ValueError(
+                f"resolution contradicts the calibrated case for {response.name!r}"
+            )
+        resolved = _wire_context_values(resolution.context)
+    else:
+        if isinstance(resolution.context, ResponseContext):
+            raise ValueError(
+                "built-in model resolution context belongs to its framework Impact"
+            )
+        document = _load(resolution.impact.to_json())
+        provenance = _object(document.get("provenance"), {"model", "context"})
+        if _dump(provenance["model"]) != model.to_json():
+            raise ValueError(
+                f"resolution does not belong to response {response.name!r}"
+            )
+        resolved = _load(_dump(provenance["context"]))
     context = response.context if response.context is not None else cf.EmptyContext()
-    configured = _load(context.to_json())
+    configured = _wire_context_values(context)
     if configured.keys() != resolved.keys() or any(
         resolved[name] != value
         for name, value in configured.items()
@@ -428,8 +486,6 @@ class EvaluationMetadata:
         return self._spec
 
     def __post_init__(self) -> None:
-        from ._evaluation_spatial import SpatialMatch
-
         if not isinstance(self.query, EvaluationQuery):
             raise TypeError("query must be EvaluationQuery")
         if not isinstance(self.report, ExecutionReport):
@@ -583,8 +639,6 @@ class EvaluationMetadata:
 
     @classmethod
     def from_json(cls, text: str) -> EvaluationMetadata:
-        from ._evaluation_spatial import spatial_match_from_document
-
         doc = _object(
             _load(text),
             {
@@ -661,29 +715,40 @@ def _input(value: object) -> EvaluationInput:
 def _response(value: object) -> EvaluationResponse:
     doc = _object(value, {"name", "variable_id", "model"}, {"context"})
     model = _load(_dump(doc["model"]))
-    parsed: _Model = (
-        cf.ImpactReference.from_json(_dump(model))
-        if "id" in model
-        else cf.Impact.from_json(_dump(model))
-    )
+    parsed: Model
+    if model.get("kind") == "contextual":
+        parsed = ContextualImpact.from_json(_dump(model))
+    elif "id" in model:
+        parsed = cf.ImpactReference.from_json(_dump(model))
+    else:
+        parsed = cf.Impact.from_json(_dump(model))
+    context = None
+    if "context" in doc:
+        context_json = _dump(doc["context"])
+        context = (
+            ResponseContext.from_json(context_json)
+            if isinstance(parsed, ContextualImpact)
+            else cf.ImpactContext.from_json(context_json)
+        )
     return EvaluationResponse(
         _identifier(doc["name"], "response name"),
         _identifier(doc["variable_id"], "response variable_id"),
         parsed,
-        None
-        if "context" not in doc
-        else cf.ImpactContext.from_json(_dump(doc["context"])),
+        context,
     )
 
 
 def _resolution(value: object) -> EvaluationResolution:
-    doc = _object(value, {"id", "response_id", "impact", "asset_ids"})
+    doc = _object(value, {"id", "response_id", "impact", "asset_ids"}, {"context"})
     result = EvaluationResolution(
         _identifier(doc["response_id"], "response_id"),
         cf.Impact.from_json(_dump(doc["impact"])),
         asset_ids=tuple(
             _asset_id(item) for item in _array(doc["asset_ids"], "resolution asset_ids")
         ),
+        context=None
+        if "context" not in doc
+        else ResponseContext.from_json(_dump(doc["context"])),
     )
     if doc["id"] != result.id:
         raise ValueError("evaluation resolution identity disagrees with the impact")
@@ -816,8 +881,6 @@ def _validate_match(
     series: SeriesKey,
     failure: EvaluationFailure | None,
 ) -> tuple[str | None, str | None, float | None]:
-    from ._evaluation_spatial import SpatialMatchKind
-
     support = _optional_id(row["support_id"], "support_id")
     resource = _optional_id(row["resource_id"], "resource_id")
     distance = row["distance_metres"]
@@ -885,7 +948,7 @@ def _validate_response(
         raise ValueError("a response cannot resolve without evaluated source evidence")
     if response.context is not None and isinstance(row.get("asset"), Mapping):
         asset = cast(Mapping[str, object], row["asset"])
-        for field, value in _load(response.context.to_json()).items():
+        for field, value in _wire_context_values(response.context).items():
             if not isinstance(value, dict):
                 continue
             binding = value.get("column")

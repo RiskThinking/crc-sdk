@@ -38,7 +38,7 @@ from ._recipes import (
     _static_source,
     _TableNode,
 )
-from ._runtime import LocalPath, Runtime, _local_path, _memory_bytes
+from ._runtime import LocalPath, _local_path, _memory_bytes
 from ._selection import (
     PeriodSelector,
     ScenarioSelector,
@@ -318,17 +318,6 @@ class Observations(
             operations=operations,
         )
 
-    def write(
-        self,
-        path: LocalPath,
-        *,
-        overwrite: bool = False,
-        runtime: Runtime | None = None,
-    ) -> Observations:
-        return cast(
-            Observations, super().write(path, overwrite=overwrite, runtime=runtime)
-        )
-
 
 class Projections(
     _RecipeBase[EvidenceMetadata[Literal[EvidenceKind.PROJECTIONS]], "Projections"]
@@ -427,17 +416,6 @@ class Projections(
             ),
         )
 
-    def write(
-        self,
-        path: LocalPath,
-        *,
-        overwrite: bool = False,
-        runtime: Runtime | None = None,
-    ) -> Projections:
-        return cast(
-            Projections, super().write(path, overwrite=overwrite, runtime=runtime)
-        )
-
 
 class Layer(_RecipeBase[EvidenceMetadata[Literal[EvidenceKind.LAYER]], "Layer"]):
     __slots__ = ()
@@ -518,12 +496,3 @@ class Layer(_RecipeBase[EvidenceMetadata[Literal[EvidenceKind.LAYER]], "Layer"])
                 ),
             ),
         )
-
-    def write(
-        self,
-        path: LocalPath,
-        *,
-        overwrite: bool = False,
-        runtime: Runtime | None = None,
-    ) -> Layer:
-        return cast(Layer, super().write(path, overwrite=overwrite, runtime=runtime))

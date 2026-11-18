@@ -1,5 +1,5 @@
 from datetime import date
-from typing import reveal_type
+from typing import assert_type, reveal_type
 
 import numpy as np
 from crc_framework import (
@@ -64,6 +64,7 @@ reveal_type(dataset.read().metadata)
 reveal_type(dataset.batches().metadata)
 with dataset.execute(runtime=Runtime()) as execution:
     reveal_type(execution.read().metadata)
+    assert_type(execution.write("depth.parquet"), Dataset)
 
 sample_data = {
     "support_id": ["a"] * 3,
@@ -73,6 +74,8 @@ sample_data = {
     "value": [1.0, 2.0, 4.0],
 }
 samples = Samples.from_table(sample_data, variable=variable)
+with samples.execute() as sample_execution:
+    assert_type(sample_execution.write("samples.parquet"), Samples)
 reveal_type(samples.read().metadata)
 reveal_type(samples.read().fit(SampleFit(family=DistributionFamily.GUMBEL_RIGHT)))
 

@@ -193,13 +193,50 @@ def test_cmip6_360_day_actual_calendar_and_reference_selection(
         writer = csv.DictWriter(file, fieldnames=CATALOGUE_COLUMNS)
         writer.writeheader()
         writer.writerow(row)
+        writer.writerow(row)
+        writer.writerow(
+            {
+                **row,
+                "source_id": "OTHER",
+                "experiment_id": "ssp245",
+                "member_id": "r2i1p1f1",
+                "variable_id": "tasmin",
+                "zstore": "file:///no-discovery-payload.zarr",
+            }
+        )
+        writer.writerow({**row, "source_id": "UNSUPPORTED", "variable_id": "sfcWind"})
+        writer.writerow({**row, "source_id": "UNSUPPORTED", "grid_label": "unknown"})
     monkeypatch.setattr(module, "CMIP6_CATALOGUE", catalogue.as_uri())
-    recipe = CMIP6(
-        indicator=CMIP6.Indicator.ANNUAL_MAXIMUM_DAILY_MAXIMUM_TEMPERATURE,
-        model="MODEL",
-        scenario="historical",
-        member="r1i1p1f1",
-    ).select(area=AREA)
+    with monkeypatch.context() as discovery:
+        discovery.setattr(
+            module,
+            "open_zarr_snapshot",
+            lambda *args: pytest.fail("catalogue discovery opened a source array"),
+        )
+        combinations = CMIP6().inspect().series
+        assert [
+            (r.model, r.scenario.id, r.member, r.variable.id)
+            for r in combinations
+            if r.scenario is not None
+        ] == [
+            (
+                "MODEL",
+                "historical",
+                "r1i1p1f1",
+                "cmip6:annual_maximum_daily_maximum_temperature",
+            ),
+            (
+                "OTHER",
+                "ssp245",
+                "r2i1p1f1",
+                "cmip6:annual_minimum_daily_minimum_temperature",
+            ),
+        ]
+        assert CMIP6(model="MODEL").inspect().series == combinations[:1]
+        assert combinations[0].period is None
+        with pytest.raises(ValueError, match="conflicting model identities"):
+            CMIP6(model="OTHER").select(series=combinations[0], area=AREA).explain()
+    recipe = CMIP6().select(series=combinations[0], area=AREA)
     inventory = recipe.inspect()
     assert inventory.series[0].period is not None
     assert inventory.series[0].period.calendar is not None
@@ -231,10 +268,21 @@ def test_cmip6_360_day_actual_calendar_and_reference_selection(
     assert raw.select(series=raw_inventory.series).read().table.num_rows == 360
     assert raw.aggregate(AnnualMaximum()).read().table["value"].to_pylist() == [280.0]
     assert result.metadata.source is not None
+    assert result.metadata.source.model == "MODEL"
     release = result.metadata.source.release
     assert release is not None
     pinned = recipe.select(series=replace(inventory.series[0], release=release))
     assert pinned.read().table.equals(result.table, check_metadata=False)
+    saved = recipe.write(tmp_path / "annual.parquet")
+    reference = saved.inspect().series[0]
+    assert reference.release == release
+    assert reference.model == "MODEL" and reference.member == "r1i1p1f1"
+    assert (
+        CMIP6()
+        .select(series=reference, area=AREA)
+        .read()
+        .table.equals(result.table, check_metadata=False)
+    )
     array = zarr.open_group(str(path), mode="r+")["tasmax"]
     assert isinstance(array, zarr.Array)
     array[0, 0, 0] = 291.0
@@ -309,20 +357,37 @@ def test_nex_real_native_netcdf_view_and_pinned_replay(
         prefix + "MODEL/historical/": [prefix + "MODEL/historical/r1/"],
         directory: [directory + name for name in paths],
     }
+    other_directory = prefix + "OTHER/ssp585/r2/tasmin/"
+    catalogue_pages = {
+        None: keys[directory],
+        "page 2": [other_directory + "tasmin_day_OTHER_ssp585_r2_gn_2003.nc"],
+    }
 
     def acquire(uri: str, destination: Path) -> int:
-        requested = urllib.parse.parse_qs(urllib.parse.urlsplit(uri).query)["prefix"][0]
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(uri).query)
+        requested = query["prefix"][0]
+        next_page = ""
+        if "delimiter" in query:
+            objects = keys[requested]
+        else:
+            token = query.get("continuation-token", [None])[0]
+            objects = [
+                key for key in catalogue_pages[token] if key.startswith(requested)
+            ]
+            if token is None:
+                next_page = "<NextContinuationToken>page 2</NextContinuationToken>"
         contents = "".join(
             (
                 f"<CommonPrefixes><Prefix>{v}</Prefix></CommonPrefixes>"
                 if v.endswith("/")
                 else f"<Contents><Key>{v}</Key></Contents>"
             )
-            for v in keys[requested]
+            for v in objects
         )
         destination.write_text(
             '<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
             + contents
+            + next_page
             + "<IsTruncated>false</IsTruncated></ListBucketResult>"
         )
         return 200
@@ -343,18 +408,33 @@ def test_nex_real_native_netcdf_view_and_pinned_replay(
             scope, paths[uri.rsplit("/", 1)[-1]].as_uri(), **kw
         ),
     )
-    recipe = NEX(
-        indicator=NEX.Indicator.ANNUAL_MAXIMUM_DAILY_PRECIPITATION
+    indicator = (
+        NEX.Indicator.ANNUAL_MAXIMUM_DAILY_PRECIPITATION
         if variable == "pr"
-        else NEX.Indicator.ANNUAL_MAXIMUM_DAILY_MAXIMUM_TEMPERATURE,
-        model="MODEL",
-        scenario="historical",
-        member="r1",
-    ).select(area=AREA)
+        else NEX.Indicator.ANNUAL_MAXIMUM_DAILY_MAXIMUM_TEMPERATURE
+    )
+    with monkeypatch.context() as discovery:
+        discovery.setattr(
+            module,
+            "netcdf_header_snapshot",
+            lambda *args: pytest.fail("catalogue discovery opened a NetCDF header"),
+        )
+        combinations = NEX().inspect().series
+        assert {
+            (r.model, r.scenario.id, r.member)
+            for r in combinations
+            if r.scenario is not None
+        } == {("MODEL", "historical", "r1"), ("OTHER", "ssp585", "r2")}
+        assert all(r.period is None for r in combinations)
+        (choice,) = NEX(indicator=indicator).inspect().series
+        assert choice.model == "MODEL" and choice.member == "r1"
+    recipe = NEX().select(series=choice, area=AREA)
     cache = tmp_path / "cache"
     result = recipe.read(runtime=Runtime(cache=Cache.reuse(cache)))
     assert result.table["value"].to_pylist() == pytest.approx([annual_value] * 2)
     assert result.metadata.source is not None
+    assert result.metadata.source.model == "MODEL"
+    assert result.metadata.source.member == "r1"
     release = result.metadata.source.release
     assert release is not None
     assert any("#crc-variable=" in r.uri for r in result.metadata.source.resources)

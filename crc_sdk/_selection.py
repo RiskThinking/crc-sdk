@@ -151,6 +151,10 @@ def _reference_document(
             }
         if value.probability is not None:
             result["probability"] = value.probability._document()
+        if value.model is not None:
+            result["model"] = value.model
+        if value.member is not None:
+            result["member"] = value.member
         return result
     return {"id": value.id, "science": scientific_identity(value)}
 
@@ -273,6 +277,14 @@ class SelectionState:
                     raise ValueError(
                         "selected series release differs from the source snapshot"
                     )
+                for name in ("model", "member"):
+                    requested = getattr(reference, name)
+                    if requested is not None and (
+                        source is None or requested != getattr(source, name)
+                    ):
+                        raise ValueError(
+                            f"selected series {name} differs from the source snapshot"
+                        )
                 series_keys.add(key)
         selected = tuple(
             item

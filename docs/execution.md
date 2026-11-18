@@ -149,6 +149,7 @@ with depth.batches(runtime=runtime) as stream:
 assert stream.report.complete
 ```
 
+The scoped `write()` returns the same artifact type as the recipe's `write()`.
 An explicit execution resolves each source and distinct modelling node once.
 Its checked batch spool supplies later terminals without reacquisition or
 refitting. The runtime is selected once, on `execute()`. Separate direct

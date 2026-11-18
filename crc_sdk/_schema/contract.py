@@ -50,6 +50,7 @@ def dataset_json_schema() -> dict[str, object]:
                     "provider": identifier,
                     "product": identifier,
                     "member": identifier,
+                    "model": identifier,
                     "release": {"$ref": "#/$defs/release"},
                     "resources": {
                         "type": "array",

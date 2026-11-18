@@ -70,7 +70,12 @@ The default matches the actual support. A point covers its own location.
 A polygon covers the asset geometry within its declared footprint, including
 its boundary. H3 cells provide coverage when the series declares cell support.
 Unmatched assets retain rows with a null `support_id` and a failure reason.
-Overlapping covering supports raise a validation error.
+Overlapping covering supports raise a validation error by default. If you know
+which source supports should take priority, use
+`SpatialMatch.covering(preferred_supports=["site-survey", "regional-model"])`.
+The first ID in the list that covers the asset wins. If the list leaves an
+overlap unresolved, evaluation raises a validation error. The priority order is
+stored in saved evaluations.
 
 Use `SpatialMatch.nearest` with point assets and point-supported series. Set
 an explicit distance cap. Results include the matched support and its
@@ -166,6 +171,53 @@ relative tolerance of `1e-12`.
 Use `select(responses=...)` to choose
 named rows explicitly. The returned table has one row per asset, participating
 series, requested coordinate, and exposure or named response.
+
+### Calibrate your own cases
+
+Use `ContextualImpact` when your preferred numerical model varies by an asset's
+category. Define a frozen `ResponseContext` dataclass with the fields your
+model needs. Case values are exact strings or string-valued enum members.
+Each case holds a framework `Impact` with the same input and output measurement.
+
+```python
+from dataclasses import dataclass
+from enum import Enum
+
+from crc_sdk import ColumnBinding, ContextualImpact, ResponseContext
+
+
+class FacilityUse(Enum):
+    WAREHOUSE = "warehouse"
+    OFFICE = "office"
+
+
+@dataclass(frozen=True)
+class FacilityContext(ResponseContext):
+    use: FacilityUse | ColumnBinding
+
+
+days = TimeDuration(unit=TimeUnit.DAY)
+warehouse = Impact.linear(slope=2.0, input=depth_measurement, output=days)
+office = Impact.tabulated([(0.0, 0.0), (1.0, 1.0), (3.0, 7.0)],
+                          input=depth_measurement, output=days)
+repair_model = ContextualImpact([
+    (FacilityContext(FacilityUse.WAREHOUSE), warehouse),
+    (FacilityContext(FacilityUse.OFFICE), office),
+])
+assert repair_model.requirements.context_type is FacilityContext
+repair = nearby.return_periods([10, 100]).impact(
+    "repair_days", repair_model, variable=depth_variable,
+    context=FacilityContext(FacilityUse.WAREHOUSE),
+)
+assert repair.read().table.num_rows == 8
+```
+
+To resolve a different case per asset, pass `FacilityContext(assets.column("use"))`
+when the asset table has a `use` column. An unknown case raises a validation
+error. A saved evaluation records the declared cases, the concrete context and
+the calibrated model used for each asset. Resolve a concrete context with
+`repair_model.resolve(FacilityContext(FacilityUse.WAREHOUSE))` to obtain the
+framework `Impact` for numerical operations such as expectation or pushforward.
 
 ## Save and reopen
 

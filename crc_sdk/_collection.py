@@ -10,11 +10,13 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Self
+from typing import Self
 
 import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.compute as pc  # type: ignore[import-untyped]
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
+
+import crc_sdk
 
 from ._collection_bundle import (
     MANIFEST,
@@ -88,11 +90,6 @@ from ._selection import (
 )
 from ._source_io import native_data
 from ._terminals import BatchStream, Execution, ReadResult
-
-if TYPE_CHECKING:
-    from ._assets import Assets
-    from ._evaluation import Evaluation
-    from ._evaluation_spatial import SpatialMatch
 
 
 @dataclass(frozen=True, slots=True)
@@ -1056,8 +1053,8 @@ class DatasetCollection:
         )
 
     def evaluate(
-        self, assets: Assets, *, spatial: SpatialMatch | None = None
-    ) -> Evaluation:
+        self, assets: crc_sdk.Assets, *, spatial: crc_sdk.SpatialMatch | None = None
+    ) -> crc_sdk.Evaluation:
         from ._evaluation import Evaluation
 
         return Evaluation._create(self, assets, spatial=spatial)
@@ -1082,7 +1079,7 @@ class DatasetCollection:
 
     def execute(
         self, *, runtime: Runtime | None = None
-    ) -> Execution[CollectionMetadata]:
+    ) -> Execution[CollectionMetadata, DatasetCollection]:
         return _CollectionExecution(self, runtime=runtime)
 
     def write(
@@ -1101,7 +1098,7 @@ class DatasetCollection:
         raise RuntimeError("a collection must be written as a directory bundle")
 
 
-class _CollectionExecution(Execution[CollectionMetadata]):
+class _CollectionExecution(Execution[CollectionMetadata, DatasetCollection]):
     def write(self, path: LocalPath, *, overwrite: bool = False) -> DatasetCollection:
         self._active()
         destination, existing = bundle_destination(path, overwrite)

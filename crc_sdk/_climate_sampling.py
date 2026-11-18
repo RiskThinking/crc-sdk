@@ -105,6 +105,11 @@ _OPERATIONS = {
     "annual_maximum_daily_precipitation": "rx1day",
     "annual_maximum_five_day_precipitation": "rx5day",
 }
+_NATIVE_VARIABLES = {
+    operation: cmip.INDICATOR_VARIABLES[native].variable
+    for operation, native in _OPERATIONS.items()
+}
+_NEX_YEAR = re.compile(r"_(\d{4})(?:_v(\d+(?:\.\d+)*))?\.nc$")
 
 
 def _initialize(value: object, node: _ClimateNode) -> None:
@@ -421,6 +426,39 @@ class _ClimateNode(SourceNode[EvidenceMetadata]):
     key: str = field(init=False)
 
     def __post_init__(self) -> None:
+        references = self.state.series or ()
+        if self.provider != "era5" and self.scenario is None and self.state.scenarios:
+            if len(self.state.scenarios) == 1:
+                object.__setattr__(self, "scenario", self.state.scenarios[0])
+        if self.provider != "era5" and references:
+            for name in ("model", "member"):
+                selected = {
+                    value
+                    for ref in references
+                    if (value := getattr(ref, name)) is not None
+                }
+                configured = getattr(self, name)
+                if configured is not None:
+                    selected.add(configured)
+                if len(selected) > 1:
+                    raise ValueError(
+                        f"selected series has conflicting {name} identities"
+                    )
+                if selected:
+                    object.__setattr__(self, name, selected.pop())
+            scenarios = tuple(
+                ref.scenario for ref in references if ref.scenario is not None
+            )
+            if scenarios:
+                scenario = self.scenario if self.scenario is not None else scenarios[0]
+                scenario_id = (
+                    scenario.id if isinstance(scenario, Scenario) else scenario
+                )
+                if any(value.id != scenario_id for value in scenarios):
+                    raise ValueError(
+                        "selected series has conflicting scenario identities"
+                    )
+                object.__setattr__(self, "scenario", scenario)
         if self.release is not None and not isinstance(self.release, ReleaseReference):
             raise TypeError("release must be ReleaseReference")
         for name in ("model", "member"):
@@ -507,7 +545,7 @@ class _ClimateNode(SourceNode[EvidenceMetadata]):
                     result.append(
                         Requirement(
                             name + "_required",
-                            f"Choose an exact source {name} from inspect().",
+                            f"Choose the source {name} through inspect().series.",
                             parameter=name,
                         )
                     )
@@ -518,12 +556,21 @@ class _ClimateNode(SourceNode[EvidenceMetadata]):
             operation = self._operation()
             if self.provider == "era5":
                 return _era5_source(scope, self, operation)
+            assert operation is not None
             if self.provider == "cmip6":
                 _, release = payload_selection(self.state, self.release)
-                return _cmip_source(scope, self, operation, release=release)
+                return _cmip_source(scope, self, release=release)
             return _nex_source(scope, self, operation)
 
     def inspection(self, scope: ExecutionScope) -> Inspection:
+        if self.provider != "era5" and (
+            self._operation() is None
+            or self.model is None
+            or self.scenario is None
+            or self.member is None
+        ):
+            with native_data(source=self.provider, scope=scope):
+                return _discover_climate(scope, self)
         source = self._source(scope)
         operations = (
             tuple(_OPERATIONS)
@@ -567,6 +614,8 @@ class _ClimateNode(SourceNode[EvidenceMetadata]):
                 probability=None
                 if self.raw
                 else _reference(self.provider, operation).probability,
+                model=source.identity.model,
+                member=source.identity.member,
             )
             for operation in operations
         )
@@ -610,6 +659,13 @@ class _ClimateNode(SourceNode[EvidenceMetadata]):
             raise CapabilityError(
                 "ERA5 requires explicit .select(time=Period.window(...)) bounds."
             )
+        if self.provider != "era5" and (
+            self.model is None or self.scenario is None or self.member is None
+        ):
+            raise CapabilityError(
+                f"{self.provider.upper()} requires a model, scenario, and member. "
+                "Select a published combination from inspect().series."
+            )
         source = self._source(scope)
         if source.requirements:
             raise CapabilityError(" ".join(r.message for r in source.requirements))
@@ -618,9 +674,16 @@ class _ClimateNode(SourceNode[EvidenceMetadata]):
         period = _period(time, source.first_year, source.last_year, source.calendar)
         metadata = _metadata(self, source, (operation,), period)
         state, release = payload_selection(self.state, self.release)
-        resolved = replace(state, time=time).resolve(
-            metadata.spec, source=source.identity
-        )
+        resolved = replace(
+            state,
+            time=time,
+            series=None
+            if state.series is None
+            else tuple(
+                replace(ref, period=period) if ref.period is None else ref
+                for ref in state.series
+            ),
+        ).resolve(metadata.spec, source=source.identity)
         metadata = selected_metadata(metadata, resolved)
         current = metadata
 
@@ -1200,33 +1263,18 @@ def _era5_source(
     )
 
 
-def _cmip_source(
-    scope: ExecutionScope,
-    node: _ClimateNode,
-    operation: str | None,
-    *,
-    release: ReleaseReference | None,
-) -> _GridSource:
+def _cmip_datasets(
+    scope: ExecutionScope, node: _ClimateNode
+) -> tuple[list[cmip.CMIP6Dataset], ResourceIdentity]:
     path, catalogue = fetch(scope, CMIP6_CATALOGUE)
-    native = (
-        None
-        if operation is None
-        else cmip.INDICATOR_VARIABLES[_OPERATIONS[operation]].variable
-    )
+    variables = _discovery_variables(node)
     scenario = (
         node.scenario.id if isinstance(node.scenario, Scenario) else node.scenario
     )
-    if (
-        scenario is None
-        and node.state.scenarios is not None
-        and len(node.state.scenarios) == 1
-    ):
-        candidate = node.state.scenarios[0]
-        scenario = candidate.id if isinstance(candidate, Scenario) else candidate
     datasets = []
     with path.open(newline="", encoding="utf-8-sig") as source:
         for row in csv.DictReader(source):
-            if row.get("table_id") != "day":
+            if row.get("table_id") != "day" or row.get("variable_id") not in variables:
                 continue
             if any(
                 value is not None and row.get(name) != value
@@ -1234,64 +1282,31 @@ def _cmip_source(
                     ("source_id", node.model),
                     ("experiment_id", scenario),
                     ("member_id", node.member),
-                    ("variable_id", native),
                 )
             ):
                 continue
             datasets.append(
                 cmip.CMIP6Dataset(*(row[name] for name in cmip.CATALOGUE_COLUMNS))
             )
+    return datasets, catalogue
+
+
+def _cmip_source(
+    scope: ExecutionScope, node: _ClimateNode, *, release: ReleaseReference | None
+) -> _GridSource:
+    datasets, catalogue = _cmip_datasets(scope, node)
     if not datasets:
         raise LookupError(
             "No published CMIP6 dataset matches the exact source selection"
         )
-    requirements = []
-    for parameter, attribute in (
-        ("model", "source_id"),
-        ("scenario", "experiment_id"),
-        ("member", "member_id"),
-        ("indicator", "variable_id"),
-    ):
-        values = sorted({getattr(d, attribute) for d in datasets})
-        if (
-            (parameter == "indicator" and operation is None)
-            or len(values) > 1
-            and getattr(node, parameter, None) is None
-        ):
-            requirements.append(
-                Requirement(
-                    parameter + "_required",
-                    f"Choose {parameter} from {values!r}.",
-                    parameter=parameter,
-                )
-            )
-    if requirements:
-        identity = SourceIdentity(
-            "cmip6",
-            "catalogue",
-            resources=(catalogue,),
-        )
-        return _GridSource(
-            identity,
-            Calendar.GREGORIAN,
-            0,
-            0,
-            None if scenario is None else Scenario(scenario),
-            tuple(requirements),
-            None,
-            lambda: identity,
-        )
     matches = [d for d in datasets if release is None or d.dataset_id == release.id]
     if not matches:
         raise LookupError("The pinned CMIP6 release is not in the supported catalogue")
-    versions = max(d.version for d in matches)
-    matches = [d for d in matches if d.version == versions]
-    grids = {d.grid_label for d in matches}
-    preferred = next((g for g in cmip.GRID_PREFERENCE if g in grids), None)
-    matches = [d for d in matches if d.grid_label == preferred]
-    if len(matches) != 1:
-        raise ValueError("CMIP6 native source selection is ambiguous")
-    dataset = matches[0]
+    dataset = _preferred_cmip_dataset(matches)
+    if dataset is None:
+        raise ValueError(
+            "CMIP6 selection has no unique publication on a supported grid"
+        )
     snapshot = open_zarr_snapshot(scope, dataset.zstore)
     group = snapshot.group
     calendar = calendar_name(group["time"].attrs.get("calendar"))
@@ -1337,6 +1352,7 @@ def _cmip_source(
         dataset.dataset_id,
         resources=actual_resources(),
         member=dataset.member_id,
+        model=dataset.source_id,
     )
     actual_scenario = (
         node.scenario
@@ -1419,101 +1435,141 @@ def _cmip_source(
 
 
 def _nex_listing(
-    scope: ExecutionScope, prefix: str
-) -> tuple[tuple[str, ...], tuple[str, ...], tuple[ResourceIdentity, ...]]:
+    scope: ExecutionScope, prefix: str, *, recursive: bool = False
+) -> tuple[tuple[str, ...], tuple[ResourceIdentity, ...]]:
     keys: list[str] = []
-    directories: list[str] = []
     resources = []
     token: str | None = None
     while True:
-        uri = NEX_BUCKET + "/?list-type=2&delimiter=/&prefix=" + quote(prefix, safe="")
+        uri = NEX_BUCKET + "/?list-type=2&prefix=" + quote(prefix, safe="")
+        if not recursive:
+            uri += "&delimiter=/"
         if token is not None:
             uri += "&continuation-token=" + quote(token, safe="")
         path, resource = fetch(scope, uri)
         resources.append(resource)
         tree = ET.fromstring(path.read_bytes())
         keys.extend(e.text or "" for e in tree.findall(".//{*}Contents/{*}Key"))
-        directories.extend(
-            e.text or "" for e in tree.findall(".//{*}CommonPrefixes/{*}Prefix")
-        )
         token = tree.findtext("{*}NextContinuationToken")
         if token is None:
-            return tuple(keys), tuple(directories), tuple(resources)
+            return tuple(keys), tuple(resources)
+
+
+def _discovery_variables(node: _ClimateNode) -> dict[str, list[str]]:
+    operation = node._operation()
+    by_variable: dict[str, list[str]] = {}
+    for candidate, native in _NATIVE_VARIABLES.items():
+        if operation is None or candidate == operation:
+            by_variable.setdefault(native, []).append(candidate)
+    return by_variable
+
+
+def _preferred_cmip_dataset(
+    datasets: list[cmip.CMIP6Dataset],
+) -> cmip.CMIP6Dataset | None:
+    latest = max(d.version for d in datasets)
+    newest = {d for d in datasets if d.version == latest}
+    for grid in cmip.GRID_PREFERENCE:
+        matches = {d for d in newest if d.grid_label == grid}
+        if matches:
+            return matches.pop() if len(matches) == 1 else None
+    return None
+
+
+def _discover_climate(scope: ExecutionScope, node: _ClimateNode) -> Inspection:
+    supported = _discovery_variables(node)
+    if node.provider == "cmip6":
+        datasets, catalogue = _cmip_datasets(scope, node)
+        by_series: dict[tuple[str, str, str, str], list[cmip.CMIP6Dataset]] = {}
+        for d in datasets:
+            key = (d.source_id, d.experiment_id, d.member_id, d.variable_id)
+            by_series.setdefault(key, []).append(d)
+        entries = {
+            key for key, group in by_series.items() if _preferred_cmip_dataset(group)
+        }
+        source = SourceIdentity("cmip6", "catalogue", resources=(catalogue,))
+    else:
+        entries, resources = _nex_catalogue(scope, node, supported)
+        source = SourceIdentity("nex", "NEX-GDDP-CMIP6", resources=resources)
+    references = tuple(
+        SeriesReference(
+            _native_variable(node.provider, operation)
+            if node.raw
+            else _variable(node.provider, operation),
+            scenario=node.scenario
+            if isinstance(node.scenario, Scenario)
+            else Scenario(scenario),
+            probability=None
+            if node.raw
+            else _reference(node.provider, operation).probability,
+            model=model,
+            member=member,
+        )
+        for model, scenario, member, variable in sorted(entries)
+        for operation in supported[variable]
+    )
+    available_operations = {
+        operation for *_, variable in entries for operation in supported[variable]
+    }
+    return Inspection(
+        series=references,
+        indicators=tuple(
+            _reference(node.provider, operation)
+            for operation in _OPERATIONS
+            if operation in available_operations
+        ),
+        capabilities=(Capability.INSPECT,),
+        requirements=node.requirements(),
+        source=source,
+    )
+
+
+def _nex_catalogue(
+    scope: ExecutionScope, node: _ClimateNode, supported: dict[str, list[str]]
+) -> tuple[set[tuple[str, str, str, str]], tuple[ResourceIdentity, ...]]:
+    scenario = (
+        node.scenario.id if isinstance(node.scenario, Scenario) else node.scenario
+    )
+    selection = (node.model, scenario, node.member)
+    prefix = NEX_PREFIX
+    for component in selection:
+        if component is None:
+            break
+        prefix += component + "/"
+    keys, resources = _nex_listing(scope, prefix, recursive=True)
+    entries = set()
+    for key in keys:
+        if not key.startswith(NEX_PREFIX):
+            continue
+        parts = key.removeprefix(NEX_PREFIX).split("/")
+        if len(parts) != 5:
+            continue
+        model, experiment, member, variable, filename = parts
+        if variable not in supported or _NEX_YEAR.search(filename) is None:
+            continue
+        if all(
+            selected is None or selected == actual
+            for selected, actual in zip(selection, parts[:3], strict=True)
+        ):
+            entries.add((model, experiment, member, variable))
+    return entries, resources
 
 
 def _nex_source(
-    scope: ExecutionScope, node: _ClimateNode, operation: str | None
+    scope: ExecutionScope, node: _ClimateNode, operation: str
 ) -> _GridSource:
     scenario = (
         node.scenario.id if isinstance(node.scenario, Scenario) else node.scenario
     )
-    prefix = NEX_PREFIX
-    requirements = []
-    resources: list[ResourceIdentity] = []
-    for parameter, selected in (
-        ("model", node.model),
-        ("scenario", scenario),
-        ("member", node.member),
-    ):
-        keys, directories, identities = _nex_listing(scope, prefix)
-        resources.extend(identities)
-        choices = sorted(p.rstrip("/").rsplit("/", 1)[-1] for p in directories)
-        if selected is None:
-            requirements.append(
-                Requirement(
-                    parameter + "_required",
-                    f"Choose {parameter} from {choices!r}.",
-                    parameter=parameter,
-                )
-            )
-            identity = SourceIdentity(
-                "nex",
-                "NEX-GDDP-CMIP6",
-                resources=tuple(resources),
-            )
-            return _GridSource(
-                identity,
-                Calendar.GREGORIAN,
-                0,
-                0,
-                None if scenario is None else Scenario(scenario),
-                tuple(requirements),
-                None,
-                lambda: identity,
-            )
-        if selected not in choices:
-            raise LookupError(f"NEX source has no {parameter} {selected!r}")
-        prefix += selected + "/"
-    if operation is None:
-        identity = SourceIdentity(
-            "nex",
-            "NEX-GDDP-CMIP6",
-            resources=tuple(resources),
-        )
-        return _GridSource(
-            identity,
-            Calendar.GREGORIAN,
-            0,
-            0,
-            Scenario(cast(str, scenario)),
-            (
-                Requirement(
-                    "indicator_required",
-                    "Choose a named NEX.Indicator.",
-                    parameter="indicator",
-                ),
-            ),
-            None,
-            lambda: identity,
-        )
-    variable = cmip.INDICATOR_VARIABLES[_OPERATIONS[operation]].variable
-    keys, _, identities = _nex_listing(scope, prefix + variable + "/")
-    resources.extend(identities)
-    pattern = re.compile(r"_(\d{4})(?:_v(\d+(?:\.\d+)*))?\.nc$")
+    assert node.model is not None and scenario is not None and node.member is not None
+    variable = _NATIVE_VARIABLES[operation]
+    prefix = f"{NEX_PREFIX}{node.model}/{scenario}/{node.member}/{variable}/"
+    keys, identities = _nex_listing(scope, prefix)
+    resources = list(identities)
     files: dict[int, tuple[tuple[int, ...], str]] = {}
     for key in keys:
-        match = pattern.search(key)
-        if match:
+        match = _NEX_YEAR.search(key)
+        if match and key.startswith(prefix) and "/" not in key.removeprefix(prefix):
             year = int(match[1])
             version = tuple(map(int, (match[2] or "1.0").split(".")))
             if year not in files or version > files[year][0]:
@@ -1528,15 +1584,14 @@ def _nex_source(
     if calendar not in {Calendar.GREGORIAN, Calendar.PROLEPTIC_GREGORIAN}:
         raise ValueError("NEX source does not use its published Gregorian calendar")
     actual_scenario = (
-        node.scenario
-        if isinstance(node.scenario, Scenario)
-        else Scenario(cast(str, scenario))
+        node.scenario if isinstance(node.scenario, Scenario) else Scenario(scenario)
     )
     identity = SourceIdentity(
         "nex",
         "NEX-GDDP-CMIP6",
         resources=tuple(resources),
-        member=f"{node.model}/{node.member}",
+        member=node.member,
+        model=node.model,
     )
 
     def records(

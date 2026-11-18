@@ -105,6 +105,106 @@
       ],
       "additionalProperties": false
     },
+    "case_context": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "response_context"
+        },
+        "values": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+          }
+        }
+      },
+      "required": [
+        "kind",
+        "values"
+      ],
+      "additionalProperties": false
+    },
+    "response_context": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "response_context"
+        },
+        "values": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+          },
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "column": {
+                    "type": "string",
+                    "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+                  }
+                },
+                "required": [
+                  "column"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        }
+      },
+      "required": [
+        "kind",
+        "values"
+      ],
+      "additionalProperties": false
+    },
+    "contextual_impact": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "contextual"
+        },
+        "cases": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "properties": {
+              "context": {
+                "$ref": "#/$defs/case_context"
+              },
+              "impact": {
+                "$ref": "https://climateriskcommons.org/schemas/impact-2.0.schema.json"
+              }
+            },
+            "required": [
+              "context",
+              "impact"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "kind",
+        "cases"
+      ],
+      "additionalProperties": false
+    },
     "response": {
       "type": "object",
       "properties": {
@@ -123,11 +223,14 @@
             },
             {
               "$ref": "https://climateriskcommons.org/schemas/impact-reference-2.0.schema.json"
+            },
+            {
+              "$ref": "#/$defs/contextual_impact"
             }
           ]
         },
         "context": {
-          "$ref": "https://climateriskcommons.org/schemas/impact-context-1.0.schema.json"
+          "type": "object"
         }
       },
       "required": [
@@ -135,7 +238,31 @@
         "variable_id",
         "model"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "if": {
+        "properties": {
+          "model": {
+            "$ref": "#/$defs/contextual_impact"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "context"
+        ],
+        "properties": {
+          "context": {
+            "$ref": "#/$defs/response_context"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "context": {
+            "$ref": "https://climateriskcommons.org/schemas/impact-context-1.0.schema.json"
+          }
+        }
+      }
     },
     "resolution": {
       "type": "object",
@@ -150,6 +277,9 @@
         },
         "impact": {
           "$ref": "https://climateriskcommons.org/schemas/impact-2.0.schema.json"
+        },
+        "context": {
+          "$ref": "#/$defs/case_context"
         },
         "asset_ids": {
           "type": "array",
@@ -185,6 +315,15 @@
           "properties": {
             "kind": {
               "const": "covering"
+            },
+            "preferred_supports": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+              },
+              "minItems": 1,
+              "uniqueItems": true
             }
           },
           "required": [

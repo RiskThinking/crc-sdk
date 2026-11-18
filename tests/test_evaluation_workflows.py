@@ -356,6 +356,26 @@ def test_bounded_nearest_and_lower_tail_queries() -> None:
     assert result.table["failure"][2].as_py()["code"] == "outside_max_distance"
 
 
+def test_write_and_reopen_preserves_covering_support_priority(tmp_path: Path) -> None:
+    duplicate_supports = data(
+        Probability.annual(tail=cf.Tail.UPPER), longitudes=(0.0, 0.0)
+    )
+    assets = sites(0.0)
+    assert (
+        duplicate_supports.evaluate(assets).return_periods([10]).validate().valid
+        is False
+    )
+    policy = SpatialMatch.covering(preferred_supports=["site-1", "site-0"])
+    saved = (
+        duplicate_supports.evaluate(assets, spatial=policy)
+        .return_periods([10])
+        .write(tmp_path / "priority.parquet")
+    )
+    result = EvaluationArtifact.open(saved.path).read()
+    assert result.metadata.spatial == policy
+    assert result.table["support_id"].to_pylist() == ["site-1"]
+
+
 @pytest.mark.parametrize("choose_variables", [False, True])
 def test_only_named_response_skips_unrelated_member_fit(choose_variables: bool) -> None:
     other = Variable("company:other")

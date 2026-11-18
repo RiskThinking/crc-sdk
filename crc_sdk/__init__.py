@@ -22,6 +22,7 @@ from ._collection_schema import (
     CollectionResource,
     CollectionSelection,
 )
+from ._contextual_impact import ContextualImpact, ResponseContext
 from ._crc_open import CRCOpen
 from ._cropland_source import USDACropland
 from ._dataset_schema import (
@@ -121,6 +122,7 @@ __all__ = [
     "CollectionResource",
     "CollectionSelection",
     "ColumnBinding",
+    "ContextualImpact",
     "Coverage",
     "DailyTotal",
     "DataSpec",
@@ -183,6 +185,7 @@ __all__ = [
     "ReleaseReference",
     "Requirement",
     "ResourceIdentity",
+    "ResponseContext",
     "Runtime",
     "Samples",
     "Sampling",

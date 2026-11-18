@@ -95,8 +95,30 @@ ERA5's public ARCO store uses global spatial chunks for each hour. A small area
 still requires those compressed source chunks. Explicit time bounds are
 required, and inspection reports the native chunk layout and acquisition
 estimate. Cache a deliberate selection before repeating a long calculation.
-CMIP6 and NEX require an actual model, scenario, and member; discovery returns
-the available combinations rather than guessing these scientific choices.
+
+CMIP6 and NEX expose published combinations as `SeriesReference` records.
+References from the catalog list the indicator, model, scenario, and member.
+After selecting a combination, inspection reads its calendar and actual period.
+This example uses the area and time window from above.
+
+<!-- live-example -->
+```python
+from crc_sdk import CMIP6
+
+choices = CMIP6(
+    indicator=CMIP6.Indicator.ANNUAL_MAXIMUM_DAILY_PRECIPITATION,
+).inspect(runtime=runtime).series
+for choice in choices:
+    print(choice.model, choice.scenario, choice.member)
+
+# Use one of the references from the inventory.
+recipe = CMIP6().select(series=choices[0], area=area, time=period)
+print(recipe.inspect(runtime=runtime).series[0].period)
+```
+
+Use the same workflow with `NEX`. Filtering inspection by an indicator or model
+can shorten the list. Inspect saved samples for a reference that includes the
+verified payload release as well as the model, scenario, member, and period.
 
 ERA5, CMIP6, NEX, JRC, and EDO discovery provides the available science and
 coverage. Their catalogues lack content checksums for every native object, so

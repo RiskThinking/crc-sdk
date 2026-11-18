@@ -8,7 +8,7 @@ import hashlib
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import get_type_hints
 
 import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
@@ -20,6 +20,7 @@ from crc_framework import (
     SampleFit,
 )
 
+from crc_sdk import Assets, Dataset, Evaluation, ReadResult, SpatialMatch
 from crc_sdk._dataset_schema import (
     DatasetMetadata,
     ExecutionDiagnostic,
@@ -33,10 +34,7 @@ from crc_sdk._errors import CapabilityError, ValidationError
 from crc_sdk._graph import DataValidationError, ExecutionScope, Node, NodeStream
 from crc_sdk._runtime import ProgressEvent, Runtime
 from crc_sdk._schema import DatasetRow, metadata_from_table, rows_to_table
-from crc_sdk._terminals import BatchStream, Execution, PersistedArtifact, _schema
-
-if TYPE_CHECKING:
-    from crc_sdk._recipes import Dataset
+from crc_sdk._terminals import BatchStream, Execution, _schema
 
 CELL = 594475228122316799
 
@@ -127,12 +125,18 @@ class Recipe:
         self._node = node
         self.fail_saved = fail_saved
 
-    def _saved(
-        self, path: Path, value: DatasetMetadata, digest: str
-    ) -> PersistedArtifact:
+    def _saved(self, path: Path, value: DatasetMetadata, digest: str) -> Saved:
         if self.fail_saved:
             raise RuntimeError("handle construction failed")
-        return cast("Dataset", Saved(path, value, digest))
+        return Saved(path, value, digest)
+
+
+def test_workflow_annotations_resolve_through_public_imports() -> None:
+    dataset = get_type_hints(Dataset.evaluate)
+    assert dataset["assets"] is Assets
+    assert dataset["spatial"] == SpatialMatch | None
+    assert dataset["return"] is Evaluation
+    assert get_type_hints(ReadResult.fit)["return"] is Dataset
 
 
 def test_read_result_and_report_survive_scope_cleanup() -> None:
@@ -392,8 +396,7 @@ def test_write_finalizes_arrow_and_parquet_metadata_without_output_rewrite(
     assert len([event for event in events if event.startswith("batch:")]) == 3
     assert not list(tmp_path.glob(".result.parquet.*"))
     assert (
-        cast(Saved, saved).sha256
-        == "sha256:" + hashlib.sha256(destination.read_bytes()).hexdigest()
+        saved.sha256 == "sha256:" + hashlib.sha256(destination.read_bytes()).hexdigest()
     )
 
 
