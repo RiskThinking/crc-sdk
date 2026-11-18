@@ -23,7 +23,7 @@ from shapely.errors import GEOSException  # type: ignore[import-untyped]
 from shapely.geometry import Point  # type: ignore[import-untyped]
 
 from ._dataset_schema import SourceIdentity, _identifier
-from ._geometry.h3 import cell_polygon
+from ._geometry import cell_polygon
 from ._graph import ExecutionScope
 from ._runtime import LocalPath, _local_path, _memory_bytes
 from ._schema.dataset import _cell

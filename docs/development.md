@@ -14,23 +14,28 @@ source override only; built SDK wheels retain the declared
 uv sync --locked --all-extras
 uv run python tools/api_contracts/check.py
 uv run pytest
+uv run python -I tools/check_examples.py
 uv run mypy
 uv run ruff check .
 uv run ruff format --check .
 ```
 
-Without uv: `python -m venv .venv && .venv/bin/pip install -e ".[zarr,netcdf,raster,test]"`.
+To install without uv, create a virtual environment and install the paired
+framework followed by `python -m pip install -e ".[zarr,netcdf,raster,test]"`.
 
-Tests use offline source fixtures. Generated dataset and catalog resources are
-checked together with the paired framework contracts:
+The test suite uses offline source fixtures. The example check runs the Python
+examples from the README and guides, using a fresh directory for each guide.
+It supplies a local release index to the CRC Open example and syntax-checks
+the explicitly marked live provider snippets.
+
+Check the generated artifact definitions against the paired framework.
 
 ```sh
 uv run python tools/generate_dataset_contracts.py --check
 uv run python tools/generate_evidence_contracts.py --check
 uv run python tools/generate_collection_contracts.py --check
 uv run python tools/generate_evaluation_contracts.py --check
-uv run pytest -q tests/test_dataset_schema.py tests/test_declarations.py tests/test_catalog.py
-uv run pytest -q tests/test_execution_scope.py tests/test_recipes.py tests/test_terminals.py
+uv run python ../crc-framework-rs/tools/sync_data_contracts.py --sdk . --check
 ```
 
 ## Conventions
@@ -51,28 +56,33 @@ uv run pytest -q tests/test_execution_scope.py tests/test_recipes.py tests/test_
 
 ## CI
 
-`.github/workflows/ci.yml` runs on pushes to `main` and pull requests:
+CI runs contracts, lint, and typing checks. It tests the paired SDK and framework
+on Linux with Python 3.11–3.14 and on Windows.
+CI verifies imports and contracts in a fresh base wheel installation, then
+runs the offline suite and guide examples against the installed wheels with
+locked test dependencies. A separate Linux Python 3.12 job checks the minimum
+supported PyArrow version.
 
-- lint on Python 3.12: `ruff check`, `ruff format --check` and `mypy`;
-- tests on Python 3.11–3.14 with the locked dependencies and paired framework
-  source (3.14 is
-  non-blocking while native wheels catch up);
-- paired editable and wheel installation checks;
-- clean installs of the built SDK and framework wheels, plus a Windows job.
+CI uses the framework's `main` branch by default. Set the `CRC_FRAMEWORK_REF`
+repository variable or dispatch the workflow with a framework ref to test a
+specific pairing.
 
 ## Releases
 
 1. Apply the package and schema versions from
    `crc_sdk/contracts/api/release.json` to `pyproject.toml`, generated contracts,
-   lockfiles, and release checks. Superseded unshipped definitions are replaced
-   in place; their existence is not a reason for an additional version bump.
+   lockfiles, and release checks.
    Run `uv lock` after changing dependencies.
-2. Merge, then create a GitHub release with tag `v<version>` (for example
-   `v1.0.0` or `v1.1.0a1`). Prerelease tags are marked automatically.
-3. `release.yaml` reruns CI, checks the tag matches the package version, builds
-   one universal wheel and an sdist, and requires
-   `tools/api_contracts/check.py --runtime` against the installed wheel before
-   publication. Declaration checks do not prove the implementation is complete.
+2. Publish the framework version recorded in the ledger and a [current CRC Open
+   release index](sources.md#discover-a-crc-open-release). Merge the SDK and
+   push the SDK package tag, such as `v1.0.0`.
+3. The SDK release workflow checks that the tag matches the SDK package
+   version and runs paired CI at the exact framework tag in the ledger. It
+   builds the wheel and source distribution, installs the wheel with the exact
+   published framework version, and verifies the installed contracts, tests,
+   and examples. It checks that the default CRC Open endpoint resolves to a
+   nonempty current-format index. The release publishes the verified artifacts
+   to GitHub and PyPI.
 
 ## Contributor credits
 

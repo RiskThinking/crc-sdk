@@ -203,19 +203,21 @@ def test_framework_types_cannot_be_reexported_by_sdk(
         ("evaluation", "3.0"),
         ("collection", "2.0"),
         ("taxonomy", "2.0"),
-        ("numerical", "2.0"),
+        ("dataset", "3.0"),
     ],
 )
-def test_unshipped_formats_do_not_cause_another_version_bump(
+def test_release_ledger_must_match_owned_formats(
     checker: ModuleType,
     declarations: tuple[dict[str, Any], dict[str, Any]],
     format_name: str,
     unnecessary_version: str,
 ) -> None:
-    contract, release = declarations
+    _, release = declarations
     release["formats"][format_name] = unnecessary_version
-    with pytest.raises(checker.ContractError, match="single release ledger"):
-        checker.validate_contract(contract, release)
+    with pytest.raises(
+        checker.ContractError, match=f"{format_name} schema does not match"
+    ):
+        checker.check_schema_versions(release)
 
 
 def test_duplicate_json_fields_are_rejected(
@@ -333,6 +335,7 @@ def test_runtime_rejects_undeclared_aliases_outside_all(
     (resources / "release.json").write_text(json.dumps(release))
     monkeypatch.setattr(checker, "import_runtime", lambda path: package)
     monkeypatch.setattr(checker, "files", lambda owner: tmp_path)
+    monkeypatch.setattr(checker, "packaged_errors", lambda path: [])
     monkeypatch.setattr(checker.importlib.metadata, "version", lambda name: "1.0.0")
 
     def missing(name: str) -> None:
@@ -436,6 +439,7 @@ def test_function_exports_validate_their_signature(
     (resources / "release.json").write_text(json.dumps(release))
     monkeypatch.setattr(checker, "import_runtime", lambda path: package)
     monkeypatch.setattr(checker, "files", lambda owner: tmp_path)
+    monkeypatch.setattr(checker, "packaged_errors", lambda path: [])
     monkeypatch.setattr(checker.importlib.metadata, "version", lambda name: "1.0.0")
 
     def missing(name: str) -> None:

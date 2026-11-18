@@ -24,7 +24,8 @@ from pathlib import Path
 from typing import Any, ForwardRef, Literal, TypeVar, Union, get_args, get_origin
 
 ROOT = Path(__file__).resolve().parents[2]
-CONTRACTS = ROOT / "crc_sdk" / "contracts" / "api"
+PACKAGE = ROOT / "crc_sdk"
+CONTRACTS = PACKAGE / "contracts" / "api"
 BUILTINS = {
     "str",
     "int",
@@ -235,27 +236,31 @@ def validate_contract(contract: dict[str, Any], release: dict[str, Any]) -> None
     require(contract.get("package") == "crc-sdk", "wrong package owner")
     require(contract.get("canonical_module") == "crc_sdk", "wrong canonical import")
     require(release.get("schema_version") == "1.0", "unsupported release ledger schema")
+    packages = release.get("packages")
     require(
-        release.get("packages")
-        == {
-            "framework": "1.0.0",
-            "sdk": "1.0.0",
-            "framework_requirement": "crc-framework>=1.0.0,<2",
-        },
-        "package versions differ from the single release ledger",
+        isinstance(packages, dict)
+        and set(packages) == {"framework", "sdk", "framework_requirement"}
+        and all(isinstance(version, str) and version for version in packages.values()),
+        "release ledger must declare package versions and the framework requirement",
     )
+    formats = release.get("formats")
     require(
-        release.get("formats")
+        isinstance(formats, dict)
+        and set(formats)
         == {
-            "dataset": "2.0",
-            "evaluation": "2.0",
-            "collection": "1.0",
-            "taxonomy": "1.0",
-            "numerical": "1.0",
-            "impact": "2.0",
-            "evidence": "1.0",
-        },
-        "format versions differ from the single release ledger",
+            "dataset",
+            "evaluation",
+            "collection",
+            "taxonomy",
+            "numerical",
+            "impact",
+            "evidence",
+        }
+        and all(
+            isinstance(version, str) and re.fullmatch(r"[0-9]+\.[0-9]+", version)
+            for version in formats.values()
+        ),
+        "release ledger must declare major.minor format versions",
     )
     exports = contract.get("exports")
     require(isinstance(exports, dict) and bool(exports), "public allowlist is empty")
@@ -469,6 +474,27 @@ def check_versions(release: Mapping[str, Any], root: Path = ROOT) -> None:
     )
 
 
+def check_schema_versions(release: Mapping[str, Any]) -> None:
+    resources = PACKAGE / "contracts"
+    for name, directory in (
+        ("dataset", "schemas"),
+        ("evaluation", "schemas"),
+        ("collection", "schemas"),
+        ("evidence", "schemas"),
+        ("taxonomy", "taxonomy"),
+    ):
+        version = release["formats"][name]
+        schemas = {
+            path.name
+            for path in (resources / directory).glob(f"{name}-[0-9]*.schema.json")
+        }
+        require(
+            schemas == {f"{name}-{version}.schema.json"},
+            f"{name} schema does not match release ledger version {version}: "
+            f"{sorted(schemas)}",
+        )
+
+
 def _normalized_annotation(value: Any) -> str:
     if value is inspect.Signature.empty:
         return "<missing>"
@@ -651,6 +677,31 @@ def _packaged_removal_errors(
     return errors
 
 
+def packaged_errors(installed: Path, declared: Path = PACKAGE) -> list[str]:
+    def inventory(package: Path) -> set[Path]:
+        return {
+            path.relative_to(package)
+            for path in package.rglob("*")
+            if path.is_file()
+            and (path.suffix in {".py", ".pyi", ".json"} or path.name == "py.typed")
+        }
+
+    expected = inventory(declared)
+    actual = inventory(installed)
+    errors = [
+        f"{path}: missing from installed package" for path in sorted(expected - actual)
+    ]
+    errors.extend(
+        f"{path}: unexpected file in installed package"
+        for path in sorted(actual - expected)
+    )
+    for path in sorted(expected & actual):
+        source = (declared / path).read_text(encoding="utf-8")
+        if (installed / path).read_text(encoding="utf-8") != source:
+            errors.append(f"{path}: installed resource differs from release checkout")
+    return errors
+
+
 def check_runtime(
     contract: Mapping[str, Any],
     release: Mapping[str, Any],
@@ -668,6 +719,8 @@ def check_runtime(
         "installed contract files differ from the source release declarations",
     )
     errors = _packaged_removal_errors(files(package), contract, release)
+    require(package.__file__ is not None, "installed crc_sdk has no package location")
+    errors.extend(packaged_errors(Path(package.__file__).resolve().parent))
     if package_root is not None and not Path(
         package.__file__ or ""
     ).resolve().is_relative_to(package_root):
@@ -829,6 +882,7 @@ def main() -> int:
         contract, release = load_contracts()
         validate_contract(contract, release)
         check_versions(release)
+        check_schema_versions(release)
         if arguments.package_root is not None and not arguments.runtime:
             raise ContractError("--package-root requires --runtime")
         if arguments.runtime:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -161,6 +161,33 @@ def grid_cells(
     return tuple(result)
 
 
+def _attribute_values(attributes: Mapping[str, object], name: str) -> tuple[Any, ...]:
+    raw = attributes.get(name)
+    return () if raw is None else tuple(np.asarray(raw).reshape(-1).tolist())
+
+
+def _unpack_grid_values(
+    raw: np.ndarray[Any, Any], attributes: Mapping[str, object]
+) -> np.ndarray[Any, Any]:
+    """Mask CF sentinels on stored values before applying scale and offset."""
+    stored = np.asarray(raw)
+    invalid = np.zeros(stored.shape, dtype=bool)
+    sentinels = _attribute_values(attributes, "_FillValue") + _attribute_values(
+        attributes, "missing_value"
+    )
+    for sentinel in dict.fromkeys(sentinels):
+        invalid |= stored == sentinel
+    values = stored.astype(np.float64)
+    scale = _attribute_values(attributes, "scale_factor")
+    offset = _attribute_values(attributes, "add_offset")
+    if scale:
+        values *= float(scale[0])
+    if offset:
+        values += float(offset[0])
+    values[invalid] = np.nan
+    return values
+
+
 def grid_values(
     array: Any,
     *,
@@ -172,8 +199,6 @@ def grid_values(
     cells: tuple[GridCell, ...],
     memory_limit: int | None = None,
 ) -> np.ndarray[Any, Any]:
-    from ._connectors.duckdb.netcdf import _CFDecoding
-
     dimensions = tuple(
         array.attrs.get("_ARRAY_DIMENSIONS", getattr(array, "dimensions", ()))
     )
@@ -200,7 +225,7 @@ def grid_values(
     ):
         selection[dimensions.index(name)] = value
     raw = array[tuple(selection)]
-    values = _CFDecoding(array, None)(raw)
+    values = _unpack_grid_values(raw, array.attrs)
     values = np.transpose(values, [dimensions.index(name) for name in wanted])
     return values[
         :, [cell.row - r0 for cell in cells], [cell.column - c0 for cell in cells]

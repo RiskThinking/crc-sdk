@@ -3,8 +3,7 @@
 [Docs index](README.md) · [Scientific declarations](scientific-data.md)
 
 Dataset `2.0` stores the science declared for participating series and the
-numerical evidence or law for each original spatial support. Historical hazard
-schemas and field aliases are rejected.
+numerical evidence or law for each original spatial support.
 
 ## Rows
 
@@ -31,7 +30,7 @@ The numerical payload is the framework's strict tagged union. A point mass
 contains one value. Gumbel laws have no shape parameter. Histograms, atoms,
 parametric laws, hurdles, completed curves, and transformed laws retain their
 actual representations. Completion and conditioning retain the scientific
-choice and original evidence. Historical curve dictionaries are rejected.
+choice and original evidence.
 
 H3 is a delivery optimization. Source geometry governs coverage; an index does
 not broaden a point into an area. Polygon topology and WKB layout are validated.
@@ -47,8 +46,8 @@ trips preserve those types and declarations.
 
 `Dataset.from_raster` accepts one same-grid, single-band raster per supplied
 non-exceedance probability. Each pixel retains its original footprint and
-quantile knots. The constructor describes work; terminals acquire verified
-snapshots and stream the selected pixels.
+quantile knots. Substitute your own GeoTIFF paths below and install the
+`raster` extra to read them. Building the recipe only records the paths.
 
 ```python
 from crc_framework import DepthAboveGround, LengthUnit, Tail
@@ -62,6 +61,7 @@ depth = Dataset.from_raster(
     ),
     probability=Probability.annual(tail=Tail.UPPER),
 )
+assert depth.explain().operations
 ```
 
 The probability keys are supplied data. All rasters must declare the same grid
@@ -73,9 +73,9 @@ as skipped with a diagnostic.
 
 Metadata contains variables, scenarios, actual periods, series probability
 meaning, source product and member identity, spatial support, typed resource
-identities, transformations, and the execution report. Global unit, tail,
-window, fitting, and coverage summaries do not override per-series science.
-Stored row-key constants and redundant envelope checksums are absent.
+identities, transformations, and the execution report. Units, annual tails,
+time windows, fits, and coverage retain the scope where they were declared
+or observed.
 
 Resource hashes use `sha256:` followed by 64 lowercase hexadecimal digits.
 Source license, attribution, and timezone-aware retrieval time are recorded when

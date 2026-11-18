@@ -1,7 +1,7 @@
 # CRC SDK documentation
 
-Start at the [project README](../README.md), then choose the reference for your
-question:
+Start at the [project quickstart](../README.md#query-a-dataset), then choose a
+guide.
 
 | Page | Covers |
 | --- | --- |
@@ -13,7 +13,8 @@ question:
 | [Sources and native evidence](sources.md) | Provider capabilities, discovery, temporal reductions, user evidence, and assets |
 | [Python interface contract](api-reference.md) | Canonical imports, ownership, and installed-package checks |
 | [Source resource terms](data-licences.md) | License, attribution, retrieval time, and content identity |
+| [Release notes](release-notes.md) | Package and artifact versions, and CRC Open availability |
 | [Development](development.md) | Paired checkout setup, checks, generated resources, and releases |
 
 Numerical probability laws, fitting, and impacts are documented in the
-[framework Python guide](../../crc-framework-rs/docs/python.md).
+[framework Python guide](https://github.com/RiskThinking/crc-framework-rs/blob/main/docs/python.md).

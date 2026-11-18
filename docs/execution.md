@@ -42,11 +42,16 @@ and probability meaning are typed declarations. Mappings of columns to arrays,
 Arrow tables, record batches, Arrow stream interchange, and installed pandas
 DataFrames use the same input boundary.
 
-## Fit observations once
+## Inspect annual samples, then fit them
+
+Each row supplies an annual maximum temperature in Celsius at one station.
+Read a small preview to check the input, then collect the full sample for the
+fit. Here the fitted result is written directly without an intermediate
+evidence file.
 
 ```python
-from crc_framework import DistributionFamily, SampleFit, Temperature, TemperatureUnit
-from crc_sdk import Samples
+from crc_framework import DistributionFamily, SampleFit, Tail, Temperature, TemperatureUnit
+from crc_sdk import Dataset, Probability, Samples, Variable
 
 observations = {
     "support_id": ["station-a"] * 5,
@@ -63,9 +68,11 @@ samples = Samples.from_table(
     ),
     probability=Probability.annual(tail=Tail.UPPER),
 )
-specification = SampleFit(family=DistributionFamily.GUMBEL_RIGHT)
+preview = samples.read(limit=2)
+assert preview.table.num_rows == 2 and not preview.report.complete
 evidence = samples.read()
-fitted = evidence.fit(specification)
+assert evidence.report.complete and evidence.report.valid
+fitted = evidence.fit(SampleFit(family=DistributionFamily.GUMBEL_RIGHT))
 saved = fitted.write("temperature.parquet")
 assert saved.path is not None
 assert Dataset.open(saved.path).read().report.valid
@@ -73,8 +80,8 @@ assert Dataset.open(saved.path).read().report.valid
 
 The collected evidence owns its Arrow values. Fitting that result uses those
 values, even after the original execution closes. It never reacquires the
-original source. A bounded `samples.read(limit=5)` is a preview and cannot be
-fitted unless consumption actually reached the end and completed validation.
+original source. A bounded read can be fitted only if consumption actually
+reached the end and completed validation.
 An exact limit boundary may remain incomplete because the source has not yet
 reported exhaustion. A limit on a fitted recipe bounds output rows; fitting
 still uses the complete selected evidence.
@@ -122,10 +129,11 @@ declared.
 ## Reuse an execution or stream it
 
 ```python
-from crc_sdk import Cache, Runtime
+from crc_sdk import Cache, CacheMode, Runtime
 
 runtime = Runtime(cache=Cache.reuse(".crc-cache"), batch_rows=1024)
 description = fitted.explain(runtime=runtime)
+assert description.cache.mode is CacheMode.REUSE
 with fitted.execute(runtime=runtime) as execution:
     report = execution.validate()
     values = execution.read()
@@ -149,14 +157,17 @@ invariants are checked throughout consumption. Breaking early leaves an
 incomplete report and releases scope-owned resources. Tables, metadata, and
 immutable report snapshots remain usable after their execution closes.
 
-`Runtime()` uses ephemeral source storage and one worker. Persistent cache
-policies are `Cache.reuse(path)`, `Cache.offline(path)`, and
-`Cache.refresh(path)`. Cache hits verify content, and offline execution never
-calls an acquisition function. Direct local inputs are read from their owned
-snapshots. Temporary joins, replay batches, and modelling state remain
-execution-owned. A borrowed database connection remains caller-owned and keeps
-its configuration. Memory limits bound collection and blocking fitting; a
-selection exceeding the budget raises `MemoryError` with an actionable message.
+`Runtime()` uses ephemeral source storage and one worker. `Cache.reuse(path)`
+keeps verified source snapshots in the given directory and acquires missing
+resources as needed. `Cache.offline(path)` only reads verified cached
+resources and raises if a required resource is missing. `Cache.refresh(path)`
+reacquires source data. [Offline replay example](sources.md#discover-a-crc-open-release)
+
+Direct local inputs are read from their owned snapshots. Temporary joins,
+replay batches, and modelling state remain execution-owned. A borrowed
+database connection remains caller-owned and keeps its configuration. Memory
+limits bound collection and blocking fitting. A selection exceeding the budget
+raises `MemoryError`.
 
 `Runtime(progress=callback)` receives typed `ProgressEvent` values. Raising from
 the callback cancels execution and closes owned resources.

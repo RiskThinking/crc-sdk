@@ -97,6 +97,5 @@ for the same exact ID. Display labels are not scientific conflicts; the left
 catalog's label is retained. The resulting namespace and revision identify the
 composed catalogs, while `sha256` identifies their complete serialized content.
 
-Catalog JSON uses taxonomy format `1.0`, and dataset metadata uses dataset
-format `2.0`. Historical hazard/pathway/horizon fields and alias registries are
-rejected. No migration envelope or compatibility flag is required.
+Catalog JSON uses taxonomy format `1.0`. Dataset metadata records each selected
+series and its scientific declarations in dataset format `2.0`.

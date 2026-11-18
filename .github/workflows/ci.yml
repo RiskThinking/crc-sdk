@@ -2,22 +2,17 @@ name: Validate
 
 on:
   push:
-    branches: [main, codex/python-v1]
+    branches: [main]
   pull_request:
   workflow_dispatch:
     inputs:
       framework_ref:
         description: Paired framework branch or commit
         type: string
-        default: codex/python-v1
   workflow_call:
     inputs:
       framework_ref:
         type: string
-        default: codex/python-v1
-    secrets:
-      CRC_COMPAT_TOKEN:
-        required: false
 
 permissions:
   contents: read
@@ -36,9 +31,8 @@ jobs:
       - uses: actions/checkout@v7
         with:
           repository: RiskThinking/crc-framework-rs
-          ref: ${{ inputs.framework_ref || 'codex/python-v1' }}
+          ref: ${{ inputs.framework_ref || vars.CRC_FRAMEWORK_REF || 'main' }}
           path: crc-framework-rs
-          token: ${{ secrets.CRC_COMPAT_TOKEN || github.token }}
           persist-credentials: false
       - uses: astral-sh/setup-uv@v10.2.0
         with:
@@ -55,6 +49,8 @@ jobs:
           .venv/bin/python tools/api_contracts/check.py
           .venv/bin/python tools/generate_dataset_contracts.py --check
           .venv/bin/python tools/generate_evidence_contracts.py --check
+          .venv/bin/python tools/generate_collection_contracts.py --check
+          .venv/bin/python tools/generate_evaluation_contracts.py --check
           .venv/bin/python ../crc-framework-rs/tools/sync_data_contracts.py --sdk . --check
           .venv/bin/python ../crc-framework-rs/tools/api_contracts/check.py
       - name: Ruff
@@ -65,9 +61,8 @@ jobs:
         run: uv run --locked --all-extras --python 3.12 mypy
 
   tests:
-    name: ${{ matrix.os }} Python ${{ matrix.python }}
+    name: ${{ matrix.os }} Python ${{ matrix.python }}${{ matrix.pyarrow && format(' / PyArrow {0}', matrix.pyarrow) || '' }}
     runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.python == '3.14' }}
     strategy:
       fail-fast: false
       matrix:
@@ -77,6 +72,7 @@ jobs:
           - {os: ubuntu-latest, python: '3.13'}
           - {os: ubuntu-latest, python: '3.14'}
           - {os: windows-latest, python: '3.12'}
+          - {os: ubuntu-latest, python: '3.12', pyarrow: '18.0.0'}
     defaults:
       run:
         shell: bash
@@ -88,9 +84,8 @@ jobs:
       - uses: actions/checkout@v7
         with:
           repository: RiskThinking/crc-framework-rs
-          ref: ${{ inputs.framework_ref || 'codex/python-v1' }}
+          ref: ${{ inputs.framework_ref || vars.CRC_FRAMEWORK_REF || 'main' }}
           path: crc-framework-rs
-          token: ${{ secrets.CRC_COMPAT_TOKEN || github.token }}
           persist-credentials: false
       - uses: astral-sh/setup-uv@v10.2.0
         with:
@@ -100,17 +95,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: crc-framework-rs -> target
-      - name: Install locked paired packages
-        run: uv sync --locked --all-extras --python "${{ matrix.python }}"
-      - name: Check dependencies and run offline tests
-        run: |
-          uv pip check --python .venv
-          uv run --locked --all-extras --python "${{ matrix.python }}" pytest -q
       - name: Build paired wheels
         run: |
           uv build --project ../crc-framework-rs --wheel --python "${{ matrix.python }}" --out-dir "$RUNNER_TEMP/framework-wheel"
-          uv build --no-sources --out-dir "$RUNNER_TEMP/sdk-wheel"
-      - name: Verify installed wheel versions and packaged contracts
+          uv build --no-sources --python "${{ matrix.python }}" --out-dir "$RUNNER_TEMP/sdk-wheel"
+      - name: Verify base installs and public interfaces
         run: |
           set -euo pipefail
           uv venv --python "${{ matrix.python }}" "$RUNNER_TEMP/wheel-venv"
@@ -121,5 +110,23 @@ jobs:
           fi
           uv pip install --python "$wheel_python" "$RUNNER_TEMP"/framework-wheel/*.whl "$RUNNER_TEMP"/sdk-wheel/*.whl
           uv pip check --python "$wheel_python"
+          echo "WHEEL_PYTHON=$wheel_python" >> "$GITHUB_ENV"
           cd "$RUNNER_TEMP"
+          "$wheel_python" -I "$GITHUB_WORKSPACE/crc-framework-rs/tools/api_contracts/check.py" --runtime
+          "$wheel_python" -I "$GITHUB_WORKSPACE/crc-sdk/tools/api_contracts/check.py" --runtime
           "$wheel_python" -I "$GITHUB_WORKSPACE/crc-sdk/tools/check_wheels.py"
+      - name: Run offline tests and guides on installed wheels
+        env:
+          PYARROW_VERSION: ${{ matrix.pyarrow }}
+        run: |
+          set -euo pipefail
+          wheels=( "$RUNNER_TEMP"/sdk-wheel/*.whl )
+          uv export --locked --all-extras --no-emit-local --no-hashes --output-file "$RUNNER_TEMP/test-requirements.txt" --quiet
+          if [[ -n "$PYARROW_VERSION" ]]; then
+            sed -i "/^pyarrow==/s/==[0-9.]*/==$PYARROW_VERSION/" "$RUNNER_TEMP/test-requirements.txt"
+          fi
+          uv pip install --python "$WHEEL_PYTHON" -r "$RUNNER_TEMP/test-requirements.txt" "${wheels[0]}[zarr,netcdf,raster,test]" "$RUNNER_TEMP"/framework-wheel/*.whl
+          uv pip check --python "$WHEEL_PYTHON"
+          cd "$RUNNER_TEMP"
+          "$WHEEL_PYTHON" -I -m pytest -q --import-mode=importlib "$GITHUB_WORKSPACE/crc-sdk/tests"
+          "$WHEEL_PYTHON" -I "$GITHUB_WORKSPACE/crc-sdk/tools/check_examples.py"

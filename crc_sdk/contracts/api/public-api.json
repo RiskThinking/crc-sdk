@@ -4951,13 +4951,6 @@
       "row_key",
       "sort_order"
     ],
-    "replacement_tests": {
-      "tests/test_core.py": "canonical imports and ownership; numerical functions imported from crc_framework",
-      "tests/test_schema_13.py": "strict dataset 2.0 and typed evidence roundtrips; reject historical dataset formats",
-      "tests/test_jrc_workflow.py": "typed JRC product selection and shared cache/runtime execution",
-      "tests/test_ghcnh.py": "typed GHCNh sample acquisition, coverage and estimator choices",
-      "tests/test_portfolio.py": "semantic Evaluation and EvaluationArtifact contract with complete missing-asset reporting"
-    },
     "methods": {
       "*": [
         "for_assets",
