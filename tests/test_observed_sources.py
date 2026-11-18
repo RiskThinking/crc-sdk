@@ -19,7 +19,9 @@ from shapely import from_wkb  # type: ignore[import-untyped]
 from shapely.geometry import box  # type: ignore[import-untyped]
 
 from crc_sdk import (
+    Assets,
     DatasetCollection,
+    EvaluationArtifact,
     EvidenceMetadata,
     FitFailure,
     FittingDiagnostic,
@@ -744,6 +746,26 @@ def test_noaa_annual_observations_central_curves_and_confidence_evidence_stay_di
     curve = table_to_rows(central.table)[0].curve
     assert curve is not None
     np.testing.assert_equal(curve.quantile([0.9, 0.99]), [1.5, 2.5])
+
+
+def test_noaa_published_dataset_evaluates_with_validated_source_metadata(
+    transport: NativeTransport, tmp_path: Path
+) -> None:
+    source = NOAAWaterLevels().select(stations="8518750").levels()
+    assets = Assets({"asset_id": ["test"], "longitude": [-74.0], "latitude": [40.7]})
+    evaluation = source.evaluate(assets).return_periods([10])
+    result = evaluation.read()
+    assert result.table["value"].to_pylist() == [1.5]
+    (upstream,) = result.metadata.inputs
+    assert upstream.metadata.report.complete
+    assert upstream.metadata.report.valid is True
+    assert upstream.metadata.report.counts.produced == 1
+    assert result.metadata.source == upstream.metadata.source
+
+    saved = evaluation.write(tmp_path / "noaa-evaluation.parquet")
+    reopened = EvaluationArtifact.open(saved.path).read()
+    assert reopened.report.valid is True
+    assert reopened.table["value"].to_pylist() == [1.5]
 
 
 def test_noaa_published_references_preserve_probability_semantics(

@@ -809,9 +809,17 @@ def test_saved_exposures_have_ordered_quantiles_and_continuous_support(
             artifact.read()
 
 
-@pytest.mark.parametrize("claimed_rows", [0, 1])
-def test_saved_matched_supports_are_bounded_by_the_input_row_count(
-    tmp_path: Path, claimed_rows: int
+@pytest.mark.parametrize(
+    ("claimed_rows", "claimed_failures", "message"),
+    [
+        (0, 0, "matched supports exceed the input"),
+        (1, 0, "matched supports exceed the input"),
+        (2, 1, "supports with curves exceed the available input rows"),
+        (2, 2, "supports with curves exceed the available input rows"),
+    ],
+)
+def test_saved_matched_supports_are_bounded_by_input_counts(
+    tmp_path: Path, claimed_rows: int, claimed_failures: int, message: str
 ) -> None:
     artifact = (
         data(longitudes=(0, 1))
@@ -826,13 +834,15 @@ def test_saved_matched_supports_are_bounded_by_the_input_row_count(
     document = json.loads(headers[b"crc.evaluation"])
     counts = document["inputs"][0]["metadata"]["report"]["counts"]
     assert counts["produced"] == 2
-    counts.update(requested=claimed_rows, produced=claimed_rows)
+    counts.update(
+        requested=claimed_rows, produced=claimed_rows, no_data=claimed_failures
+    )
     headers[b"crc.evaluation"] = json.dumps(document).encode()
     inconsistent = tmp_path / "inconsistent-input.parquet"
     pq.write_table(table.replace_schema_metadata(headers), inconsistent)
     reopened = EvaluationArtifact.open(inconsistent)
     assert reopened.validate().valid is False
-    with pytest.raises(ValidationError, match="matched supports exceed the input"):
+    with pytest.raises(ValidationError, match=message):
         reopened.read()
 
 

@@ -6,6 +6,7 @@ import json
 import os
 import urllib.parse
 from collections.abc import Iterator, Mapping
+from contextlib import closing
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path, PurePosixPath
@@ -16,10 +17,14 @@ import pyarrow.parquet as pq  # type: ignore[import-untyped]
 from ._dataset_schema import (
     DatasetMetadata,
     ExecutionReport,
+    IdentityKind,
+    IdentityRename,
     ReleaseReference,
     SourceIdentity,
+    SpatialContract,
     Stage,
     SupportKind,
+    Transformation,
     _digest,
     _identifier,
     _object,
@@ -35,9 +40,14 @@ from ._declarations import (
 )
 from ._graph import ExecutionScope, NodeStream
 from ._inspection import Capability, Inspection, Operation, SeriesReference
-from ._recipes import Dataset, _checked_stream, _key
+from ._recipes import Dataset, _Checked, _checked_stream, _key
 from ._runtime import LocalPath
-from ._selection import SelectionState, selected_metadata
+from ._selection import (
+    ResolvedSelection,
+    SelectionState,
+    participating_spec,
+    selected_metadata,
+)
 from ._source_io import SourceNode, check_release, fetch, fetch_json, native_data
 from ._terminals import _schema
 
@@ -117,27 +127,32 @@ def _series_key(item: SeriesSpec) -> tuple[str, str | None, str | None]:
 
 def _selected(
     entries: tuple[ReleaseDataset, ...], state: SelectionState, source: SourceIdentity
-) -> tuple[tuple[ReleaseDataset, DatasetMetadata], ...]:
-    metadata = _merge(tuple((entry, entry.metadata) for entry in entries), source)
-    resolved = state.resolve(metadata.spec, source=source)
-    result: list[tuple[ReleaseDataset, DatasetMetadata]] = []
+) -> tuple[tuple[ReleaseDataset, DatasetMetadata, ResolvedSelection], ...]:
+    resolved = state.resolve(
+        _merged_spec(tuple(entry.metadata for entry in entries)), source=source
+    )
+    result = []
     for entry in entries:
-        selected = selected_metadata(replace(entry.metadata, source=source), resolved)
-        if selected.spec.series:
-            result.append((entry, selected))
+        spec = entry.metadata.spec
+        series = tuple(
+            item for item in spec.series if _series_key(item) in resolved.keys
+        )
+        if series:
+            local = replace(
+                resolved,
+                spec=participating_spec(spec, series),
+                keys=frozenset(_series_key(item) for item in series),
+            )
+            result.append((entry, selected_metadata(entry.metadata, local), local))
     return tuple(result)
 
 
-def _merge(
-    parts: tuple[tuple[ReleaseDataset, DatasetMetadata], ...], source: SourceIdentity
-) -> DatasetMetadata:
+def _merged_spec(parts: tuple[DatasetMetadata, ...]) -> DataSpec:
     variables: dict[str, Variable] = {}
     scenarios: dict[str, Scenario] = {}
     periods: dict[str, Period] = {}
     series: dict[tuple[str, str | None, str | None], SeriesSpec] = {}
-    supports: list[SupportKind] = []
-    resolutions: set[int | None] = set()
-    for _, metadata in parts:
+    for metadata in parts:
         for value in metadata.spec.variables:
             _merge_descriptor(value, variables)
         for scenario in metadata.spec.scenarios:
@@ -154,16 +169,129 @@ def _merge(
                     "scientific definitions"
                 )
             series[key] = item
-        supports.extend(metadata.spatial.supports)
-        resolutions.add(metadata.spatial.index_resolution)
-    from ._dataset_schema import SpatialContract, SupportKind
-
-    spec = DataSpec(
+    return DataSpec(
         tuple(variables.values()),
         series=tuple(series.values()),
         scenarios=tuple(scenarios.values()),
         periods=tuple(periods.values()),
     )
+
+
+def _project_provenance(
+    metadata: DatasetMetadata,
+    variables: tuple[Variable, ...],
+    scenarios: tuple[Scenario, ...],
+) -> tuple[Transformation, ...]:
+    spec = DataSpec(variables, scenarios=scenarios, series=())
+    return selected_metadata(
+        metadata, ResolvedSelection(spec=spec, keys=frozenset())
+    ).provenance
+
+
+def _merged_provenance(
+    parts: tuple[DatasetMetadata, ...],
+    spec: DataSpec,
+) -> tuple[Transformation, ...]:
+    if not any(part.provenance for part in parts):
+        return ()
+    if len(parts) == 1:
+        return parts[0].provenance
+
+    history: dict[tuple[IdentityKind, str], tuple[Transformation, ...]] = {}
+    additions: list[tuple[Transformation, ...]] = []
+    for part in parts:
+        variables = []
+        scenarios = []
+        for variable in part.spec.variables:
+            key = IdentityKind.VARIABLE, variable.id
+            steps = _project_provenance(part, (variable,), ())
+            if key not in history:
+                variables.append(variable)
+            elif history[key] != steps:
+                raise ValueError(
+                    f"Conflicting release provenance for variable {variable.id!r}"
+                )
+            history[key] = steps
+        for scenario in part.spec.scenarios:
+            key = IdentityKind.SCENARIO, scenario.id
+            steps = tuple(
+                step
+                for step in _project_provenance(part, (), (scenario,))
+                if isinstance(step, IdentityRename)
+            )
+            if key not in history:
+                scenarios.append(scenario)
+            elif history[key] != steps:
+                raise ValueError(
+                    f"Conflicting release provenance for scenario {scenario.id!r}"
+                )
+            history[key] = steps
+        if variables or scenarios:
+            additions.append(
+                _project_provenance(part, tuple(variables), tuple(scenarios))
+            )
+    return _join_provenance(additions, spec)
+
+
+def _rewind_rename(ids: set[str], mapping: Mapping[str, str]) -> set[str] | None:
+    targets = set(mapping.values())
+    previous = (ids - targets) | mapping.keys()
+    return previous if targets <= ids and len(previous) == len(ids) else None
+
+
+def _join_provenance(
+    additions: list[tuple[Transformation, ...]], spec: DataSpec
+) -> tuple[Transformation, ...]:
+    # Keep each input's step order. When independent shards project different
+    # sides of an atomic rename, rewind the sides together to avoid collisions.
+    pending = [list(steps) for steps in reversed(additions) if steps]
+    identities = {
+        IdentityKind.VARIABLE: {variable.id for variable in spec.variables},
+        IdentityKind.SCENARIO: {scenario.id for scenario in spec.scenarios},
+    }
+    merged: list[Transformation] = []
+    while pending:
+        blocked: dict[
+            IdentityKind, list[tuple[list[Transformation], IdentityRename]]
+        ] = {}
+        for steps in pending:
+            step = steps[-1]
+            if isinstance(step, IdentityRename):
+                previous = _rewind_rename(identities[step.dimension], step.mapping)
+                if previous is None:
+                    blocked.setdefault(step.dimension, []).append((steps, step))
+                    continue
+                identities[step.dimension] = previous
+            merged.append(steps.pop())
+            break
+        else:
+            for dimension, group in blocked.items():
+                mapping = {
+                    old: new for _, step in group for old, new in step.mapping.items()
+                }
+                if len(mapping) != sum(len(step.mapping) for _, step in group):
+                    continue
+                previous = _rewind_rename(identities[dimension], mapping)
+                if previous is not None:
+                    identities[dimension] = previous
+                    merged.append(IdentityRename(dimension=dimension, mapping=mapping))
+                    for steps, _ in group:
+                        steps.pop()
+                    break
+            else:
+                raise ValueError(
+                    "Release provenance contains conflicting historical identities"
+                )
+        pending = [steps for steps in pending if steps]
+    return tuple(reversed(merged))
+
+
+def _merge(
+    parts: tuple[DatasetMetadata, ...], source: SourceIdentity
+) -> DatasetMetadata:
+    spec = _merged_spec(parts)
+    supports = [support for part in parts for support in part.spatial.supports]
+    resolutions = {part.spatial.index_resolution for part in parts}
     return DatasetMetadata(
         spec=spec,
         spatial=SpatialContract(
@@ -254,11 +382,13 @@ class _CRCNode(SourceNode[DatasetMetadata]):
     def inspection(self, scope: ExecutionScope) -> Inspection:
         if self._empty():
             source = SourceIdentity(provider="crc", product="crc-open")
-            selected: tuple[tuple[ReleaseDataset, DatasetMetadata], ...] = ()
+            selected: tuple[
+                tuple[ReleaseDataset, DatasetMetadata, ResolvedSelection], ...
+            ] = ()
         else:
             _, entries, source = self._resolve(scope)
             selected = _selected(entries, self.state, source)
-        metadata = _merge(selected, source)
+        metadata = _merge(tuple(part for _, part, _ in selected), source)
         return Inspection(
             schema=_schema(metadata),
             series=tuple(
@@ -291,11 +421,16 @@ class _CRCNode(SourceNode[DatasetMetadata]):
             )
         catalog, entries, source = self._resolve(scope)
         selected = _selected(entries, self.state, source)
-        metadata = _merge(selected, source)
+        parts = tuple(part for _, part, _ in selected)
+        metadata = _merge(parts, source)
+        with native_data(scope=scope, source=source.product):
+            metadata = replace(
+                metadata, provenance=_merged_provenance(parts, metadata.spec)
+            )
         identities = list(source.resources)
 
         def batches() -> Iterator[pa.RecordBatch]:
-            for entry, entrymeta in selected:
+            for entry, _, resolved in selected:
                 uri = urllib.parse.urljoin(catalog, entry.uri)
                 path, resource = fetch(
                     scope,
@@ -306,7 +441,8 @@ class _CRCNode(SourceNode[DatasetMetadata]):
                 )
                 identities.append(resource)
                 with pq.ParquetFile(path) as reader:
-                    stored = (reader.schema_arrow.metadata or {}).get(b"crc.dataset")
+                    schema = reader.schema_arrow
+                    stored = (schema.metadata or {}).get(b"crc.dataset")
                     if (
                         stored is None
                         or DatasetMetadata.from_json(stored.decode()).to_json()
@@ -316,40 +452,59 @@ class _CRCNode(SourceNode[DatasetMetadata]):
                             "release dataset header differs from "
                             "its indexed declaration"
                         )
-                    from ._schema import rows_to_table, table_to_rows
-
-                    if reader.num_row_groups == 0:
-                        continue
-                    for batch in reader.iter_batches(
-                        batch_size=scope.runtime.batch_rows
-                    ):
-                        raw = pa.Table.from_batches([batch]).replace_schema_metadata(
-                            _schema(
-                                replace(
-                                    entry.metadata,
-                                    report=replace(
-                                        entry.metadata.report,
-                                        complete=False,
-                                        valid=None,
-                                    ),
+                    if not schema.equals(_schema(entry.metadata), check_metadata=False):
+                        raise ValueError(
+                            "release dataset Arrow schema contradicts its "
+                            "indexed declaration"
+                        )
+                    report = entry.metadata.report
+                    if not report.complete or report.valid is not True:
+                        raise ValueError(
+                            "release dataset requires a complete, valid report"
+                        )
+                    if reader.metadata.num_rows != report.counts.produced:
+                        raise ValueError(
+                            "release dataset produced count disagrees with "
+                            "the Parquet footer"
+                        )
+                    checked = _Checked(scope, entry.metadata)
+                    with closing(checked.db):
+                        for batch in reader.iter_batches(
+                            batch_size=scope.runtime.batch_rows
+                        ):
+                            batch = checked.check(batch)
+                            coordinates = batch.select(
+                                [
+                                    "variable_id",
+                                    "scenario_id",
+                                    "period_id",
+                                    "support_id",
+                                    "cell_id",
+                                    "geometry",
+                                ]
+                            )
+                            selected_batch = batch.filter(
+                                pa.array(
+                                    [
+                                        resolved.matches_record(row)
+                                        for row in coordinates.to_pylist()
+                                    ],
+                                    type=pa.bool_(),
                                 )
-                            ).metadata
+                            )
+                            if selected_batch.num_rows:
+                                yield selected_batch
+                    if (
+                        checked.produced != report.counts.produced
+                        or checked.no_data != report.counts.no_data
+                    ):
+                        raise ValueError(
+                            "release dataset report counts disagree with "
+                            "the consumed rows"
                         )
-                        rows = table_to_rows(raw)
-                        resolved = SelectionState(area=self.state.area).resolve(
-                            entrymeta.spec, source=source
-                        )
-                        keys = {_series_key(item) for item in entrymeta.spec.series}
-                        rows = tuple(
-                            row
-                            for row in rows
-                            if (row.variable_id, row.scenario_id, row.period_id) in keys
-                            and resolved.matches(row)
-                        )
-                        if rows:
-                            yield from rows_to_table(rows, metadata).to_batches()
 
         stream = _checked_stream(scope, metadata, batches())
+        stream.verify_before_yield = True
         original = stream.report
 
         def report() -> ExecutionReport:

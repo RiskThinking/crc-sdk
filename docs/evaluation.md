@@ -181,8 +181,8 @@ attributes, recorded source releases, and diagnostics for missing results.
 Rows that share a source support agree on its fit outcome and on the exposure
 at each query coordinate. Validation checks that exposure quantiles are
 nondecreasing in non-exceedance order and that supported queries form one
-contiguous range. The upstream no-data count bounds the number of failed fits
-represented in the results.
+contiguous range. Upstream counts separately bound matches to failed fits and
+matches to supports with curves.
 The evaluation report carries acquired input checksums, upstream diagnostics,
 skipped counts, and annual completeness counts from the input reports. Reopening
 checks those inherited facts against the embedded input metadata.

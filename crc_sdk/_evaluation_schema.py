@@ -1467,6 +1467,10 @@ class EvaluationValidator:
                 raise ValueError(
                     "evaluation fit failures exceed the input no-data count"
                 )
+            if total - failed > counts.produced - counts.no_data:
+                raise ValueError(
+                    "evaluation supports with curves exceed the available input rows"
+                )
 
         current = None
         largest: float | None = None

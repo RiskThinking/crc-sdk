@@ -11,6 +11,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import Self, cast
+from urllib.error import URLError
 
 import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.compute as pc  # type: ignore[import-untyped]
@@ -47,7 +48,7 @@ from ._dataset_schema import (
     _identifier,
 )
 from ._declarations import Period, Scenario, SeriesSpec, Variable, scientific_identity
-from ._errors import ValidationError
+from ._errors import CapabilityError, ValidationError
 from ._graph import DataValidationError, ExecutionScope, Node, NodeStream
 from ._inspection import (
     Bounds,
@@ -94,6 +95,8 @@ from ._selection import (
 )
 from ._source_io import check_release, native_data
 from ._terminals import BatchStream, Execution, ReadResult
+
+_UNAVAILABLE_SOURCE = (CapabilityError, FileNotFoundError, TimeoutError, URLError)
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,14 +181,17 @@ def _plan_release_selection(
     scope: ExecutionScope,
     entries: dict[str, _Entry],
     references: tuple[SeriesReference, ...],
+    optional: set[str],
+    unavailable: dict[str, tuple[tuple[SeriesReference, ...], Exception]],
 ) -> None:
-    """Prefer exact metadata, resolving live candidates only when necessary."""
+    """Resolve live candidates alongside saved snapshots for exact selectors."""
     configured = {
         name: _release_key(_configured_payload_pin(cast(Node[object], entry.node)))
         for name, entry in entries.items()
     }
     unresolved: list[tuple[SeriesReference, tuple[str, ...]]] = []
     checks: dict[str, dict[tuple[str, str], ReleaseReference]] = {}
+    competing: set[str] = set()
     for ref in references:
         release = ref.release
         if release is None or release.id.startswith("inventory:"):
@@ -195,28 +201,46 @@ def _plan_release_selection(
         names = tuple(
             name
             for name, entry in entries.items()
-            if (not verified or configured[name] == key)
+            if (not verified or name in optional or configured[name] == key)
             and entry.could_match_payload(ref)
         )
         unresolved.append((ref, names))
         for name in names:
             checks.setdefault(name, {})[key] = release
-    # Single candidates can verify before they yield. Ambiguous candidates
-    # need their native snapshot resolved even during inspection.
-    competing = {name for _, names in unresolved if len(names) > 1 for name in names}
+        if len(names) > 1:
+            competing.update(names)
+        elif verified:
+            competing.update(name for name in names if name in optional)
+    # A single live candidate can verify before it yields. A live candidate
+    # competing with another snapshot must prove which selector it satisfies.
     competing.update(name for name, pins in checks.items() if len(pins) > 1)
     for name in checks:
-        if name in competing:
+        if name not in competing:
+            continue
+        try:
             entries[name] = entries[name].actual_payload(scope)
+        except _UNAVAILABLE_SOURCE as error:
+            if name not in optional or error is scope._callback_error:
+                raise
+            unavailable[name] = (
+                tuple(ref for ref, names in unresolved if name in names),
+                error,
+            )
+            del entries[name]
     for ref, names in unresolved:
-        if (
-            names
-            and all(name in competing for name in names)
-            and not any(_has_reference(entry, ref) for entry in entries.values())
+        if any(name not in competing for name in names) or any(
+            _has_reference(entry, ref) for entry in entries.values()
         ):
-            source = entries[names[0]].resource.metadata.source
+            continue
+        for name in names:
+            if name not in entries:
+                continue
+            source = entries[name].resource.metadata.source
             if source is not None and source.release is not None:
                 check_release(source.release, ref.release)
+        for failed_refs, failure in unavailable.values():
+            if ref in failed_refs:
+                raise failure
     for name, pins in checks.items():
         if name not in competing:
             entries[name] = replace(
@@ -1096,7 +1120,7 @@ class DatasetCollection:
             else requested_members
         )
         known: dict[str, _Entry] = {}
-        requirements: list[Requirement] = []
+        requirements: dict[str, tuple[Requirement, ...]] = {}
         discovered: dict[tuple[int, str], Inspection] = {}
         active_members = planning.members
         active_variables = planning.active_variables
@@ -1124,7 +1148,7 @@ class DatasetCollection:
                         discovered[identity] = temporary._inspect(scope)
                     details = discovered[identity]
                     if not metadata_only:
-                        requirements.extend(details.requirements)
+                        requirements[name] = details.requirements
                     metadata = details.metadata
                     if not isinstance(metadata, DatasetMetadata):
                         return
@@ -1191,17 +1215,24 @@ class DatasetCollection:
                 )
                 not in release_keys
             ):
-                live_candidates.append((name, dataset))
+                live_candidates.append((name, dataset, declared))
             else:
                 plan_member(name, dataset, metadata_only=False)
-        # Exact selection can already be proven by saved inputs. Only then
-        # is it safe to leave a live publication outside the plan.
-        for name, dataset in live_candidates:
-            if not all(
-                any(_has_reference(entry, ref) for entry in known.values())
-                for ref in references
-            ):
+        unavailable: dict[str, tuple[tuple[SeriesReference, ...], Exception]] = {}
+        for name, dataset, declared in live_candidates:
+            try:
                 plan_member(name, dataset, metadata_only=False)
+            except _UNAVAILABLE_SOURCE as error:
+                if error is scope._callback_error:
+                    raise
+                unavailable[name] = (
+                    tuple(
+                        ref
+                        for ref in references
+                        if declared is None or ref.variable.id in declared
+                    ),
+                    error,
+                )
         # An excluded member may declare a selector used independently of the
         # active series. Discover it only if the active metadata cannot do so.
         for name, dataset, declared in deferred:
@@ -1235,8 +1266,16 @@ class DatasetCollection:
                 for name, entry in known.items()
                 if active_members is None or name in active_members
             }
-            _plan_release_selection(scope, active_entries, references)
+            _plan_release_selection(
+                scope,
+                active_entries,
+                references,
+                {name for name, _, _ in live_candidates},
+                unavailable,
+            )
             known.update(active_entries)
+            for name in unavailable:
+                known.pop(name, None)
 
         members = tuple(
             CollectionMember(
@@ -1253,7 +1292,12 @@ class DatasetCollection:
             members,
             entries,
             CollectionSelection(),
-            tuple(requirements),
+            tuple(
+                requirement
+                for name, values in requirements.items()
+                if name not in unavailable
+                for requirement in values
+            ),
             projected_variables=projected_variables,
             variable_declarations=variable_declarations,
         )
