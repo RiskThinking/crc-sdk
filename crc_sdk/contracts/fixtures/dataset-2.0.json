@@ -1609,6 +1609,346 @@
   ],
   "rejected": [
     {
+      "name": "unknown-temporal-measurement-change-field",
+      "structural": true,
+      "document": {
+        "metadata": {
+          "provenance": [
+            {
+              "kind": "unit_conversion",
+              "offset": 0.0,
+              "scale": 86400,
+              "source_unit": "kg m-2 s-1",
+              "target_unit": "mm/day",
+              "variable_id": "user:depth"
+            },
+            {
+              "coverage": 1.0,
+              "input_sampling": {
+                "calendar": "360_day",
+                "step": {
+                  "unit": "d",
+                  "value": 1.0
+                },
+                "timestamp": "start"
+              },
+              "kind": "temporal_reduction",
+              "measurements": [
+                {
+                  "input": {
+                    "accumulation_duration": {
+                      "unit": "d",
+                      "value": 1
+                    },
+                    "aggregation": "mean",
+                    "kind": "precipitation_rate",
+                    "unit": "mm/day"
+                  },
+                  "output": {
+                    "accumulation_duration": {
+                      "unit": "d",
+                      "value": 1
+                    },
+                    "kind": "precipitation_amount",
+                    "unit": "mm"
+                  },
+                  "variable_id": "user:depth"
+                }
+              ],
+              "operation": "daily_total",
+              "output_sampling": {
+                "calendar": "360_day",
+                "step": {
+                  "unit": "d",
+                  "value": 1.0
+                },
+                "timestamp": "start"
+              }
+            },
+            {
+              "coverage": 1.0,
+              "input_sampling": {
+                "calendar": "360_day",
+                "step": {
+                  "unit": "d",
+                  "value": 1.0
+                },
+                "timestamp": "start"
+              },
+              "kind": "temporal_reduction",
+              "measurements": [
+                {
+                  "input": {
+                    "accumulation_duration": {
+                      "unit": "d",
+                      "value": 1
+                    },
+                    "kind": "precipitation_amount",
+                    "unit": "mm"
+                  },
+                  "output": {
+                    "accumulation_duration": {
+                      "unit": "d",
+                      "value": 5
+                    },
+                    "kind": "precipitation_amount",
+                    "unit": "mm"
+                  },
+                  "variable_id": "user:depth",
+                  "unknown": true
+                }
+              ],
+              "operation": "rolling_total",
+              "output_sampling": {
+                "calendar": "360_day",
+                "step": {
+                  "unit": "d",
+                  "value": 1.0
+                },
+                "timestamp": "start"
+              },
+              "window": {
+                "unit": "d",
+                "value": 5.0
+              }
+            }
+          ],
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 0,
+              "no_data": 0,
+              "produced": 1,
+              "requested": 1,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [],
+            "source_identities": [],
+            "valid": true
+          },
+          "schema_version": "2.0",
+          "spatial": {
+            "index_resolution": 4,
+            "supports": [
+              "cell"
+            ]
+          },
+          "spec": {
+            "periods": [],
+            "scenarios": [],
+            "series": [
+              {
+                "period_id": null,
+                "scenario_id": null,
+                "variable_id": "user:depth"
+              }
+            ],
+            "variables": [
+              {
+                "id": "user:depth",
+                "measurement": {
+                  "accumulation_duration": {
+                    "unit": "d",
+                    "value": 5
+                  },
+                  "kind": "precipitation_amount",
+                  "unit": "mm"
+                }
+              }
+            ]
+          }
+        },
+        "rows": [
+          {
+            "cell_id": 594475228122316799,
+            "curve": {
+              "kind": "point_mass",
+              "object": "distribution",
+              "schema_version": "1.0",
+              "value": 1.0
+            },
+            "period_id": null,
+            "scenario_id": null,
+            "support_id": "user:support",
+            "variable_id": "user:depth"
+          }
+        ]
+      }
+    },
+    {
+      "name": "unknown-temporal-window-field",
+      "structural": true,
+      "document": {
+        "metadata": {
+          "provenance": [
+            {
+              "kind": "unit_conversion",
+              "offset": 0.0,
+              "scale": 86400,
+              "source_unit": "kg m-2 s-1",
+              "target_unit": "mm/day",
+              "variable_id": "user:depth"
+            },
+            {
+              "coverage": 1.0,
+              "input_sampling": {
+                "calendar": "360_day",
+                "step": {
+                  "unit": "d",
+                  "value": 1.0
+                },
+                "timestamp": "start"
+              },
+              "kind": "temporal_reduction",
+              "measurements": [
+                {
+                  "input": {
+                    "accumulation_duration": {
+                      "unit": "d",
+                      "value": 1
+                    },
+                    "aggregation": "mean",
+                    "kind": "precipitation_rate",
+                    "unit": "mm/day"
+                  },
+                  "output": {
+                    "accumulation_duration": {
+                      "unit": "d",
+                      "value": 1
+                    },
+                    "kind": "precipitation_amount",
+                    "unit": "mm"
+                  },
+                  "variable_id": "user:depth"
+                }
+              ],
+              "operation": "daily_total",
+              "output_sampling": {
+                "calendar": "360_day",
+                "step": {
+                  "unit": "d",
+                  "value": 1.0
+                },
+                "timestamp": "start"
+              }
+            },
+            {
+              "coverage": 1.0,
+              "input_sampling": {
+                "calendar": "360_day",
+                "step": {
+                  "unit": "d",
+                  "value": 1.0
+                },
+                "timestamp": "start"
+              },
+              "kind": "temporal_reduction",
+              "measurements": [
+                {
+                  "input": {
+                    "accumulation_duration": {
+                      "unit": "d",
+                      "value": 1
+                    },
+                    "kind": "precipitation_amount",
+                    "unit": "mm"
+                  },
+                  "output": {
+                    "accumulation_duration": {
+                      "unit": "d",
+                      "value": 5
+                    },
+                    "kind": "precipitation_amount",
+                    "unit": "mm"
+                  },
+                  "variable_id": "user:depth"
+                }
+              ],
+              "operation": "rolling_total",
+              "output_sampling": {
+                "calendar": "360_day",
+                "step": {
+                  "unit": "d",
+                  "value": 1.0
+                },
+                "timestamp": "start"
+              },
+              "window": {
+                "unit": "d",
+                "value": 5.0,
+                "unknown": true
+              }
+            }
+          ],
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 0,
+              "no_data": 0,
+              "produced": 1,
+              "requested": 1,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [],
+            "source_identities": [],
+            "valid": true
+          },
+          "schema_version": "2.0",
+          "spatial": {
+            "index_resolution": 4,
+            "supports": [
+              "cell"
+            ]
+          },
+          "spec": {
+            "periods": [],
+            "scenarios": [],
+            "series": [
+              {
+                "period_id": null,
+                "scenario_id": null,
+                "variable_id": "user:depth"
+              }
+            ],
+            "variables": [
+              {
+                "id": "user:depth",
+                "measurement": {
+                  "accumulation_duration": {
+                    "unit": "d",
+                    "value": 5
+                  },
+                  "kind": "precipitation_amount",
+                  "unit": "mm"
+                }
+              }
+            ]
+          }
+        },
+        "rows": [
+          {
+            "cell_id": 594475228122316799,
+            "curve": {
+              "kind": "point_mass",
+              "object": "distribution",
+              "schema_version": "1.0",
+              "value": 1.0
+            },
+            "period_id": null,
+            "scenario_id": null,
+            "support_id": "user:support",
+            "variable_id": "user:depth"
+          }
+        ]
+      }
+    },
+    {
       "name": "temporal-output-measurement-mismatch",
       "structural": false,
       "document": {

@@ -12,7 +12,14 @@ from typing import TYPE_CHECKING, TypeAlias, cast
 import crc_framework as cf
 import pyarrow as pa  # type: ignore[import-untyped]
 
-from ._declarations import Calendar, DataSpec, Probability, SeriesSpec, Variable
+from ._declarations import (
+    Calendar,
+    DataSpec,
+    Probability,
+    SeriesSpec,
+    Variable,
+    _fields,
+)
 
 if TYPE_CHECKING:
     from ._evidence import EvidenceMetadata
@@ -269,24 +276,32 @@ def temporal_reduction_from_document(value: object) -> TemporalReduction:
         or value["kind"] != "temporal_reduction"
     ):
         raise ValueError("invalid temporal reduction record")
+    measurements = value.get("measurements", [])
+    if not isinstance(measurements, list):
+        raise TypeError("temporal reduction measurements must be an array")
+    changes = []
+    for measurement in measurements:
+        record = _fields(measurement, {"variable_id", "input", "output"})
+        changes.append(
+            MeasurementChange(
+                variable_id=cast(str, record["variable_id"]),
+                input=cf.Measurement.from_json(json.dumps(record["input"])),
+                output=cf.Measurement.from_json(json.dumps(record["output"])),
+            )
+        )
+    window = None
+    if "window" in value:
+        record = _fields(value["window"], {"value", "unit"})
+        window = cf.Duration(
+            cast(float, record["value"]), unit=cf.TimeUnit(record["unit"])
+        )
     return TemporalReduction(
         operation=ReductionKind(value["operation"]),
         coverage=Coverage.minimum_fraction(value["coverage"]),
         input_sampling=sampling_from_document(value["input_sampling"]),
         output_sampling=sampling_from_document(value["output_sampling"]),
-        measurements=tuple(
-            MeasurementChange(
-                variable_id=m["variable_id"],
-                input=cf.Measurement.from_json(json.dumps(m["input"])),
-                output=cf.Measurement.from_json(json.dumps(m["output"])),
-            )
-            for m in value.get("measurements", [])
-        ),
-        window=None
-        if "window" not in value
-        else cf.Duration(
-            value["window"]["value"], unit=cf.TimeUnit(value["window"]["unit"])
-        ),
+        measurements=tuple(changes),
+        window=window,
     )
 
 

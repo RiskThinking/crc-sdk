@@ -35,6 +35,7 @@ from ._dataset_schema import (
     _identifier,
 )
 from ._declarations import (
+    Calendar,
     DataSpec,
     Period,
     PeriodKind,
@@ -43,12 +44,12 @@ from ._declarations import (
     Variable,
     scientific_identity,
 )
+from ._evidence import EvidenceMetadata
 from ._inspection import Bounds, SeriesReference, StationReference
 from ._schema.dataset import DatasetRow
 
 if TYPE_CHECKING:
     from ._dataset_schema import DatasetMetadata
-    from ._evidence import EvidenceMetadata
 
 MetadataT = TypeVar("MetadataT", bound="DatasetMetadata | EvidenceMetadata")
 
@@ -287,23 +288,23 @@ class SelectionState:
             )
             and (series_keys is None or _series_key(item) in series_keys)
         )
-        if self.time is not None and self.time.calendar is not None:
-            if any(
-                item.period is not None
-                and item.period.calendar is not None
-                and item.period.calendar is not self.time.calendar
-                for item in selected
-            ):
-                raise ValueError(
-                    "observation time calendar contradicts the source calendar"
-                )
+        time = self.time
+        if time is not None:
+            time = _observation_time(
+                time,
+                {
+                    item.period.calendar
+                    for item in selected
+                    if item.period is not None and item.period.calendar is not None
+                },
+            )
         selected_spec = participating_spec(spec, selected)
         return ResolvedSelection(
             spec=selected_spec,
             keys=frozenset(_series_key(item) for item in selected),
             area=self.area,
             stations=self.stations,
-            time=self.time,
+            time=time,
         )
 
 
@@ -391,6 +392,18 @@ class ResolvedSelection:
             geometry=cast(bytes | None, row.get("geometry")),
             cell_id=cast(int | None, row.get("cell_id")),
         )
+
+
+def _observation_time(time: Period, calendars: set[Calendar]) -> Period:
+    if time.calendar is not None:
+        if calendars - {time.calendar}:
+            raise ValueError(
+                "observation time calendar contradicts the source calendar"
+            )
+    elif len(calendars) == 1:
+        assert time.start is not None and time.end is not None
+        return Period.window(time.start, time.end, calendar=next(iter(calendars)))
+    return time
 
 
 def _in_time(value: object, period: Period) -> bool:
@@ -685,7 +698,10 @@ def selected_metadata(metadata: MetadataT, selected: ResolvedSelection) -> Metad
             participating.update(before)
     provenance = tuple(reversed(retained))
     if selected.time is not None:
-        selection = ObservationTimeSelection(time=selected.time)
+        time = selected.time
+        if isinstance(metadata, EvidenceMetadata) and metadata.sampling is not None:
+            time = _observation_time(time, {metadata.sampling.calendar})
+        selection = ObservationTimeSelection(time=time)
         if selection not in provenance:
             provenance = (*provenance, selection)
     return replace(metadata, spec=selected.spec, provenance=provenance)
