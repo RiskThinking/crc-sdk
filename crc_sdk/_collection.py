@@ -5,9 +5,8 @@ from __future__ import annotations
 import base64
 import hashlib
 import os
-import tempfile
 import types
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
@@ -22,12 +21,17 @@ from ._collection_bundle import (
     bundle_destination,
     publish_bundle,
     read_manifest,
+    stage_bundle,
 )
 from ._collection_schema import (
     CollectionMember,
     CollectionMetadata,
     CollectionResource,
     CollectionSelection,
+    _reference_matches,
+    _release_key,
+    _requested_ids,
+    _typed_match,
     collection_arrow_schema,
 )
 from ._dataset_schema import (
@@ -35,14 +39,13 @@ from ._dataset_schema import (
     ExecutionCounts,
     ExecutionDiagnostic,
     ExecutionReport,
-    ReleaseReference,
     SourceIdentity,
     SpatialContract,
     Stage,
     _dump,
     _identifier,
 )
-from ._declarations import Period, Scenario, SeriesSpec, Variable, scientific_identity
+from ._declarations import Scenario, Variable
 from ._errors import ValidationError
 from ._graph import DataValidationError, ExecutionScope, Node, NodeStream
 from ._inspection import (
@@ -105,20 +108,6 @@ class _Plan:
     requirements: tuple[Requirement, ...] = ()
 
 
-def _release_key(release: ReleaseReference | None) -> tuple[str, str] | None:
-    return None if release is None else (release.id, release.sha256)
-
-
-def _requested_ids(
-    values: Sequence[str | Variable | Scenario | Period] | None,
-) -> set[str] | None:
-    return (
-        None
-        if values is None
-        else {value if isinstance(value, str) else value.id for value in values}
-    )
-
-
 def _known_ids(
     requested: set[str] | None,
     available: set[str],
@@ -127,49 +116,6 @@ def _known_ids(
 ) -> None:
     if requested is not None and (missing := requested - available):
         raise ValueError(f"unknown requested {dimension} {sorted(missing)[0]!r}")
-
-
-def _typed_match(
-    values: Sequence[str | Variable | Scenario | Period] | None,
-    actual: Variable | Scenario | Period | None,
-) -> None:
-    if actual is None:
-        return
-    for value in values or ():
-        if (
-            not isinstance(value, str)
-            and value.id == actual.id
-            and scientific_identity(value) != scientific_identity(actual)
-        ):
-            raise ValueError(f"conflicting scientific definition for {actual.id!r}")
-
-
-def _reference_matches(
-    item: SeriesSpec,
-    reference: SeriesReference,
-    release: ReleaseReference | None,
-) -> bool:
-    if _series_key(item) != _series_key(reference):
-        return False
-    if reference.release is not None and _release_key(
-        reference.release
-    ) != _release_key(release):
-        return False
-    for actual, requested in (
-        (item.variable, reference.variable),
-        (item.scenario, reference.scenario),
-        (item.period, reference.period),
-        (item.probability, reference.probability),
-    ):
-        if (
-            actual is not None
-            and requested is not None
-            and scientific_identity(actual) != scientific_identity(requested)
-        ):
-            raise ValueError(
-                f"conflicting scientific series definition {_series_key(item)!r}"
-            )
-    return True
 
 
 def _project_entries(
@@ -343,11 +289,20 @@ class _ReaderNode(Node[DatasetMetadata]):
 
 
 class _BundleResourceNode(Node[DatasetMetadata]):
-    def __init__(self, directory: Path, resource: CollectionResource) -> None:
+    def __init__(
+        self, directory: Path, resource: CollectionResource, area: Bounds | None
+    ) -> None:
         assert resource.path is not None and resource.sha256 is not None
         self.directory = directory
         self.resource = resource
-        self.key = _key("collection-file", str(directory), resource.id, resource.sha256)
+        self.area = area
+        self.key = _key(
+            "collection-file",
+            str(directory),
+            resource.id,
+            resource.sha256,
+            SelectionState(area=area).document()["area"],
+        )
 
     def open(self, scope: ExecutionScope) -> NodeStream[DatasetMetadata]:
         metadata = self.resource.metadata
@@ -385,7 +340,24 @@ class _BundleResourceNode(Node[DatasetMetadata]):
                         )
                     )
                 if reader.num_row_groups:
-                    yield from reader.iter_batches(batch_size=scope.runtime.batch_rows)
+                    selection = ResolvedSelection(
+                        spec=metadata.spec,
+                        keys=frozenset(_series_key(s) for s in metadata.spec.series),
+                        area=self.area,
+                    )
+                    for batch in reader.iter_batches(
+                        batch_size=scope.runtime.batch_rows
+                    ):
+                        if self.area is not None and any(
+                            not selection.matches_record(row)
+                            for row in batch.to_pylist()
+                        ):
+                            raise _invalid(
+                                ValueError(
+                                    "resource rows contradict the saved area selection"
+                                )
+                            )
+                        yield batch
 
         return _checked_stream(scope, metadata, batches())
 
@@ -766,7 +738,10 @@ class DatasetCollection:
             return _Plan(manifest, self._collected_entries)
         assert self._path is not None
         entries = {
-            resource.id: _Entry(resource, _BundleResourceNode(self._path, resource))
+            resource.id: _Entry(
+                resource,
+                _BundleResourceNode(self._path, resource, manifest.selection.area),
+            )
             for resource in manifest.resources
         }
         return _Plan(manifest, entries)
@@ -1077,11 +1052,7 @@ class _CollectionExecution(Execution[CollectionMetadata]):
         scope = self._scope
         node = self._recipe._node
         destination.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(
-            prefix=f".{destination.name}.",
-            dir=destination.parent,
-        ) as temporary:
-            staging = Path(temporary)
+        with stage_bundle(destination) as staging:
             try:
                 metadata = _write_resources(scope, node, staging)
             except DataValidationError as error:
@@ -1092,7 +1063,6 @@ class _CollectionExecution(Execution[CollectionMetadata]):
                 os.fsync(stream.fileno())
             if read_manifest(staging) != metadata:
                 raise ValueError("staged collection manifest failed its round trip")
-            bundle_destination(destination, overwrite)
             publish_bundle(staging, destination, existing=existing)
             result = object.__new__(DatasetCollection)
             result._initialize(path=destination, snapshot=metadata)

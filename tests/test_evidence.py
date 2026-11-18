@@ -13,6 +13,7 @@ import pyarrow as pa  # type: ignore[import-untyped]
 import pytest
 from crc_framework import (
     DistributionFamily,
+    Duration,
     FitError,
     ModelSelection,
     QuantileCurve,
@@ -21,10 +22,12 @@ from crc_framework import (
     SampleFit,
     SelectionCriterion,
     Tail,
+    TimeUnit,
 )
 from jsonschema import Draft202012Validator, FormatChecker
 from referencing import Registry, Resource
 
+from crc_sdk import Observations, ObservationTimeSelection, Sampling
 from crc_sdk._dataset_schema import ExecutionReport
 from crc_sdk._declarations import (
     Calendar,
@@ -279,6 +282,28 @@ def test_native_calendar_dates_are_preserved_and_checked_against_declaration() -
             variable=Variable("my:quantity"),
             period=Period.window(2000, 2000, calendar=Calendar.GREGORIAN),
         )
+
+
+def test_observation_time_selection_inherits_the_sampling_calendar() -> None:
+    table = samples(1)
+    table["time"] = ["2000-02-30"]
+    observations = Observations.from_table(
+        table,
+        variable=Variable("my:quantity"),
+        sampling=Sampling(
+            calendar=Calendar.DAYS_360, step=Duration(1, unit=TimeUnit.DAY)
+        ),
+    )
+    result = observations.select(time=Period.window(2000, 2000)).read()
+    assert result.table["time"].to_pylist() == ["2000-02-30"]
+    assert result.metadata.provenance[-1] == ObservationTimeSelection(
+        time=Period.window(2000, 2000, calendar=Calendar.DAYS_360)
+    )
+    contradicting = observations.select(
+        time=Period.window(2000, 2000, calendar=Calendar.GREGORIAN)
+    )
+    with pytest.raises(ValueError, match="calendar contradicts"):
+        contradicting.read()
 
 
 @pytest.mark.parametrize("time", ["2000-02-31", "2000-04-31"])

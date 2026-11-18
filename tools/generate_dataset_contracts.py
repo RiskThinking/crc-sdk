@@ -270,6 +270,12 @@ def fixture_cases() -> dict[str, object]:
         rejected.append({"name": name, "structural": structural, "document": document})
 
     value = deepcopy(reduced)
+    value["metadata"]["provenance"][-1]["measurements"][0]["unknown"] = True
+    reject("unknown-temporal-measurement-change-field", value, True)
+    value = deepcopy(reduced)
+    value["metadata"]["provenance"][-1]["window"]["unknown"] = True
+    reject("unknown-temporal-window-field", value, True)
+    value = deepcopy(reduced)
     value["metadata"]["provenance"][-1]["measurements"][0]["output"][
         "accumulation_duration"
     ]["value"] = 1

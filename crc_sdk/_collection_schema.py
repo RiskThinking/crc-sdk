@@ -13,6 +13,7 @@ import pyarrow as pa  # type: ignore[import-untyped]
 from ._dataset_schema import (
     DatasetMetadata,
     ExecutionReport,
+    ReleaseReference,
     SourceIdentity,
     _array,
     _digest,
@@ -91,6 +92,63 @@ def _merge_specs(specs: Sequence[DataSpec]) -> DataSpec:
         scenarios=tuple(scenarios.values()),
         periods=tuple(periods.values()),
     )
+
+
+def _release_key(release: ReleaseReference | None) -> tuple[str, str] | None:
+    return None if release is None else (release.id, release.sha256)
+
+
+def _requested_ids(
+    values: Sequence[str | Variable | Scenario | Period] | None,
+) -> set[str] | None:
+    return (
+        None
+        if values is None
+        else {value if isinstance(value, str) else value.id for value in values}
+    )
+
+
+def _typed_match(
+    values: Sequence[str | Variable | Scenario | Period] | None,
+    actual: Variable | Scenario | Period | None,
+) -> None:
+    if actual is None:
+        return
+    for value in values or ():
+        if (
+            not isinstance(value, str)
+            and value.id == actual.id
+            and scientific_identity(value) != scientific_identity(actual)
+        ):
+            raise ValueError(f"conflicting scientific definition for {actual.id!r}")
+
+
+def _reference_matches(
+    item: SeriesSpec,
+    reference: SeriesReference,
+    release: ReleaseReference | None,
+) -> bool:
+    if _series_key(item) != _series_key(reference):
+        return False
+    if reference.release is not None and _release_key(
+        reference.release
+    ) != _release_key(release):
+        return False
+    for actual, requested in (
+        (item.variable, reference.variable),
+        (item.scenario, reference.scenario),
+        (item.period, reference.period),
+        (item.probability, reference.probability),
+    ):
+        if (
+            actual is not None
+            and requested is not None
+            and scientific_identity(actual) != scientific_identity(requested)
+        ):
+            raise ValueError(
+                f"conflicting scientific series definition {_series_key(item)!r}"
+            )
+    return True
 
 
 def _series_document(reference: SeriesReference) -> dict[str, object]:
@@ -364,9 +422,48 @@ class CollectionMetadata:
         ]
         if len(paths) != len(set(paths)):
             raise ValueError("collection resource paths must be unique")
+        if self.report.complete and self.report.valid is True:
+            self._validate_selection()
         object.__setattr__(
             self, "_spec", _merge_specs([r.metadata.spec for r in self.resources])
         )
+
+    def _validate_selection(self) -> None:
+        selection = self.selection
+        if selection.members is not None and {m.id for m in self.members} != set(
+            selection.members
+        ):
+            raise ValueError(
+                "saved member selection does not match the bundle inventory"
+            )
+        if selection._empty() and self.resources:
+            raise ValueError("an empty collection selection cannot contain resources")
+        filters = (selection.variables, selection.scenarios, selection.periods)
+        requested = tuple(map(_requested_ids, filters))
+        for resource in self.resources:
+            metadata = resource.metadata
+            release = None if metadata.source is None else metadata.source.release
+            for item in metadata.spec.series:
+                for actual, allowed, descriptors in zip(
+                    (item.variable, item.scenario, item.period),
+                    requested,
+                    filters,
+                    strict=True,
+                ):
+                    if allowed is not None and (
+                        actual is None or actual.id not in allowed
+                    ):
+                        raise ValueError(
+                            "resource series contradicts the saved selection"
+                        )
+                    _typed_match(descriptors, actual)
+                if selection.series is not None and not any(
+                    _reference_matches(item, reference, release)
+                    for reference in selection.series
+                ):
+                    raise ValueError(
+                        "resource series contradicts the saved series selection"
+                    )
 
     @property
     def schema_version(self) -> str:

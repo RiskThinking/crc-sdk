@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -45,6 +46,7 @@ from crc_sdk import (
     SupportKind,
     ValidationError,
     Variable,
+    _collection_bundle,
 )
 from crc_sdk._collection_bundle import MANIFEST
 from crc_sdk._collection_schema import collection_metadata_schema
@@ -210,6 +212,46 @@ def test_selected_bundle_moves_and_reopens_offline_with_typed_selection(
         .read()
         .table.equals(direct.table)
     )
+
+
+@pytest.mark.parametrize(
+    ("selector", "value", "message"),
+    [
+        ("members", ["missing"], "saved member selection"),
+        ("members", [], "saved member selection"),
+        ("variables", ["missing"], "contradicts the saved selection"),
+        ("variables", [], "empty collection selection"),
+        ("area", {"west": 5, "south": 5, "east": 7, "north": 7}, "saved area"),
+    ],
+)
+def test_bundle_rejects_rows_outside_its_saved_selection(
+    tmp_path: Path, selector: str, value: object, message: str
+) -> None:
+    path = tmp_path / "bundle"
+    DatasetCollection({"first": _dataset(), "second": _dataset()}).write(path)
+    manifest = path / MANIFEST
+    document = json.loads(manifest.read_text())
+    document["selection"][selector] = value
+    manifest.write_text(json.dumps(document))
+
+    with pytest.raises(ValidationError, match=message):
+        DatasetCollection.open(path).read()
+
+
+def test_selecting_one_member_still_checks_integrity_of_the_bundle_inventory(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "bundle"
+    saved = DatasetCollection(
+        {"first": _dataset(), "second": _dataset(longitude=4)}
+    ).write(path)
+    assert saved.metadata is not None
+    expected = saved.metadata.resources[1].path
+    assert expected is not None
+    (path / expected).unlink()
+
+    with pytest.raises(FileNotFoundError):
+        DatasetCollection.open(path).select(members="first").read()
 
 
 def test_only_participating_conflicts_are_reconciled() -> None:
@@ -385,6 +427,104 @@ def test_overwrite_preserves_existing_bundle_on_failure(tmp_path: Path) -> None:
     empty = source.select(members=[]).write(path, overwrite=True).read()
     assert not empty.table.num_rows
     assert empty.metadata.selection.members == ()
+
+
+@pytest.mark.skipif(
+    sys.platform not in {"linux", "darwin"}, reason="atomic directory exchange"
+)
+@pytest.mark.parametrize("rollback_fails", [False, True])
+def test_overwrite_preserves_a_directory_moved_into_destination_during_exchange(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rollback_fails: bool
+) -> None:
+    recipe = DatasetCollection({"first": _dataset()})
+    path = tmp_path / "bundle"
+    recipe.write(path)
+    moved = tmp_path / "moved"
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "notes").write_text("keep")
+    original = _collection_bundle._rename_bundle
+
+    def interleave(staged: Path, target: Path, *, exchange: bool) -> None:
+        if not moved.exists():
+            target.rename(moved)
+            other.rename(target)
+        elif rollback_fails:
+            raise OSError("rollback unavailable")
+        original(staged, target, exchange=exchange)
+
+    monkeypatch.setattr(_collection_bundle, "_rename_bundle", interleave)
+    with pytest.raises(
+        OSError, match="collection (destination changed|rollback failed)"
+    ):
+        recipe.write(path, overwrite=True)
+
+    if rollback_fails:
+        (retained,) = tmp_path.glob(".bundle.*/bundle/notes")
+        assert retained.read_text() == "keep"
+    else:
+        assert (path / "notes").read_text() == "keep"
+        assert not list(tmp_path.glob(".bundle.*"))
+    assert DatasetCollection.open(moved).validate().valid is True
+
+
+@pytest.mark.skipif(
+    sys.platform not in {"linux", "darwin"}, reason="atomic directory exchange"
+)
+def test_overwrite_keeps_bundle_published_by_another_writer(tmp_path: Path) -> None:
+    target = tmp_path / "bundle"
+    recipe = DatasetCollection({"first": _dataset()})
+    recipe.write(target)
+    replacement = DatasetCollection({"second": _dataset()})
+    complete = False
+
+    def publish_replacement(event: ProgressEvent) -> None:
+        nonlocal complete
+        if not complete and event.stage is Stage.WRITING:
+            replacement.write(target, overwrite=True)
+            complete = True
+
+    with pytest.raises(OSError, match="collection destination changed"):
+        recipe.write(
+            target, overwrite=True, runtime=Runtime(progress=publish_replacement)
+        )
+
+    assert DatasetCollection.open(target).read().table["member_id"].to_pylist() == [
+        "second"
+    ]
+    assert not list(tmp_path.glob(".bundle.*"))
+
+
+@pytest.mark.skipif(
+    sys.platform not in {"linux", "darwin"}, reason="atomic directory exchange"
+)
+def test_overwrite_preserves_new_files_in_the_displaced_bundle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    path = tmp_path / "bundle"
+    recipe = DatasetCollection({"original": _dataset()})
+    recipe.write(path)
+    original = _collection_bundle._retire_bundle
+    directory = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+
+    def add_file(staging: Path, bundle: _collection_bundle._ExistingBundle) -> None:
+        file = os.open(
+            "resources/notes", os.O_WRONLY | os.O_CREAT | os.O_EXCL, dir_fd=directory
+        )
+        with os.fdopen(file, "w") as stream:
+            stream.write("keep")
+        original(staging, bundle)
+
+    monkeypatch.setattr(_collection_bundle, "_retire_bundle", add_file)
+    try:
+        published = recipe.select(members=[]).write(path, overwrite=True)
+    finally:
+        os.close(directory)
+
+    assert published.validate().valid is True
+    (retained,) = tmp_path.glob(".bundle.*/bundle/resources/notes")
+    assert retained.read_text() == "keep"
+    assert str(retained.parent.parent) in caplog.text
 
 
 def test_refuses_to_replace_arbitrary_or_extended_directory(tmp_path: Path) -> None:
