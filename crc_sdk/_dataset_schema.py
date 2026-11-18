@@ -13,7 +13,7 @@ from types import MappingProxyType
 from typing import cast
 
 import crc_framework
-from crc_framework import FitError, FitRecord
+from crc_framework import FitError, FitRecord, _core
 from rfc3339_validator import validate_rfc3339  # type: ignore[import-untyped]
 
 from ._aggregation import TemporalReduction, temporal_reduction_from_document
@@ -748,6 +748,13 @@ class DatasetMetadata:
                     raise ValueError(
                         "conversion target unit contradicts the variable measurement"
                     )
+                _core.validate_unit_conversion(
+                    _dump(measurement),
+                    step.source_unit,
+                    step.target_unit,
+                    step.scale,
+                    step.offset,
+                )
                 measurements[step.variable_id] = {
                     **measurement,
                     "unit": step.source_unit,

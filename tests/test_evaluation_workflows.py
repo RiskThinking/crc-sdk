@@ -15,12 +15,14 @@ import pytest
 from crc_sdk import (
     Assets,
     Bounds,
+    Calendar,
     Dataset,
     DatasetCollection,
     DataSpec,
     Distance,
     EvaluationArtifact,
     EvaluationMetadata,
+    FitFailure,
     Period,
     Probability,
     QuantileColumns,
@@ -28,6 +30,7 @@ from crc_sdk import (
     ReleaseReference,
     Runtime,
     Samples,
+    Sampling,
     SeriesSpec,
     SourceIdentity,
     SpatialMatch,
@@ -580,6 +583,94 @@ def test_reopened_evaluation_checks_source_versions_and_diagnostics(
     assert artifact.validate().valid is False
     with pytest.raises(ValidationError, match=diagnostic):
         artifact.read()
+
+
+@pytest.mark.parametrize(
+    ("field", "diagnostic"),
+    [
+        ("source_identities", "report omits upstream source provenance"),
+        ("diagnostics", "report omits upstream diagnostics"),
+        ("skipped", "report counts contradict its upstream reports"),
+        ("usable_years", "report counts contradict its upstream reports"),
+        ("incomplete_years", "report counts contradict its upstream reports"),
+    ],
+)
+def test_reopened_evaluation_validates_its_inherited_report(
+    tmp_path: Path, field: str, diagnostic: str
+) -> None:
+    fitted = Samples.from_table(
+        {
+            "support_id": ["point"] * 5,
+            "longitude": [0.0] * 5,
+            "latitude": [0.0] * 5,
+            "time": [2000, 2001, 2002, 2003, 2004],
+            "value": [1.0, 1.0, 1.0, 1.0, None],
+        },
+        variable=VARIABLE,
+        sampling=Sampling(
+            calendar=Calendar.GREGORIAN, step=cf.Duration(1, unit=cf.TimeUnit.YEAR)
+        ),
+    ).fit(
+        cf.SampleFit(family=cf.DistributionFamily.GUMBEL_RIGHT),
+        on_failure=FitFailure.SKIP,
+    )
+    path = tmp_path / "fitted.parquet"
+    fitted.write(path)
+    saved = (
+        Dataset.open(path)
+        .evaluate(sites(0))
+        .probabilities([0.5])
+        .write(tmp_path / "evaluation.parquet")
+    )
+    assert EvaluationArtifact.open(saved.path).validate().valid is True
+    table = pq.read_table(saved.path)
+    headers = dict(table.schema.metadata)
+    document = json.loads(headers[b"crc.evaluation"])
+    upstream = document["inputs"][0]["metadata"]
+    assert "source" not in upstream
+    assert upstream["report"]["source_identities"]
+    assert upstream["report"]["counts"]["skipped"] == 1
+    assert document["report"]["counts"]["skipped"] == 1
+    if field in upstream["report"]["counts"]:
+        assert document["report"]["counts"][field] > 0
+        document["report"]["counts"][field] = 0
+    elif field == "diagnostics":
+        document["report"][field] = [
+            item for item in document["report"][field] if item["stage"] != "fitting"
+        ]
+    else:
+        document["report"][field] = []
+    headers[b"crc.evaluation"] = json.dumps(document).encode()
+    altered = tmp_path / "altered.parquet"
+    pq.write_table(table.replace_schema_metadata(headers), altered)
+
+    artifact = EvaluationArtifact.open(altered)
+    report = artifact.validate()
+    assert report.valid is False
+    assert any(diagnostic in issue.message for issue in report.diagnostics)
+    with pytest.raises(ValidationError, match=diagnostic):
+        artifact.read()
+
+
+def test_evaluation_retains_the_provenance_of_empty_collection_members(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "empty.parquet"
+    annual().select(variables=[]).write(path)
+    collection = DatasetCollection({"empty": Dataset.open(path), "data": annual()})
+    saved = (
+        collection.evaluate(sites(0))
+        .return_periods([100])
+        .write(tmp_path / "evaluation.parquet")
+    )
+    result = EvaluationArtifact.open(saved.path).read()
+    assert result.table["value"].to_pylist() == [2.0]
+    (empty,) = (item for item in result.metadata.inputs if item.member_id == "empty")
+    assert not empty.metadata.spec.series
+    assert empty.metadata.report.source_identities
+    assert set(empty.metadata.report.source_identities) <= set(
+        result.report.source_identities
+    )
 
 
 def test_bounded_nearest_and_lower_tail_queries() -> None:

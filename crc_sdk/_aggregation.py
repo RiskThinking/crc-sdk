@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, TypeAlias, cast
 
 import crc_framework as cf
 import pyarrow as pa  # type: ignore[import-untyped]
+from crc_framework import _core
 
 from ._declarations import (
     Calendar,
@@ -514,19 +515,15 @@ def _measurement_daily(
             "deaccumulate cumulative source counters first"
         )
     if isinstance(measurement, cf.PrecipitationRate):
-        divisor = (
-            3600
-            if measurement.unit is cf.PrecipitationRateUnit.MILLIMETRES_PER_HOUR
-            else 86400
+        hourly_scale, _ = _core.unit_conversion(
+            measurement.unit.value,
+            cf.PrecipitationRateUnit.MILLIMETRES_PER_HOUR.value,
         )
-        scale = step / divisor
+        scale = hourly_scale * (step / 3600)
     else:
-        scale = {
-            cf.LengthUnit.METRE: 1000.0,
-            cf.LengthUnit.CENTIMETRE: 10.0,
-            cf.LengthUnit.MILLIMETRE: 1.0,
-            cf.LengthUnit.FOOT: 304.8,
-        }[measurement.unit]
+        scale, _ = _core.unit_conversion(
+            measurement.unit.value, cf.LengthUnit.MILLIMETRE.value
+        )
     return Variable(
         variable.id,
         measurement=cf.PrecipitationAmount(

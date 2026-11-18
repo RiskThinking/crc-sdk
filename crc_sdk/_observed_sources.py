@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from enum import Enum
@@ -88,6 +89,8 @@ from ._source_io import (
     fetch,
     fetch_json,
     fetch_optional,
+    inventory_payload_pin,
+    inventory_release,
     native_data,
     payload_selection,
     release_snapshot,
@@ -147,17 +150,6 @@ def _empty_state(state: SelectionState) -> bool:
             state.scenarios,
             state.periods,
         )
-    )
-
-
-def _inspection_selection(state: SelectionState) -> SelectionState:
-    # Discovery does not promise retained mutable bytes. Explicit pin validation
-    # belongs to the consuming terminal, which owns the actual source snapshot.
-    return replace(
-        state,
-        series=None
-        if state.series is None
-        else tuple(replace(ref, release=None) for ref in state.series),
     )
 
 
@@ -372,6 +364,7 @@ class _Prepared:
     parts: tuple[_Part, ...]
     source: SourceIdentity | None
     stations: tuple[StationReference, ...]
+    publication: SourceIdentity | None = None
 
 
 def _requests(
@@ -636,6 +629,12 @@ def _catalogue(
             )
             sources.extend(identities)
         stations, resources = tuple(stations_list), tuple(sources)
+    return _select_stations(provider, stations, state), resources
+
+
+def _select_stations(
+    provider: str, stations: tuple[StationReference, ...], state: SelectionState
+) -> tuple[StationReference, ...]:
     selected = stations
     if state.stations is not None:
         missing = set(state.stations) - {item.id for item in stations}
@@ -656,7 +655,48 @@ def _catalogue(
                 else item.longitude >= area.west or item.longitude <= area.east
             )
         )
-    return selected, resources
+    return selected
+
+
+def _station_publication(
+    scope: ExecutionScope,
+    provider: str,
+    state: SelectionState,
+    *,
+    release_id: str,
+    requested: ReleaseReference | None,
+) -> tuple[tuple[StationReference, ...], tuple[ResourceIdentity, ...]]:
+    # OGC discovery can start with the whole station catalogue. Retain that
+    # verified inventory when a later series selection adds a station or area.
+    may_use_full = (
+        _scoped_api_catalogue(provider, state)
+        and requested is not None
+        and requested.id in (f"inventory:{release_id}", release_id)
+    )
+    try:
+        stations, resources = _catalogue(scope, provider, state)
+    except FileNotFoundError:
+        if not may_use_full:
+            raise
+    else:
+        if (
+            not may_use_full
+            or requested is not None
+            and (
+                requested.id == release_id
+                or inventory_release(resources, id=release_id).sha256
+                == requested.sha256
+            )
+        ):
+            return stations, resources
+    stations, resources = _catalogue(scope, provider, SelectionState())
+    return _select_stations(provider, stations, state), resources
+
+
+def _scoped_api_catalogue(provider: str, state: SelectionState) -> bool:
+    return provider in ("usgs", "hydat", "eccc") and (
+        state.stations is not None or state.area is not None
+    )
 
 
 def _station_period(period: Period | None) -> Period | None:
@@ -788,12 +828,8 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
             )
         return () if empty else tuple(required)
 
-    def _prepare(
-        self, scope: ExecutionScope, *, verify_release: bool = True
-    ) -> _Prepared:
-        expected = self.release
-        if verify_release:
-            _, expected = payload_selection(self.state, expected)
+    def _selection(self) -> tuple[SelectionState, ReleaseReference | None]:
+        state, pin = payload_selection(self.state, self.release)
         if self.state.time is not None and self.state.time.calendar not in (
             None,
             Calendar.GREGORIAN,
@@ -817,14 +853,87 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
         )
         if self.state.variables is not None:
             SelectionState(variables=self.state.variables).resolve(known)
+        return state, pin
+
+    @property
+    def _release_id(self) -> str:
+        return f"{self.provider}:selected-source-snapshot"
+
+    def _discover(
+        self, scope: ExecutionScope, requested: ReleaseReference | None
+    ) -> tuple[_Prepared, ReleaseReference | None]:
         if _empty_state(self.state):
-            return _Prepared((), None, ())
-        if self.requirements():
-            raise CapabilityError(
-                " ".join(item.message for item in self.requirements())
+            return _Prepared((), None, ()), None
+        resources: tuple[ResourceIdentity, ...]
+        if self.provider == "ibtracs":
+            # The documented archive endpoint identifies the publication.
+            # Archive revisions are fingerprinted separately from this locator.
+            locator = _IBTRACS + "#publication"
+            stations: tuple[StationReference, ...] = ()
+            resources = (
+                ResourceIdentity(
+                    locator,
+                    "sha256:" + hashlib.sha256(_IBTRACS.encode()).hexdigest(),
+                    license=_NOAA_TERMS,
+                    attribution="NOAA NCEI IBTrACS v04r01, doi:10.25921/82ty-9e16",
+                ),
             )
+        else:
+            stations, resources = _station_publication(
+                scope,
+                self.provider,
+                self.state,
+                release_id=self._release_id,
+                requested=requested,
+            )
+        release = inventory_release(resources, id=self._release_id)
+        pin = inventory_payload_pin(release, requested)
+        source = SourceIdentity(
+            provider=self.provider,
+            product={
+                "ghcnh": "ghcnh_hourly_temperature",
+                "isd": "global_hourly_temperature",
+                "usgs": "daily_mean_discharge",
+                "hydat": "hydrometric_daily_mean",
+                "eccc": "climate_daily",
+                "noaa_slr": "sea_level_scenario_projections_2022",
+                "noaa_water": "detrended_annual_high_water",
+                "ibtracs": "ibtracs_v04r01_tracks",
+            }[self.provider],
+            release=release,
+            resources=resources,
+            member=self.agency,
+        )
+        return _Prepared((), source, stations), pin
+
+    def _station_parts(
+        self, scope: ExecutionScope, stations: tuple[StationReference, ...]
+    ) -> Iterator[tuple[_Part, ResourceIdentity]]:
+        time = self.state.time
+        assert time is not None and time.start is not None and time.end is not None
+        for station in stations:
+            for year in range(time.start, time.end + 1):
+                uri = (
+                    f"https://noaa-ghcnh-pds.s3.amazonaws.com/hourly/access/by-year/{year}/parquet/GHCNh_{station.id}_{year}.parquet"
+                    if self.provider == "ghcnh"
+                    else f"https://noaa-global-hourly-pds.s3.amazonaws.com/{year}/{station.id}.csv"
+                )
+                path, identity = fetch_optional(
+                    scope, uri, license=_NOAA_TERMS, attribution=_NOAA_ATTRIBUTION
+                )
+                yield _Part(path, uri, station.id, year), identity
+
+    def _prepare(
+        self,
+        scope: ExecutionScope,
+        discovery: _Prepared,
+        pin: ReleaseReference | None,
+    ) -> _Prepared:
+        if discovery.source is None:
+            return discovery
         parts: list[_Part] = []
-        resources: list[ResourceIdentity] = []
+        resources = list(discovery.source.resources)
+        stations = discovery.stations
         if self.provider == "ibtracs":
             path, identity = fetch(
                 scope,
@@ -834,34 +943,13 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
             )
             parts.append(_Part(path, _IBTRACS))
             resources.append(identity)
-            stations: tuple[StationReference, ...] = ()
+        elif self.provider in ("ghcnh", "isd"):
+            for part, resource in self._station_parts(scope, stations):
+                parts.append(part)
+                resources.append(resource)
         else:
-            stations, catalogue = _catalogue(scope, self.provider, self.state)
-            resources.extend(catalogue)
-            years = (
-                range(
-                    cast(int, self.state.time.start), cast(int, self.state.time.end) + 1
-                )
-                if self.state.time is not None
-                else ()
-            )
             for station in stations:
-                if self.provider in ("ghcnh", "isd"):
-                    for year in years:
-                        uri = (
-                            f"https://noaa-ghcnh-pds.s3.amazonaws.com/hourly/access/by-year/{year}/parquet/GHCNh_{station.id}_{year}.parquet"
-                            if self.provider == "ghcnh"
-                            else f"https://noaa-global-hourly-pds.s3.amazonaws.com/{year}/{station.id}.csv"
-                        )
-                        optional_path, identity = fetch_optional(
-                            scope,
-                            uri,
-                            license=_NOAA_TERMS,
-                            attribution=_NOAA_ATTRIBUTION,
-                        )
-                        parts.append(_Part(optional_path, uri, station.id, year))
-                        resources.append(identity)
-                elif self.provider in ("usgs", "hydat", "eccc"):
+                if self.provider in ("usgs", "hydat", "eccc"):
                     assert self.state.time is not None
                     start, end = self.state.time.start, self.state.time.end
                     if self.provider == "usgs":
@@ -954,36 +1042,67 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
                     )
                     parts.append(_Part(path, uri, station.id))
                     resources.append(identity)
-        release = (
-            release_snapshot(resources, id=f"{self.provider}:selected-source-snapshot")
-            if resources
-            else None
-        )
-        if release is not None and verify_release:
-            check_release(release, expected)
-        source = SourceIdentity(
-            provider=self.provider,
-            product={
-                "ghcnh": "ghcnh_hourly_temperature",
-                "isd": "global_hourly_temperature",
-                "usgs": "daily_mean_discharge",
-                "hydat": "hydrometric_daily_mean",
-                "eccc": "climate_daily",
-                "noaa_slr": "sea_level_scenario_projections_2022",
-                "noaa_water": "detrended_annual_high_water",
-                "ibtracs": "ibtracs_v04r01_tracks",
-            }[self.provider],
-            release=release,
-            resources=tuple(resources),
-            member=self.agency,
-        )
-        return _Prepared(tuple(parts), source, stations)
+        publication = discovery.source
+        source = self._verified_source(publication, resources, None)
+        assert source.release is not None
+        if (
+            pin is not None
+            and source.release.sha256 != pin.sha256
+            and _scoped_api_catalogue(self.provider, self.state)
+        ):
+            # Exact payload snapshots can include the full catalogue when
+            # the original selection came from an unfiltered inventory.
+            # Try that dependency too, without reacquiring observation data.
+            try:
+                all_stations, full_catalogue = _catalogue(
+                    scope, self.provider, SelectionState()
+                )
+            except FileNotFoundError:
+                pass
+            else:
+                if (
+                    _select_stations(self.provider, all_stations, self.state)
+                    == stations
+                ):
+                    candidate = replace(
+                        publication,
+                        resources=full_catalogue,
+                        release=inventory_release(full_catalogue, id=self._release_id),
+                    )
+                    full_source = self._verified_source(
+                        candidate,
+                        [*full_catalogue, *resources[len(publication.resources) :]],
+                        None,
+                    )
+                    assert full_source.release is not None
+                    if full_source.release.sha256 == pin.sha256:
+                        publication, source = candidate, full_source
+        assert source.release is not None
+        check_release(source.release, pin)
+        return _Prepared(tuple(parts), source, stations, publication)
 
-    def _raw(self, prepared: _Prepared) -> Iterator[dict[str, object]]:
-        locations = {
-            station.id: (cast(float, station.longitude), cast(float, station.latitude))
-            for station in prepared.stations
-        }
+    def _verified_source(
+        self,
+        publication: SourceIdentity,
+        resources: list[ResourceIdentity],
+        pin: ReleaseReference | None,
+    ) -> SourceIdentity:
+        release = release_snapshot(resources, id=self._release_id)
+        check_release(release, pin)
+        return replace(publication, release=release, resources=tuple(resources))
+
+    def _raw(
+        self, prepared: _Prepared, parts: tuple[_Part, ...] | None = None
+    ) -> Iterator[dict[str, object]]:
+        locations = {}
+        if self.provider not in ("ghcnh", "isd", "ibtracs"):
+            locations = {
+                station.id: (
+                    cast(float, station.longitude),
+                    cast(float, station.latitude),
+                )
+                for station in prepared.stations
+            }
         if self.provider == "noaa_water":
             station_map = {
                 item.id: {
@@ -993,7 +1112,7 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
                 }
                 for item in prepared.stations
             }
-        for part in prepared.parts:
+        for part in prepared.parts if parts is None else parts:
             if part.path is None:
                 continue
             if self.provider == "ghcnh":
@@ -1052,7 +1171,7 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
         )
         # Projection scenarios/years are learned from actual native records, not a
         # guessed Cartesian product. This native decoding does no fitting.
-        if self.provider == "noaa_slr" and prepared.parts:
+        if self.provider == "noaa_slr":
             with native_data(source="noaa_sea_level_projections"):
                 rows = list(self._raw(prepared))
             scenarios = {
@@ -1140,38 +1259,19 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
         )
 
     def inspection(self, scope: ExecutionScope) -> Inspection:
+        state, requested = self._selection()
         requirements = self.requirements()
-        metadata_only = self.provider in ("ghcnh", "isd", "ibtracs")
-        if _empty_state(self.state):
-            prepared = _Prepared((), None, ())
-        elif requirements or metadata_only:
-            stations, identities = (
-                _catalogue(scope, self.provider, self.state)
-                if self.provider != "ibtracs"
-                else ((), ())
-            )
-            inventory_source = (
-                SourceIdentity(
-                    provider=self.provider,
-                    product="station_inventory",
-                    resources=identities,
-                )
-                if identities
-                else None
-            )
-            prepared = _Prepared((), inventory_source, stations)
-        else:
-            prepared = self._prepare(scope, verify_release=False)
-        if prepared.source is not None:
-            prepared = replace(prepared, source=replace(prepared.source, release=None))
+        discovery, pin = self._discover(scope, requested)
+        prepared = (
+            self._prepare(scope, discovery, pin)
+            if not requirements and (pin is not None or self.provider == "noaa_slr")
+            else discovery
+        )
         metadata = self._metadata(prepared)
         metadata = replace(
-            metadata,
-            spec=_inspection_selection(self.state)
-            .resolve(metadata.spec, source=metadata.source)
-            .spec,
+            metadata, spec=state.resolve(metadata.spec, source=metadata.source).spec
         )
-        if not _empty_state(self.state):
+        if prepared is discovery and prepared.source is not None:
             requirements = (
                 *requirements,
                 Requirement(
@@ -1192,6 +1292,7 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
                     release=None
                     if prepared.source is None
                     else prepared.source.release,
+                    member=None if prepared.source is None else prepared.source.member,
                 )
                 for item in metadata.spec.series
             ),
@@ -1221,14 +1322,51 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
         )
 
     def open(self, scope: ExecutionScope) -> NodeStream[EvidenceMetadata]:
-        prepared = self._prepare(scope)
+        state, requested = self._selection()
+        if requirements := self.requirements():
+            raise CapabilityError(" ".join(item.message for item in requirements))
+        discovery, pin = self._discover(scope, requested)
+        weather = self.provider in ("ghcnh", "isd")
+        prepared = discovery if weather else self._prepare(scope, discovery, pin)
         metadata = self._metadata(prepared)
-        resolved = self.state.resolve(metadata.spec, source=metadata.source)
+        resolved = state.resolve(metadata.spec, source=metadata.source)
         actual = selected_metadata(metadata, resolved)
-        final = actual
+        publication = prepared.publication or discovery.source
+        resources = [] if publication is None else list(publication.resources)
+        absent: list[_Part] = []
+
+        def with_source(
+            metadata: EvidenceMetadata, source: SourceIdentity | None
+        ) -> EvidenceMetadata:
+            identities: tuple[SourceIdentity, ...] = () if source is None else (source,)
+            if publication is not None and source is not None and source != publication:
+                identities = (publication, source)
+            return replace(
+                metadata,
+                source=source,
+                report=replace(metadata.report, source_identities=identities),
+            )
+
+        final = with_source(actual, actual.source)
         count = missing = 0
 
-        def batches() -> Iterator[pa.RecordBatch]:
+        def parts() -> Iterator[_Part]:
+            nonlocal final
+            if not weather:
+                yield from prepared.parts
+                return
+            assert publication is not None
+            for part, resource in self._station_parts(scope, prepared.stations):
+                resources.append(resource)
+                if part.path is None:
+                    absent.append(part)
+                final = with_source(
+                    final,
+                    replace(publication, release=None, resources=tuple(resources)),
+                )
+                yield part
+
+        def produce() -> Iterator[pa.RecordBatch]:
             nonlocal final, count, missing
             if not resolved.keys or self.state.stations == ():
                 return
@@ -1240,7 +1378,7 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
                 # A station-year is an explicit blocking reduction, not a global
                 # materialization of every requested station and year.
                 decode = ghcnh_rows if self.provider == "ghcnh" else isd_rows
-                for part in prepared.parts:
+                for part in parts():
                     station, year = part.station, part.year
                     assert station is not None and year is not None
                     raw = (
@@ -1295,6 +1433,7 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
                         actual,
                         kind=EvidenceKind.OBSERVATIONS,
                         spec=raw_spec,
+                        source=final.source,
                         provenance=(),
                         sampling=Sampling(
                             calendar=Calendar.GREGORIAN,
@@ -1308,9 +1447,7 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
                                 produced=len(raw),
                                 no_data=sum(row["value"] is None for row in raw),
                             ),
-                            source_identities=()
-                            if prepared.source is None
-                            else (prepared.source,),
+                            source_identities=final.report.source_identities,
                         ),
                     )
                     reduction = (
@@ -1359,9 +1496,7 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
                                 usable_years=usable,
                                 incomplete_years=incomplete,
                             ),
-                            source_identities=()
-                            if prepared.source is None
-                            else (prepared.source,),
+                            source_identities=final.report.source_identities,
                         ),
                     )
                     yield from evidence_table(records, final).to_batches(
@@ -1369,33 +1504,51 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
                     )
                 return
             pending = []
-            for row in self._raw(prepared):
-                if metadata.kind is EvidenceKind.PROJECTIONS:
-                    year = int(cast(str, row["time"]))
-                    row["period_id"] = Period.window(
-                        year, year, calendar=Calendar.GREGORIAN
-                    ).id
-                    row["coordinate"] = {"kind": "time", "time": str(year)}
-                    row["interval"] = None
-                else:
-                    row["period_id"] = None if self.period is None else self.period.id
-                if not resolved.matches_record(row):
-                    continue
-                if metadata.kind is EvidenceKind.PROJECTIONS:
-                    row.pop("time")
-                pending.append(row)
-                count += 1
-                missing += int(row["value"] is None)
-                if len(pending) == scope.runtime.batch_rows:
+            groups = (
+                (self._raw(prepared, (part,)) for part in parts())
+                if weather
+                else iter((self._raw(prepared),))
+            )
+            for rows in groups:
+                for row in rows:
+                    if metadata.kind is EvidenceKind.PROJECTIONS:
+                        year = int(cast(str, row["time"]))
+                        row["period_id"] = Period.window(
+                            year, year, calendar=Calendar.GREGORIAN
+                        ).id
+                        row["coordinate"] = {"kind": "time", "time": str(year)}
+                        row["interval"] = None
+                    else:
+                        row["period_id"] = (
+                            None if self.period is None else self.period.id
+                        )
+                    if not resolved.matches_record(row):
+                        continue
+                    if metadata.kind is EvidenceKind.PROJECTIONS:
+                        row.pop("time")
+                    pending.append(row)
+                    count += 1
+                    missing += int(row["value"] is None)
+                    if len(pending) == scope.runtime.batch_rows:
+                        yield from evidence_table(pending, actual).to_batches()
+                        pending = []
+                if weather and pending:
                     yield from evidence_table(pending, actual).to_batches()
                     pending = []
             if pending:
                 yield from evidence_table(pending, actual).to_batches()
 
+        def batches() -> Iterator[pa.RecordBatch]:
+            nonlocal final
+            yield from produce()
+            if weather and publication is not None:
+                final = with_source(
+                    final, self._verified_source(publication, resources, pin)
+                )
+
         def report() -> ExecutionReport:
-            if self.indicator is not None and final is not actual:
+            if self.indicator is not None:
                 return final.report
-            absent = [part for part in prepared.parts if part.path is None]
             return ExecutionReport(
                 False,
                 None,
@@ -1416,7 +1569,7 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
                     no_data=missing,
                     incomplete_years=len(absent),
                 ),
-                source_identities=() if prepared.source is None else (prepared.source,),
+                source_identities=final.report.source_identities,
             )
 
         return NodeStream(
@@ -1425,10 +1578,13 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
             batches(),
             report=report,
             final_metadata=lambda: final,
+            verify_before_yield=weather and pin is not None,
         )
 
 
 class _WaterLevelNode(SourceNode[DatasetMetadata | EvidenceMetadata]):
+    _release_id = "noaa:annual_exceedance_snapshot"
+
     def __init__(
         self,
         release: ReleaseReference | None,
@@ -1462,8 +1618,25 @@ class _WaterLevelNode(SourceNode[DatasetMetadata | EvidenceMetadata]):
             )
         )
 
+    def _publication(
+        self, scope: ExecutionScope
+    ) -> tuple[tuple[StationReference, ...], SourceIdentity, ReleaseReference | None]:
+        _, requested = payload_selection(self.state, self.release)
+        stations, resources = _catalogue(scope, "noaa_water", self.state)
+        release = inventory_release(resources, id=self._release_id)
+        return (
+            stations,
+            SourceIdentity(
+                provider="noaa",
+                product="annual_high_water_exceedance",
+                release=release,
+                resources=resources,
+            ),
+            inventory_payload_pin(release, requested),
+        )
+
     def _resolve(
-        self, scope: ExecutionScope, *, verify_release: bool = True
+        self, scope: ExecutionScope
     ) -> tuple[DatasetMetadata | EvidenceMetadata, list[dict[str, object]]]:
         if self.state.time is not None:
             raise CapabilityError(
@@ -1473,7 +1646,7 @@ class _WaterLevelNode(SourceNode[DatasetMetadata | EvidenceMetadata]):
                 "instead."
             )
         if _empty_state(self.state):
-            source = None
+            source = publication = None
             records: list[dict[str, object]] = []
             variables: list[Variable] = []
         else:
@@ -1482,7 +1655,7 @@ class _WaterLevelNode(SourceNode[DatasetMetadata | EvidenceMetadata]):
                     "Choose NOAA stations from inspect().stations or "
                     "select(area=Bounds(...))."
                 )
-            selected, identities = _catalogue(scope, "noaa_water", self.state)
+            selected, publication, pin = self._publication(scope)
             catalogue_uri = (
                 _NOAA_PRODUCT
                 + "?"
@@ -1501,7 +1674,7 @@ class _WaterLevelNode(SourceNode[DatasetMetadata | EvidenceMetadata]):
                     )
                 )
             }
-            resources = list(identities)
+            resources = list(publication.resources)
             records, variables = [], []
             for station in selected:
                 uri = (
@@ -1626,15 +1799,9 @@ class _WaterLevelNode(SourceNode[DatasetMetadata | EvidenceMetadata]):
                                 "q": 1 - chance,
                             }
                         )
-            actual = release_snapshot(resources, id="noaa:annual_exceedance_snapshot")
-            if verify_release:
-                check_release(actual, self.release)
-            source = SourceIdentity(
-                provider="noaa",
-                product="annual_high_water_exceedance",
-                release=actual,
-                resources=tuple(resources),
-            )
+            actual = release_snapshot(resources, id=self._release_id)
+            check_release(actual, pin)
+            source = replace(publication, release=actual, resources=tuple(resources))
         probability = (
             Probability.confidence()
             if self.confidence
@@ -1645,7 +1812,11 @@ class _WaterLevelNode(SourceNode[DatasetMetadata | EvidenceMetadata]):
             series=[SeriesSpec(v, probability=probability) for v in variables],
         )
         report = ExecutionReport(
-            False, None, source_identities=() if source is None else (source,)
+            False,
+            None,
+            source_identities=()
+            if source is None or publication is None
+            else (publication, source),
         )
         spatial = SpatialContract(supports=(SupportKind.POINT,), index_resolution=9)
         if self.confidence:
@@ -1668,13 +1839,11 @@ class _WaterLevelNode(SourceNode[DatasetMetadata | EvidenceMetadata]):
             and self.state.stations is None
             and self.state.area is None
         ):
-            stations, identities = _catalogue(scope, "noaa_water", self.state)
+            stations, publication, _ = self._publication(scope)
+            assert publication.release is not None
             return Inspection(
-                source=SourceIdentity(
-                    provider="noaa",
-                    product="extreme_water_level_station_inventory",
-                    resources=identities,
-                ),
+                source=publication,
+                releases=(publication.release,),
                 stations=stations,
                 capabilities=(
                     Capability.INSPECT,
@@ -1693,15 +1862,11 @@ class _WaterLevelNode(SourceNode[DatasetMetadata | EvidenceMetadata]):
                     ),
                 ),
             )
-        metadata, _ = self._resolve(scope, verify_release=False)
+        metadata, _ = self._resolve(scope)
+        state, _ = payload_selection(self.state, self.release)
         metadata = replace(
             metadata,
-            spec=_inspection_selection(self.state)
-            .resolve(metadata.spec, source=metadata.source)
-            .spec,
-            source=None
-            if metadata.source is None
-            else replace(metadata.source, release=None),
+            spec=state.resolve(metadata.spec, source=metadata.source).spec,
         )
         from ._schema import dataset_arrow_schema
 
@@ -1728,22 +1893,14 @@ class _WaterLevelNode(SourceNode[DatasetMetadata | EvidenceMetadata]):
                 Capability.WRITE,
             ),
             source=metadata.source,
-            requirements=()
-            if _empty_state(self.state)
-            else (
-                Requirement(
-                    "snapshot_resolved_on_read",
-                    "Published native estimates are pinned when read.",
-                    "release",
-                ),
-            ),
         )
 
     def open(
         self, scope: ExecutionScope
     ) -> NodeStream[DatasetMetadata | EvidenceMetadata]:
         metadata, records = self._resolve(scope)
-        resolved = self.state.resolve(metadata.spec, source=metadata.source)
+        state, _ = payload_selection(self.state, self.release)
+        resolved = state.resolve(metadata.spec, source=metadata.source)
         metadata = replace(metadata, spec=resolved.spec)
         count = 0
 

@@ -60,7 +60,7 @@ from ._dataset_schema import (
     _transformation,
     _wire_integer,
 )
-from ._declarations import Calendar, DataSpec, ProbabilityKind, _data_spec
+from ._declarations import Calendar, DataSpec, Period, ProbabilityKind, _data_spec
 from ._schema.dataset import DatasetRow, _cell, _geometry, validate_rows
 
 _METADATA_KEY = b"crc.evidence"
@@ -502,6 +502,23 @@ def _observation_year(time: str, sampling: Sampling | None) -> int:
     return int(time[:4])
 
 
+def _validate_time(
+    time: str, period: Period | None, sampling: Sampling | None, *, name: str
+) -> None:
+    calendar = None if sampling is None else sampling.calendar
+    if period is not None and period.calendar is not None:
+        calendar = period.calendar
+    if _sample_time(time, calendar) != time:
+        raise ValueError("evidence time must use canonical uppercase T and Z")
+    if period is not None and period.start is not None and period.end is not None:
+        year = _observation_year(time, sampling)
+        if not period.start <= year <= period.end:
+            raise ValueError(
+                f"{name} year {year} lies outside its declared period "
+                f"[{period.start}, {period.end}]"
+            )
+
+
 def evidence_row_key(
     record: Mapping[str, object], metadata: EvidenceMetadata
 ) -> tuple[object, ...]:
@@ -588,23 +605,10 @@ def validate_evidence(
         if identity not in series:
             raise ValueError(f"evidence refers to an undeclared series: {identity!r}")
         declared_period = series[identity].period
-        calendar = None if metadata.sampling is None else metadata.sampling.calendar
-        if declared_period is not None and declared_period.calendar is not None:
-            calendar = declared_period.calendar
         if metadata.kind in (EvidenceKind.SAMPLES, EvidenceKind.OBSERVATIONS):
-            if _sample_time(record["time"], calendar) != record["time"]:
-                raise ValueError("evidence time must use canonical uppercase T and Z")
-            if (
-                declared_period is not None
-                and declared_period.start is not None
-                and declared_period.end is not None
-            ):
-                year = _observation_year(record["time"], metadata.sampling)
-                if not declared_period.start <= year <= declared_period.end:
-                    raise ValueError(
-                        f"observation year {year} lies outside its declared period "
-                        f"[{declared_period.start}, {declared_period.end}]"
-                    )
+            _validate_time(
+                record["time"], declared_period, metadata.sampling, name="observation"
+            )
         elif metadata.kind is EvidenceKind.PROJECTIONS:
             coordinate = record["coordinate"]
             if coordinate is None or coordinate["kind"] not in (
@@ -619,7 +623,9 @@ def validate_evidence(
                     raise ValueError(
                         "time projection coordinate has inactive return-period fields"
                     )
-                _sample_time(coordinate["time"], calendar)
+                _validate_time(
+                    coordinate["time"], declared_period, None, name="projection"
+                )
             elif (
                 coordinate["time"] is not None
                 or _number(coordinate["years"], "return period") <= 0

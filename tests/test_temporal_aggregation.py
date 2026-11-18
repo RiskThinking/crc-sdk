@@ -392,9 +392,18 @@ def test_explicit_relaxed_rule_is_retained_without_rescaling() -> None:
     }
 
 
-def test_daily_total_integrates_rates_and_records_changed_measurement() -> None:
+@pytest.mark.parametrize(
+    ("unit", "value"),
+    [
+        (cf.PrecipitationRateUnit.MILLIMETRES_PER_DAY, 24.0),
+        (cf.PrecipitationRateUnit.KILOGRAMS_PER_SQUARE_METRE_PER_SECOND, 1.0 / 3600.0),
+    ],
+)
+def test_daily_total_integrates_rates_and_records_changed_measurement(
+    unit: cf.PrecipitationRateUnit, value: float
+) -> None:
     rate = cf.PrecipitationRate(
-        unit=cf.PrecipitationRateUnit.MILLIMETRES_PER_DAY,
+        unit=unit,
         accumulation_duration=cf.Duration(1, unit=cf.TimeUnit.HOUR),
         aggregation=cf.Aggregation.MEAN,
     )
@@ -402,14 +411,14 @@ def test_daily_total_integrates_rates_and_records_changed_measurement() -> None:
     result = (
         observations(
             times,
-            [24.0] * 24,
+            [value] * 24,
             step=cf.Duration(1, unit=cf.TimeUnit.HOUR),
             measurement=rate,
         )
         .aggregate(DailyTotal())
         .read()
     )
-    assert result.table["value"].to_pylist() == [24.0]
+    assert result.table["value"].to_pylist() == pytest.approx([24.0])
     reduction = result.metadata.provenance[-1]
     assert isinstance(reduction, TemporalReduction)
     change = reduction.measurements[0]
@@ -464,6 +473,38 @@ def test_interval_and_projection_coordinates_are_not_annual_cdf_knots(
     assert type(saved) is Projections
     assert saved.path is not None
     assert Projections.open(saved.path).read().table.to_pylist() == [row]
+
+
+def test_projection_times_use_the_declared_period_on_build_and_reopen(
+    tmp_path: Path,
+) -> None:
+    period = Period.window(2030, 2030, calendar=Calendar.DAYS_360)
+    records = {
+        "support_id": ["station"],
+        "longitude": [0],
+        "latitude": [0],
+        "time": ["2030-02-30"],
+        "value": [20],
+    }
+    projections = Projections.from_table(
+        records, variable=Variable("water_level"), period=period
+    )
+    read = projections.read()
+    assert read.table["coordinate"][0].as_py()["time"] == "2030-02-30"
+    with pytest.raises(ValueError, match="projection year 2000 lies outside"):
+        Projections.from_table(
+            {**records, "time": ["2000-02-30"]},
+            variable=Variable("water_level"),
+            period=period,
+        )
+    rows = read.table.to_pylist()
+    rows[0]["coordinate"]["time"] = "2000-02-30"
+    path = tmp_path / "wrong-period.parquet"
+    pq.write_table(pa.Table.from_pylist(rows, schema=read.table.schema), path)
+    reopened = Projections.open(path)
+    assert reopened.validate().valid is False
+    with pytest.raises(ValidationError, match="projection year 2000 lies outside"):
+        reopened.read()
 
 
 def test_geometry_only_layer_keeps_its_actual_footprint(tmp_path: Path) -> None:

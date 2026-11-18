@@ -23,6 +23,7 @@ from crc_sdk import (
     FitFailure,
     FittingDiagnostic,
     ReadResult,
+    ReleaseReference,
     Samples,
     UnavailableStationYear,
     ValidationError,
@@ -679,7 +680,17 @@ def test_collected_station_year_remains_selectable_before_fitting(
 def test_noaa_projection_bounds_are_separate_variables_without_invented_quantiles(
     transport: NativeTransport,
 ) -> None:
-    result = NOAASeaLevel().select(stations="8518750").read()
+    discovery = NOAASeaLevel().inspect()
+    assert discovery.releases and discovery.stations and discovery.series == ()
+    recipe = NOAASeaLevel().select(stations="8518750")
+    configured = recipe.inspect()
+    assert configured.series and all(
+        reference.scenario is not None
+        and reference.period is not None
+        and reference.release in configured.releases
+        for reference in configured.series
+    )
+    result = recipe.read()
     assert result.metadata.kind is EvidenceKind.PROJECTIONS
     assert result.table["value"].to_pylist() == [30, 20, 40]
     assert result.table["probability"].null_count == 3
@@ -855,8 +866,9 @@ def test_inspection_exposes_typed_inventory_and_does_no_station_modelling(
     }
     assert len(inventory.indicators) == 2
     assert all(s.probability is not None for s in inventory.series)
-    assert inventory.source is not None and inventory.source.release is None
-    assert inventory.releases == ()
+    assert inventory.source is not None and inventory.source.release is not None
+    assert inventory.releases == (inventory.source.release,)
+    assert all(s.release == inventory.releases[0] for s in inventory.series)
     assert len(transport.calls) == 1
     configured = (
         GHCNh(indicator=GHCNh.Indicator.ANNUAL_MAXIMUM_DAILY_MAXIMUM_TEMPERATURE)
@@ -864,7 +876,7 @@ def test_inspection_exposes_typed_inventory_and_does_no_station_modelling(
         .inspect()
     )
     assert [r.code for r in configured.requirements] == ["snapshot_resolved_on_read"]
-    assert configured.releases == ()
+    assert configured.releases == inventory.releases
     assert len(transport.calls) == 2
 
 
@@ -892,6 +904,9 @@ def test_inspected_series_selects_station_indicator_and_native_years(
     assert replay.table.equals(direct.table, check_metadata=False)
     assert replay.metadata.source is not None
     assert replay.metadata.source.release == pinned.release
+    assert provider().select(series=pinned, stations=station).inspect().releases == (
+        pinned.release,
+    )
 
 
 @pytest.mark.parametrize("provider", [GHCNh, ISD])
@@ -1118,8 +1133,8 @@ def test_mutable_api_inspect_select_read_does_not_pin_volatile_response_timestam
     monkeypatch.setattr(_source_io, "_download", changing_timestamp)
     recipe = USGS().select(stations="USGS-01234567", time=_year())
     inventory = recipe.inspect()
-    assert inventory.series[0].release is None
-    assert inventory.releases == ()
+    assert inventory.series[0].release is not None
+    assert inventory.releases == (inventory.series[0].release,)
     assert [r.code for r in inventory.requirements] == ["snapshot_resolved_on_read"]
     result = recipe.select(series=inventory.series[0]).read()
     assert result.table["value"].to_pylist() == [3.5]
@@ -1127,7 +1142,7 @@ def test_mutable_api_inspect_select_read_does_not_pin_volatile_response_timestam
         result.metadata.source is not None
         and result.metadata.source.release is not None
     )
-    assert tick == 2
+    assert tick == 1
 
 
 def test_bulk_evidence_inspection_stays_metadata_only(
@@ -1138,14 +1153,123 @@ def test_bulk_evidence_inspection_stays_metadata_only(
         .select(stations="12345678901", time=_year())
         .inspect()
     )
-    assert weather.series and weather.releases == ()
+    assert weather.series and weather.releases == (weather.series[0].release,)
     assert len(transport.calls) == 1
     assert transport.calls[0].endswith("isd-history.csv")
-    IBTrACS().inspect()
+    tracks = IBTrACS().inspect()
+    assert tracks.series and tracks.releases == (tracks.series[0].release,)
     CHIRPS().select(
         area=Bounds(west=-79.5, south=43.5, east=-79, north=44), time=_year()
     ).inspect()
     assert len(transport.calls) == 1
+
+
+@pytest.mark.parametrize("provider", [GHCNh, ISD])
+def test_station_preview_does_not_fetch_a_later_unavailable_year(
+    provider: type[GHCNh] | type[ISD],
+    transport: NativeTransport,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def download(uri: str, path: Path) -> int:
+        if "2021" in urlsplit(uri).path:
+            raise ConnectionError(uri)
+        return transport(uri, path)
+
+    recipe = provider().observations()
+    station = recipe.inspect().stations[0]
+    monkeypatch.setattr(_source_io, "_download", download)
+    preview = recipe.select(stations=station, time=Period.window(2020, 2021)).read(
+        limit=1
+    )
+    assert preview.table["time"].to_pylist() == ["2020-01-01T00:00:00"]
+    assert not preview.report.complete
+    assert (
+        preview.metadata.source is not None and preview.metadata.source.release is None
+    )
+
+
+def test_exact_station_payload_pin_verifies_later_years_before_yielding(
+    transport: NativeTransport, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = (
+        ISD()
+        .observations()
+        .select(stations="12345678901", time=Period.window(2020, 2021))
+    )
+    complete = source.read()
+    assert (
+        complete.metadata.source is not None
+        and complete.metadata.source.release is not None
+    )
+    release = complete.metadata.source.release
+    pinned = (
+        ISD(release=release)
+        .observations()
+        .select(stations="12345678901", time=Period.window(2020, 2021))
+    )
+    assert pinned.read(limit=1).table["time"].to_pylist() == ["2020-01-01T00:00:00"]
+
+    def changed(uri: str, path: Path) -> int:
+        status = transport(uri, path)
+        if "/2021/" in urlsplit(uri).path:
+            path.write_bytes(path.read_bytes().replace(b"+0010,1", b"+0030,1"))
+        return status
+
+    monkeypatch.setattr(_source_io, "_download", changed)
+    with (
+        pinned.batches() as stream,
+        pytest.raises(OSError, match="source release changed"),
+    ):
+        next(iter(stream))
+    with pytest.raises(OSError, match="source release changed"):
+        pinned.inspect()
+
+
+def test_station_inventory_pin_is_checked_by_inspection_and_execution(
+    transport: NativeTransport, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    inventory = ISD().inspect()
+    publication = inventory.releases[0]
+    unknown = ReleaseReference("unknown-release", publication.sha256)
+    with pytest.raises(OSError, match="source release changed"):
+        ISD(release=unknown).inspect()
+    recipe = ISD().select(
+        series=inventory.series[0], stations=inventory.stations[0], time=_year()
+    )
+    assert recipe.read().table.num_rows == 1
+
+    def changed(uri: str, path: Path) -> int:
+        status = transport(uri, path)
+        if urlsplit(uri).path.endswith("isd-history.csv"):
+            path.write_bytes(path.read_bytes().replace(b'"Test"', b'"Renamed"'))
+        return status
+
+    monkeypatch.setattr(_source_io, "_download", changed)
+    with pytest.raises(OSError, match="source release changed"):
+        recipe.inspect()
+    with pytest.raises(OSError, match="source release changed"):
+        recipe.read()
+
+
+def test_api_station_full_catalogue_pin_survives_narrowing_and_exact_replay(
+    transport: NativeTransport,
+) -> None:
+    inventory = USGS().inspect()
+    station = inventory.stations[0]
+    result = (
+        USGS().select(series=inventory.series[0], stations=station, time=_year()).read()
+    )
+    assert (
+        result.metadata.source is not None
+        and result.metadata.source.release is not None
+    )
+    assert result.report.source_identities[0].release == inventory.releases[0]
+    replay = (
+        USGS(release=result.metadata.source.release)
+        .select(stations=station, time=_year())
+        .read()
+    )
+    assert replay.table.equals(result.table, check_metadata=False)
 
 
 def test_chirps_reuses_inspected_gregorian_series_period(

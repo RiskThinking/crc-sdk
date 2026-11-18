@@ -13,6 +13,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, TypeAlias, TypeVar, cast
 
 import crc_framework
+from crc_framework import _core
 from h3.api import basic_int as h3  # type: ignore[import-untyped]
 from shapely import from_wkb  # type: ignore[import-untyped]
 from shapely.affinity import translate  # type: ignore[import-untyped]
@@ -743,30 +744,6 @@ def selected_metadata(metadata: MetadataT, selected: ResolvedSelection) -> Metad
     return replace(metadata, spec=selected.spec, provenance=provenance)
 
 
-# Values map to a physical base as base = value * scale + offset. Calendar
-# months/years deliberately form a separate group from fixed-duration seconds.
-_UNITS: dict[str, tuple[str, float, float]] = {
-    "m": ("length", 1.0, 0.0),
-    "cm": ("length", 0.01, 0.0),
-    "mm": ("length", 0.001, 0.0),
-    "ft": ("length", 0.3048, 0.0),
-    "s": ("duration", 1.0, 0.0),
-    "h": ("duration", 3600.0, 0.0),
-    "d": ("duration", 86400.0, 0.0),
-    "month": ("calendar_duration", 1.0, 0.0),
-    "yr": ("calendar_duration", 12.0, 0.0),
-    "1": ("ratio", 1.0, 0.0),
-    "percent": ("ratio", 0.01, 0.0),
-    "degC": ("temperature", 1.0, 273.15),
-    "K": ("temperature", 1.0, 0.0),
-    "degF": ("temperature", 5.0 / 9.0, 273.15 - 32.0 * 5.0 / 9.0),
-    "m/s": ("speed", 1.0, 0.0),
-    "km/h": ("speed", 1.0 / 3.6, 0.0),
-    "mm/day": ("precipitation_rate", 1.0 / 86400.0, 0.0),
-    "mm/h": ("precipitation_rate", 1.0 / 3600.0, 0.0),
-    "K.d": ("degree_days", 1.0, 0.0),
-    "degC.d": ("degree_days", 1.0, 0.0),
-}
 _UNIT_TYPES = (
     crc_framework.LengthUnit,
     crc_framework.TimeUnit,
@@ -800,10 +777,7 @@ def conversion_spec(
     )
     if source_unit == unit.value:
         return spec, None
-    source = _UNITS.get(source_unit)
-    target = _UNITS[unit.value]
-    if source is None or source[0] != target[0]:
-        raise ValueError(f"cannot convert {source_unit!r} to {unit.value!r}")
+    scale, offset = _core.unit_conversion(source_unit, unit.value)
     document = json.loads(measurement.to_json())
     document["unit"] = unit.value
     try:
@@ -831,8 +805,8 @@ def conversion_spec(
         variable_id=identifier,
         source_unit=source_unit,
         target_unit=unit.value,
-        scale=source[1] / target[1],
-        offset=(source[2] - target[2]) / target[1],
+        scale=scale,
+        offset=offset,
     )
 
 
