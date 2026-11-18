@@ -29,6 +29,7 @@ from ._dataset_schema import (
     FittingDiagnostic,
     SourceIdentity,
     Stage,
+    UnavailableStationYear,
 )
 from ._declaration_updates import refine_spec
 from ._declarations import (
@@ -70,6 +71,7 @@ from ._schema import (
 )
 from ._selection import (
     PeriodSelector,
+    ResolvedSelection,
     ScenarioSelector,
     SelectionState,
     SeriesSelector,
@@ -461,6 +463,11 @@ class _TableNode(_ScientificNode[MetadataT]):
             if isinstance(metadata, DatasetMetadata) or metadata.sampling is None
             else metadata.sampling._document(),
             metadata.spatial._document(),
+            [
+                (d.station_id, d.year)
+                for d in metadata.report.diagnostics
+                if isinstance(d, UnavailableStationYear)
+            ],
         )
 
     def _view_metadata(
@@ -623,6 +630,38 @@ class _ParquetNode(_ScientificNode[MetadataT]):
         return NodeStream(schema, metadata, batches(), report=report)
 
 
+def _select_unavailable_years(
+    report: ExecutionReport, selected: ResolvedSelection
+) -> ExecutionReport:
+    def retain(diagnostic: ExecutionDiagnostic) -> bool:
+        if not isinstance(diagnostic, UnavailableStationYear):
+            return True
+        if selected.empty or (
+            selected.stations is not None
+            and diagnostic.station_id not in selected.stations
+        ):
+            return False
+        if selected.time is not None:
+            start, stop = selected.time.start, selected.time.end
+            assert start is not None and stop is not None
+            return start <= diagnostic.year <= stop
+        return True
+
+    diagnostics = tuple(d for d in report.diagnostics if retain(d))
+    removed = len(report.diagnostics) - len(diagnostics)
+    if not removed:
+        return report
+    return replace(
+        report,
+        diagnostics=diagnostics,
+        counts=replace(
+            report.counts,
+            requested=max(report.counts.produced, report.counts.requested - removed),
+            incomplete_years=max(0, report.counts.incomplete_years - removed),
+        ),
+    )
+
+
 class _SelectionNode(_ScientificNode[MetadataT]):
     def __init__(self, parent: Node[MetadataT], state: SelectionState) -> None:
         self.parent: Node[MetadataT] = parent
@@ -643,7 +682,9 @@ class _SelectionNode(_ScientificNode[MetadataT]):
     ) -> ExecutionReport:
         parent = scope.report(self.parent)
         metadata = scope.metadata(self.parent)
-        if self.state.resolve(metadata.spec, source=metadata.source).empty:
+        selected = self.state.resolve(metadata.spec, source=metadata.source)
+        parent = _select_unavailable_years(parent, selected)
+        if selected.empty:
             parent = replace(
                 parent, complete=True, valid=False if parent.valid is False else True
             )
@@ -713,6 +754,11 @@ class _SelectionNode(_ScientificNode[MetadataT]):
                             records, schema=_schema(metadata)
                         )
             if resolved.stations is not None:
+                seen_stations.update(
+                    d.station_id
+                    for d in scope.report(self.parent).diagnostics
+                    if isinstance(d, UnavailableStationYear)
+                )
                 missing = set(resolved.stations) - seen_stations
                 if missing:
                     raise ValueError(
@@ -725,12 +771,16 @@ class _SelectionNode(_ScientificNode[MetadataT]):
         def report() -> ExecutionReport:
             assert own_report is not None
             own = own_report()
-            parent = scope.computation_report(self.parent)
+            parent = _select_unavailable_years(scope.report(self.parent), resolved)
+            unavailable = sum(
+                isinstance(d, UnavailableStationYear) for d in parent.diagnostics
+            )
             return replace(
                 own,
                 diagnostics=parent.diagnostics,
                 counts=replace(
                     own.counts,
+                    requested=own.counts.requested + unavailable,
                     skipped=parent.counts.skipped,
                     usable_years=parent.counts.usable_years,
                     incomplete_years=parent.counts.incomplete_years,
@@ -747,6 +797,10 @@ def _support_inventory(node: Node[MetadataT]) -> set[str] | None:
         return {
             str(record.get("station_id") or record["support_id"])
             for record in node.table.to_pylist()
+        } | {
+            d.station_id
+            for d in node.metadata_value.report.diagnostics
+            if isinstance(d, UnavailableStationYear)
         }
     if isinstance(node, _TransformNode):
         return _support_inventory(node.parent)
@@ -808,8 +862,13 @@ class _FitNode(_ScientificNode[DatasetMetadata], Generic[MetadataT]):
         self, scope: ExecutionScope, shared: ExecutionReport
     ) -> ExecutionReport:
         known, source = _static_source(scope, self.parent)
+        parent = scope.report(self.parent)
+        own = tuple(d for d in shared.diagnostics if d not in parent.diagnostics)
         return _report_view(
-            shared, parent=scope.report(self.parent), source_known=known, source=source
+            replace(shared, diagnostics=own),
+            parent=parent,
+            source_known=known,
+            source=source,
         )
 
     def open(self, scope: ExecutionScope) -> NodeStream[DatasetMetadata]:
@@ -836,19 +895,30 @@ class _FitNode(_ScientificNode[DatasetMetadata], Generic[MetadataT]):
                         "Narrow select() or increase the limit."
                     )
                 parts.append(batch)
-            parent_report = scope.computation_report(self.parent)
+            parent_report = scope.report(self.parent)
             actual = _with_report(scope.metadata(self.parent), parent_report)
             table = pa.Table.from_batches(
                 parts, schema=_schema(actual)
             ).replace_schema_metadata(_schema(actual).metadata)
-            if table.num_rows == 0:
+            unlocated_annual = (
+                isinstance(actual, EvidenceMetadata)
+                and actual.spec.series
+                and any(
+                    isinstance(d, UnavailableStationYear)
+                    for d in parent_report.diagnostics
+                )
+            )
+            if table.num_rows == 0 and not unlocated_annual:
                 result_metadata = replace(
                     metadata,
                     report=ExecutionReport(
                         True,
                         True,
                         parent_report.diagnostics,
-                        ExecutionCounts(),
+                        ExecutionCounts(
+                            usable_years=parent_report.counts.usable_years,
+                            incomplete_years=parent_report.counts.incomplete_years,
+                        ),
                         parent_report.source_identities,
                     ),
                 )
@@ -860,6 +930,22 @@ class _FitNode(_ScientificNode[DatasetMetadata], Generic[MetadataT]):
                         table, actual, self.specification, on_failure=self.failure
                     )
                 except crc_framework.FitError as error:
+                    result_metadata = replace(
+                        metadata,
+                        report=ExecutionReport(
+                            False,
+                            None,
+                            parent_report.diagnostics,
+                            ExecutionCounts(
+                                requested=error.requested
+                                if isinstance(error, _SampleFitError)
+                                else 0,
+                                usable_years=parent_report.counts.usable_years,
+                                incomplete_years=parent_report.counts.incomplete_years,
+                            ),
+                            parent_report.source_identities,
+                        ),
+                    )
                     raise _fit_invalid(
                         error,
                         source=error.source

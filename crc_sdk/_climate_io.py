@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import AsyncIterator, Iterable, Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 from urllib.error import HTTPError
@@ -226,7 +226,6 @@ def raster_quantile_rows(
 @dataclass(slots=True)
 class ZarrSnapshot:
     group: Any
-    metadata: ResourceIdentity
     _resource_map: dict[str, ResourceIdentity]
 
 
@@ -253,7 +252,6 @@ def open_zarr_snapshot(
     from ._source_io import fetch
 
     resources: dict[str, ResourceIdentity] = {}
-    metadata_resource: ResourceIdentity | None = None
     last_io_error: FileNotFoundError | None = None
     format_version: Literal[2, 3] = 2
     failures: list[OSError] = []
@@ -273,11 +271,10 @@ def open_zarr_snapshot(
                 raise
             failures.append(error)
             continue
-        metadata_resource = identity
         resources[identity.uri] = identity
         format_version = 2 if version == 2 else 3
         break
-    if metadata_resource is None:
+    else:
         raise failures[0]
 
     class SnapshotStore(Store):
@@ -292,7 +289,7 @@ def open_zarr_snapshot(
             return self is other
 
         async def get(self, key: str, prototype: Any, byte_range: Any = None) -> Any:
-            nonlocal metadata_resource, last_io_error
+            nonlocal last_io_error
             path = PurePosixPath(key)
             if path.is_absolute() or ".." in path.parts:
                 raise ValueError("invalid Zarr resource key")
@@ -310,12 +307,11 @@ def open_zarr_snapshot(
                 if error.code == 404:
                     identity = getattr(error, "resource", None)
                     if isinstance(identity, ResourceIdentity):
-                        resources[identity.uri] = identity
+                        missing_uri = identity.uri + "#crc-http-status=404"
+                        resources[missing_uri] = replace(identity, uri=missing_uri)
                     return None
                 raise
             resources[resource.uri] = resource
-            if key in (".zmetadata", "zarr.json"):
-                metadata_resource = resource
             value = local.read_bytes()
             if isinstance(byte_range, RangeByteRequest):
                 value = value[byte_range.start : byte_range.end]
@@ -369,13 +365,9 @@ def open_zarr_snapshot(
         if last_io_error is not None:
             raise last_io_error
         raise
-    if metadata_resource is None:
-        raise ValueError(
-            "the climate store did not provide a consolidated metadata identity"
-        )
     # zarr metadata and chunks are acquired lazily. The same owned list is
     # refreshed when consumers request a current source identity.
-    return ZarrSnapshot(group, metadata_resource, resources)
+    return ZarrSnapshot(group, resources)
 
 
 def zarr_resources(snapshot: ZarrSnapshot) -> tuple[ResourceIdentity, ...]:

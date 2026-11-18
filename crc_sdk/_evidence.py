@@ -36,6 +36,7 @@ from ._dataset_schema import (
     Stage,
     SupportKind,
     Transformation,
+    UnavailableStationYear,
     _dump,
     _identifier,
     _load,
@@ -143,16 +144,20 @@ class _SampleFitError(FitError):
         error: FitError,
         *,
         variable_id: str,
-        support_id: str,
+        support_id: str | None,
         source: str | None,
+        requested: int,
     ) -> None:
         super().__init__(
             error.message, record=error.record, diagnostics=error.diagnostics
         )
         self.code = error.code
         self.variable_id = _identifier(variable_id, "variable_id")
-        self.support_id = _identifier(support_id, "support_id")
+        self.support_id = (
+            None if support_id is None else _identifier(support_id, "support_id")
+        )
         self.source = None if source is None else _identifier(source, "source")
+        self.requested = requested
 
 
 def evidence_metadata_schema() -> dict[str, object]:
@@ -590,11 +595,69 @@ def fit_sample_table(
         raise TypeError("sample model selection requires SampleFit candidates")
     validate_evidence(table, metadata)
     groups: dict[tuple[object, ...], list[dict[str, object]]] = {}
+    observed_stations = set()
     for record in table.to_pylist():
         groups.setdefault(tuple(record[name] for name in _IDENTITY), []).append(record)
+        if record["station_id"] is not None:
+            observed_stations.add(record["station_id"])
+    unlocated: dict[str, set[int]] = {}
+    if metadata.spec.series:
+        for diagnostic in metadata.report.diagnostics:
+            if (
+                isinstance(diagnostic, UnavailableStationYear)
+                and diagnostic.station_id not in observed_stations
+            ):
+                unlocated.setdefault(diagnostic.station_id, set()).add(diagnostic.year)
+    requested = len(groups) + len(unlocated)
+    source = None if metadata.source is None else metadata.source.product
     rows: list[DatasetRow] = []
     diagnostics = list(metadata.report.diagnostics)
     skipped = no_data = 0
+
+    def record_failure(
+        original: FitError,
+        count: int,
+        *,
+        variable_id: str,
+        support_id: str | None,
+        station_id: str | None = None,
+    ) -> FitError:
+        message = original.message
+        if station_id is not None:
+            message = f"Station {station_id!r} has no usable annual evidence. {message}"
+        error = FitError(
+            message,
+            record=replace(
+                original.record,
+                evidence_count=count,
+                excluded_count=count - original.record.used_count,
+            ),
+            diagnostics=original.diagnostics,
+        )
+        error.code = original.code
+        if on_failure is FitFailure.RAISE:
+            raise _SampleFitError(
+                error,
+                variable_id=variable_id,
+                support_id=support_id,
+                source=source,
+                requested=requested,
+            ) from original
+        diagnostics.append(
+            FittingDiagnostic(
+                code=error.code,
+                severity=DiagnosticSeverity.WARNING,
+                stage=Stage.FITTING,
+                message=f"{variable_id}: {error.message}",
+                source=source,
+                support_id=support_id,
+                remedy="Inspect the retained fitting record and choose an explicit "
+                "SampleFit specification or supply more observations.",
+                record=error.record,
+            )
+        )
+        return error
+
     for identity, records in groups.items():
         variable, scenario, period, support, cell = identity
         common: _RowIdentity = {
@@ -626,41 +689,17 @@ def fit_sample_table(
                     severity=d.severity,
                     stage=Stage.FITTING,
                     message=d.message,
-                    source=None if metadata.source is None else metadata.source.product,
+                    source=source,
                     support_id=cast(str, support),
                 )
                 for d in result.diagnostics
             )
         except FitError as original_error:
-            error = FitError(
-                original_error.message,
-                record=replace(
-                    original_error.record,
-                    evidence_count=len(records),
-                    excluded_count=len(records) - original_error.record.used_count,
-                ),
-                diagnostics=original_error.diagnostics,
-            )
-            error.code = original_error.code
-            if on_failure is FitFailure.RAISE:
-                raise _SampleFitError(
-                    error,
-                    variable_id=cast(str, variable),
-                    support_id=cast(str, support),
-                    source=None if metadata.source is None else metadata.source.product,
-                ) from error
-            diagnostics.append(
-                FittingDiagnostic(
-                    code=error.code,
-                    severity=DiagnosticSeverity.WARNING,
-                    stage=Stage.FITTING,
-                    message=f"{variable}: {error.message}",
-                    source=None if metadata.source is None else metadata.source.product,
-                    support_id=cast(str, support),
-                    remedy="Inspect the retained fitting record and choose an explicit "
-                    "SampleFit specification or supply more observations.",
-                    record=error.record,
-                )
+            error = record_failure(
+                original_error,
+                len(records),
+                variable_id=cast(str, variable),
+                support_id=cast(str, support),
             )
             if on_failure is FitFailure.KEEP_NO_DATA:
                 no_data += 1
@@ -669,12 +708,29 @@ def fit_sample_table(
                 )
             else:
                 skipped += 1
+    if unlocated:
+        # The selected station has no observed support anywhere in this
+        # window. Retain the failed fit in the report without inventing a row.
+        # These observations belong to the provider's single annual series.
+        variable_id = metadata.spec.series[0].variable.id
+        try:
+            fit_samples([], specification)
+        except FitError as error:
+            for station_id, years in unlocated.items():
+                record_failure(
+                    error,
+                    len(years),
+                    variable_id=variable_id,
+                    support_id=None,
+                    station_id=station_id,
+                )
+                skipped += int(on_failure is FitFailure.SKIP)
     report = ExecutionReport(
         complete=True,
         valid=True,
         diagnostics=tuple(diagnostics),
         counts=ExecutionCounts(
-            requested=len(groups),
+            requested=requested,
             produced=len(rows),
             skipped=skipped,
             no_data=no_data,

@@ -496,6 +496,64 @@
             "record"
           ],
           "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "station_year_unavailable"
+            },
+            "severity": {
+              "const": "warning"
+            },
+            "stage": {
+              "enum": [
+                "acquisition",
+                "decoding"
+              ]
+            },
+            "message": {
+              "type": "string",
+              "minLength": 1
+            },
+            "source": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+            },
+            "query_value": {
+              "type": "number"
+            },
+            "remedy": {
+              "type": "string",
+              "minLength": 1
+            },
+            "station_id": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+            },
+            "year": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9999
+            },
+            "minimum_fraction": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "maximum": 1
+            }
+          },
+          "required": [
+            "code",
+            "severity",
+            "stage",
+            "message",
+            "station_id",
+            "year",
+            "minimum_fraction"
+          ],
+          "additionalProperties": false
         }
       ]
     },

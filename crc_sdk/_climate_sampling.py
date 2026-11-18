@@ -86,7 +86,14 @@ from ._providers import era5 as era
 from ._recipes import Samples, _key
 from ._runtime import _memory_bytes
 from ._selection import SelectionState, selected_metadata
-from ._source_io import SourceNode, check_release, fetch, native_data, release_snapshot
+from ._source_io import (
+    SourceNode,
+    fetch,
+    native_data,
+    payload_selection,
+    selected_source_time,
+    verify_payload,
+)
 
 ERA5_STORE = era.ARCO_0P25
 CMIP6_CATALOGUE = cmip.CATALOGUE_URL
@@ -486,7 +493,7 @@ class _ClimateNode(SourceNode[EvidenceMetadata]):
                     parameter="area",
                 )
             )
-        if self.provider == "era5" and self.state.time is None:
+        if self.provider == "era5" and selected_source_time(self.state) is None:
             result.append(
                 Requirement(
                     "time_required",
@@ -512,7 +519,8 @@ class _ClimateNode(SourceNode[EvidenceMetadata]):
             if self.provider == "era5":
                 return _era5_source(scope, self, operation)
             if self.provider == "cmip6":
-                return _cmip_source(scope, self, operation)
+                _, release = payload_selection(self.state, self.release)
+                return _cmip_source(scope, self, operation, release=release)
             return _nex_source(scope, self, operation)
 
     def inspection(self, scope: ExecutionScope) -> Inspection:
@@ -539,15 +547,15 @@ class _ClimateNode(SourceNode[EvidenceMetadata]):
                 indicators=tuple(
                     _reference(self.provider, operation) for operation in _OPERATIONS
                 ),
-                releases=()
-                if source.identity.release is None
-                else (source.identity.release,),
                 requirements=source.requirements + self._missing() + source.notes,
                 source=source.identity,
                 capabilities=(Capability.INSPECT,),
             )
         period = _period(
-            self.state.time, source.first_year, source.last_year, source.calendar
+            selected_source_time(self.state),
+            source.first_year,
+            source.last_year,
+            source.calendar,
         )
         references = tuple(
             SeriesReference(
@@ -556,7 +564,6 @@ class _ClimateNode(SourceNode[EvidenceMetadata]):
                 else _variable(self.provider, operation),
                 scenario=source.scenario,
                 period=period,
-                release=source.identity.release,
                 probability=None
                 if self.raw
                 else _reference(self.provider, operation).probability,
@@ -569,9 +576,6 @@ class _ClimateNode(SourceNode[EvidenceMetadata]):
             indicators=tuple(
                 _reference(self.provider, operation) for operation in _OPERATIONS
             ),
-            releases=()
-            if source.identity.release is None
-            else (source.identity.release,),
             capabilities=(
                 Capability.INSPECT,
                 Capability.READ,
@@ -601,7 +605,8 @@ class _ClimateNode(SourceNode[EvidenceMetadata]):
                 f"{self.provider.upper()} requires "
                 ".select(area=Bounds(...)) before source acquisition."
             )
-        if self.provider == "era5" and self.state.time is None:
+        time = selected_source_time(self.state)
+        if self.provider == "era5" and time is None:
             raise CapabilityError(
                 "ERA5 requires explicit .select(time=Period.window(...)) bounds."
             )
@@ -610,16 +615,24 @@ class _ClimateNode(SourceNode[EvidenceMetadata]):
             raise CapabilityError(" ".join(r.message for r in source.requirements))
         source_records = source.records
         assert source_records is not None
-        period = _period(
-            self.state.time, source.first_year, source.last_year, source.calendar
-        )
+        period = _period(time, source.first_year, source.last_year, source.calendar)
         metadata = _metadata(self, source, (operation,), period)
-        resolved = self.state.resolve(metadata.spec, source=source.identity)
+        state, release = payload_selection(self.state, self.release)
+        resolved = replace(state, time=time).resolve(
+            metadata.spec, source=source.identity
+        )
         metadata = selected_metadata(metadata, resolved)
         current = metadata
 
-        def result_metadata(count: int, missing: int) -> EvidenceMetadata:
+        def result_metadata(
+            count: int, missing: int, *, consumed: bool = False
+        ) -> EvidenceMetadata:
             actual_source = source.final_identity()
+            if consumed:
+                assert source.release_id is not None
+                actual_source = verify_payload(
+                    actual_source, id=source.release_id, expected=release
+                )
             diagnostics = (
                 ()
                 if not missing
@@ -659,10 +672,13 @@ class _ClimateNode(SourceNode[EvidenceMetadata]):
             records: list[dict[str, object]] = []
             count = missing = 0
             if not resolved.empty:
-                for year in range(
-                    max(cast(int, period.start), source.first_year),
-                    min(cast(int, period.end), source.last_year) + 1,
-                ):
+                start, end = cast(int, period.start), cast(int, period.end)
+                if self.raw:
+                    start, end = (
+                        max(start, source.first_year),
+                        min(end, source.last_year),
+                    )
+                for year in range(start, end + 1):
                     scope.emit(
                         Stage.DECODING if self.raw else Stage.REDUCTION,
                         year - cast(int, period.start),
@@ -707,7 +723,7 @@ class _ClimateNode(SourceNode[EvidenceMetadata]):
                 with native_data(source=self.provider, scope=scope):
                     table = evidence_table(records, metadata)
                 yield from table.to_batches(max_chunksize=scope.runtime.batch_rows)
-            current = result_metadata(count, missing)
+            current = result_metadata(count, missing, consumed=True)
 
         return NodeStream(
             evidence_arrow_schema(metadata),
@@ -715,6 +731,7 @@ class _ClimateNode(SourceNode[EvidenceMetadata]):
             batches(),
             report=lambda: current.report,
             final_metadata=lambda: current,
+            verify_before_yield=release is not None,
         )
 
 
@@ -942,6 +959,7 @@ class _GridSource:
     records: Callable[[int, Period, str, float], Iterator[dict[str, object]]] | None
     final_identity: Callable[[], SourceIdentity]
     notes: tuple[Requirement, ...] = ()
+    release_id: str | None = None
 
 
 def _raw_grid_records(
@@ -1046,10 +1064,8 @@ def _era5_source(
     first_date = str(attrs.get("valid_time_start", str(time[0])))[:10]
     last_date = str(attrs.get("valid_time_stop", str(time[-1])))[:10]
     first, last = int(first_date[:4]), int(last_date[:4])
-    release = release_snapshot((snapshot.metadata,), id="final-through-" + last_date)
-    check_release(release, node.release)
     identity = SourceIdentity(
-        "era5", ERA5_STORE.name, release=release, resources=zarr_resources(snapshot)
+        "era5", ERA5_STORE.name, resources=zarr_resources(snapshot)
     )
 
     def final_identity() -> SourceIdentity:
@@ -1150,7 +1166,7 @@ def _era5_source(
             yield record
 
     native = None if operation is None else _OPERATIONS[operation]
-    selected_time = node.state.time
+    selected_time = selected_source_time(node.state)
     notes: tuple[Requirement, ...] = ()
     if native is not None and selected_time is not None:
         variable_name = ERA5_STORE.variables["tp" if native.startswith("rx") else "t2m"]
@@ -1180,11 +1196,16 @@ def _era5_source(
         rewritten,
         final_identity,
         notes,
+        release_id="final-through-" + last_date,
     )
 
 
 def _cmip_source(
-    scope: ExecutionScope, node: _ClimateNode, operation: str | None
+    scope: ExecutionScope,
+    node: _ClimateNode,
+    operation: str | None,
+    *,
+    release: ReleaseReference | None,
 ) -> _GridSource:
     path, catalogue = fetch(scope, CMIP6_CATALOGUE)
     native = (
@@ -1248,7 +1269,6 @@ def _cmip_source(
         identity = SourceIdentity(
             "cmip6",
             "catalogue",
-            release=release_snapshot((catalogue,)),
             resources=(catalogue,),
         )
         return _GridSource(
@@ -1261,9 +1281,7 @@ def _cmip_source(
             None,
             lambda: identity,
         )
-    matches = [
-        d for d in datasets if node.release is None or d.dataset_id == node.release.id
-    ]
+    matches = [d for d in datasets if release is None or d.dataset_id == release.id]
     if not matches:
         raise LookupError("The pinned CMIP6 release is not in the supported catalogue")
     versions = max(d.version for d in matches)
@@ -1294,8 +1312,6 @@ def _cmip_source(
         "sha256:" + hashlib.sha256(payload).hexdigest(),
         retrieved_at=catalogue.retrieved_at,
     )
-    release = release_snapshot((record, snapshot.metadata), id=dataset.dataset_id)
-    check_release(release, node.release)
     licence = group.attrs.get("license") or group.attrs.get("licence")
     attribution = (
         str(group.attrs.get("institution", dataset.institution_id))
@@ -1319,7 +1335,6 @@ def _cmip_source(
     identity = SourceIdentity(
         "cmip6",
         dataset.dataset_id,
-        release=release,
         resources=actual_resources(),
         member=dataset.member_id,
     )
@@ -1399,6 +1414,7 @@ def _cmip_source(
         (),
         records,
         lambda: replace(identity, resources=actual_resources()),
+        release_id=dataset.dataset_id,
     )
 
 
@@ -1453,7 +1469,6 @@ def _nex_source(
             identity = SourceIdentity(
                 "nex",
                 "NEX-GDDP-CMIP6",
-                release=release_snapshot(resources),
                 resources=tuple(resources),
             )
             return _GridSource(
@@ -1473,7 +1488,6 @@ def _nex_source(
         identity = SourceIdentity(
             "nex",
             "NEX-GDDP-CMIP6",
-            release=release_snapshot(resources),
             resources=tuple(resources),
         )
         return _GridSource(
@@ -1518,14 +1532,9 @@ def _nex_source(
         if isinstance(node.scenario, Scenario)
         else Scenario(cast(str, scenario))
     )
-    release = release_snapshot(
-        resources, id=f"{node.model}/{scenario}/{node.member}/{variable}"
-    )
-    check_release(release, node.release)
     identity = SourceIdentity(
         "nex",
         "NEX-GDDP-CMIP6",
-        release=release,
         resources=tuple(resources),
         member=f"{node.model}/{node.member}",
     )
@@ -1641,4 +1650,5 @@ def _nex_source(
         lambda: replace(
             identity, resources=tuple({r.uri: r for r in resources}.values())
         ),
+        release_id=f"{node.model}/{scenario}/{node.member}/{variable}",
     )

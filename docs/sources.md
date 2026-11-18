@@ -63,12 +63,10 @@ runtime = Runtime(cache=Cache.reuse(".crc-cache"))
 for indicator in ERA5().inspect(runtime=runtime).indicators:
     print(indicator.label, indicator.measurement)
 
-rain = ERA5(
-    indicator=ERA5.Indicator.ANNUAL_MAXIMUM_DAILY_PRECIPITATION,
-).select(
-    area=Bounds(west=23.9, south=59.9, east=24.1, north=60.1),
-    time=Period.window(1991, 2020),
-)
+indicator = ERA5.Indicator.ANNUAL_MAXIMUM_DAILY_PRECIPITATION
+area = Bounds(west=23.9, south=59.9, east=24.1, north=60.1)
+period = Period.window(1991, 2020)
+rain = ERA5(indicator=indicator).select(area=area, time=period)
 inventory = rain.inspect(runtime=runtime)
 for requirement in inventory.requirements:
     print(requirement.message)
@@ -99,6 +97,26 @@ required, and inspection reports the native chunk layout and acquisition
 estimate. Cache a deliberate selection before repeating a long calculation.
 CMIP6 and NEX require an actual model, scenario, and member; discovery returns
 the available combinations rather than guessing these scientific choices.
+
+ERA5, CMIP6, NEX, JRC, and EDO discovery provides the available science and
+coverage. Their catalogues lack content checksums for every native object, so
+the release reference becomes available from the completed read. The reference
+identifies the payload acquired for the selected area and time. Reuse those
+bounds when replaying the pin. This example continues the ERA5 workflow above.
+
+<!-- live-example -->
+```python
+source = annual_observations.metadata.source
+assert source is not None and source.release is not None
+pinned = ERA5(indicator=indicator, release=source.release).select(area=area, time=period)
+offline = Runtime(cache=Cache.offline(".crc-cache"))
+replayed = pinned.read(runtime=offline)
+assert replayed.table.equals(annual_observations.table, check_metadata=False)
+```
+
+Pinned reads check the selected source bytes before returning even a preview
+or the first batch. If a native object or cached view has changed, the read
+raises a release mismatch.
 
 Access the underlying observations through the same configured provider. This
 example continues the live workflow above.
@@ -182,6 +200,10 @@ station_data = GHCNh(
 Station references carry the source ID, label, and known location/record window.
 A station ID identifies the station; support IDs identify immutable observation
 locations. A station move does not rewrite the geometry of earlier reports.
+Unavailable station-years appear as `UnavailableStationYear` diagnostics with
+the station ID, year, and required coverage fraction. The report counts them as
+requested and incomplete years. Source rows with known support carry their
+actual coverage and any failure directly.
 Raw GHCNh/ISD reports remain irregular. Their named annual recipes require all
 24 distinct hours for a complete day and then apply the declared annual rule.
 

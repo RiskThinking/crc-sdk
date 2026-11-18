@@ -27,6 +27,7 @@ from ._declarations import SeriesSpec, Variable, scientific_identity
 from ._errors import CapabilityError, ValidationError
 from ._evaluation_responses import Response
 from ._evaluation_schema import (
+    AssetId,
     EvaluationFailure,
     EvaluationInput,
     EvaluationMetadata,
@@ -466,7 +467,7 @@ class _EvaluationNode(Node[EvaluationMetadata]):
             source=declaration.source,
         )
         diagnostics: dict[str, ExecutionDiagnostic] = {}
-        resolutions: dict[tuple[str, str], EvaluationResolution] = {}
+        resolutions: dict[tuple[str, str], tuple[cf.Impact, dict[AssetId, None]]] = {}
         resolved_models: dict[tuple[str, str], cf.Impact] = {}
         produced = no_data = matched = unmatched = 0
         requested = (
@@ -509,7 +510,10 @@ class _EvaluationNode(Node[EvaluationMetadata]):
             return _replace(
                 planned,
                 inputs=current_inputs,
-                resolutions=tuple(resolutions.values()),
+                resolutions=tuple(
+                    EvaluationResolution(name, impact, asset_ids=tuple(assigned_assets))
+                    for (name, _), (impact, assigned_assets) in resolutions.items()
+                ),
                 report=outcome,
             )
 
@@ -617,10 +621,12 @@ class _EvaluationNode(Node[EvaluationMetadata]):
                                 resolution_key = (response.name, resolution_id)
                                 if resolution_key not in resolutions:
                                     record = EvaluationResolution(
-                                        response.name, resolved
+                                        response.name, resolved, asset_ids=(asset_id,)
                                     )
                                     validator.register_resolution(record)
-                                    resolutions[resolution_key] = record
+                                    resolutions[resolution_key] = (resolved, {})
+                                _, assigned_assets = resolutions[resolution_key]
+                                assigned_assets.setdefault(asset_id, None)
                         for value, (result, failure) in zip(
                             query.values,
                             exposures,

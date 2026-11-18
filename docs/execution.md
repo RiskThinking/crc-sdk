@@ -91,6 +91,9 @@ fit with its authoritative record and warning; `FitFailure.SKIP` records the
 omission and counts. Neither policy fabricates a numerical law.
 Fitting failures retain their framework execution record on a typed
 `FittingDiagnostic.record`, including when `validate()` returns a failure report.
+When a station has no observations in the selected window, its historical
+support may be unknown. `FitFailure.KEEP_NO_DATA` retains that fit failure in
+the report. A spatial output row requires known support.
 
 ## Select and transform explicitly
 

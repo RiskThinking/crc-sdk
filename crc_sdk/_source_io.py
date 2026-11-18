@@ -26,10 +26,11 @@ from ._dataset_schema import (
     ExecutionReport,
     ReleaseReference,
     ResourceIdentity,
+    SourceIdentity,
     Stage,
     _resource,
 )
-from ._declarations import ScientificValue
+from ._declarations import Period, PeriodKind, ScientificValue
 from ._graph import ExecutionScope, Node, NodeStream
 from ._inspection import Inspection, Requirement
 from ._runtime import CacheMode
@@ -131,6 +132,7 @@ class SourceNode(Node[MetadataT]):
             final_metadata=metadata,
             close=close,
             checked=True,
+            verify_before_yield=stream.verify_before_yield,
         )
 
 
@@ -519,3 +521,40 @@ def check_release(actual: ReleaseReference, requested: ReleaseReference | None) 
             f"source release changed: expected {requested.id} ({requested.sha256}), "
             f"received {actual.id} ({actual.sha256})"
         )
+
+
+def payload_selection(
+    state: SelectionState, release: ReleaseReference | None
+) -> tuple[SelectionState, ReleaseReference | None]:
+    """Resolve science selectors independently of the pending payload check."""
+    references = state.series
+    if references is None:
+        return state, release
+    for reference in references:
+        pin = reference.release
+        if pin is not None:
+            check_release(pin, release)
+            release = pin
+    return replace(
+        state,
+        series=tuple(replace(reference, release=None) for reference in references),
+    ), release
+
+
+def selected_source_time(state: SelectionState) -> Period | None:
+    """Use an exact series window when a separate time selector is absent."""
+    if state.time is not None:
+        return state.time
+    if state.series is not None and len(state.series) == 1:
+        period = state.series[0].period
+        if period is not None and period.kind is PeriodKind.WINDOW:
+            return period
+    return None
+
+
+def verify_payload(
+    source: SourceIdentity, *, id: str, expected: ReleaseReference | None
+) -> SourceIdentity:
+    release = release_snapshot(source.resources, id=id)
+    check_release(release, expected)
+    return replace(source, release=release)

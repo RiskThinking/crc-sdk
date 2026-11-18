@@ -136,6 +136,32 @@ def test_era5_hourly_complete_days_and_owned_offline_replay(
     assert replay.table.equals(result.table, check_metadata=False)
 
 
+def test_era5_annual_results_retain_requested_years_outside_source_coverage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from crc_sdk import _climate_sampling as module
+
+    path = tmp_path / "era5.zarr"
+    _grid(path, variable="2m_temperature", hourly=True)
+    monkeypatch.setattr(
+        module, "ERA5_STORE", replace(module.ERA5_STORE, url=path.as_uri())
+    )
+    years = Period.window(2000, 2003)
+    recipe = ERA5(
+        indicator=ERA5.Indicator.ANNUAL_MAXIMUM_DAILY_MAXIMUM_TEMPERATURE
+    ).select(area=AREA, time=years)
+    result = recipe.read()
+    assert result.table["time"].to_pylist() == ["2000", "2001", "2002", "2003"]
+    assert result.table["value"].to_pylist() == [None, pytest.approx(6.85), None, None]
+    coverage = result.table["coverage"].to_pylist()
+    assert coverage[0] == {"valid": 0, "expected": 366, "minimum_fraction": 1.0}
+    assert coverage[-1] == {"valid": 0, "expected": 365, "minimum_fraction": 1.0}
+    counts = result.report.counts
+    assert counts.requested == counts.produced == 4
+    assert counts.usable_years == 1
+    assert counts.incomplete_years == counts.no_data == 3
+
+
 def test_cmip6_360_day_actual_calendar_and_reference_selection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -204,6 +230,16 @@ def test_cmip6_360_day_actual_calendar_and_reference_selection(
     assert Capability.FIT not in raw_inventory.capabilities
     assert raw.select(series=raw_inventory.series).read().table.num_rows == 360
     assert raw.aggregate(AnnualMaximum()).read().table["value"].to_pylist() == [280.0]
+    assert result.metadata.source is not None
+    release = result.metadata.source.release
+    assert release is not None
+    pinned = recipe.select(series=replace(inventory.series[0], release=release))
+    assert pinned.read().table.equals(result.table, check_metadata=False)
+    array = zarr.open_group(str(path), mode="r+")["tasmax"]
+    assert isinstance(array, zarr.Array)
+    array[0, 0, 0] = 291.0
+    with pytest.raises(OSError, match="release changed"):
+        pinned.read(limit=1)
 
 
 def _netcdf(
@@ -238,7 +274,7 @@ def _netcdf(
     "variable,unit,source_value,annual_value,native_value",
     [("tasmax", "K", 290.0, 16.85, 290.0), ("pr", "kg m-2 s-1", 1 / 86400, 1.0, 1.0)],
 )
-def test_nex_real_native_netcdf_view_and_offline_replay(
+def test_nex_real_native_netcdf_view_and_pinned_replay(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     variable: str,
@@ -252,18 +288,26 @@ def test_nex_real_native_netcdf_view_and_offline_replay(
     from crc_sdk import _climate_sampling as module
     from crc_sdk._climate_io import netcdf_header_snapshot, netcdf_window_snapshot
 
-    path = tmp_path / "annual.nc"
-    _netcdf(path, variable, np.arange(365), unit, np.full((365, 2, 2), source_value))
     prefix = module.NEX_PREFIX
+    directory = prefix + f"MODEL/historical/r1/{variable}/"
+    paths = {}
+    for year in (2001, 2002):
+        name = f"{variable}_day_MODEL_historical_r1_gn_{year}.nc"
+        path = tmp_path / name
+        _netcdf(
+            path,
+            variable,
+            np.arange(365),
+            unit,
+            np.full((365, 2, 2), source_value),
+            time_units=f"days since {year}-01-01",
+        )
+        paths[name] = path
     keys = {
         prefix: [prefix + "MODEL/"],
         prefix + "MODEL/": [prefix + "MODEL/historical/"],
         prefix + "MODEL/historical/": [prefix + "MODEL/historical/r1/"],
-        prefix + f"MODEL/historical/r1/{variable}/": [
-            prefix
-            + f"MODEL/historical/r1/{variable}/"
-            + f"{variable}_day_MODEL_historical_r1_gn_2001.nc"
-        ],
+        directory: [directory + name for name in paths],
     }
 
     def acquire(uri: str, destination: Path) -> int:
@@ -287,7 +331,7 @@ def test_nex_real_native_netcdf_view_and_offline_replay(
         module,
         "netcdf_header_snapshot",
         lambda scope, uri, variable: netcdf_header_snapshot(
-            scope, path.as_uri(), variable
+            scope, paths[uri.rsplit("/", 1)[-1]].as_uri(), variable
         ),
     )
     monkeypatch.setattr(module, "NEX_BUCKET", "https://fixture.test")
@@ -295,7 +339,9 @@ def test_nex_real_native_netcdf_view_and_offline_replay(
     monkeypatch.setattr(
         module,
         "netcdf_window_snapshot",
-        lambda scope, uri, **kw: netcdf_window_snapshot(scope, path.as_uri(), **kw),
+        lambda scope, uri, **kw: netcdf_window_snapshot(
+            scope, paths[uri.rsplit("/", 1)[-1]].as_uri(), **kw
+        ),
     )
     recipe = NEX(
         indicator=NEX.Indicator.ANNUAL_MAXIMUM_DAILY_PRECIPITATION
@@ -307,13 +353,15 @@ def test_nex_real_native_netcdf_view_and_offline_replay(
     ).select(area=AREA)
     cache = tmp_path / "cache"
     result = recipe.read(runtime=Runtime(cache=Cache.reuse(cache)))
-    assert result.table["value"].to_pylist() == pytest.approx([annual_value])
+    assert result.table["value"].to_pylist() == pytest.approx([annual_value] * 2)
     assert result.metadata.source is not None
+    release = result.metadata.source.release
+    assert release is not None
     assert any("#crc-variable=" in r.uri for r in result.metadata.source.resources)
     raw = recipe.observations()
     native = raw.read(runtime=Runtime(cache=Cache.reuse(cache), batch_rows=31))
-    assert native.table.num_rows == 365
-    assert native.table["value"].to_pylist() == pytest.approx([native_value] * 365)
+    assert native.table.num_rows == 730
+    assert native.table["value"].to_pylist() == pytest.approx([native_value] * 730)
     assert native.metadata.sampling is not None
     assert native.metadata.sampling.step == cf.Duration(1, unit=cf.TimeUnit.DAY)
     assert native.metadata.spec.series[0].scenario is not None
@@ -332,12 +380,31 @@ def test_nex_real_native_netcdf_view_and_offline_replay(
     monkeypatch.setattr(
         "crc_sdk._source_io._download", lambda *a: pytest.fail("offline acquisition")
     )
-    assert recipe.read(runtime=Runtime(cache=Cache.offline(cache))).table.equals(
-        result.table, check_metadata=False
+    offline = Runtime(cache=Cache.offline(cache))
+    reference = recipe.inspect(runtime=offline).series[0]
+    assert reference.release is None
+    assert (
+        recipe.select(series=replace(reference, release=release))
+        .read(runtime=offline)
+        .table.equals(result.table, check_metadata=False)
     )
     assert raw.read(runtime=Runtime(cache=Cache.offline(cache))).table.equals(
         native.table, check_metadata=False
     )
+    # The listing and first file used for header discovery still describe the
+    # same publication. Only the second year's payload changes.
+    _netcdf(
+        paths[f"{variable}_day_MODEL_historical_r1_gn_2002.nc"],
+        variable,
+        np.arange(365),
+        unit,
+        np.full((365, 2, 2), source_value * 1.01),
+        time_units="days since 2002-01-01",
+    )
+    monkeypatch.setattr("crc_sdk._source_io._download", acquire)
+    pinned = recipe.select(series=replace(reference, release=release))
+    with pytest.raises(OSError, match="release changed"):
+        pinned.read(limit=1, runtime=Runtime(cache=Cache.refresh(cache), batch_rows=1))
 
 
 def test_edo_native_dekads_are_readable_without_fitting(
@@ -370,10 +437,14 @@ def test_edo_native_dekads_are_readable_without_fitting(
     recipe = EDO(product=EDO.Product.SOIL_MOISTURE_INDEX).select(area=AREA)
     cache = tmp_path / "cache"
     result = recipe.read(runtime=Runtime(cache=Cache.reuse(cache)))
+    assert result.metadata.source is not None
+    release = result.metadata.source.release
+    assert release is not None
     monkeypatch.setattr(
         "crc_sdk._source_io._download", lambda *a: pytest.fail("offline acquisition")
     )
-    assert recipe.read(runtime=Runtime(cache=Cache.offline(cache))).table.equals(
+    pinned = EDO(release=release).select(area=AREA)
+    assert pinned.read(runtime=Runtime(cache=Cache.offline(cache))).table.equals(
         result.table, check_metadata=False
     )
     assert result.table["time"].to_pylist() == [
@@ -384,6 +455,17 @@ def test_edo_native_dekads_are_readable_without_fitting(
     assert result.table["value"].to_pylist() == pytest.approx([0.4] * 3)
     assert result.metadata.sampling is None
     assert result.metadata.spec.series[0].probability is None
+    _netcdf(
+        root / name,
+        "sminx",
+        [0, 10, 20],
+        "1",
+        np.full((3, 2, 2), 0.6),
+        calendar="proleptic_gregorian",
+    )
+    monkeypatch.setattr("crc_sdk._source_io._download", acquire)
+    with pytest.raises(OSError, match="release changed"):
+        pinned.read(limit=1, runtime=Runtime(cache=Cache.refresh(cache)))
 
 
 def test_jrc_preserves_published_quantile_knots_and_native_pixel_support(
@@ -421,6 +503,18 @@ def test_jrc_preserves_published_quantile_knots_and_native_pixel_support(
     recipe = JRC(product=JRC.Product.EFAS).select(area=AREA)
     cache = tmp_path / "cache"
     result = recipe.read(runtime=Runtime(cache=Cache.reuse(cache)))
+    assert result.metadata.source is not None
+    release = result.metadata.source.release
+    assert release is not None
+    pinned = JRC(product=JRC.Product.EFAS, release=release).select(area=AREA)
+    assert pinned.read(runtime=Runtime(cache=Cache.offline(cache))).table.equals(
+        result.table, check_metadata=False
+    )
+    with rasterio.open(root / "rp100.tif", "r+") as file:
+        file.write(np.full((2, 2), 11.0), 1)
+    with pytest.raises(OSError, match="release changed"):
+        pinned.read(limit=1)
+    assert pinned.inspect().releases == ()
     monkeypatch.setattr(
         "crc_sdk._source_io._download", lambda *a: pytest.fail("offline acquisition")
     )
@@ -467,7 +561,8 @@ def test_idf_central_quantiles_and_published_confidence_intervals(
         duration=cf.Duration(1, unit=cf.TimeUnit.HOUR),
     )
     cache = tmp_path / "cache"
-    assert recipe.read(runtime=Runtime(cache=Cache.reuse(cache))).table.num_rows == 1
+    result = recipe.read(runtime=Runtime(cache=Cache.reuse(cache)))
+    assert result.table.num_rows == 1
     confidence = recipe.confidence_intervals().read(
         runtime=Runtime(cache=Cache.reuse(cache))
     )
@@ -476,6 +571,14 @@ def test_idf_central_quantiles_and_published_confidence_intervals(
     assert inventory.series[0].period is not None
     assert inventory.stations[0].period.start == 1950
     assert inventory.series[0].period.end == 2017
+    assert result.metadata.source is not None
+    assert inventory.series[0].release == result.metadata.source.release
+    assert inventory.series[0].release is not None
+    assert (
+        recipe.select(series=inventory.series[0])
+        .read(runtime=Runtime(cache=Cache.offline(cache)))
+        .table.equals(result.table, check_metadata=False)
+    )
     monkeypatch.setattr(
         "crc_sdk._source_io._download", lambda *a: pytest.fail("offline acquisition")
     )
@@ -581,29 +684,60 @@ def test_strict_http_netcdf_range_snapshot_owns_only_selected_native_view(
     assert not directory.exists()
 
 
-def test_provider_release_ref_and_time_ref_are_exact(
+def test_era5_payload_pin_rejects_changed_chunks_before_preview_or_streaming(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from crc_sdk import ReleaseReference
     from crc_sdk import _climate_sampling as module
 
     path = tmp_path / "era5.zarr"
-    _grid(path, variable="2m_temperature", hourly=True)
+    group = _grid(path, variable="2m_temperature", hourly=True)
     monkeypatch.setattr(
         module, "ERA5_STORE", replace(module.ERA5_STORE, url=path.as_uri())
     )
-    recipe = ERA5(
-        indicator=ERA5.Indicator.ANNUAL_MAXIMUM_DAILY_MAXIMUM_TEMPERATURE
-    ).select(area=AREA, time=Period.window(2001, 2001))
-    reference = recipe.inspect().series[0]
-    assert reference.release is not None
+    indicator = ERA5.Indicator.ANNUAL_MAXIMUM_DAILY_MAXIMUM_TEMPERATURE
+    time = Period.window(2001, 2001)
+    recipe = ERA5(indicator=indicator).select(area=AREA, time=time)
+    cache = tmp_path / "cache"
+    inventory = recipe.inspect(runtime=Runtime(cache=Cache.reuse(cache)))
+    reference = inventory.series[0]
+    assert reference.release is None and inventory.releases == ()
+    result = (
+        ERA5()
+        .select(area=AREA, series=reference)
+        .read(runtime=Runtime(cache=Cache.reuse(cache)))
+    )
+    assert result.table["value"].to_pylist() == pytest.approx([6.85])
+    assert result.metadata.source is not None
+    release = result.metadata.source.release
+    assert release is not None
+    pinned = ERA5(indicator=indicator, release=release).select(area=AREA, time=time)
+    pinned_series = ERA5().select(area=AREA, series=replace(reference, release=release))
+    for selected in (pinned, pinned_series):
+        replay = selected.read(runtime=Runtime(cache=Cache.offline(cache)))
+        assert replay.table.equals(result.table, check_metadata=False)
+        assert replay.metadata.source is not None
+        assert replay.metadata.source.release == release
     with pytest.raises(OSError, match="release"):
         ERA5(
-            indicator=ERA5.Indicator.ANNUAL_MAXIMUM_DAILY_MAXIMUM_TEMPERATURE,
-            release=ReleaseReference(reference.release.id, "sha256:" + "0" * 64),
-        ).select(area=AREA, time=Period.window(2001, 2001)).read()
+            indicator=indicator,
+            release=ReleaseReference(release.id, "sha256:" + "0" * 64),
+        ).select(area=AREA, time=time).read()
     with pytest.raises(ValueError, match="period|series"):
         recipe.select(time=Period.window(2001, 2002), series=[reference]).read()
+    metadata = (path / ".zmetadata").read_bytes()
+    group["2m_temperature"][0, 0, 0] = 290.0
+    assert (path / ".zmetadata").read_bytes() == metadata
+    empty = pinned.read(limit=0)
+    assert not empty.report.complete and empty.report.valid is None
+    assert empty.metadata.source is not None and empty.metadata.source.release is None
+    with pytest.raises(OSError, match="release changed"):
+        pinned.read(limit=1)
+    with pinned_series.batches(runtime=Runtime(cache=Cache.refresh(cache))) as stream:
+        with pytest.raises(OSError, match="release changed"):
+            next(iter(stream))
+    changed = recipe.read(runtime=Runtime(cache=Cache.offline(cache)))
+    assert changed.table["value"].to_pylist() == pytest.approx([16.85])
 
 
 def test_era5_native_hourly_measurements_missing_data_and_bounded_preview(

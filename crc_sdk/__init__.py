@@ -39,6 +39,7 @@ from ._dataset_schema import (
     SpatialContract,
     Stage,
     SupportKind,
+    UnavailableStationYear,
     UnitConversion,
 )
 from ._declarations import (
@@ -200,6 +201,7 @@ __all__ = [
     "TimestampPosition",
     "USDACropland",
     "USGS",
+    "UnavailableStationYear",
     "UnitConversion",
     "ValidationError",
     "Variable",

@@ -196,15 +196,21 @@ class EvaluationResponse:
 
 @dataclass(frozen=True, slots=True, eq=False)
 class EvaluationResolution:
-    """The actual calibrated impact resolved for a referenced response."""
+    """A calibrated response and the assets to which that resolution applied."""
 
     response_id: str
     impact: cf.Impact
+    asset_ids: tuple[str | int, ...] = field(kw_only=True)
 
     def __post_init__(self) -> None:
         _identifier(self.response_id, "response_id")
         if not isinstance(self.impact, cf.Impact):
             raise TypeError("resolution requires a framework Impact")
+        if not isinstance(self.asset_ids, tuple):
+            raise TypeError("resolution asset_ids must be an immutable tuple")
+        ids = tuple(_asset_id(item) for item in self.asset_ids)
+        if not ids or len(set(ids)) != len(ids):
+            raise ValueError("resolution requires nonempty, unique asset IDs")
 
     @property
     def id(self) -> str:
@@ -212,7 +218,9 @@ class EvaluationResolution:
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, EvaluationResolution) and (
-            self.response_id == other.response_id and self.id == other.id
+            self.response_id == other.response_id
+            and self.id == other.id
+            and self.asset_ids == other.asset_ids
         )
 
     def _document(self) -> dict[str, object]:
@@ -220,6 +228,7 @@ class EvaluationResolution:
             "response_id": self.response_id,
             "id": self.id,
             "impact": _load(self.impact.to_json()),
+            "asset_ids": self.asset_ids,
         }
 
 
@@ -388,7 +397,7 @@ class EvaluationMetadata:
     _response_by_id: Mapping[str, EvaluationResponse] = field(
         init=False, compare=False, repr=False
     )
-    _resolution_by_id: Mapping[tuple[str, str], EvaluationResolution] = field(
+    _asset_resolutions: Mapping[tuple[AssetId, str], str] = field(
         init=False, compare=False, repr=False
     )
     _resolved_contexts: Mapping[tuple[str, str], dict[str, object]] = field(
@@ -493,11 +502,12 @@ class EvaluationMetadata:
                 )
             bind_response(response.model, variable.measurement)
             responses[response.name] = response
-        resolved: dict[tuple[str, str], EvaluationResolution] = {}
         contexts: dict[tuple[str, str], dict[str, object]] = {}
+        asset_resolutions: dict[tuple[AssetId, str], str] = {}
+        assets = set(self.asset_ids or ())
         for item in self.resolutions:
             resolution_key = item.response_id, item.id
-            if resolution_key in resolved:
+            if resolution_key in contexts:
                 raise ValueError(f"duplicate evaluation resolution {resolution_key!r}")
             if item.response_id not in responses:
                 raise ValueError(
@@ -506,7 +516,17 @@ class EvaluationMetadata:
             contexts[resolution_key] = _resolution_context(
                 item, responses[item.response_id]
             )
-            resolved[resolution_key] = item
+            for asset_id in item.asset_ids:
+                if asset_id not in assets:
+                    raise ValueError(
+                        f"resolution references undeclared asset {asset_id!r}"
+                    )
+                assignment = (asset_id, item.response_id)
+                if assignment in asset_resolutions:
+                    raise ValueError(
+                        "one asset response cannot resolve multiple actual contexts"
+                    )
+                asset_resolutions[assignment] = item.id
         object.__setattr__(
             self,
             "_spec",
@@ -520,7 +540,7 @@ class EvaluationMetadata:
         object.__setattr__(self, "_series", selected)
         object.__setattr__(self, "_resource_series", resource_series)
         object.__setattr__(self, "_response_by_id", responses)
-        object.__setattr__(self, "_resolution_by_id", resolved)
+        object.__setattr__(self, "_asset_resolutions", asset_resolutions)
         object.__setattr__(self, "_resolved_contexts", contexts)
 
     def _document(self) -> dict[str, object]:
@@ -643,10 +663,13 @@ def _response(value: object) -> EvaluationResponse:
 
 
 def _resolution(value: object) -> EvaluationResolution:
-    doc = _object(value, {"id", "response_id", "impact"})
+    doc = _object(value, {"id", "response_id", "impact", "asset_ids"})
     result = EvaluationResolution(
         _identifier(doc["response_id"], "response_id"),
         cf.Impact.from_json(_dump(doc["impact"])),
+        asset_ids=tuple(
+            _asset_id(item) for item in _array(doc["asset_ids"], "resolution asset_ids")
+        ),
     )
     if doc["id"] != result.id:
         raise ValueError("evaluation resolution identity disagrees with the impact")
@@ -879,7 +902,6 @@ class EvaluationValidator:
         self._contexts = dict(metadata._resolved_contexts)
         self._produced = 0
         self._no_data = 0
-        self._resolutions: set[tuple[str, str]] = set()
         self._path: Path | None = None
         self._closed = False
         if scope_directory is not None:
@@ -1024,6 +1046,14 @@ class EvaluationValidator:
                 "INSERT OR IGNORE INTO matched_assets VALUES (?)", (_dump(asset_id),)
             )
         if response is not None and resolution is not None:
+            # Live execution verifies its final assignments at finish, while
+            # replay can check against its published resolution inventory now.
+            has_record = (response, resolution) in metadata._resolved_contexts
+            assigned = metadata._asset_resolutions.get((asset_id, response))
+            if has_record and assigned != resolution:
+                raise ValueError(
+                    f"asset {asset_id!r} did not use the recorded response resolution"
+                )
             key = _dump((asset_id, response))
             previous = self._db.execute(
                 "SELECT resolution FROM contexts WHERE identity = ?", (key,)
@@ -1036,7 +1066,6 @@ class EvaluationValidator:
                 raise ValueError(
                     "one asset response cannot resolve multiple actual contexts"
                 )
-            self._resolutions.add((response, resolution))
         self._produced += 1
         self._no_data += int(failure is not None)
 
@@ -1056,8 +1085,17 @@ class EvaluationValidator:
                 f"incomplete evaluation query grid: expected {expected} rows, "
                 f"found {self._produced}"
             )
-        if self._resolutions != set(current._resolution_by_id):
-            raise ValueError("evaluation resolution inventory contains unused records")
+        used = self._db.execute("SELECT count(*) FROM contexts").fetchone()[0]
+        if used != len(current._asset_resolutions):
+            raise ValueError("evaluation resolution assignments disagree with its rows")
+        for key, resolution in current._asset_resolutions.items():
+            actual = self._db.execute(
+                "SELECT resolution FROM contexts WHERE identity = ?", (_dump(key),)
+            ).fetchone()
+            if actual is None or actual[0] != resolution:
+                raise ValueError(
+                    "evaluation resolution assignments disagree with its rows"
+                )
         if current.report.complete:
             matched = self._db.execute(
                 "SELECT count(*) FROM matched_assets"
