@@ -169,6 +169,15 @@ def fixture_cases() -> dict[str, object]:
     unmatched["metadata"]["report"]["counts"].update(
         matched_assets=0, unmatched_assets=1, no_data=2
     )
+    unmatched["metadata"]["report"]["diagnostics"] = [
+        {
+            "code": "no_covering_support",
+            "severity": "warning",
+            "stage": "evaluation",
+            "message": "No covering support.",
+            "query_value": 100.0,
+        }
+    ]
     for row in unmatched["rows"]:
         row.update(
             support_id=None,

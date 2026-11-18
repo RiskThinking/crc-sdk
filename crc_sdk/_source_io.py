@@ -37,6 +37,8 @@ from ._runtime import CacheMode
 from ._selection import SelectionState
 
 MetadataT = TypeVar("MetadataT")
+_ABSENT_SOURCE = b"CRC source response: HTTP 404\n"
+_ABSENT_DIGEST = "sha256:" + hashlib.sha256(_ABSENT_SOURCE).hexdigest()
 
 
 class SourceNode(Node[MetadataT]):
@@ -133,6 +135,7 @@ class SourceNode(Node[MetadataT]):
             close=close,
             checked=True,
             verify_before_yield=stream.verify_before_yield,
+            observation_supports=stream.observation_supports,
         )
 
 
@@ -210,6 +213,8 @@ def _read_index(path: Path, uri: str) -> tuple[ResourceIdentity, int]:
             raise ValueError("source cache URI differs from its key")
         if document["status"] not in (200, 404) or isinstance(document["status"], bool):
             raise ValueError("unsupported source response status")
+        if (document["status"] == 404) != (identity.sha256 == _ABSENT_DIGEST):
+            raise ValueError("cached source status contradicts its content identity")
         return identity, int(document["status"])
     except (ValueError, TypeError, UnicodeError) as error:
         raise OSError(f"Invalid source cache index: {path}") from error
@@ -265,8 +270,7 @@ def _download(uri: str, path: Path) -> int:
     except urllib.error.HTTPError as error:
         if error.code != 404:
             raise
-        with error, path.open("wb") as output:
-            shutil.copyfileobj(error, output, length=1024 * 1024)
+        error.close()
         return 404
 
 
@@ -322,6 +326,20 @@ def _fetch(
             raise OSError("source cache revision differs from its checksum key")
     digest = expected_sha256 or (None if cached is None else cached.sha256)
     retrieved: datetime | None = None
+
+    def acquire(path: Path) -> None:
+        nonlocal retrieved, status
+        status = (
+            (_download(uri, path) or 200)
+            if acquire_callback is None
+            else (acquire_callback(path) or 200)
+        )
+        if status == 404:
+            # Its absence is the source fact. Request IDs and other HTTP error
+            # presentation details are volatile outside the resource's identity.
+            path.write_bytes(_ABSENT_SOURCE)
+        retrieved = datetime.now(UTC)
+
     if digest is not None:
         identity = ResourceIdentity(
             uri,
@@ -339,15 +357,6 @@ def _fetch(
             retrieved_at=None if cached is None else cached.retrieved_at,
         )
 
-        def acquire(path: Path) -> None:
-            nonlocal retrieved, status
-            status = (
-                (_download(uri, path) or 200)
-                if acquire_callback is None
-                else (acquire_callback(path) or 200)
-            )
-            retrieved = datetime.now(UTC)
-
         path = scope.pin(identity, acquire)
         if retrieved is not None:
             identity = replace(identity, retrieved_at=retrieved)
@@ -361,12 +370,7 @@ def _fetch(
         temporary = Path(name)
         try:
             scope.emit(Stage.ACQUISITION, 0, 1)
-            status = (
-                (_download(uri, temporary) or 200)
-                if acquire_callback is None
-                else (acquire_callback(temporary) or 200)
-            )
-            retrieved = datetime.now(UTC)
+            acquire(temporary)
             with temporary.open("rb") as reader:
                 path, found = scope.pin_handle(reader, uri=uri)
             identity = ResourceIdentity(
@@ -541,15 +545,26 @@ def payload_selection(
     ), release
 
 
-def selected_source_time(state: SelectionState) -> Period | None:
-    """Use an exact series window when a separate time selector is absent."""
-    if state.time is not None:
-        return state.time
+def selected_series_period(state: SelectionState) -> Period | None:
     if state.series is not None and len(state.series) == 1:
         period = state.series[0].period
         if period is not None and period.kind is PeriodKind.WINDOW:
             return period
     return None
+
+
+def selected_source_time(state: SelectionState) -> Period | None:
+    """Use the inspected series period as the default bound on acquisition."""
+    declared = selected_series_period(state)
+    requested = state.time
+    if declared is not None and requested is not None:
+        assert declared.start is not None and declared.end is not None
+        assert requested.start is not None and requested.end is not None
+        if requested.start < declared.start or requested.end > declared.end:
+            raise ValueError(
+                "selected time must lie within the inspected series period"
+            )
+    return requested if requested is not None else declared
 
 
 def verify_payload(

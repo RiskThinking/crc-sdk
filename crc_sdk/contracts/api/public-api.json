@@ -1060,7 +1060,7 @@
             {
               "name": "spec",
               "kind": "positional_or_keyword",
-              "annotation": "crc_framework.FitSpec"
+              "annotation": "QuantileFitSpec"
             },
             {
               "name": "on_failure",
@@ -3901,7 +3901,7 @@
             {
               "name": "spec",
               "kind": "positional_or_keyword",
-              "annotation": "crc_framework.FitSpec"
+              "annotation": "QuantileFitSpec | SampleFitSpec"
             },
             {
               "name": "on_failure",
@@ -4322,7 +4322,7 @@
             {
               "name": "spec",
               "kind": "positional_or_keyword",
-              "annotation": "crc_framework.FitSpec"
+              "annotation": "SampleFitSpec"
             },
             {
               "name": "on_failure",
@@ -4887,6 +4887,8 @@
     }
   },
   "type_aliases": {
+    "QuantileFitSpec": "crc_framework.QuantileFit | crc_framework.CensoredQuantileFit | crc_framework.HurdleQuantileFit | crc_framework.ModelSelection",
+    "SampleFitSpec": "crc_framework.SampleFit | crc_framework.ModelSelection",
     "Scalar": "str | int | float | bool | bytes | datetime.date | None",
     "TableInput": "Mapping[str, Sequence[Scalar] | numpy.typing.NDArray[numpy.generic]] | pyarrow.Table | pyarrow.RecordBatch | pandas.DataFrame | ArrowInterchange",
     "LocalPath": "str | os.PathLike[str]",

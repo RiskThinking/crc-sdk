@@ -250,6 +250,9 @@ def annual_records(
     """Reduce complete native days and retain every requested annual outcome."""
     assert selected.start is not None and selected.end is not None
     cal = cf_calendar(calendar)
+    precipitation = native in ("rx1day", "rx5day")
+    if precipitation and np.any(np.isfinite(values) & (values < 0)):
+        raise ValueError("Precipitation totals require nonnegative source intervals")
     days = np.floor(times / (24 if hourly else 1)).astype(np.int64)
     if interval_end:
         days = np.floor((times - 1) / 24).astype(np.int64)
@@ -264,7 +267,7 @@ def annual_records(
                 continue
             sample = values[selected_indices]
             valid = np.isfinite(sample).all(axis=0)
-            if native in ("rx1day", "rx5day"):
+            if precipitation:
                 reduced = sample.sum(axis=0)
             elif native == "tnn":
                 reduced = sample.min(axis=0)

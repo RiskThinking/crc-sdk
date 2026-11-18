@@ -22,6 +22,7 @@ from ._dataset_schema import (
     DatasetMetadata,
     ExecutionReport,
     SourceIdentity,
+    Stage,
     _array,
     _boolean,
     _dump,
@@ -484,6 +485,55 @@ class EvaluationMetadata:
     def spec(self) -> DataSpec:
         """The participating series and their scientific meaning."""
         return self._spec
+
+    def _check_source_versions(self) -> None:
+        def revision(source: SourceIdentity) -> tuple[object, ...]:
+            release = source.release
+            return (
+                source.provider,
+                source.product,
+                source.model,
+                source.member,
+                None if release is None else (release.id, release.sha256),
+            )
+
+        def resources(source: SourceIdentity) -> set[tuple[str, str]]:
+            return {(resource.uri, resource.sha256) for resource in source.resources}
+
+        def contains(
+            expected: SourceIdentity, recorded: tuple[SourceIdentity, ...]
+        ) -> bool:
+            return any(
+                revision(expected) == revision(source)
+                and resources(expected) <= resources(source)
+                for source in recorded
+            )
+
+        if self.source is not None and not contains(
+            self.source, self.report.source_identities
+        ):
+            raise ValueError(
+                "evaluation source version disagrees with recorded provenance"
+            )
+        for item in self.inputs:
+            if (
+                not item.metadata.report.complete
+                or item.metadata.report.valid is not True
+            ):
+                raise ValueError(
+                    "complete evaluation requires complete validated input provenance"
+                )
+            source = item.metadata.source
+            if source is None:
+                continue
+            local = item.metadata.report.source_identities
+            if not contains(source, self.report.source_identities) or (
+                local and not contains(source, local)
+            ):
+                raise ValueError(
+                    "evaluation input source version disagrees with recorded "
+                    f"provenance for {source.product!r}"
+                )
 
     def __post_init__(self) -> None:
         if not isinstance(self.query, EvaluationQuery):
@@ -986,6 +1036,15 @@ class EvaluationValidator:
         )
         self._produced = 0
         self._no_data = 0
+        self._failure_codes: set[str] = set()
+        self._stored_failure_details = {
+            (d.code, d.message, d.support_id, d.query_value)
+            for d in metadata.report.diagnostics
+            if metadata.report.complete
+            and d.stage is Stage.EVALUATION
+            and d.severity is cf.DiagnosticSeverity.WARNING
+        }
+        self._verified_failure_codes: set[str] = set()
         self._path: Path | None = None
         self._closed = False
         if scope_directory is not None:
@@ -1002,6 +1061,9 @@ class EvaluationValidator:
             CREATE TABLE queries (identity TEXT PRIMARY KEY, next INTEGER NOT NULL);
             CREATE TABLE matches (identity TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE matched_assets (identity TEXT PRIMARY KEY);
+            CREATE TABLE retained_assets (
+                identity TEXT PRIMARY KEY, digest BLOB NOT NULL
+            );
             CREATE TABLE contexts (identity TEXT PRIMARY KEY, resolution TEXT NOT NULL);
             CREATE TABLE outcomes (
                 event TEXT NOT NULL,
@@ -1065,6 +1127,28 @@ class EvaluationValidator:
             self._check_row(row, current)
         return batch
 
+    def _check_retained_asset(
+        self, identity: AssetId, asset: dict[str, object]
+    ) -> None:
+        # Arrow preserves the type and exact value of nested, binary and decimal fields.
+        schema = pa.schema(list(self._fields.field("asset").type))
+        row = pa.RecordBatch.from_pylist([asset], schema=schema)
+        with pa.BufferOutputStream() as sink:
+            with pa.ipc.new_stream(sink, schema) as writer:
+                writer.write_batch(row)
+            digest = hashlib.sha256(sink.getvalue()).digest()
+        key = _dump(identity)
+        self._db.execute(
+            "INSERT OR IGNORE INTO retained_assets VALUES (?, ?)", (key, digest)
+        )
+        saved = self._db.execute(
+            "SELECT digest FROM retained_assets WHERE identity = ?", (key,)
+        ).fetchone()
+        if saved != (digest,):
+            raise ValueError(
+                f"retained attributes disagree across rows for asset {identity!r}"
+            )
+
     def _check_row(
         self, row: Mapping[str, object], metadata: EvaluationMetadata
     ) -> None:
@@ -1104,6 +1188,8 @@ class EvaluationValidator:
                 raise ValueError(
                     "evaluation row is missing declared retained asset fields"
                 )
+            if metadata.report.complete:
+                self._check_retained_asset(asset_id, asset)
         match = _validate_match(row, metadata, member, series, failure)
         response, resolution = _validate_response(
             row, metadata, variable, failure, self._contexts
@@ -1177,6 +1263,15 @@ class EvaluationValidator:
             )
         self._produced += 1
         self._no_data += int(failure is not None)
+        if failure is not None:
+            self._failure_codes.add(failure.code)
+            if (
+                failure.code,
+                failure.message,
+                match[0],
+                query,
+            ) in self._stored_failure_details:
+                self._verified_failure_codes.add(failure.code)
 
     def _check_response_values(self, metadata: EvaluationMetadata) -> None:
         impacts = {
@@ -1269,6 +1364,22 @@ class EvaluationValidator:
                 or counts.unmatched_assets != unmatched
             ):
                 raise ValueError("evaluation report counts contradict its result rows")
+            diagnostics = (
+                self._verified_failure_codes
+                if self._metadata.report.complete
+                else {
+                    d.code
+                    for d in current.report.diagnostics
+                    if d.stage is Stage.EVALUATION
+                    and d.severity is cf.DiagnosticSeverity.WARNING
+                }
+            )
+            if missing := self._failure_codes - diagnostics:
+                raise ValueError(
+                    f"evaluation report omits diagnostics for {sorted(missing)!r}"
+                )
+            if len(self._assets):
+                current._check_source_versions()
 
 
 def validate_evaluation(

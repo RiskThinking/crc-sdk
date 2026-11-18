@@ -154,6 +154,41 @@ def _point_key(point: Point) -> tuple[float, float]:
     return latitude, -180.0 if longitude == 180 else longitude
 
 
+def _source_supports(rows: Sequence[DatasetRow]) -> tuple[DatasetRow, ...]:
+    supports: dict[str, DatasetRow] = {}
+    for row in rows:
+        existing = supports.get(row.support_id)
+        if existing is not None:
+            if row.geometry is None or existing.geometry is None:
+                same_support = (
+                    row.geometry == existing.geometry
+                    and row.cell_id == existing.cell_id
+                )
+            else:
+                same_support = row.geometry == existing.geometry or from_wkb(
+                    row.geometry
+                ).equals(from_wkb(existing.geometry))
+            delivery_fields = {"cell_id", "geometry"}
+            if not same_support or {
+                key: value
+                for key, value in row._document().items()
+                if key not in delivery_fields
+            } != {
+                key: value
+                for key, value in existing._document().items()
+                if key not in delivery_fields
+            }:
+                raise SpatialMatchError(
+                    "conflicting_support_delivery",
+                    "Delivery cells disagree on the geometry or model of support "
+                    f"{row.support_id!r}.",
+                )
+            if existing.cell_id <= row.cell_id:
+                continue
+        supports[row.support_id] = row
+    return tuple(supports.values())
+
+
 class SpatialIndex:
     """Spatial candidates for one member and one series."""
 
@@ -162,7 +197,7 @@ class SpatialIndex:
         self._support_priority = {
             support: rank for rank, support in enumerate(policy.preferred_supports)
         }
-        self._rows = tuple(rows)
+        self._rows = _source_supports(rows)
         self._points: dict[tuple[float, float], list[int]] = {}
         self._cells: dict[int, dict[int, list[int]]] = {}
         self._areas: list[BaseGeometry] = []

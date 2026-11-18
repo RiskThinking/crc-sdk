@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 
 import crc_framework as cf
+import pyarrow as pa  # type: ignore[import-untyped]
+import pyarrow.parquet as pq  # type: ignore[import-untyped]
 import pytest
 from shapely.geometry import Polygon  # type: ignore[import-untyped]
 
@@ -228,6 +231,38 @@ def test_reopened_annual_samples_recount_selected_years(tmp_path: Path) -> None:
         assert reopened.report.counts.usable_years == usable
         assert reopened.report.counts.incomplete_years == 1 - usable
         assert bool(reopened.report.diagnostics) == (usable == 0)
+
+
+@pytest.mark.parametrize("mutation", ["fraction", "expected", "missing", "counts"])
+def test_saved_annual_samples_reject_contradictory_coverage(
+    tmp_path: Path, mutation: str
+) -> None:
+    annual = observations(["2001-01-01"], [3.0]).aggregate(AnnualMaximum()).read()
+    record = annual.table.to_pylist()[0]
+    metadata = json.loads(annual.metadata.to_json())
+    if mutation == "fraction":
+        record["value"] = 3.0
+        record["failure"] = None
+        record["coverage"]["minimum_fraction"] = 0.001
+        metadata["report"]["counts"].update(
+            no_data=0, incomplete_years=0, usable_years=1
+        )
+    elif mutation == "expected":
+        record["coverage"]["expected"] *= 2
+    elif mutation == "missing":
+        record["coverage"] = None
+    else:
+        metadata["report"]["counts"].update(usable_years=17, incomplete_years=88)
+    table = pa.Table.from_pylist([record], schema=annual.table.schema)
+    path = tmp_path / "contradictory.parquet"
+    pq.write_table(
+        table.replace_schema_metadata({b"crc.evidence": json.dumps(metadata).encode()}),
+        path,
+    )
+    recipe = Samples.open(path)
+    assert recipe.validate().valid is False
+    with pytest.raises(ValidationError, match="coverage|annual evidence counts"):
+        recipe.read()
 
 
 def test_monthly_native_observations_use_twelve_months_not_invented_days() -> None:

@@ -11,6 +11,7 @@ import xml.etree.ElementTree as ET
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
 from enum import Enum
+from functools import cache
 from typing import Any, Literal, cast
 from urllib.parse import quote
 
@@ -72,7 +73,7 @@ from ._evidence import (
     evidence_table,
 )
 from ._evidence_recipes import Observations
-from ._graph import ExecutionScope, Node, NodeStream
+from ._graph import ExecutionScope, Node, NodeStream, ObservationSupport
 from ._inspection import (
     Capability,
     IndicatorReference,
@@ -91,6 +92,7 @@ from ._source_io import (
     fetch,
     native_data,
     payload_selection,
+    selected_series_period,
     selected_source_time,
     verify_payload,
 )
@@ -599,7 +601,7 @@ class _ClimateNode(SourceNode[EvidenceMetadata]):
                 capabilities=(Capability.INSPECT,),
             )
         period = _period(
-            selected_source_time(self.state),
+            selected_series_period(self.state) or selected_source_time(self.state),
             source.first_year,
             source.last_year,
             source.calendar,
@@ -671,7 +673,13 @@ class _ClimateNode(SourceNode[EvidenceMetadata]):
             raise CapabilityError(" ".join(r.message for r in source.requirements))
         source_records = source.records
         assert source_records is not None
-        period = _period(time, source.first_year, source.last_year, source.calendar)
+        window = _period(time, source.first_year, source.last_year, source.calendar)
+        period = _period(
+            selected_series_period(self.state) or time,
+            source.first_year,
+            source.last_year,
+            source.calendar,
+        )
         metadata = _metadata(self, source, (operation,), period)
         state, release = payload_selection(self.state, self.release)
         resolved = replace(
@@ -680,12 +688,15 @@ class _ClimateNode(SourceNode[EvidenceMetadata]):
             series=None
             if state.series is None
             else tuple(
-                replace(ref, period=period) if ref.period is None else ref
+                replace(ref, period=period)
+                if ref.period is None or ref.period.calendar is None
+                else ref
                 for ref in state.series
             ),
         ).resolve(metadata.spec, source=source.identity)
         metadata = selected_metadata(metadata, resolved)
         current = metadata
+        observation_supports: tuple[ObservationSupport, ...] = ()
 
         def result_metadata(
             count: int, missing: int, *, consumed: bool = False
@@ -731,11 +742,11 @@ class _ClimateNode(SourceNode[EvidenceMetadata]):
             )
 
         def batches() -> Iterator[pa.RecordBatch]:
-            nonlocal current
+            nonlocal current, observation_supports
             records: list[dict[str, object]] = []
             count = missing = 0
             if not resolved.empty:
-                start, end = cast(int, period.start), cast(int, period.end)
+                start, end = cast(int, window.start), cast(int, window.end)
                 if self.raw:
                     start, end = (
                         max(start, source.first_year),
@@ -744,7 +755,7 @@ class _ClimateNode(SourceNode[EvidenceMetadata]):
                 for year in range(start, end + 1):
                     scope.emit(
                         Stage.DECODING if self.raw else Stage.REDUCTION,
-                        year - cast(int, period.start),
+                        year - cast(int, window.start),
                     )
 
                     def decoded() -> Iterator[dict[str, object]]:
@@ -786,6 +797,13 @@ class _ClimateNode(SourceNode[EvidenceMetadata]):
                 with native_data(source=self.provider, scope=scope):
                     table = evidence_table(records, metadata)
                 yield from table.to_batches(max_chunksize=scope.runtime.batch_rows)
+            if self.raw and not count and not resolved.empty and source.supports:
+                with native_data(source=self.provider, scope=scope):
+                    observation_supports = tuple(
+                        support
+                        for support in source.supports()
+                        if resolved.stations is None or support.id in resolved.stations
+                    )
             current = result_metadata(count, missing, consumed=True)
 
         return NodeStream(
@@ -795,6 +813,7 @@ class _ClimateNode(SourceNode[EvidenceMetadata]):
             report=lambda: current.report,
             final_metadata=lambda: current,
             verify_before_yield=release is not None,
+            observation_supports=lambda: observation_supports,
         )
 
 
@@ -864,8 +883,15 @@ def _metadata(
                 node.coverage,
             )
         )
-    if node.state.time is not None:
-        provenance.append(ObservationTimeSelection(time=period))
+    selected_time = selected_source_time(node.state)
+    if selected_time is not None:
+        provenance.append(
+            ObservationTimeSelection(
+                time=_period(
+                    selected_time, source.first_year, source.last_year, source.calendar
+                )
+            )
+        )
     return EvidenceMetadata(
         kind=EvidenceKind.OBSERVATIONS if node.raw else EvidenceKind.SAMPLES,
         spec=spec,
@@ -1023,6 +1049,7 @@ class _GridSource:
     final_identity: Callable[[], SourceIdentity]
     notes: tuple[Requirement, ...] = ()
     release_id: str | None = None
+    supports: Callable[[], tuple[ObservationSupport, ...]] | None = None
 
 
 def _raw_grid_records(
@@ -1134,6 +1161,27 @@ def _era5_source(
     def final_identity() -> SourceIdentity:
         return replace(identity, resources=zarr_resources(snapshot))
 
+    @cache
+    def cells() -> tuple[GridCell, ...]:
+        assert node.state.area is not None
+        return grid_cells(
+            group,
+            lat_name=ERA5_STORE.lat_name,
+            lon_name=ERA5_STORE.lon_name,
+            area=node.state.area,
+            fallback_resolution=ERA5_STORE.resolution_degrees,
+        )
+
+    def supports() -> tuple[ObservationSupport, ...]:
+        return tuple(
+            ObservationSupport(
+                f"era5:{ERA5_STORE.name}:{cell.row}:{cell.column}",
+                cell.cell_id,
+                cell.geometry,
+            )
+            for cell in cells()
+        )
+
     def records(
         year: int, period: Period, selected: str, fraction: float
     ) -> Iterator[dict[str, object]]:
@@ -1146,13 +1194,7 @@ def _era5_source(
             raise ValueError(
                 f"ERA5 {name} must declare its actual source unit {expected_unit!r}"
             )
-        cells = grid_cells(
-            group,
-            lat_name=ERA5_STORE.lat_name,
-            lon_name=ERA5_STORE.lon_name,
-            area=node.state.area,
-            fallback_resolution=ERA5_STORE.resolution_degrees,
-        )
+        grid = cells()
         start = np.datetime64(f"{year}-01-01T00:00:00", "s")
         stop = np.datetime64(f"{year + 1}-01-01T00:00:00", "s")
         interval_end = native.startswith("rx")
@@ -1165,16 +1207,18 @@ def _era5_source(
             time <= np.datetime64(last_date, "s") + np.timedelta64(1, "D")
         )
         indices = np.flatnonzero(mask)
+        if node.raw and not indices.size:
+            return
         if indices.size:
             t0, t1 = int(indices[0]), int(indices[-1]) + 1
+            if np.any(
+                time[t0:t1].astype("datetime64[h]").astype("datetime64[s]")
+                != time[t0:t1]
+            ):
+                raise ValueError(
+                    "ERA5 native source timestamps must identify hourly intervals"
+                )
             if node.raw:
-                if np.any(
-                    time[t0:t1].astype("datetime64[h]").astype("datetime64[s]")
-                    != time[t0:t1]
-                ):
-                    raise ValueError(
-                        "ERA5 native source timestamps must identify hourly intervals"
-                    )
                 yield from _raw_grid_records(
                     scope,
                     array=array,
@@ -1184,7 +1228,7 @@ def _era5_source(
                     first=t0,
                     stop=t1,
                     stamps=time,
-                    cells=cells,
+                    cells=grid,
                     support_prefix=f"era5:{ERA5_STORE.name}",
                     variable_id=_native_variable("era5", selected).id,
                     scenario_id=None,
@@ -1198,18 +1242,18 @@ def _era5_source(
                 lon_name=ERA5_STORE.lon_name,
                 start=t0,
                 stop=t1,
-                cells=cells,
+                cells=grid,
                 memory_limit=_memory_bytes(scope.runtime.memory_limit),
             )
             values = values * 1000 if interval_end else values - 273.15
             hours = time[t0:t1].astype("datetime64[h]").astype(np.int64)
         else:
-            values = np.empty((0, len(cells)), dtype=np.float64)
+            values = np.empty((0, len(grid)), dtype=np.float64)
             hours = np.empty(0, dtype=np.int64)
         yield from annual_records(
             times=hours,
             values=values,
-            cells=cells,
+            cells=grid,
             calendar=calendar,
             selected=Period.window(year, year, calendar=calendar),
             native=native,
@@ -1260,6 +1304,7 @@ def _era5_source(
         final_identity,
         notes,
         release_id="final-through-" + last_date,
+        supports=supports,
     )
 
 

@@ -565,6 +565,36 @@ def test_native_404_is_cached_absence_with_station_year_diagnostic(
     assert first.metadata.source.release == second.metadata.source.release
 
 
+def test_station_pin_tracks_absence_and_ignores_a_volatile_404_body(
+    transport: NativeTransport, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    transport.absent_year = 2020
+    requests = 0
+
+    def download(uri: str, path: Path) -> int:
+        nonlocal requests
+        status = transport(uri, path)
+        if status == 404:
+            requests += 1
+            path.write_text(f"<Error><RequestId>{requests}</RequestId></Error>")
+        return status
+
+    monkeypatch.setattr(_source_io, "_download", download)
+    indicator = ISD.Indicator.ANNUAL_MAXIMUM_DAILY_MAXIMUM_TEMPERATURE
+    station = "12345678901"
+    initial = ISD(indicator=indicator).select(stations=station, time=_year()).read()
+    assert initial.metadata.source is not None and initial.metadata.source.release
+    pinned = ISD(indicator=indicator, release=initial.metadata.source.release).select(
+        stations=station, time=_year()
+    )
+    refresh = Runtime(cache=Cache.refresh(tmp_path))
+    assert pinned.read(runtime=refresh).report.counts.incomplete_years == 1
+    assert requests == 2
+    transport.absent_year = None
+    with pytest.raises(OSError, match="source release changed"):
+        pinned.read(runtime=refresh)
+
+
 @pytest.mark.parametrize("input_kind", ["recipe", "collected", "reopened"])
 def test_unlocated_station_year_follows_each_fit_policy(
     input_kind: str, transport: NativeTransport, tmp_path: Path
@@ -815,6 +845,28 @@ def test_inspected_series_selects_station_indicator_and_native_years(
     assert replay.table.equals(direct.table, check_metadata=False)
     assert replay.metadata.source is not None
     assert replay.metadata.source.release == pinned.release
+
+
+@pytest.mark.parametrize("provider", [GHCNh, ISD])
+def test_station_reference_period_survives_narrower_observation_window(
+    transport: NativeTransport, provider: type[GHCNh] | type[ISD]
+) -> None:
+    inventory = provider().inspect()
+    station = inventory.stations[0]
+    dated = (
+        provider()
+        .select(
+            series=inventory.series[0], stations=station, time=Period.window(2019, 2020)
+        )
+        .inspect()
+        .series[0]
+    )
+    narrowed = provider().select(series=dated, stations=station, time=_year())
+    assert narrowed.inspect().series[0].period == dated.period
+    result = narrowed.read()
+    assert result.table["time"].to_pylist() == ["2020"]
+    assert result.metadata.spec.series[0].period == dated.period
+    assert all("2019" not in uri for uri in transport.calls)
 
 
 def test_unknown_static_variables_fail_before_any_source_acquisition(

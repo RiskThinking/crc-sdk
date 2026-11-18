@@ -357,13 +357,14 @@ def test_successful_fit_and_retained_failure_keep_authoritative_records() -> Non
         replace(failed_row, curve=Distribution.point_mass(1))
     with pytest.raises(ValueError, match="successfully fitted"):
         replace(original, curve=QuantileCurve([0.1, 0.9], [1, 2]))
-    with pytest.raises(ValueError, match="family disagrees"):
-        replace(
-            original,
-            curve=Distribution.parametric(
-                DistributionFamily.GUMBEL_LEFT, location=0, scale=1
-            ),
-        )
+    wrong_family = replace(
+        original,
+        curve=Distribution.parametric(
+            DistributionFamily.GUMBEL_LEFT, location=0, scale=1
+        ),
+    )
+    with pytest.raises(ValueError, match="representation contradicts"):
+        validate_rows([wrong_family], metadata())
 
 
 def test_source_provenance_and_report_round_trip_without_envelope_checksum() -> None:

@@ -17,7 +17,7 @@ from crc_framework import (
     DiagnosticSeverity,
     Distribution,
     DistributionFamily,
-    SampleFit,
+    QuantileFit,
 )
 
 from crc_sdk import Assets, Dataset, Evaluation, ReadResult, SpatialMatch
@@ -274,7 +274,7 @@ def test_truncated_replay_is_an_incomplete_result_and_stream() -> None:
         assert preview.table.num_rows == 1
         assert preview.report.complete is False
         assert preview.report.valid is None
-        spec = SampleFit(family=DistributionFamily.GUMBEL_RIGHT)
+        spec = QuantileFit(family=DistributionFamily.GUMBEL_RIGHT)
         with pytest.raises(CapabilityError, match="preview"):
             preview.fit(spec)
         with execution.batches() as stream:

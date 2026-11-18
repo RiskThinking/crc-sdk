@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
+from dataclasses import replace
 
 import crc_framework as cf
 import pytest
@@ -124,6 +125,22 @@ def test_covering_priority_uses_only_matching_supports() -> None:
         ).match(asset)
     with pytest.raises(ValueError, match="unique support IDs"):
         SpatialMatch.covering(preferred_supports=["first", "first"])
+
+
+def test_delivery_cells_share_one_original_support() -> None:
+    source = replace(_point("original", 0), geometry=box(-2, -2, 2, 2).wkb)
+    replica = replace(source, cell_id=h3.latlng_to_cell(0, 1, 4))
+    asset = Point(0, 0).wkb
+    chosen = min((source, replica), key=lambda row: row.cell_id)
+    for policy in (
+        SpatialMatch.covering(),
+        SpatialMatch.covering(preferred_supports=["original"]),
+    ):
+        assert SpatialIndex([source, replica], policy).match(asset).row is chosen
+        assert SpatialIndex([replica, source], policy).match(asset).row is chosen
+    inconsistent = replace(replica, curve=cf.QuantileCurve([0.2, 0.8], [3, 5]))
+    with pytest.raises(SpatialMatchError, match="Delivery cells disagree"):
+        SpatialIndex([source, inconsistent], SpatialMatch.covering())
 
 
 def test_nearest_uses_great_circle_metres_across_antimeridian() -> None:

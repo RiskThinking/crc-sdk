@@ -24,7 +24,19 @@
             "usable_years": 0
           },
           "diagnostics": [],
-          "source_identities": [],
+          "source_identities": [
+            {
+              "member": "r1",
+              "model": "model-a",
+              "product": "depth",
+              "provider": "project",
+              "release": {
+                "id": "first",
+                "sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+              },
+              "resources": []
+            }
+          ],
           "valid": true
         },
         "resources": [
@@ -45,10 +57,33 @@
                   "usable_years": 0
                 },
                 "diagnostics": [],
-                "source_identities": [],
+                "source_identities": [
+                  {
+                    "member": "r1",
+                    "model": "model-a",
+                    "product": "depth",
+                    "provider": "project",
+                    "release": {
+                      "id": "first",
+                      "sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                    },
+                    "resources": []
+                  }
+                ],
                 "valid": true
               },
               "schema_version": "2.0",
+              "source": {
+                "member": "r1",
+                "model": "model-a",
+                "product": "depth",
+                "provider": "project",
+                "release": {
+                  "id": "first",
+                  "sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                },
+                "resources": []
+              },
               "spatial": {
                 "supports": [
                   "point"
@@ -99,11 +134,17 @@
           "scenarios": null,
           "series": [
             {
+              "member": "r1",
+              "model": "model-a",
               "period": {
                 "end": 2020,
                 "id": "period:b1f73a944751f6c3bd4d45927732edec9953ee4d1f9b62a2c456e705dc07ac44",
                 "kind": "window",
                 "start": 1991
+              },
+              "release": {
+                "id": "first",
+                "sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
               },
               "scenario": null,
               "variable": {
@@ -178,7 +219,19 @@
             "usable_years": 0
           },
           "diagnostics": [],
-          "source_identities": [],
+          "source_identities": [
+            {
+              "member": "r1",
+              "model": "model-a",
+              "product": "depth",
+              "provider": "project",
+              "release": {
+                "id": "first",
+                "sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+              },
+              "resources": []
+            }
+          ],
           "valid": true
         },
         "resources": [
@@ -199,10 +252,33 @@
                   "usable_years": 0
                 },
                 "diagnostics": [],
-                "source_identities": [],
+                "source_identities": [
+                  {
+                    "member": "r1",
+                    "model": "model-a",
+                    "product": "depth",
+                    "provider": "project",
+                    "release": {
+                      "id": "first",
+                      "sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                    },
+                    "resources": []
+                  }
+                ],
                 "valid": true
               },
               "schema_version": "2.0",
+              "source": {
+                "member": "r1",
+                "model": "model-a",
+                "product": "depth",
+                "provider": "project",
+                "release": {
+                  "id": "first",
+                  "sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                },
+                "resources": []
+              },
               "spatial": {
                 "supports": [
                   "point"
@@ -253,11 +329,17 @@
           "scenarios": null,
           "series": [
             {
+              "member": "r1",
+              "model": "model-a",
               "period": {
                 "end": 2020,
                 "id": "period:b1f73a944751f6c3bd4d45927732edec9953ee4d1f9b62a2c456e705dc07ac44",
                 "kind": "window",
                 "start": 1991
+              },
+              "release": {
+                "id": "first",
+                "sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
               },
               "scenario": null,
               "variable": {
@@ -298,7 +380,19 @@
             "usable_years": 0
           },
           "diagnostics": [],
-          "source_identities": [],
+          "source_identities": [
+            {
+              "member": "r1",
+              "model": "model-a",
+              "product": "depth",
+              "provider": "project",
+              "release": {
+                "id": "first",
+                "sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+              },
+              "resources": []
+            }
+          ],
           "valid": true
         },
         "resources": [
@@ -319,10 +413,33 @@
                   "usable_years": 0
                 },
                 "diagnostics": [],
-                "source_identities": [],
+                "source_identities": [
+                  {
+                    "member": "r1",
+                    "model": "model-a",
+                    "product": "depth",
+                    "provider": "project",
+                    "release": {
+                      "id": "first",
+                      "sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                    },
+                    "resources": []
+                  }
+                ],
                 "valid": true
               },
               "schema_version": "2.0",
+              "source": {
+                "member": "r1",
+                "model": "model-a",
+                "product": "depth",
+                "provider": "project",
+                "release": {
+                  "id": "first",
+                  "sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                },
+                "resources": []
+              },
               "spatial": {
                 "supports": [
                   "point"
@@ -373,11 +490,17 @@
           "scenarios": null,
           "series": [
             {
+              "member": "r1",
+              "model": "model-a",
               "period": {
                 "end": 2020,
                 "id": "period:b1f73a944751f6c3bd4d45927732edec9953ee4d1f9b62a2c456e705dc07ac44",
                 "kind": "window",
                 "start": 1991
+              },
+              "release": {
+                "id": "first",
+                "sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
               },
               "scenario": null,
               "variable": {
@@ -418,7 +541,19 @@
             "usable_years": 0
           },
           "diagnostics": [],
-          "source_identities": [],
+          "source_identities": [
+            {
+              "member": "r1",
+              "model": "model-a",
+              "product": "depth",
+              "provider": "project",
+              "release": {
+                "id": "first",
+                "sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+              },
+              "resources": []
+            }
+          ],
           "valid": true
         },
         "resources": [
@@ -439,10 +574,33 @@
                   "usable_years": 0
                 },
                 "diagnostics": [],
-                "source_identities": [],
+                "source_identities": [
+                  {
+                    "member": "r1",
+                    "model": "model-a",
+                    "product": "depth",
+                    "provider": "project",
+                    "release": {
+                      "id": "first",
+                      "sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                    },
+                    "resources": []
+                  }
+                ],
                 "valid": true
               },
               "schema_version": "2.0",
+              "source": {
+                "member": "r1",
+                "model": "model-a",
+                "product": "depth",
+                "provider": "project",
+                "release": {
+                  "id": "first",
+                  "sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                },
+                "resources": []
+              },
               "spatial": {
                 "supports": [
                   "point"
@@ -492,11 +650,17 @@
           "scenarios": null,
           "series": [
             {
+              "member": "r1",
+              "model": "model-a",
               "period": {
                 "end": 2020,
                 "id": "period:b1f73a944751f6c3bd4d45927732edec9953ee4d1f9b62a2c456e705dc07ac44",
                 "kind": "window",
                 "start": 1991
+              },
+              "release": {
+                "id": "first",
+                "sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
               },
               "scenario": null,
               "variable": {
@@ -537,7 +701,19 @@
             "usable_years": 0
           },
           "diagnostics": [],
-          "source_identities": [],
+          "source_identities": [
+            {
+              "member": "r1",
+              "model": "model-a",
+              "product": "depth",
+              "provider": "project",
+              "release": {
+                "id": "first",
+                "sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+              },
+              "resources": []
+            }
+          ],
           "valid": true
         },
         "resources": [
@@ -558,10 +734,33 @@
                   "usable_years": 0
                 },
                 "diagnostics": [],
-                "source_identities": [],
+                "source_identities": [
+                  {
+                    "member": "r1",
+                    "model": "model-a",
+                    "product": "depth",
+                    "provider": "project",
+                    "release": {
+                      "id": "first",
+                      "sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                    },
+                    "resources": []
+                  }
+                ],
                 "valid": true
               },
               "schema_version": "2.0",
+              "source": {
+                "member": "r1",
+                "model": "model-a",
+                "product": "depth",
+                "provider": "project",
+                "release": {
+                  "id": "first",
+                  "sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                },
+                "resources": []
+              },
               "spatial": {
                 "supports": [
                   "point"
@@ -612,11 +811,17 @@
           "scenarios": null,
           "series": [
             {
+              "member": "r1",
+              "model": "model-a",
               "period": {
                 "end": 2020,
                 "id": "period:b1f73a944751f6c3bd4d45927732edec9953ee4d1f9b62a2c456e705dc07ac44",
                 "kind": "window",
                 "start": 1991
+              },
+              "release": {
+                "id": "first",
+                "sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
               },
               "scenario": null,
               "variable": {
@@ -657,7 +862,19 @@
             "usable_years": 0
           },
           "diagnostics": [],
-          "source_identities": [],
+          "source_identities": [
+            {
+              "member": "r1",
+              "model": "model-a",
+              "product": "depth",
+              "provider": "project",
+              "release": {
+                "id": "first",
+                "sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+              },
+              "resources": []
+            }
+          ],
           "valid": true
         },
         "resources": [
@@ -678,10 +895,33 @@
                   "usable_years": 0
                 },
                 "diagnostics": [],
-                "source_identities": [],
+                "source_identities": [
+                  {
+                    "member": "r1",
+                    "model": "model-a",
+                    "product": "depth",
+                    "provider": "project",
+                    "release": {
+                      "id": "first",
+                      "sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                    },
+                    "resources": []
+                  }
+                ],
                 "valid": true
               },
               "schema_version": "2.0",
+              "source": {
+                "member": "r1",
+                "model": "model-a",
+                "product": "depth",
+                "provider": "project",
+                "release": {
+                  "id": "first",
+                  "sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                },
+                "resources": []
+              },
               "spatial": {
                 "supports": [
                   "point"
@@ -732,11 +972,17 @@
           "scenarios": null,
           "series": [
             {
+              "member": "r1",
+              "model": "model-a",
               "period": {
                 "end": 2020,
                 "id": "period:b1f73a944751f6c3bd4d45927732edec9953ee4d1f9b62a2c456e705dc07ac44",
                 "kind": "window",
                 "start": 1991
+              },
+              "release": {
+                "id": "first",
+                "sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
               },
               "scenario": null,
               "variable": {
@@ -778,7 +1024,19 @@
             "usable_years": 0
           },
           "diagnostics": [],
-          "source_identities": [],
+          "source_identities": [
+            {
+              "member": "r1",
+              "model": "model-a",
+              "product": "depth",
+              "provider": "project",
+              "release": {
+                "id": "first",
+                "sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+              },
+              "resources": []
+            }
+          ],
           "valid": true
         },
         "resources": [
@@ -799,10 +1057,33 @@
                   "usable_years": 0
                 },
                 "diagnostics": [],
-                "source_identities": [],
+                "source_identities": [
+                  {
+                    "member": "r1",
+                    "model": "model-a",
+                    "product": "depth",
+                    "provider": "project",
+                    "release": {
+                      "id": "first",
+                      "sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                    },
+                    "resources": []
+                  }
+                ],
                 "valid": true
               },
               "schema_version": "2.0",
+              "source": {
+                "member": "r1",
+                "model": "model-a",
+                "product": "depth",
+                "provider": "project",
+                "release": {
+                  "id": "first",
+                  "sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                },
+                "resources": []
+              },
               "spatial": {
                 "supports": [
                   "point"
@@ -853,11 +1134,178 @@
           "scenarios": null,
           "series": [
             {
+              "member": "r1",
+              "model": "model-a",
               "period": {
                 "end": 2020,
                 "id": "period:b1f73a944751f6c3bd4d45927732edec9953ee4d1f9b62a2c456e705dc07ac44",
                 "kind": "window",
                 "start": 1991
+              },
+              "release": {
+                "id": "first",
+                "sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+              },
+              "scenario": null,
+              "variable": {
+                "id": "company:depth"
+              }
+            }
+          ],
+          "variables": [
+            {
+              "id": "company:depth"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "wrong-source-model",
+      "structural": false,
+      "document": {
+        "members": [
+          {
+            "id": "company baseline",
+            "resource_ids": [
+              "r1"
+            ]
+          }
+        ],
+        "report": {
+          "complete": true,
+          "counts": {
+            "incomplete_years": 0,
+            "matched_assets": 0,
+            "no_data": 0,
+            "produced": 1,
+            "requested": 1,
+            "skipped": 0,
+            "unmatched_assets": 0,
+            "usable_years": 0
+          },
+          "diagnostics": [],
+          "source_identities": [
+            {
+              "member": "r1",
+              "model": "model-a",
+              "product": "depth",
+              "provider": "project",
+              "release": {
+                "id": "first",
+                "sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+              },
+              "resources": []
+            }
+          ],
+          "valid": true
+        },
+        "resources": [
+          {
+            "id": "r1",
+            "metadata": {
+              "provenance": [],
+              "report": {
+                "complete": true,
+                "counts": {
+                  "incomplete_years": 0,
+                  "matched_assets": 0,
+                  "no_data": 0,
+                  "produced": 1,
+                  "requested": 1,
+                  "skipped": 0,
+                  "unmatched_assets": 0,
+                  "usable_years": 0
+                },
+                "diagnostics": [],
+                "source_identities": [
+                  {
+                    "member": "r1",
+                    "model": "model-a",
+                    "product": "depth",
+                    "provider": "project",
+                    "release": {
+                      "id": "first",
+                      "sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                    },
+                    "resources": []
+                  }
+                ],
+                "valid": true
+              },
+              "schema_version": "2.0",
+              "source": {
+                "member": "r1",
+                "model": "model-a",
+                "product": "depth",
+                "provider": "project",
+                "release": {
+                  "id": "first",
+                  "sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                },
+                "resources": []
+              },
+              "spatial": {
+                "supports": [
+                  "point"
+                ]
+              },
+              "spec": {
+                "periods": [
+                  {
+                    "end": 2020,
+                    "id": "period:b1f73a944751f6c3bd4d45927732edec9953ee4d1f9b62a2c456e705dc07ac44",
+                    "kind": "window",
+                    "start": 1991
+                  }
+                ],
+                "scenarios": [],
+                "series": [
+                  {
+                    "period_id": "period:b1f73a944751f6c3bd4d45927732edec9953ee4d1f9b62a2c456e705dc07ac44",
+                    "scenario_id": null,
+                    "variable_id": "company:depth"
+                  }
+                ],
+                "variables": [
+                  {
+                    "id": "company:depth"
+                  }
+                ]
+              }
+            },
+            "path": "resources/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.parquet",
+            "sha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        ],
+        "schema_version": "1.0",
+        "selection": {
+          "area": null,
+          "members": [
+            "company baseline"
+          ],
+          "periods": [
+            {
+              "end": 2020,
+              "id": "period:b1f73a944751f6c3bd4d45927732edec9953ee4d1f9b62a2c456e705dc07ac44",
+              "kind": "window",
+              "start": 1991
+            }
+          ],
+          "scenarios": null,
+          "series": [
+            {
+              "member": "r1",
+              "model": "model-b",
+              "period": {
+                "end": 2020,
+                "id": "period:b1f73a944751f6c3bd4d45927732edec9953ee4d1f9b62a2c456e705dc07ac44",
+                "kind": "window",
+                "start": 1991
+              },
+              "release": {
+                "id": "first",
+                "sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
               },
               "scenario": null,
               "variable": {

@@ -14,7 +14,7 @@ from typing import cast
 
 import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
-from crc_framework import Distribution, FitRecord, QuantileCurve
+from crc_framework import Distribution, FitRecord, QuantileCurve, _core
 from h3.api import basic_int as h3  # type: ignore[import-untyped]
 from shapely import from_wkb, is_valid, is_valid_reason  # type: ignore[import-untyped]
 
@@ -183,22 +183,6 @@ class DatasetRow:
                 raise ValueError(
                     "fit records require a successfully fitted distribution"
                 )
-            selected = self.fit.selected_attempt
-            if selected is None or not 0 <= selected < len(self.fit.attempts):
-                raise ValueError("fit record has no selected attempt")
-            family = getattr(self.fit.attempts[selected].specification, "family", None)
-            data = _load(self.curve.to_json())
-            while data.get("kind") in ("hurdle", "transformed"):
-                nested = data["base"] if data["kind"] == "hurdle" else data["source"]
-                if not isinstance(nested, dict):
-                    raise ValueError("invalid fitted numerical representation")
-                data = cast(dict[str, object], nested)
-            if data.get("kind") != "parametric" or getattr(
-                family, "value", None
-            ) != data.get("family"):
-                raise ValueError(
-                    "curve family disagrees with the selected fitting specification"
-                )
 
     def _document(self) -> dict[str, object]:
         result: dict[str, object] = {
@@ -255,6 +239,7 @@ def validate_rows(
     }
     keys: set[tuple[str, str | None, str | None, str, int]] = set()
     supports: dict[str, tuple[bytes | None, int | None]] = {}
+    provenance: str | None = None
     failed = 0
     for row in rows:
         if not isinstance(row, DatasetRow):
@@ -290,6 +275,13 @@ def validate_rows(
                 )
         supports[row.support_id] = support
         failed += int(row.failure is not None)
+        if row.fit is not None:
+            assert isinstance(row.curve, Distribution)
+            if provenance is None:
+                provenance = _dump([step._document() for step in metadata.provenance])
+            _core.validate_fitted_curve(
+                row.fit.to_json(), row.curve.to_json(), row.variable_id, provenance
+            )
     if metadata.report.complete:
         if metadata.report.counts.produced != len(rows):
             raise ValueError("complete dataset produced count disagrees with its rows")

@@ -67,6 +67,14 @@ class NodeStream(Generic[MetadataT]):
     close: Callable[[], None] | None = None
     checked: bool = False
     verify_before_yield: bool = False
+    observation_supports: Callable[[], tuple[ObservationSupport, ...]] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ObservationSupport:
+    id: str
+    cell_id: int
+    geometry: bytes
 
 
 class Node(ABC, Generic[MetadataT]):
@@ -431,6 +439,14 @@ class ExecutionScope:
     def computation_metadata(self, node: Node[MetadataT]) -> MetadataT:
         """Read scope-local producer metadata without applying branch views."""
         return self._replay(node).metadata()
+
+    def observation_supports(
+        self, node: Node[MetadataT]
+    ) -> tuple[ObservationSupport, ...]:
+        """Known observation footprints from an already-exhausted input."""
+        replay = self._replay(node)
+        supports = replay.stream.observation_supports
+        return () if not replay.exhausted or supports is None else supports()
 
     def computation_report(self, node: Node[MetadataT]) -> ExecutionReport:
         """Read shared row-validation state without applying branch assertions."""

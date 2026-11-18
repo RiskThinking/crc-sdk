@@ -22,7 +22,7 @@ from shapely import from_wkb  # type: ignore[import-untyped]
 
 import crc_sdk
 
-from ._aggregation import Sampling
+from ._aggregation import Sampling, _annual_sampling
 from ._dataset_schema import (
     DatasetMetadata,
     ExecutionCounts,
@@ -54,7 +54,13 @@ from ._evidence import (
     metadata_from_evidence_table,
     validate_evidence,
 )
-from ._graph import DataValidationError, ExecutionScope, Node, NodeStream
+from ._graph import (
+    DataValidationError,
+    ExecutionScope,
+    Node,
+    NodeStream,
+    ObservationSupport,
+)
 from ._inspection import (
     Bounds,
     Capability,
@@ -86,6 +92,7 @@ from ._selection import (
     rename_metadata,
     rename_row,
     selected_metadata,
+    support_intersects,
 )
 from ._source_io import SourceNode
 from ._table_input import (
@@ -98,7 +105,9 @@ from ._table_input import (
 from ._terminals import (
     BatchStream,
     Execution,
+    QuantileFitSpec,
     ReadResult,
+    SampleFitSpec,
     _publication_path,
     _schema,
     _with_report,
@@ -793,6 +802,23 @@ class _SelectionNode(_ScientificNode[MetadataT]):
         own_report = stream.report
         annual = _annual_samples(metadata)
 
+        def observation_supports() -> tuple[ObservationSupport, ...]:
+            if resolved.empty:
+                return ()
+            return tuple(
+                support
+                for support in scope.observation_supports(self.parent)
+                if (resolved.stations is None or support.id in resolved.stations)
+                and (
+                    resolved.area is None
+                    or support_intersects(
+                        resolved.area,
+                        geometry=support.geometry,
+                        cell_id=support.cell_id,
+                    )
+                )
+            )
+
         def report() -> ExecutionReport:
             assert own_report is not None
             own = own_report()
@@ -817,6 +843,7 @@ class _SelectionNode(_ScientificNode[MetadataT]):
             )
 
         stream.report = report
+        stream.observation_supports = observation_supports
         return stream
 
 
@@ -824,9 +851,7 @@ def _annual_samples(metadata: Metadata) -> bool:
     return (
         isinstance(metadata, EvidenceMetadata)
         and metadata.kind is EvidenceKind.SAMPLES
-        and metadata.sampling is not None
-        and metadata.sampling.step.unit is crc_framework.TimeUnit.YEAR
-        and metadata.sampling.step.value == 1
+        and _annual_sampling(metadata.sampling)
     )
 
 
@@ -1312,6 +1337,7 @@ class _TransformNode(_ScientificNode[MetadataT]):
             )
 
         stream.report = report
+        stream.observation_supports = lambda: scope.observation_supports(self.parent)
         return stream
 
 
@@ -1854,7 +1880,7 @@ class Dataset(_RecipeBase[DatasetMetadata, "Dataset"]):
         )
 
     def fit(
-        self, spec: crc_framework.FitSpec, *, on_failure: FitFailure = FitFailure.RAISE
+        self, spec: QuantileFitSpec, *, on_failure: FitFailure = FitFailure.RAISE
     ) -> Dataset:
         _fit_kind(spec, samples=False)
         return Dataset._create(
@@ -1961,7 +1987,7 @@ class Samples(_RecipeBase[EvidenceMetadata[Literal[EvidenceKind.SAMPLES]], "Samp
         )
 
     def fit(
-        self, spec: crc_framework.FitSpec, *, on_failure: FitFailure = FitFailure.RAISE
+        self, spec: SampleFitSpec, *, on_failure: FitFailure = FitFailure.RAISE
     ) -> Dataset:
         _fit_kind(spec, samples=True)
         return Dataset._create(

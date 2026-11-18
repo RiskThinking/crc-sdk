@@ -1278,6 +1278,16 @@
               },
               "probability": {
                 "$ref": "#/$defs/probability"
+              },
+              "model": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+              },
+              "member": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
               }
             },
             "required": [

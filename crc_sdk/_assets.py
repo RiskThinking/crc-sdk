@@ -367,6 +367,11 @@ class Assets:
             [schema.field(name) for name in self._retained_columns(schema)]
         )
 
+    def _missing_bound_columns(self, required: Sequence[str]) -> tuple[str, ...]:
+        if self._table is None:
+            return ()
+        return tuple(sorted(set(required) - set(self._table.column_names)))
+
     def _collect(
         self,
         batches: Iterable[pa.RecordBatch],
