@@ -27,6 +27,8 @@ checked together with the paired framework contracts:
 ```sh
 uv run python tools/generate_dataset_contracts.py --check
 uv run python tools/generate_evidence_contracts.py --check
+uv run python tools/generate_collection_contracts.py --check
+uv run python tools/generate_evaluation_contracts.py --check
 uv run pytest -q tests/test_dataset_schema.py tests/test_declarations.py tests/test_catalog.py
 uv run pytest -q tests/test_execution_scope.py tests/test_recipes.py tests/test_terminals.py
 ```

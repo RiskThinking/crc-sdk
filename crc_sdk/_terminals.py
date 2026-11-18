@@ -37,23 +37,48 @@ from ._schema import dataset_arrow_schema
 if TYPE_CHECKING:
     import pandas  # type: ignore[import-untyped]
 
+    from ._assets import Assets
+    from ._collection import DatasetCollection
+    from ._collection_schema import CollectionMetadata
+    from ._evaluation import Evaluation, EvaluationArtifact
+    from ._evaluation_schema import EvaluationMetadata
+    from ._evaluation_spatial import SpatialMatch
     from ._evidence_recipes import Layer, Observations, Projections
     from ._recipes import Dataset, Samples
 
-MetadataT = TypeVar("MetadataT", bound=DatasetMetadata | EvidenceMetadata)
-PersistedArtifact: TypeAlias = "Dataset | Samples | Observations | Projections | Layer"
+ArtifactMetadata: TypeAlias = (
+    "DatasetMetadata | EvidenceMetadata | CollectionMetadata | EvaluationMetadata"
+)
+MetadataT = TypeVar("MetadataT", bound=ArtifactMetadata)
+PersistedArtifact: TypeAlias = (
+    "Dataset | Samples | Observations | Projections | Layer | "
+    "EvaluationArtifact | DatasetCollection"
+)
 
 
 def _with_report(metadata: MetadataT, report: ExecutionReport) -> MetadataT:
     return replace(metadata, report=report)
 
 
-def _schema(metadata: DatasetMetadata | EvidenceMetadata) -> pa.Schema:
+def _schema(metadata: ArtifactMetadata) -> pa.Schema:
     if isinstance(metadata, DatasetMetadata):
         return dataset_arrow_schema(metadata)
-    from ._evidence import evidence_arrow_schema
+    if isinstance(metadata, EvidenceMetadata):
+        from ._evidence import evidence_arrow_schema
 
-    return evidence_arrow_schema(metadata)
+        return evidence_arrow_schema(metadata)
+    from ._collection_schema import CollectionMetadata, collection_arrow_schema
+    from ._evaluation_schema import evaluation_arrow_schema
+
+    if isinstance(metadata, CollectionMetadata):
+        return collection_arrow_schema(metadata)
+    return evaluation_arrow_schema(metadata)
+
+
+def _unit(measurement: crc_framework.Measurement | None) -> str:
+    if measurement is None or measurement.unit is None:
+        return "unknown"
+    return str(getattr(measurement.unit, "value", measurement.unit))
 
 
 def _limit(value: int | None) -> int | None:
@@ -100,9 +125,11 @@ class ReadResult(Generic[MetadataT]):
             return Samples._collected(self.table, self.metadata).fit(
                 spec, on_failure=on_failure
             )
-        return Dataset._collected(self.table, self.metadata).fit(
-            spec, on_failure=on_failure
-        )
+        if isinstance(self.metadata, DatasetMetadata):
+            return Dataset._collected(self.table, self.metadata).fit(
+                spec, on_failure=on_failure
+            )
+        raise CapabilityError("Fitting requires sample or quantile evidence")
 
     @overload
     def aggregate(
@@ -133,7 +160,12 @@ class ReadResult(Generic[MetadataT]):
             )
         from ._evidence_recipes import Observations
 
-        return Observations._collected(self.table, self.metadata).aggregate(spec)
+        if isinstance(self.metadata, EvidenceMetadata):
+            if self.metadata.kind is EvidenceKind.OBSERVATIONS:
+                return Observations._collected(self.table, self.metadata).aggregate(
+                    spec
+                )
+        raise CapabilityError("Temporal aggregation requires observations")
 
     def to_pandas(self) -> pandas.DataFrame:
         frame = self.table.to_pandas()
@@ -141,13 +173,68 @@ class ReadResult(Generic[MetadataT]):
         frame.attrs["crc_report"] = self.report._document()
         return frame
 
+    def evaluate(
+        self: ReadResult[DatasetMetadata] | ReadResult[CollectionMetadata],
+        assets: Assets,
+        *,
+        spatial: SpatialMatch | None = None,
+    ) -> Evaluation:
+        if not self.report.complete:
+            raise CapabilityError(
+                "Call read() without a limit before evaluating collected data."
+            )
+        from ._collection import DatasetCollection
+        from ._collection_schema import CollectionMetadata
+        from ._recipes import Dataset
+
+        if isinstance(self.metadata, CollectionMetadata):
+            return DatasetCollection._collected(self.table, self.metadata).evaluate(
+                assets, spatial=spatial
+            )
+        if isinstance(self.metadata, DatasetMetadata):
+            return Dataset._collected(self.table, self.metadata).evaluate(
+                assets, spatial=spatial
+            )
+        raise CapabilityError("Evaluation requires a dataset or dataset collection")
+
     def __repr__(self) -> str:
-        units = {
-            str(getattr(v.measurement.unit, "value", v.measurement.unit))
+        from ._evaluation_schema import EvaluationMetadata, QueryKind
+
+        if isinstance(self.metadata, EvaluationMetadata):
+            query = self.metadata.query.kind.value
+            if self.metadata.query.kind is QueryKind.RETURN_PERIOD:
+                query += " (years)"
+            units: dict[str | None, str] = {
+                response.name: _unit(response.output)
+                for response in self.metadata.responses
+            }
+            if self.metadata.include_exposure:
+                exposure = {_unit(v.measurement) for v in self.metadata.spec.variables}
+                units[None] = (
+                    next(iter(exposure))
+                    if len(exposure) == 1
+                    else "mixed"
+                    if exposure
+                    else "unknown"
+                )
+            return (
+                f"ReadResult(rows={self.table.num_rows}, query={query!r}, "
+                f"units={units!r}, "
+                f"complete={self.report.complete}, valid={self.report.valid})\n"
+                f"{self.table!r}"
+            )
+        value_units = {
+            _unit(v.measurement)
             for v in self.metadata.spec.variables
             if v.measurement is not None and v.measurement.unit is not None
         }
-        unit = next(iter(units)) if len(units) == 1 else "mixed" if units else "unknown"
+        unit = (
+            next(iter(value_units))
+            if len(value_units) == 1
+            else "mixed"
+            if value_units
+            else "unknown"
+        )
         return (
             f"ReadResult(rows={self.table.num_rows}, unit={unit!r}, "
             f"complete={self.report.complete}, valid={self.report.valid})\n"

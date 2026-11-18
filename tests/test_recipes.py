@@ -35,6 +35,7 @@ from crc_sdk import (
     _recipes,
 )
 from crc_sdk._dataset_schema import (
+    DatasetMetadata,
     ExecutionCounts,
     ExecutionReport,
     IdentityKind,
@@ -154,8 +155,9 @@ def test_transformed_and_fitted_inspection_uses_declared_source_metadata() -> No
     ).inspect()
     assert inspection.series[0].variable.id == "company:value"
     assert inspection.series[0].measurement == Ratio(unit=RatioUnit.PERCENT)
-    assert inspection.metadata is not None
-    assert len(inspection.metadata.provenance) == 2
+    declared = inspection.metadata
+    assert isinstance(declared, DatasetMetadata)
+    assert len(declared.provenance) == 2
 
 
 def fit_specification() -> SampleFit:

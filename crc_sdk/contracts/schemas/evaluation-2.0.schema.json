@@ -1,0 +1,568 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://climateriskcommons.org/schemas/evaluation/2.0",
+  "title": "Canonical scientific evaluation",
+  "type": "object",
+  "properties": {
+    "metadata": {
+      "$ref": "#/$defs/metadata"
+    },
+    "rows": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/row"
+      }
+    }
+  },
+  "required": [
+    "metadata",
+    "rows"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "query": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "probability"
+            },
+            "values": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "values"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "return_period"
+            },
+            "values": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "type": "number",
+                "minimum": 1
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "values"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "input": {
+      "type": "object",
+      "properties": {
+        "member_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resource_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "metadata": {
+          "$ref": "https://climateriskcommons.org/schemas/dataset/2.0#/$defs/metadata"
+        }
+      },
+      "required": [
+        "member_id",
+        "resource_id",
+        "metadata"
+      ],
+      "additionalProperties": false
+    },
+    "response": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+        },
+        "variable_id": {
+          "type": "string",
+          "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+        },
+        "model": {
+          "oneOf": [
+            {
+              "$ref": "https://climateriskcommons.org/schemas/impact-2.0.schema.json"
+            },
+            {
+              "$ref": "https://climateriskcommons.org/schemas/impact-reference-2.0.schema.json"
+            }
+          ]
+        },
+        "context": {
+          "$ref": "https://climateriskcommons.org/schemas/impact-context-1.0.schema.json"
+        }
+      },
+      "required": [
+        "name",
+        "variable_id",
+        "model"
+      ],
+      "additionalProperties": false
+    },
+    "resolution": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "response_id": {
+          "type": "string",
+          "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+        },
+        "impact": {
+          "$ref": "https://climateriskcommons.org/schemas/impact-2.0.schema.json"
+        }
+      },
+      "required": [
+        "id",
+        "response_id",
+        "impact"
+      ],
+      "additionalProperties": false
+    },
+    "spatial": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "covering"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "nearest"
+            },
+            "max_distance_metres": {
+              "type": "number",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "kind",
+            "max_distance_metres"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "failure": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        },
+        "record": {
+          "allOf": [
+            {
+              "$ref": "https://climateriskcommons.org/schemas/fitting/1.0"
+            },
+            {
+              "properties": {
+                "converged": {
+                  "const": false
+                }
+              }
+            }
+          ]
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "additionalProperties": false
+    },
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "2.0"
+        },
+        "query": {
+          "$ref": "#/$defs/query"
+        },
+        "inputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/input"
+          }
+        },
+        "responses": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/response"
+          }
+        },
+        "resolutions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/resolution"
+          }
+        },
+        "spatial": {
+          "$ref": "#/$defs/spatial"
+        },
+        "include_exposure": {
+          "type": "boolean"
+        },
+        "report": {
+          "$ref": "https://climateriskcommons.org/schemas/dataset/2.0#/$defs/report"
+        },
+        "source": {
+          "$ref": "https://climateriskcommons.org/schemas/dataset/2.0#/$defs/source"
+        },
+        "asset_fields": {
+          "type": "string",
+          "minLength": 1,
+          "contentEncoding": "base64",
+          "contentMediaType": "application/vnd.apache.arrow.stream"
+        },
+        "asset_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+              },
+              {
+                "type": "integer",
+                "minimum": -9223372036854775808,
+                "maximum": 18446744073709551615
+              }
+            ]
+          }
+        }
+      },
+      "required": [
+        "schema_version",
+        "query",
+        "inputs",
+        "responses",
+        "resolutions",
+        "spatial",
+        "include_exposure",
+        "report"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "report": {
+                "properties": {
+                  "complete": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "asset_ids"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "asset_ids": {
+                "minItems": 1
+              }
+            },
+            "required": [
+              "asset_ids"
+            ]
+          },
+          "then": {
+            "required": [
+              "asset_fields"
+            ]
+          }
+        }
+      ]
+    },
+    "row": {
+      "type": "object",
+      "properties": {
+        "asset_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+            },
+            {
+              "type": "integer",
+              "minimum": -9223372036854775808,
+              "maximum": 18446744073709551615
+            }
+          ]
+        },
+        "member_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resource_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "variable_id": {
+          "type": "string",
+          "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+        },
+        "scenario_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "period_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "support_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "distance_metres": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "number",
+              "minimum": 0
+            }
+          ]
+        },
+        "response_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resolution_id": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          ]
+        },
+        "query_value": {
+          "type": "number"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "enum": [
+                "-Infinity",
+                "Infinity"
+              ]
+            }
+          ]
+        },
+        "failure": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/failure"
+            }
+          ]
+        },
+        "asset": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "asset_id",
+        "member_id",
+        "resource_id",
+        "variable_id",
+        "scenario_id",
+        "period_id",
+        "support_id",
+        "distance_metres",
+        "response_id",
+        "resolution_id",
+        "query_value",
+        "value",
+        "failure"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "failure": {
+                "type": "null"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "value": {
+                "not": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "value": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "support_id": {
+                "type": "null"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "distance_metres": {
+                "type": "null"
+              },
+              "resource_id": {
+                "type": "null"
+              },
+              "resolution_id": {
+                "type": "null"
+              },
+              "failure": {
+                "not": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "response_id": {
+                "type": "null"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "resolution_id": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

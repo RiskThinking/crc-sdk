@@ -15,6 +15,13 @@ from ._assets import Assets, CellColumn, ColumnBinding, GeometryColumn, PointCol
 from ._catalog import Catalog
 from ._climate_sampling import CMIP6, ERA5, NEX
 from ._climate_sources import ECCCIDF, EDO, JRC
+from ._collection import DatasetCollection
+from ._collection_schema import (
+    CollectionMember,
+    CollectionMetadata,
+    CollectionResource,
+    CollectionSelection,
+)
 from ._crc_open import CRCOpen
 from ._cropland_source import USDACropland
 from ._dataset_schema import (
@@ -47,6 +54,16 @@ from ._declarations import (
     scientific_identity,
 )
 from ._errors import CapabilityError, ValidationError
+from ._evaluation import Evaluation, EvaluationArtifact
+from ._evaluation_schema import (
+    EvaluationInput,
+    EvaluationMetadata,
+    EvaluationQuery,
+    EvaluationResolution,
+    EvaluationResponse,
+    QueryKind,
+)
+from ._evaluation_spatial import Distance, SpatialMatch, SpatialMatchKind
 from ._evidence import EvidenceKind, EvidenceMetadata, FitFailure
 from ._evidence_recipes import Layer, Observations, Projections
 from ._inspection import (
@@ -98,16 +115,29 @@ __all__ = [
     "CapabilityError",
     "Catalog",
     "CellColumn",
+    "CollectionMember",
+    "CollectionMetadata",
+    "CollectionResource",
+    "CollectionSelection",
     "ColumnBinding",
     "Coverage",
     "DailyTotal",
     "DataSpec",
     "Dataset",
+    "DatasetCollection",
     "DatasetMetadata",
+    "Distance",
     "ECCCDaily",
     "ECCCIDF",
     "EDO",
     "ERA5",
+    "Evaluation",
+    "EvaluationArtifact",
+    "EvaluationInput",
+    "EvaluationMetadata",
+    "EvaluationQuery",
+    "EvaluationResolution",
+    "EvaluationResponse",
     "EvidenceKind",
     "EvidenceMetadata",
     "Execution",
@@ -146,6 +176,7 @@ __all__ = [
     "ProjectionColumns",
     "Projections",
     "QuantileColumns",
+    "QueryKind",
     "ReadResult",
     "ReductionKind",
     "ReleaseReference",
@@ -159,6 +190,8 @@ __all__ = [
     "SeriesSpec",
     "SourceIdentity",
     "SpatialContract",
+    "SpatialMatch",
+    "SpatialMatchKind",
     "Stage",
     "StationReference",
     "SupportKind",

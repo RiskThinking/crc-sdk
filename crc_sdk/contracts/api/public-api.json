@@ -559,12 +559,143 @@
         "name": "str"
       }
     },
+    "CollectionMember": {
+      "kind": "class",
+      "constructor": {
+        "parameters": [
+          {
+            "name": "id",
+            "kind": "keyword_only",
+            "annotation": "str"
+          },
+          {
+            "name": "resource_ids",
+            "kind": "keyword_only",
+            "annotation": "tuple[str, ...]"
+          }
+        ],
+        "returns": "Self"
+      },
+      "properties": {
+        "id": "str",
+        "resource_ids": "tuple[str, ...]"
+      }
+    },
     "CollectionMetadata": {
       "kind": "class",
       "properties": {
         "schema_version": "str",
         "source": "SourceIdentity | None",
-        "report": "ExecutionReport"
+        "report": "ExecutionReport",
+        "spec": "DataSpec",
+        "members": "tuple[CollectionMember, ...]",
+        "resources": "tuple[CollectionResource, ...]",
+        "selection": "CollectionSelection"
+      },
+      "methods": {
+        "to_json": {
+          "parameters": [],
+          "returns": "str"
+        },
+        "from_json": {
+          "parameters": [
+            {
+              "name": "text",
+              "kind": "positional_or_keyword",
+              "annotation": "str"
+            }
+          ],
+          "returns": "CollectionMetadata",
+          "binding": "class"
+        }
+      }
+    },
+    "CollectionResource": {
+      "kind": "class",
+      "constructor": {
+        "parameters": [
+          {
+            "name": "id",
+            "kind": "keyword_only",
+            "annotation": "str"
+          },
+          {
+            "name": "metadata",
+            "kind": "keyword_only",
+            "annotation": "DatasetMetadata"
+          },
+          {
+            "name": "path",
+            "kind": "keyword_only",
+            "annotation": "str | None",
+            "default": null
+          },
+          {
+            "name": "sha256",
+            "kind": "keyword_only",
+            "annotation": "str | None",
+            "default": null
+          }
+        ],
+        "returns": "Self"
+      },
+      "properties": {
+        "id": "str",
+        "metadata": "DatasetMetadata",
+        "path": "str | None",
+        "sha256": "str | None"
+      }
+    },
+    "CollectionSelection": {
+      "kind": "class",
+      "constructor": {
+        "parameters": [
+          {
+            "name": "members",
+            "kind": "keyword_only",
+            "annotation": "tuple[str, ...] | None",
+            "default": null
+          },
+          {
+            "name": "variables",
+            "kind": "keyword_only",
+            "annotation": "tuple[Variable | str, ...] | None",
+            "default": null
+          },
+          {
+            "name": "scenarios",
+            "kind": "keyword_only",
+            "annotation": "tuple[Scenario | str, ...] | None",
+            "default": null
+          },
+          {
+            "name": "periods",
+            "kind": "keyword_only",
+            "annotation": "tuple[Period, ...] | None",
+            "default": null
+          },
+          {
+            "name": "series",
+            "kind": "keyword_only",
+            "annotation": "tuple[SeriesReference, ...] | None",
+            "default": null
+          },
+          {
+            "name": "area",
+            "kind": "keyword_only",
+            "annotation": "Bounds | None",
+            "default": null
+          }
+        ],
+        "returns": "Self"
+      },
+      "properties": {
+        "members": "tuple[str, ...] | None",
+        "variables": "tuple[Variable | str, ...] | None",
+        "scenarios": "tuple[Scenario | str, ...] | None",
+        "periods": "tuple[Period, ...] | None",
+        "series": "tuple[SeriesReference, ...] | None",
+        "area": "Bounds | None"
       }
     },
     "ColumnBinding": {
@@ -1577,6 +1708,14 @@
               "default": {
                 "sentinel": "omitted"
               }
+            },
+            {
+              "name": "area",
+              "kind": "keyword_only",
+              "annotation": "Bounds | None | types.EllipsisType",
+              "default": {
+                "sentinel": "omitted"
+              }
             }
           ],
           "returns": "Self"
@@ -1712,12 +1851,164 @@
         "report": "ExecutionReport"
       }
     },
+    "EvaluationInput": {
+      "kind": "class",
+      "constructor": {
+        "parameters": [
+          {
+            "name": "member_id",
+            "kind": "positional_or_keyword",
+            "annotation": "str | None"
+          },
+          {
+            "name": "resource_id",
+            "kind": "positional_or_keyword",
+            "annotation": "str | None"
+          },
+          {
+            "name": "metadata",
+            "kind": "positional_or_keyword",
+            "annotation": "DatasetMetadata"
+          }
+        ],
+        "returns": "Self"
+      },
+      "properties": {
+        "member_id": "str | None",
+        "resource_id": "str | None",
+        "metadata": "DatasetMetadata"
+      }
+    },
     "EvaluationMetadata": {
       "kind": "class",
       "properties": {
         "schema_version": "str",
         "source": "SourceIdentity | None",
-        "report": "ExecutionReport"
+        "report": "ExecutionReport",
+        "spec": "DataSpec",
+        "query": "EvaluationQuery",
+        "inputs": "tuple[EvaluationInput, ...]",
+        "responses": "tuple[EvaluationResponse, ...]",
+        "resolutions": "tuple[EvaluationResolution, ...]",
+        "spatial": "SpatialMatch",
+        "asset_fields": "pyarrow.Schema | None",
+        "asset_ids": "tuple[str | int, ...] | None",
+        "include_exposure": "bool"
+      },
+      "methods": {
+        "to_json": {
+          "parameters": [],
+          "returns": "str"
+        },
+        "from_json": {
+          "parameters": [
+            {
+              "name": "text",
+              "kind": "positional_or_keyword",
+              "annotation": "str"
+            }
+          ],
+          "returns": "EvaluationMetadata",
+          "binding": "class"
+        }
+      }
+    },
+    "EvaluationQuery": {
+      "kind": "class",
+      "constructor": {
+        "parameters": [
+          {
+            "name": "kind",
+            "kind": "positional_or_keyword",
+            "annotation": "QueryKind"
+          },
+          {
+            "name": "values",
+            "kind": "positional_or_keyword",
+            "annotation": "tuple[float, ...]"
+          }
+        ],
+        "returns": "Self"
+      },
+      "properties": {
+        "kind": "QueryKind",
+        "values": "tuple[float, ...]"
+      },
+      "methods": {
+        "probability": {
+          "parameters": [
+            {
+              "name": "value",
+              "kind": "positional_or_keyword",
+              "annotation": "float"
+            },
+            {
+              "name": "series",
+              "kind": "positional_or_keyword",
+              "annotation": "SeriesSpec"
+            }
+          ],
+          "returns": "float"
+        }
+      }
+    },
+    "EvaluationResolution": {
+      "kind": "class",
+      "constructor": {
+        "parameters": [
+          {
+            "name": "response_id",
+            "kind": "positional_or_keyword",
+            "annotation": "str"
+          },
+          {
+            "name": "impact",
+            "kind": "positional_or_keyword",
+            "annotation": "crc_framework.Impact"
+          }
+        ],
+        "returns": "Self"
+      },
+      "properties": {
+        "response_id": "str",
+        "impact": "crc_framework.Impact",
+        "id": "str"
+      }
+    },
+    "EvaluationResponse": {
+      "kind": "class",
+      "constructor": {
+        "parameters": [
+          {
+            "name": "name",
+            "kind": "positional_or_keyword",
+            "annotation": "str"
+          },
+          {
+            "name": "variable_id",
+            "kind": "positional_or_keyword",
+            "annotation": "str"
+          },
+          {
+            "name": "model",
+            "kind": "positional_or_keyword",
+            "annotation": "crc_framework.Impact | crc_framework.ImpactReference"
+          },
+          {
+            "name": "context",
+            "kind": "positional_or_keyword",
+            "annotation": "crc_framework.ImpactContext | None",
+            "default": null
+          }
+        ],
+        "returns": "Self"
+      },
+      "properties": {
+        "name": "str",
+        "variable_id": "str",
+        "model": "crc_framework.Impact | crc_framework.ImpactReference",
+        "context": "crc_framework.ImpactContext | None",
+        "output": "crc_framework.Measurement"
       }
     },
     "EvidenceKind": {
@@ -2119,7 +2410,7 @@
         "requirements": "tuple[Requirement, ...]",
         "source": "SourceIdentity | None",
         "stations": "tuple[StationReference, ...]",
-        "metadata": "DatasetMetadata | EvidenceMetadata | None"
+        "metadata": "ArtifactMetadata | None"
       }
     },
     "JRC": {
@@ -3534,6 +3825,13 @@
         "variable_id": "str | None",
         "scenario_id": "str | None",
         "period_id": "str | None"
+      }
+    },
+    "QueryKind": {
+      "kind": "enum",
+      "members": {
+        "PROBABILITY": "probability",
+        "RETURN_PERIOD": "return_period"
       }
     },
     "ReadResult": {

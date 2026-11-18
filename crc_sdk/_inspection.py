@@ -14,9 +14,8 @@ from ._dataset_schema import ReleaseReference, SourceIdentity, Stage, _identifie
 from ._declarations import Period, Probability, Scenario, Variable
 
 if TYPE_CHECKING:
-    from ._dataset_schema import DatasetMetadata
-    from ._evidence import EvidenceMetadata
     from ._runtime import Cache
+    from ._terminals import ArtifactMetadata
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -159,7 +158,7 @@ class Inspection:
     stations: tuple[StationReference, ...] = ()
 
     @property
-    def metadata(self) -> DatasetMetadata | EvidenceMetadata | None:
+    def metadata(self) -> ArtifactMetadata | None:
         """Typed science, sampling, and transformations declared by the source."""
         from ._dataset_schema import DatasetMetadata
         from ._evidence import EvidenceMetadata
@@ -171,6 +170,14 @@ class Inspection:
             return DatasetMetadata.from_json(headers[b"crc.dataset"].decode())
         if b"crc.evidence" in headers:
             return EvidenceMetadata.from_json(headers[b"crc.evidence"].decode())
+        if b"crc.collection" in headers:
+            from ._collection_schema import CollectionMetadata
+
+            return CollectionMetadata.from_json(headers[b"crc.collection"].decode())
+        if b"crc.evaluation" in headers:
+            from ._evaluation_schema import evaluation_metadata_from_schema
+
+            return evaluation_metadata_from_schema(self.schema)
         return None
 
     def __post_init__(self) -> None:
