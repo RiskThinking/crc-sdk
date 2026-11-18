@@ -716,6 +716,30 @@ def selected_metadata(metadata: MetadataT, selected: ResolvedSelection) -> Metad
         selection = ObservationTimeSelection(time=time)
         if selection not in provenance:
             provenance = (*provenance, selection)
+    if isinstance(metadata, EvidenceMetadata) and metadata._empty_supports:
+        empty_supports = (
+            ()
+            if selected.empty
+            else tuple(
+                support
+                for support in metadata._empty_supports
+                if (selected.stations is None or support.id in selected.stations)
+                and (
+                    selected.area is None
+                    or support_intersects(
+                        selected.area,
+                        geometry=support.geometry,
+                        cell_id=support.cell_id,
+                    )
+                )
+            )
+        )
+        return replace(
+            metadata,
+            spec=selected.spec,
+            provenance=provenance,
+            _empty_supports=empty_supports,
+        )
     return replace(metadata, spec=selected.spec, provenance=provenance)
 
 

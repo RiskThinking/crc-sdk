@@ -59,8 +59,10 @@ Each call in the chain describes work until `read()` runs the full recipe.
 You can call `probabilities([0.5, 0.9])` to query non-exceedance probabilities
 directly. An annual
 `return_periods` query uses years and requires each selected series to declare
-its annual probability and tail. The upper tail uses `q = 1 - 1 / T` and
-the lower tail uses `q = 1 / T`. Query order is preserved. A query outside
+its annual probability and tail. The upper tail uses `q = 1 - 1 / T` and keeps
+`1 / T` directly during inversion, so a finite period can resolve past the
+largest floating-point probability below one. The lower tail uses `q = 1 / T`.
+Query order is preserved. A query outside
 the supplied quantile interval retains a row with a null value and the
 `query_outside_support` failure code. [Scientific declarations](scientific-data.md)
 
@@ -159,7 +161,9 @@ its argument names and choices. An asset-column binding reads the column's
 values from the input table. The `columns` argument on `Assets` independently
 chooses the attributes carried into the nested `asset` field. Here the
 `region` values resolve the built-in response and the output carries
-`replacement_cost`. The configured site IDs appear in `asset_id`.
+`replacement_cost`. The configured site IDs appear in `asset_id`. Retained
+Arrow attributes preserve their types and precision in memory and in saved
+results, including nested values and nanosecond timestamps and durations.
 [Framework measurement and model requirements](https://github.com/RiskThinking/crc-framework-rs/blob/main/docs/measurements.md)
 
 Exposure rows are included by default and have a null `response_id`. Named

@@ -601,15 +601,21 @@ class _EvaluationNode(Node[EvaluationMetadata]):
 
         def batches() -> Iterator[pa.RecordBatch]:
             nonlocal current_inputs, produced, no_data, matched, unmatched
-            if not ids:
-                validator.finish(metadata(complete=True))
-                return
-            scope.emit(Stage.JOINING, 0)
-            grouped, resources = _index_inputs(scope, parent, inputs, groups)
+            if ids:
+                scope.emit(Stage.JOINING, 0)
+                grouped, resources = _index_inputs(scope, parent, inputs, groups)
+            else:
+                for _ in scope.iter_batches(parent):
+                    pass
+                grouped, resources = {}, {}
             current_inputs = _response_inputs(_inputs(scope.metadata(parent)), groups)
             upstream = scope.report(parent)
             if upstream.valid is False:
                 raise DataValidationError(upstream.diagnostics)
+            if not ids:
+                with native_data(scope=scope, source="evaluation"):
+                    validator.finish(metadata(complete=True))
+                return
             try:
                 indices = {
                     key: SpatialIndex(grouped.get(key, ()), plan.spatial)
@@ -621,14 +627,10 @@ class _EvaluationNode(Node[EvaluationMetadata]):
                 ) from error
             scope.emit(Stage.JOINING, sum(map(len, grouped.values())))
             pending: list[EvaluationRow] = []
+            pending_assets: list[int] = []
             asset_values = assets.table.select(asset_columns) if asset_columns else None
             contexts = assets.context
             for i, asset_id in enumerate(ids):
-                asset = (
-                    None
-                    if asset_values is None
-                    else {name: asset_values[name][i].as_py() for name in asset_columns}
-                )
                 context = {name: contexts[name][i].as_py() for name in required_columns}
                 matches = {}
                 for key, index in indices.items():
@@ -740,16 +742,30 @@ class _EvaluationNode(Node[EvaluationMetadata]):
                                     query_value=value,
                                     value=result,
                                     failure=failure,
-                                    asset=asset,
                                 )
                             )
+                            if asset_values is not None:
+                                pending_assets.append(i)
                             if len(pending) >= scope.runtime.batch_rows:
                                 yield from _evaluation_batches(
-                                    scope, pending, planned, validator
+                                    scope,
+                                    pending,
+                                    planned,
+                                    validator,
+                                    assets=asset_values,
+                                    asset_indices=pending_assets,
                                 )
                                 pending.clear()
+                                pending_assets.clear()
             if pending:
-                yield from _evaluation_batches(scope, pending, planned, validator)
+                yield from _evaluation_batches(
+                    scope,
+                    pending,
+                    planned,
+                    validator,
+                    assets=asset_values,
+                    asset_indices=pending_assets,
+                )
             with native_data(scope=scope, source="evaluation"):
                 validator.finish(metadata(complete=True))
 
@@ -837,15 +853,19 @@ def _value(
             row.failure.code, row.failure.message, row.failure.record
         )
     assert row.curve is not None
-    q = query.probability(value, series)
+    coordinate, tail = query._coordinate(value, series)
+    upper = tail is cf.Tail.UPPER
     if isinstance(row.curve, cf.QuantileCurve):
         lo, hi = row.curve.probability_interval
+        q = 1.0 - coordinate if upper else coordinate
         if q < lo or q > hi:
             return None, EvaluationFailure(
                 "query_outside_support",
                 f"Probability {q:g} lies outside supplied interval [{lo:g}, {hi:g}].",
             )
-    return cast(float, row.curve.quantile(q)), None
+    if upper:
+        return row.curve._inverse_survival(coordinate), None
+    return cast(float, row.curve.quantile(coordinate)), None
 
 
 def _evaluation_batches(
@@ -853,10 +873,20 @@ def _evaluation_batches(
     rows: list[EvaluationRow],
     metadata: EvaluationMetadata,
     validator: EvaluationValidator,
+    *,
+    assets: pa.Table | None,
+    asset_indices: list[int],
 ) -> Iterator[pa.RecordBatch]:
     with native_data(scope=scope, source="evaluation"):
+        retained = None
+        if assets is not None:
+            gathered = assets.take(pa.array(asset_indices, type=pa.int64()))
+            retained = pa.StructArray.from_arrays(
+                [column.combine_chunks() for column in gathered.columns],
+                fields=list(assets.schema),
+            )
         for batch in evaluation_table(
-            rows, metadata, include_metadata=False
+            rows, metadata, include_metadata=False, retained=retained
         ).to_batches():
             validator.check(batch)
             scope.emit(Stage.EVALUATION, validator._produced)

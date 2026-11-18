@@ -49,14 +49,22 @@ from ._inspection import (
 from ._observed_decoders import array, number, obj, text
 from ._observed_rasters import raster_records
 from ._recipes import _key
-from ._selection import SelectionState, selected_metadata, support_intersects
+from ._selection import (
+    ResolvedSelection,
+    SelectionState,
+    selected_metadata,
+    support_intersects,
+)
 from ._source_io import (
     SourceNode,
     check_release,
     fetch,
     fetch_json,
     native_data,
+    payload_selection,
     release_snapshot,
+    selected_series_period,
+    selected_source_time,
 )
 
 _CHIRPS = "https://data.chc.ucsb.edu/products/CHIRPS/v3.0/monthly/global/cogs/"
@@ -269,7 +277,7 @@ class _CHIRPSNode(SourceNode[EvidenceMetadata]):
                     "area",
                 )
             )
-        if self.state.time is None:
+        if selected_source_time(self.state) is None:
             result.append(
                 Requirement(
                     "observation_time_required",
@@ -282,19 +290,46 @@ class _CHIRPSNode(SourceNode[EvidenceMetadata]):
             )
         return tuple(result)
 
+    def _science(
+        self,
+    ) -> tuple[EvidenceMetadata, ResolvedSelection, ReleaseReference | None]:
+        state, release = payload_selection(self.state, self.release)
+        window = selected_source_time(state)
+        period = selected_series_period(state) or window
+
+        def gregorian(value: Period) -> Period:
+            if value.calendar is not None and value.calendar is not Calendar.GREGORIAN:
+                raise ValueError("CHIRPS observation years use the Gregorian calendar")
+            return Period.window(
+                cast(int, value.start),
+                cast(int, value.end),
+                calendar=Calendar.GREGORIAN,
+            )
+
+        if period is not None:
+            period = gregorian(period)
+        state = replace(
+            state,
+            time=None if window is None else gregorian(window),
+            periods=None
+            if state.periods is None
+            else tuple(
+                gregorian(p) if p.start is not None else p for p in state.periods
+            ),
+        )
+        metadata = _metadata("chirps", state, () if period is None else (period,), None)
+        selection = state.resolve(metadata.spec)
+        return selected_metadata(metadata, selection), selection, release
+
     def _prepare(
         self, scope: ExecutionScope
-    ) -> tuple[EvidenceMetadata, tuple[_RasterPart, ...]]:
-        period = self.state.time
-        metadata = _metadata(
-            "chirps", self.state, () if period is None else (period,), None
-        )
-        # Unknown exact identities fail before acquiring large native COGs.
-        resolved = _unbound_selection(self.state).resolve(metadata.spec)
+    ) -> tuple[EvidenceMetadata, ResolvedSelection, tuple[_RasterPart, ...]]:
+        metadata, resolved, release = self._science()
         if _empty(self.state):
-            return replace(metadata, spec=resolved.spec), ()
+            return metadata, resolved, ()
         if self.requirements():
             raise CapabilityError(" ".join(v.message for v in self.requirements()))
+        period = resolved.time
         assert (
             period is not None and period.start is not None and period.end is not None
         )
@@ -302,7 +337,7 @@ class _CHIRPSNode(SourceNode[EvidenceMetadata]):
             raise ValueError("CHIRPS v3 observations begin in 1981")
         assert self.state.area is not None
         if self.state.area.north < -60 or self.state.area.south > 60:
-            return selected_metadata(metadata, resolved), ()
+            return metadata, resolved, ()
         parts: list[_RasterPart] = []
         resources: list[ResourceIdentity] = []
         license, attribution = _terms("chirps")
@@ -322,16 +357,14 @@ class _CHIRPSNode(SourceNode[EvidenceMetadata]):
                         _RasterPart(path, year, month)
                         for path in raster_views(scope, bundle)
                     )
-            return replace(
-                metadata, source=_source("chirps", resources, self.release)
-            ), tuple(parts)
+            return (
+                replace(metadata, source=_source("chirps", resources, release)),
+                resolved,
+                tuple(parts),
+            )
 
     def inspection(self, scope: ExecutionScope) -> Inspection:
-        period = self.state.time
-        metadata = _metadata(
-            "chirps", self.state, () if period is None else (period,), None
-        )
-        metadata = selected_metadata(metadata, self.state.resolve(metadata.spec))
+        metadata, _, _ = self._science()
         requirements = self.requirements()
         if not _empty(self.state):
             requirements = (
@@ -346,9 +379,7 @@ class _CHIRPSNode(SourceNode[EvidenceMetadata]):
         return _inspection(metadata, requirements)
 
     def open(self, scope: ExecutionScope) -> NodeStream[EvidenceMetadata]:
-        metadata, parts = self._prepare(scope)
-        resolved = self.state.resolve(metadata.spec, source=metadata.source)
-        metadata = selected_metadata(metadata, resolved)
+        metadata, resolved, parts = self._prepare(scope)
         count = missing = 0
 
         def batches() -> Iterator[pa.RecordBatch]:
@@ -356,13 +387,15 @@ class _CHIRPSNode(SourceNode[EvidenceMetadata]):
             pending = []
             if not resolved.keys:
                 return
+            period = metadata.spec.series[0].period
+            assert period is not None
             assert self.state.area is not None
             for part in parts:
                 for row in raster_records(
                     part.path,
                     provider="chirps:v3:monthly",
                     variable_id=_variables("chirps")[0].id,
-                    period_id=None if self.state.time is None else self.state.time.id,
+                    period_id=period.id,
                     area=self.state.area,
                     time=f"{part.year:04d}-{part.month:02d}-01",
                     block_pixels=scope.runtime.batch_rows,

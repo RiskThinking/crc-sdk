@@ -148,6 +148,23 @@ def test_native_classes_labels_footprints_and_missing_counts(
     assert len(transport.calls) == 4
 
 
+def test_inspected_publication_can_select_one_cropland_year(
+    transport: _Transport,
+) -> None:
+    inventory = USDACropland().inspect()
+    reference, _ = inventory.series
+    assert reference.release is not None and inventory.releases == (reference.release,)
+    assert reference.period == Period.window(2023, 2023)
+    configured = USDACropland().select(area=_AREA, series=reference)
+    assert configured.inspect().series == (reference,)
+    assert all("/exportImage" not in url for url in transport.calls)
+    result = configured.read()
+    assert result.table.num_rows > 0
+    assert result.metadata.spec.series[0].period == reference.period
+    assert result.metadata.source is not None
+    assert result.metadata.source.release != reference.release
+
+
 def test_explicit_crop_year_and_canonical_layer_persistence(
     tmp_path: Path, transport: _Transport
 ) -> None:

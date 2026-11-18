@@ -31,7 +31,6 @@ from crc_sdk import (
     DatasetCollection,
     DatasetMetadata,
     DataSpec,
-    ExecutionCounts,
     ExecutionReport,
     FitFailure,
     FittingDiagnostic,
@@ -51,7 +50,7 @@ from crc_sdk import (
     _collection_bundle,
 )
 from crc_sdk._collection_bundle import MANIFEST
-from crc_sdk._collection_schema import collection_metadata_schema
+from crc_sdk._collection_schema import _collection_report, collection_metadata_schema
 from crc_sdk._runtime import ProgressEvent
 from crc_sdk._schema import rows_to_table, table_to_rows
 
@@ -95,6 +94,47 @@ def _dataset(
         ),
         columns=QuantileColumns(variable_id="variable"),
     )
+
+
+@pytest.mark.parametrize(
+    ("field", "forged"),
+    [
+        ("counts", {"requested": 1000, "skipped": 999}),
+        (
+            "diagnostics",
+            [
+                {
+                    "code": "fabricated",
+                    "message": "No such event",
+                    "severity": "warning",
+                    "stage": "validation",
+                }
+            ],
+        ),
+        (
+            "source_identities",
+            [{"provider": "local", "product": "fabricated", "resources": []}],
+        ),
+    ],
+)
+def test_bundle_reconciles_the_whole_report_with_member_resources(
+    tmp_path: Path, field: str, forged: object
+) -> None:
+    path = tmp_path / "bundle"
+    DatasetCollection({"member": _dataset()}).write(path)
+    manifest = path / MANIFEST
+    payload = json.loads(manifest.read_text())
+    if field == "counts":
+        payload["report"][field].update(forged)
+    else:
+        payload["report"][field] = forged
+    manifest.write_text(json.dumps(payload))
+    reopened = DatasetCollection.open(path)
+    with pytest.raises(ValidationError, match=f"collection report {field}"):
+        _ = reopened.report
+    with pytest.raises(ValidationError, match=f"collection report {field}"):
+        reopened.read()
+    assert reopened.validate().valid is False
 
 
 class _Reader(CanonicalReader):
@@ -403,10 +443,9 @@ def _install_shards(
         ),
         resources=tuple(resources),
         selection=CollectionSelection(),
-        report=ExecutionReport(
-            True,
-            True,
-            counts=ExecutionCounts(requested=len(resources), produced=len(resources)),
+        report=_collection_report(
+            (resource.metadata.report for resource in resources),
+            complete=True,
         ),
     )
     (directory / MANIFEST).write_text(manifest.to_json())

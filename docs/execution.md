@@ -91,6 +91,9 @@ fit with its authoritative record and warning; `FitFailure.SKIP` records the
 omission and counts. Neither policy fabricates a numerical law.
 Fitting failures retain their framework execution record on a typed
 `FittingDiagnostic.record`, including when `validate()` returns a failure report.
+Missing observations are excluded before fitting. The fit record counts the
+observations available to the estimator, and the SDK report records incomplete
+annual observations or identifies other omissions in its diagnostics.
 When a station has no observations in the selected window, its historical
 support may be unknown. `FitFailure.KEEP_NO_DATA` retains that fit failure in
 the report. A spatial output row requires known support.
@@ -193,3 +196,8 @@ intermediate output artifact is needed. `Dataset.open(path)` and
 `Samples.open(path)` reopen the corresponding current format in another process.
 Reopened handles expose their saved metadata and report through header-only
 discovery; reading data still performs the execution's validation.
+
+When a provider knows the original spatial supports for an empty observation
+window, collected results and `Observations.open(path)` preserve those
+supports. Annual aggregation can then report incomplete years at each support
+after reopening.

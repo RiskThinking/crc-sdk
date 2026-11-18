@@ -82,14 +82,16 @@ The recipe decodes the native accumulation convention, produces daily totals,
 and takes the largest daily total in each source-calendar year. The result is
 one annual precipitation **amount** per support and year. Fitting the collected
 result reuses those values and their pinned source identity. The five-day recipe
-first forms five-day totals. Temperature recipes reduce daily maxima or minima
-before selecting the annual extreme. No fitting occurs until `fit(...)`.
+forms totals from consecutive five-day windows within each calendar year. Its
+coverage fraction counts valid windows out of all eligible windows for that
+year. Temperature recipes reduce daily maxima or minima before selecting the
+annual extreme. No fitting occurs until `fit(...)`.
 
 The default is `Coverage.complete()`. Incomplete days and years remain missing
 observations with coverage and a reason; they do not silently enter the fit.
 `Coverage.minimum_fraction(0.95)` explicitly permits a relaxed fraction without
 rescaling missing values. Reports retain requested, usable, and incomplete year
-counts, and fitting records retain excluded evidence counts.
+counts. A fit record describes the usable observations supplied to the fitter.
 
 ERA5's public ARCO store uses global spatial chunks for each hour. A small area
 still requires those compressed source chunks. Explicit time bounds are
@@ -123,11 +125,12 @@ An unpinned, dated series can be read over a smaller observation window with
 `select(series=reference, time=...)`. The series retains its declared period
 and the metadata records the narrower observation window.
 
-ERA5, CMIP6, NEX, JRC, and EDO discovery provides the available science and
-coverage. Their catalogues lack content checksums for every native object, so
-the release reference becomes available from the completed read. The reference
-identifies the payload acquired for the selected area and time. Reuse those
-bounds when replaying the pin. This example continues the ERA5 workflow above.
+ERA5, CMIP6, NEX, JRC, EDO, and USDA Cropland inspection return release
+references for the published inventory. Pass an inspected reference directly to
+`select(series=...)` to check that inventory while choosing an area or observation
+window. The completed read records a separate release reference for the exact
+payload acquired. Reuse the same area and time bounds when replaying that
+reference. This example continues the ERA5 workflow above.
 
 <!-- live-example -->
 ```python

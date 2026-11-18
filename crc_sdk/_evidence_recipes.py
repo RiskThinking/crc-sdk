@@ -190,14 +190,7 @@ class _AggregationNode(_ScientificNode[EvidenceMetadata]):
             ).replace_schema_metadata(evidence_arrow_schema(metadata).metadata)
             scope.emit(Stage.REDUCTION, 0)
             try:
-                values, result = aggregate_table(
-                    table,
-                    metadata,
-                    self.specification,
-                    empty_supports=()
-                    if table.num_rows or isinstance(self.specification, DailyTotal)
-                    else scope.observation_supports(parent),
-                )
+                values, result = aggregate_table(table, metadata, self.specification)
             except ValueError as error:
                 raise _invalid(error, stage=Stage.REDUCTION) from error
             scope.emit(Stage.REDUCTION, values.num_rows, values.num_rows)
@@ -209,7 +202,6 @@ class _AggregationNode(_ScientificNode[EvidenceMetadata]):
             batches(),
             report=lambda: result.report,
             final_metadata=lambda: result,
-            observation_supports=lambda: scope.observation_supports(parent),
         )
 
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from enum import Enum
 from typing import Generic, TypedDict, cast
@@ -55,6 +55,7 @@ from ._dataset_schema import (
     _source,
     _spatial,
     _transformation,
+    _wire_integer,
 )
 from ._declarations import Calendar, DataSpec, ProbabilityKind, _data_spec
 from ._schema.dataset import DatasetRow, _cell, _geometry, validate_rows
@@ -117,14 +118,14 @@ def _sample_time(value: object, calendar: Calendar | None = None) -> str:
             ]
         if not 1 <= day <= maximum:
             raise ValueError("sample time has an invalid day for its declared calendar")
-    for field, maximum in (
+    for component, maximum in (
         ("hour", 23),
         ("minute", 59),
         ("second", 59),
         ("offset_hour", 23),
         ("offset_minute", 59),
     ):
-        if match[field] is not None and int(match[field]) > maximum:
+        if match[component] is not None and int(match[component]) > maximum:
             raise ValueError("sample time has an invalid clock or UTC offset")
     return value.replace("t", "T").replace("z", "Z")
 
@@ -156,6 +157,7 @@ class _SampleFitError(FitError):
         support_id: str | None,
         source: str | None,
         requested: int,
+        diagnostics: tuple[ExecutionDiagnostic, ...],
     ) -> None:
         super().__init__(error.message, record=error.record)
         self.code = error.code
@@ -165,11 +167,12 @@ class _SampleFitError(FitError):
         )
         self.source = None if source is None else _identifier(source, "source")
         self.requested = requested
+        self.diagnostics = diagnostics
 
 
 def evidence_metadata_schema() -> dict[str, object]:
     """Generate the persisted header schema from the shared scientific metadata."""
-    from ._schema.contract import dataset_json_schema
+    from ._schema.contract import _record, dataset_json_schema
 
     dataset = dataset_json_schema()
     definitions = cast(dict[str, dict[str, object]], dataset["$defs"])
@@ -179,6 +182,26 @@ def evidence_metadata_schema() -> dict[str, object]:
     properties["kind"] = {"enum": [kind.value for kind in EvidenceKind]}
     cast(list[str], metadata["required"]).append("kind")
     properties["sampling"] = sampling_schema()
+    row = cast(dict[str, object], definitions["row"]["properties"])
+    support_fields = ("support_id", "cell_id", "geometry")
+    properties["empty_supports"] = {
+        "type": "array",
+        "minItems": 1,
+        "uniqueItems": True,
+        "items": _record(
+            {name: row[name] for name in support_fields}, list(support_fields)
+        ),
+    }
+    metadata["dependentSchemas"] = {
+        "empty_supports": {
+            "properties": {
+                "kind": {"const": EvidenceKind.OBSERVATIONS.value},
+                "report": {
+                    "properties": {"counts": {"properties": {"produced": {"const": 0}}}}
+                },
+            }
+        }
+    }
     required: set[str] = set()
 
     def references(schema: object) -> None:
@@ -203,6 +226,40 @@ def evidence_metadata_schema() -> dict[str, object]:
     }
 
 
+@dataclass(frozen=True, slots=True)
+class ObservationSupport:
+    id: str
+    cell_id: int
+    geometry: bytes
+    kind: SupportKind = field(init=False)
+
+    def __post_init__(self) -> None:
+        _identifier(self.id, "support_id")
+        _cell(self.cell_id)
+        object.__setattr__(self, "kind", _geometry(self.geometry))
+
+    def _document(self) -> dict[str, object]:
+        return {
+            "support_id": self.id,
+            "cell_id": self.cell_id,
+            "geometry": self.geometry.hex(),
+        }
+
+    @classmethod
+    def _from_document(cls, value: object) -> ObservationSupport:
+        record = _object(value, {"support_id", "cell_id", "geometry"})
+        geometry = record["geometry"]
+        if not isinstance(geometry, str) or not re.fullmatch(
+            r"(?:[0-9a-f]{2}){21,}", geometry
+        ):
+            raise ValueError("support geometry must be lowercase hexadecimal WKB")
+        return cls(
+            _identifier(record["support_id"], "support_id"),
+            _wire_integer(record["cell_id"], "cell_id"),
+            bytes.fromhex(geometry),
+        )
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class EvidenceMetadata(Generic[KindT]):
     kind: KindT
@@ -212,6 +269,7 @@ class EvidenceMetadata(Generic[KindT]):
     source: SourceIdentity | None = None
     provenance: tuple[Transformation, ...] = ()
     sampling: Sampling | None = None
+    _empty_supports: tuple[ObservationSupport, ...] = field(default=(), repr=False)
 
     @property
     def schema_version(self) -> str:
@@ -220,6 +278,28 @@ class EvidenceMetadata(Generic[KindT]):
     def __post_init__(self) -> None:
         if not isinstance(self.kind, EvidenceKind):
             raise TypeError("kind must be EvidenceKind")
+        if self._empty_supports:
+            if (
+                self.kind is not EvidenceKind.OBSERVATIONS
+                or self.report.counts.produced
+            ):
+                raise ValueError("empty supports require observations with zero rows")
+            support_ids: set[str] = set()
+            for support in self._empty_supports:
+                if support.id in support_ids:
+                    raise ValueError(f"duplicate empty support_id: {support.id!r}")
+                support_ids.add(support.id)
+                if (
+                    self.spatial.index_resolution is not None
+                    and (support.cell_id >> 52) & 15 != self.spatial.index_resolution
+                ):
+                    raise ValueError(
+                        "empty support cell_id contradicts the spatial resolution"
+                    )
+                if support.kind not in self.spatial.supports:
+                    raise ValueError(
+                        "empty support geometry contradicts the spatial contract"
+                    )
         if self.sampling is not None:
             if not isinstance(self.sampling, Sampling):
                 raise TypeError("sampling must be Sampling")
@@ -278,6 +358,10 @@ class EvidenceMetadata(Generic[KindT]):
             value["source"] = self.source._document()
         if self.sampling is not None:
             value["sampling"] = self.sampling._document()
+        if self._empty_supports:
+            value["empty_supports"] = [
+                support._document() for support in self._empty_supports
+            ]
         return _dump(value)
 
     @classmethod
@@ -285,13 +369,18 @@ class EvidenceMetadata(Generic[KindT]):
         value = _object(
             _load(text),
             {"schema_version", "kind", "spec", "spatial", "report", "provenance"},
-            {"source", "sampling"},
+            {"source", "sampling", "empty_supports"},
         )
         if value["schema_version"] != "1.0":
             raise ValueError("expected evidence schema 1.0")
         provenance = value["provenance"]
         if not isinstance(provenance, list):
             raise ValueError("provenance must be an array")
+        supports = value.get("empty_supports", [])
+        if not isinstance(supports, list) or (
+            "empty_supports" in value and not supports
+        ):
+            raise ValueError("empty_supports must be a nonempty array when supplied")
         return cls(
             kind=cast(KindT, EvidenceKind(value["kind"])),
             spec=_data_spec(value["spec"]),
@@ -302,6 +391,9 @@ class EvidenceMetadata(Generic[KindT]):
             sampling=None
             if "sampling" not in value
             else sampling_from_document(value["sampling"]),
+            _empty_supports=tuple(
+                ObservationSupport._from_document(s) for s in supports
+            ),
         )
 
 
@@ -434,6 +526,8 @@ def validate_evidence(
         raise ValueError(
             "Arrow fields do not match the declared canonical evidence kind"
         )
+    if table.num_rows and metadata._empty_supports:
+        raise ValueError("empty supports require observations with zero rows")
     series = {
         (
             s.variable.id,
@@ -445,11 +539,20 @@ def validate_evidence(
     keys: set[tuple[object, ...]] = set()
     supports: dict[str, tuple[bytes | None, int | None]] = {}
     missing = 0
-    reduction = next(
-        (p for p in reversed(metadata.provenance) if isinstance(p, TemporalReduction)),
-        None,
+    reductions = tuple(
+        p for p in metadata.provenance if isinstance(p, TemporalReduction)
     )
+    reduction = reductions[-1] if reductions else None
     annual = reduction is not None and _annual_sampling(reduction.output_sampling)
+    rolling_loss = 0
+    if (
+        annual
+        and len(reductions) > 1
+        and reductions[-2].operation is ReductionKind.ROLLING_TOTAL
+    ):
+        window = reductions[-2].window
+        assert window is not None
+        rolling_loss = int(window.value) - 1
     slots = None
     if reduction is not None:
         if metadata.sampling != reduction.output_sampling:
@@ -590,7 +693,7 @@ def validate_evidence(
                     )
                 year = int(stamp[:4])
                 expected = (
-                    _year_slots(reduction.input_sampling, slots, year)
+                    _year_slots(reduction.input_sampling, slots, year) - rolling_loss
                     if annual
                     else slots
                 )
@@ -660,14 +763,13 @@ def fit_sample_table(
         groups.setdefault(tuple(record[name] for name in _IDENTITY), []).append(record)
         if record["station_id"] is not None:
             observed_stations.add(record["station_id"])
-    unlocated: dict[str, set[int]] = {}
-    if metadata.spec.series:
-        for diagnostic in metadata.report.diagnostics:
-            if (
-                isinstance(diagnostic, UnavailableStationYear)
-                and diagnostic.station_id not in observed_stations
-            ):
-                unlocated.setdefault(diagnostic.station_id, set()).add(diagnostic.year)
+    unlocated = dict.fromkeys(
+        diagnostic.station_id
+        for diagnostic in metadata.report.diagnostics
+        if metadata.spec.series
+        and isinstance(diagnostic, UnavailableStationYear)
+        and diagnostic.station_id not in observed_stations
+    )
     requested = len(groups) + len(unlocated)
     source = None if metadata.source is None else metadata.source.product
     rows: list[DatasetRow] = []
@@ -676,7 +778,6 @@ def fit_sample_table(
 
     def record_failure(
         original: FitError,
-        count: int,
         *,
         variable_id: str,
         support_id: str | None,
@@ -685,14 +786,7 @@ def fit_sample_table(
         message = original.message
         if station_id is not None:
             message = f"Station {station_id!r} has no usable annual evidence. {message}"
-        error = FitError(
-            message,
-            record=replace(
-                original.record,
-                evidence_count=count,
-                excluded_count=count - original.record.used_count,
-            ),
-        )
+        error = FitError(message, record=original.record)
         error.code = original.code
         if on_failure is FitFailure.RAISE:
             raise _SampleFitError(
@@ -701,6 +795,7 @@ def fit_sample_table(
                 support_id=support_id,
                 source=source,
                 requested=requested,
+                diagnostics=tuple(diagnostics),
             ) from original
         diagnostics.append(
             FittingDiagnostic(
@@ -727,21 +822,29 @@ def fit_sample_table(
             "cell_id": cast(int, cell),
             "geometry": cast(bytes | None, records[0]["geometry"]),
         }
+        values = [
+            cast(float, record["value"])
+            for record in records
+            if record["value"] is not None and record["failure"] is None
+        ]
+        unavailable = len(records) - len(values)
+        if unavailable and not _annual_sampling(metadata.sampling):
+            diagnostics.append(
+                ExecutionDiagnostic(
+                    code="fit.unavailable_observations",
+                    severity=DiagnosticSeverity.WARNING,
+                    stage=Stage.FITTING,
+                    message=f"{unavailable} of {len(records)} observations for "
+                    f"variable {variable!r} were unavailable for fitting",
+                    source=source,
+                    support_id=cast(str, support),
+                )
+            )
         try:
-            result = fit_samples(
-                [
-                    cast(float, record["value"])
-                    for record in records
-                    if record["value"] is not None and record["failure"] is None
-                ],
-                specification,
+            result = fit_samples(values, specification)
+            rows.append(
+                DatasetRow(**common, curve=result.distribution, fit=result.record)
             )
-            record = replace(
-                result.record,
-                evidence_count=len(records),
-                excluded_count=len(records) - result.record.used_count,
-            )
-            rows.append(DatasetRow(**common, curve=result.distribution, fit=record))
             diagnostics.append(
                 ExecutionDiagnostic(
                     code="fit.samples",
@@ -755,7 +858,6 @@ def fit_sample_table(
         except FitError as original_error:
             error = record_failure(
                 original_error,
-                len(records),
                 variable_id=cast(str, variable),
                 support_id=cast(str, support),
             )
@@ -774,10 +876,9 @@ def fit_sample_table(
         try:
             fit_samples([], specification)
         except FitError as error:
-            for station_id, years in unlocated.items():
+            for station_id in unlocated:
                 record_failure(
                     error,
-                    len(years),
                     variable_id=variable_id,
                     support_id=None,
                     station_id=station_id,

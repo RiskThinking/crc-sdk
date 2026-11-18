@@ -30,6 +30,7 @@ from ._collection_schema import (
     CollectionMetadata,
     CollectionResource,
     CollectionSelection,
+    _collection_report,
     _reference_matches,
     _release_key,
     _requested_ids,
@@ -38,8 +39,6 @@ from ._collection_schema import (
 )
 from ._dataset_schema import (
     DatasetMetadata,
-    ExecutionCounts,
-    ExecutionDiagnostic,
     ExecutionReport,
     SourceIdentity,
     Stage,
@@ -476,25 +475,10 @@ class _CollectionNode(Node[CollectionMetadata]):
                 resource.verified_path(scope)
 
         def report() -> ExecutionReport:
-            reports = [scope.report(entry.node) for entry in started]
-            diagnostics: dict[str, ExecutionDiagnostic] = {}
-            sources: dict[str, SourceIdentity] = {}
-            for child in reports:
-                for diagnostic in child.diagnostics:
-                    diagnostics.setdefault(_dump(diagnostic._document()), diagnostic)
-                for source in child.source_identities:
-                    sources.setdefault(_dump(source._document()), source)
-            counts = {
-                name: sum(getattr(result.counts, name) for result in reports)
-                for name in ExecutionCounts.__dataclass_fields__
-            }
-            counts.update(produced=produced, no_data=no_data)
-            return ExecutionReport(
-                False,
-                None,
-                tuple(diagnostics.values()),
-                ExecutionCounts(**counts),
-                tuple(sources.values()),
+            combined = _collection_report(scope.report(entry.node) for entry in started)
+            return replace(
+                combined,
+                counts=replace(combined.counts, produced=produced, no_data=no_data),
             )
 
         def final_metadata() -> CollectionMetadata:

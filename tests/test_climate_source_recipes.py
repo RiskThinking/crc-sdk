@@ -10,7 +10,15 @@ import numpy as np
 import pytest
 import zarr
 
-from crc_sdk import Bounds, Cache, Calendar, Period, Runtime, ValidationError
+from crc_sdk import (
+    Bounds,
+    Cache,
+    Calendar,
+    Period,
+    ReleaseReference,
+    Runtime,
+    ValidationError,
+)
 from crc_sdk._aggregation import (
     AnnualMaximum,
     Coverage,
@@ -187,7 +195,8 @@ def test_era5_raw_reductions_retain_empty_and_gapped_requested_years(
     ):
         predefined = source.select(area=AREA, time=years).read()
         raw = source.select(area=AREA, time=years).observations()
-        assert raw.read().table.num_rows == observations
+        collected = raw.read()
+        assert collected.table.num_rows == observations
         early = raw.aggregate(DailyTotal()).aggregate(AnnualMaximum(coverage=coverage))
         late = (
             source.observations()
@@ -195,14 +204,31 @@ def test_era5_raw_reductions_retain_empty_and_gapped_requested_years(
             .aggregate(AnnualMaximum(coverage=coverage))
             .select(area=AREA, time=years)
         )
-        for explicit in (early, late):
+        raw_path = tmp_path / f"raw-{years.start}.parquet"
+        raw.write(raw_path)
+        reopened = Observations.open(raw_path)
+        daily = raw.aggregate(DailyTotal()).write(
+            tmp_path / f"daily-{years.start}.parquet"
+        )
+        alternatives = (
+            early,
+            late,
+            collected.aggregate(DailyTotal()).aggregate(
+                AnnualMaximum(coverage=coverage)
+            ),
+            reopened.aggregate(DailyTotal()).aggregate(
+                AnnualMaximum(coverage=coverage)
+            ),
+            daily.aggregate(AnnualMaximum(coverage=coverage)),
+        )
+        for explicit in alternatives:
             result = explicit.read()
             assert result.table["support_id"].equals(predefined.table["support_id"])
             assert result.table["time"].equals(predefined.table["time"])
             assert result.table["value"].to_pylist() == expected
             assert result.report.counts == predefined.report.counts
             assert result.metadata.source is not None
-            assert result.report.source_identities == (result.metadata.source,)
+            assert result.metadata.source in result.report.source_identities
 
 
 @pytest.mark.parametrize(
@@ -331,10 +357,16 @@ def test_cmip6_360_day_actual_calendar_and_reference_selection(
         ]
         assert CMIP6(model="MODEL").inspect().series == combinations[:1]
         assert combinations[0].period is None
+        assert combinations[0].release is not None
+        assert (
+            CMIP6(release=combinations[0].release).inspect().series == combinations[:1]
+        )
         with pytest.raises(ValueError, match="conflicting model identities"):
             CMIP6(model="OTHER").select(series=combinations[0], area=AREA).explain()
     recipe = CMIP6().select(series=combinations[0], area=AREA)
     inventory = recipe.inspect()
+    assert inventory.series[0].release == combinations[0].release
+    assert inventory.releases == (inventory.series[0].release,)
     assert inventory.series[0].period is not None
     assert inventory.series[0].period.calendar is not None
     assert inventory.series[0].period.calendar.value == "360_day"
@@ -525,6 +557,10 @@ def test_nex_real_native_netcdf_view_and_pinned_replay(
         assert all(r.period is None for r in combinations)
         (choice,) = NEX(indicator=indicator).inspect().series
         assert choice.model == "MODEL" and choice.member == "r1"
+        assert choice.release is not None
+        assert NEX(release=choice.release, indicator=indicator).inspect().series == (
+            choice,
+        )
     recipe = NEX().select(series=choice, area=AREA)
     cache = tmp_path / "cache"
     result = recipe.read(runtime=Runtime(cache=Cache.reuse(cache)))
@@ -559,7 +595,7 @@ def test_nex_real_native_netcdf_view_and_pinned_replay(
     )
     offline = Runtime(cache=Cache.offline(cache))
     reference = recipe.inspect(runtime=offline).series[0]
-    assert reference.release is None
+    assert reference.release == choice.release
     assert (
         recipe.select(series=replace(reference, release=release))
         .read(runtime=offline)
@@ -678,11 +714,21 @@ def test_jrc_preserves_published_quantile_knots_and_native_pixel_support(
             file.write(np.full((2, 2), period / 10), 1)
     monkeypatch.setitem(jrc.JRC_DATASETS, "efas", dataset)
     recipe = JRC(product=JRC.Product.EFAS).select(area=AREA)
+    inventory = recipe.inspect()
+    (reference,) = inventory.series
+    assert inventory.releases == (reference.release,)
     cache = tmp_path / "cache"
     result = recipe.read(runtime=Runtime(cache=Cache.reuse(cache)))
     assert result.metadata.source is not None
     release = result.metadata.source.release
     assert release is not None
+    assert reference.release != release
+    assert (
+        JRC()
+        .select(series=reference, area=AREA)
+        .read()
+        .table.equals(result.table, check_metadata=False)
+    )
     pinned = JRC(product=JRC.Product.EFAS, release=release).select(area=AREA)
     assert pinned.read(runtime=Runtime(cache=Cache.offline(cache))).table.equals(
         result.table, check_metadata=False
@@ -691,7 +737,7 @@ def test_jrc_preserves_published_quantile_knots_and_native_pixel_support(
         file.write(np.full((2, 2), 11.0), 1)
     with pytest.raises(OSError, match="release changed"):
         pinned.read(limit=1)
-    assert pinned.inspect().releases == ()
+    assert pinned.inspect().releases == inventory.releases
     monkeypatch.setattr(
         "crc_sdk._source_io._download", lambda *a: pytest.fail("offline acquisition")
     )
@@ -703,6 +749,72 @@ def test_jrc_preserves_published_quantile_knots_and_native_pixel_support(
     assert curve is not None
     assert curve.quantile([0.9, 0.99]) == pytest.approx([1, 10])
     assert result.table["support_id"].to_pylist()[0].endswith(":1:0")
+
+
+def test_edo_reuses_inventory_period_and_streams_before_next_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from crc_sdk import _climate_io
+    from crc_sdk._providers import jrc_edo
+    from crc_sdk._source_io import _download
+
+    first = "sminx_m_eul_20010101_20011231_t.nc"
+    second = "sminx_m_eul_20020101_20021231_t.nc"
+    _netcdf(
+        tmp_path / first,
+        "sminx",
+        [0, 10, 20],
+        "1",
+        np.full((3, 2, 2), 0.4),
+        calendar="proleptic_gregorian",
+    )
+    index = tmp_path / "index.html"
+    index.write_text(
+        "".join(f'<a href="{name}">{name}</a>' for name in (first, second))
+    )
+    root = tmp_path.as_uri() + "/"
+    acquired = []
+    snapshot = _climate_io.netcdf_window_snapshot
+
+    def view(scope: Any, uri: str, **kwargs: Any) -> Any:
+        acquired.append(uri)
+        return snapshot(scope, uri, **kwargs)
+
+    def acquire(uri: str, destination: Path) -> int:
+        acquired.append(uri)
+        return _download(index.as_uri() if uri == root else uri, destination)
+
+    monkeypatch.setattr(jrc_edo, "SMI", replace(jrc_edo.SMI, base_url=root.rstrip("/")))
+    monkeypatch.setattr("crc_sdk._source_io._download", acquire)
+    monkeypatch.setattr(_climate_io, "netcdf_window_snapshot", view)
+    inventory = EDO().inspect()
+    (reference,) = inventory.series
+    assert reference.period == Period.window(
+        2001, 2002, calendar=Calendar.PROLEPTIC_GREGORIAN
+    )
+    assert reference.release is not None and inventory.releases == (reference.release,)
+    assert acquired == [root]
+    selected = EDO().select(series=reference, area=AREA, time=Period.window(2001, 2001))
+    assert selected.inspect().series == (reference,)
+    result = selected.read()
+    assert result.table["time"].to_pylist() == [
+        "2001-01-01",
+        "2001-01-11",
+        "2001-01-21",
+    ]
+    assert result.table["period_id"].to_pylist() == [reference.period.id] * 3
+    assert root + second not in acquired
+    with EDO().select(area=AREA).batches(batch_rows=1) as stream:
+        batches = iter(stream)
+        assert next(batches)["time"].to_pylist() == ["2001-01-01"]
+        assert root + second not in acquired
+        assert [b["time"].to_pylist() for b in (next(batches), next(batches))] == [
+            ["2001-01-11"],
+            ["2001-01-21"],
+        ]
+        with pytest.raises(FileNotFoundError):
+            next(batches)
+    assert acquired[-1] == root + second
 
 
 def test_idf_central_quantiles_and_published_confidence_intervals(
@@ -809,6 +921,46 @@ def test_era5_precipitation_midnight_boundary_and_explicit_coverage(
     assert relaxed.report.counts.usable_years == 1
 
 
+def test_era5_five_day_precipitation_coverage_counts_rolling_totals(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from crc_sdk import _climate_sampling as module
+
+    path = tmp_path / "five-day-rain.zarr"
+    group = _grid(path, variable="total_precipitation", hourly=True)
+    array = group["total_precipitation"]
+    array[:] = 0.001
+    array.attrs["units"] = "m"
+    zarr.consolidate_metadata(str(path))
+    monkeypatch.setattr(
+        module, "ERA5_STORE", replace(module.ERA5_STORE, url=path.as_uri())
+    )
+    recipe = ERA5(
+        indicator=ERA5.Indicator.ANNUAL_MAXIMUM_FIVE_DAY_PRECIPITATION,
+        coverage=Coverage.minimum_fraction(0.5),
+    ).select(area=AREA, time=Period.window(2001, 2001))
+    complete = recipe.read()
+    assert complete.table["value"].to_pylist() == pytest.approx([120.0])
+    assert complete.table["coverage"].to_pylist() == [
+        {"valid": 361, "expected": 361, "minimum_fraction": 0.5}
+    ]
+    values = np.asarray(array[:])
+    for day in range(5, 365, 2):
+        values[day * 24 + 1, :, :] = np.nan
+    array[:] = values
+    result = recipe.read()
+    assert result.table["value"].to_pylist() == [None]
+    assert result.table["coverage"].to_pylist() == [
+        {"valid": 1, "expected": 361, "minimum_fraction": 0.5}
+    ]
+    assert result.report.counts.incomplete_years == 1
+    saved = recipe.write(tmp_path / "five-day.parquet")
+    assert (
+        saved.read().table["coverage"].to_pylist()
+        == result.table["coverage"].to_pylist()
+    )
+
+
 def test_strict_http_netcdf_range_snapshot_owns_only_selected_native_view(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -864,7 +1016,6 @@ def test_strict_http_netcdf_range_snapshot_owns_only_selected_native_view(
 def test_era5_payload_pin_rejects_changed_chunks_before_preview_or_streaming(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from crc_sdk import ReleaseReference
     from crc_sdk import _climate_sampling as module
 
     path = tmp_path / "era5.zarr"
@@ -878,7 +1029,15 @@ def test_era5_payload_pin_rejects_changed_chunks_before_preview_or_streaming(
     cache = tmp_path / "cache"
     inventory = recipe.inspect(runtime=Runtime(cache=Cache.reuse(cache)))
     reference = inventory.series[0]
-    assert reference.release is None and inventory.releases == ()
+    assert reference.release is not None and inventory.releases == (reference.release,)
+    for unknown in (
+        ReleaseReference("unavailable", "sha256:" + "0" * 64),
+        replace(reference.release, sha256="sha256:" + "0" * 64),
+    ):
+        with pytest.raises(OSError, match="source release changed"):
+            ERA5(indicator=indicator, release=unknown).select(
+                area=AREA, time=time
+            ).inspect()
     result = (
         ERA5()
         .select(area=AREA, series=reference)
@@ -907,7 +1066,8 @@ def test_era5_payload_pin_rejects_changed_chunks_before_preview_or_streaming(
     assert (path / ".zmetadata").read_bytes() == metadata
     empty = pinned.read(limit=0)
     assert not empty.report.complete and empty.report.valid is None
-    assert empty.metadata.source is not None and empty.metadata.source.release is None
+    assert empty.metadata.source is not None
+    assert empty.metadata.source.release == reference.release
     with pytest.raises(OSError, match="release changed"):
         pinned.read(limit=1)
     with pinned_series.batches(runtime=Runtime(cache=Cache.refresh(cache))) as stream:

@@ -59,7 +59,6 @@ from ._graph import (
     ExecutionScope,
     Node,
     NodeStream,
-    ObservationSupport,
 )
 from ._inspection import (
     Bounds,
@@ -92,7 +91,6 @@ from ._selection import (
     rename_metadata,
     rename_row,
     selected_metadata,
-    support_intersects,
 )
 from ._source_io import SourceNode
 from ._table_input import (
@@ -479,6 +477,9 @@ class _TableNode(_ScientificNode[MetadataT]):
                 for d in metadata.report.diagnostics
                 if isinstance(d, UnavailableStationYear)
             ],
+            []
+            if isinstance(metadata, DatasetMetadata)
+            else [support._document() for support in metadata._empty_supports],
         )
 
     def _view_metadata(
@@ -787,6 +788,9 @@ class _SelectionNode(_ScientificNode[MetadataT]):
                             records, schema=_schema(metadata)
                         )
             if resolved.stations is not None:
+                consumed = scope.metadata(self.parent)
+                if isinstance(consumed, EvidenceMetadata):
+                    seen_stations.update(s.id for s in consumed._empty_supports)
                 seen_stations.update(
                     d.station_id
                     for d in scope.report(self.parent).diagnostics
@@ -801,23 +805,6 @@ class _SelectionNode(_ScientificNode[MetadataT]):
         stream = _checked_stream(scope, metadata, batches())
         own_report = stream.report
         annual = _annual_samples(metadata)
-
-        def observation_supports() -> tuple[ObservationSupport, ...]:
-            if resolved.empty:
-                return ()
-            return tuple(
-                support
-                for support in scope.observation_supports(self.parent)
-                if (resolved.stations is None or support.id in resolved.stations)
-                and (
-                    resolved.area is None
-                    or support_intersects(
-                        resolved.area,
-                        geometry=support.geometry,
-                        cell_id=support.cell_id,
-                    )
-                )
-            )
 
         def report() -> ExecutionReport:
             assert own_report is not None
@@ -843,7 +830,6 @@ class _SelectionNode(_ScientificNode[MetadataT]):
             )
 
         stream.report = report
-        stream.observation_supports = observation_supports
         return stream
 
 
@@ -857,7 +843,7 @@ def _annual_samples(metadata: Metadata) -> bool:
 
 def _support_inventory(node: Node[MetadataT]) -> set[str] | None:
     if isinstance(node, _TableNode):
-        return {
+        inventory = {
             str(record.get("station_id") or record["support_id"])
             for record in node.table.to_pylist()
         } | {
@@ -865,6 +851,9 @@ def _support_inventory(node: Node[MetadataT]) -> set[str] | None:
             for d in node.metadata_value.report.diagnostics
             if isinstance(d, UnavailableStationYear)
         }
+        if isinstance(node.metadata_value, EvidenceMetadata):
+            inventory.update(s.id for s in node.metadata_value._empty_supports)
+        return inventory
     if isinstance(node, _TransformNode):
         return _support_inventory(node.parent)
     return None
@@ -998,7 +987,9 @@ class _FitNode(_ScientificNode[DatasetMetadata], Generic[MetadataT]):
                         report=ExecutionReport(
                             False,
                             None,
-                            parent_report.diagnostics,
+                            error.diagnostics
+                            if isinstance(error, _SampleFitError)
+                            else parent_report.diagnostics,
                             ExecutionCounts(
                                 requested=error.requested
                                 if isinstance(error, _SampleFitError)
@@ -1337,7 +1328,6 @@ class _TransformNode(_ScientificNode[MetadataT]):
             )
 
         stream.report = report
-        stream.observation_supports = lambda: scope.observation_supports(self.parent)
         return stream
 
 
