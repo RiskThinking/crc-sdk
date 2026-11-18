@@ -13,7 +13,7 @@ from contextlib import AbstractContextManager
 from dataclasses import replace
 from enum import Enum
 from pathlib import Path
-from typing import Generic, Literal, Self, TypeAlias, TypeVar, cast
+from typing import TYPE_CHECKING, Generic, Literal, Self, TypeAlias, TypeVar, cast
 
 import crc_framework
 import pyarrow as pa  # type: ignore[import-untyped]
@@ -99,6 +99,11 @@ from ._terminals import (
     _schema,
     _with_report,
 )
+
+if TYPE_CHECKING:
+    from ._assets import Assets
+    from ._evaluation import Evaluation
+    from ._evaluation_spatial import SpatialMatch
 
 Metadata: TypeAlias = DatasetMetadata | EvidenceMetadata
 MetadataT = TypeVar("MetadataT", bound=Metadata)
@@ -724,6 +729,12 @@ class _SelectionNode(_ScientificNode[MetadataT]):
             return replace(
                 own,
                 diagnostics=parent.diagnostics,
+                counts=replace(
+                    own.counts,
+                    skipped=parent.counts.skipped,
+                    usable_years=parent.counts.usable_years,
+                    incomplete_years=parent.counts.incomplete_years,
+                ),
                 source_identities=parent.source_identities,
             )
 
@@ -1361,80 +1372,90 @@ class _RecipeBase(Generic[MetadataT, CanonicalT]):
 
     def inspect(self, *, runtime: Runtime | None = None) -> Inspection:
         with ExecutionScope(runtime) as scope:
-            node = self._node
-            source: Node[object] | None = cast(Node[object], node)
-            details: Inspection | None = None
-            while source is not None:
-                if isinstance(source, SourceNode):
-                    try:
-                        details = source.inspection(scope)
-                    except DataValidationError as error:
-                        raise ValidationError(
-                            report=ExecutionReport(
-                                False,
-                                False,
-                                diagnostics=error.diagnostics,
-                            )
-                        ) from error
-                    break
-                parent = getattr(source, "parent", None)
-                source = parent if isinstance(parent, Node) else None
-            if details is not None and (
-                details.schema is None
-                or node is source
-                or isinstance(source, SourceNode)
-                and source.requirements()
-            ):
-                return details
-            try:
-                declared = None if details is None else details.metadata
-                projected = (
-                    None
-                    if declared is None or source is None
-                    else _inspection_view(cast(Node[object], node), source, declared)
-                )
-                metadata: Metadata = (
-                    scope.metadata(node) if projected is None else projected
-                )
-            except DataValidationError as error:
-                raise ValidationError(report=scope.report(node)) from error
-            capabilities: tuple[Capability, ...] = (
-                Capability.INSPECT,
-                Capability.READ,
-                Capability.BATCHES,
-                Capability.WRITE,
-            )
+            return self._inspect(scope)
+
+    def _inspect(self, scope: ExecutionScope) -> Inspection:
+        node = self._node
+        source: Node[object] | None = cast(Node[object], node)
+        details: Inspection | None = None
+        while source is not None:
+            if isinstance(source, SourceNode):
+                try:
+                    details = source.inspection(scope)
+                except DataValidationError as error:
+                    raise ValidationError(
+                        report=ExecutionReport(
+                            False,
+                            False,
+                            diagnostics=error.diagnostics,
+                        )
+                    ) from error
+                break
+            parent = getattr(source, "parent", None)
+            source = parent if isinstance(parent, Node) else None
+        if details is not None and (
+            details.schema is None
+            or node is source
+            or isinstance(source, SourceNode)
+            and source.requirements()
+        ):
             if (
-                isinstance(metadata, DatasetMetadata)
-                or metadata.kind is EvidenceKind.SAMPLES
+                isinstance(self, Dataset)
+                and Capability.READ in details.capabilities
+                and Capability.EVALUATE not in details.capabilities
             ):
-                capabilities += (Capability.FIT,)
-            elif (
-                metadata.kind is EvidenceKind.OBSERVATIONS
-                and metadata.sampling is not None
-            ):
-                capabilities += (Capability.AGGREGATE,)
-            return Inspection(
-                schema=_schema(metadata),
-                series=tuple(
-                    SeriesReference(
-                        item.variable,
-                        scenario=item.scenario,
-                        period=item.period,
-                        probability=item.probability,
-                        release=None
-                        if metadata.source is None
-                        else metadata.source.release,
-                    )
-                    for item in metadata.spec.series
-                ),
-                capabilities=capabilities,
-                requirements=() if details is None else details.requirements,
-                source=metadata.source,
-                indicators=() if details is None else details.indicators,
-                releases=() if details is None else details.releases,
-                stations=() if details is None else details.stations,
+                return replace(
+                    details, capabilities=(*details.capabilities, Capability.EVALUATE)
+                )
+            return details
+        try:
+            declared = None if details is None else details.metadata
+            projected = (
+                None
+                if not isinstance(declared, (DatasetMetadata, EvidenceMetadata))
+                or source is None
+                else _inspection_view(cast(Node[object], node), source, declared)
             )
+            metadata: Metadata = (
+                scope.metadata(node) if projected is None else projected
+            )
+        except DataValidationError as error:
+            raise ValidationError(report=scope.report(node)) from error
+        capabilities: tuple[Capability, ...] = (
+            Capability.INSPECT,
+            Capability.READ,
+            Capability.BATCHES,
+            Capability.WRITE,
+        )
+        if isinstance(metadata, DatasetMetadata):
+            capabilities += (Capability.FIT, Capability.EVALUATE)
+        elif metadata.kind is EvidenceKind.SAMPLES:
+            capabilities += (Capability.FIT,)
+        elif (
+            metadata.kind is EvidenceKind.OBSERVATIONS and metadata.sampling is not None
+        ):
+            capabilities += (Capability.AGGREGATE,)
+        return Inspection(
+            schema=_schema(metadata),
+            series=tuple(
+                SeriesReference(
+                    item.variable,
+                    scenario=item.scenario,
+                    period=item.period,
+                    probability=item.probability,
+                    release=None
+                    if metadata.source is None
+                    else metadata.source.release,
+                )
+                for item in metadata.spec.series
+            ),
+            capabilities=capabilities,
+            requirements=() if details is None else details.requirements,
+            source=metadata.source,
+            indicators=() if details is None else details.indicators,
+            releases=() if details is None else details.releases,
+            stations=() if details is None else details.stations,
+        )
 
     def read(
         self, *, limit: int | None = None, runtime: Runtime | None = None
@@ -1692,6 +1713,13 @@ class Dataset(_RecipeBase[DatasetMetadata, "Dataset"]):
                 Operation(Stage.DECODING, "Use supplied quantile evidence directly"),
             ),
         )
+
+    def evaluate(
+        self, assets: Assets, *, spatial: SpatialMatch | None = None
+    ) -> Evaluation:
+        from ._evaluation import Evaluation
+
+        return Evaluation._create(self, assets, spatial)
 
     def select(
         self,

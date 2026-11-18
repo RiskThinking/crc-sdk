@@ -33,10 +33,9 @@ does not re-export the framework's numerical interface.
 | Validate all selected data | `validate` |
 | Reuse one execution | Context-managed `execute` |
 
-Supplied quantile curves are directly queryable. There is no preservation or
-preparation call before evaluation. Result terminals execute every upstream
-dependency automatically; choosing a statistical fit remains an explicit
-scientific operation.
+Supplied quantiles can be evaluated directly. Result terminals execute upstream
+dependencies automatically. Choosing a statistical fit is an explicit scientific
+operation. [Evaluation guide](evaluation.md)
 
 Single-series constructors accept scientific declarations directly. Scenario
 and period may be absent. Unknown user quantities require no taxonomy entry or
@@ -62,7 +61,7 @@ silently become fitting samples.
 `EvaluationArtifact`, or `DatasetCollection` according to the data kind. Each
 saved handle has a path and can be reopened by that type's `open` method. A saved
 collection is a portable directory bundle containing its selected dependencies.
-Only local atomic publication is supported.
+Publication is atomic on supported local filesystems. [Collection guide](collections.md)
 
 An explicit `execute(runtime=...)` scope owns one runtime. Its `read`, `batches`,
 `validate`, and `write` methods reuse that scope. `explain(runtime=...)` describes

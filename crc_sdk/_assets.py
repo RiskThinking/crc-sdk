@@ -202,6 +202,7 @@ def _wkb_2d(value: bytes) -> None:
 @dataclass(frozen=True, slots=True)
 class AssetData:
     table: pa.Table
+    context: pa.Table
     id_column: str
     location: AssetLocation
     geometries: tuple[bytes, ...]
@@ -320,14 +321,27 @@ class Assets:
     def column(self, name: str) -> ColumnBinding:
         return ColumnBinding(name)
 
-    def _input_columns(self, schema: pa.Schema) -> tuple[str, ...]:
+    def _input_columns(
+        self, schema: pa.Schema, required: tuple[str, ...]
+    ) -> tuple[str, ...]:
         location = _location(schema, self._location)
+        missing = set(required) - set(schema.names)
+        if missing:
+            raise ValueError(
+                f"Missing bound asset columns: {sorted(missing)!r}. "
+                "Include them in the asset input or supply typed context constants."
+            )
         keep = (
             tuple(schema.names)
             if self._columns is None
             else tuple(
                 dict.fromkeys(
-                    (self._id_column, *self._columns, *_location_columns(location))
+                    (
+                        self._id_column,
+                        *self._columns,
+                        *_location_columns(location),
+                        *required,
+                    )
                 )
             )
         )
@@ -340,9 +354,9 @@ class Assets:
         self,
         batches: Iterable[pa.RecordBatch],
         schema: pa.Schema,
+        keep: tuple[str, ...],
         budget: int | None,
     ) -> pa.Table:
-        keep = self._input_columns(schema)
         selected_schema = pa.schema(
             [schema.field(name) for name in keep], metadata=schema.metadata
         )
@@ -359,14 +373,24 @@ class Assets:
             owned.append(batch)
         return pa.Table.from_batches(owned, schema=selected_schema)
 
-    def _materialize(self, scope: ExecutionScope) -> AssetData:
+    def _materialize(
+        self, scope: ExecutionScope, *, required_columns: Sequence[str] = ()
+    ) -> AssetData:
         scope._active()
-        if self._key in scope._asset_results:
-            return cast(AssetData, scope._asset_results[self._key])
+        required = tuple(
+            sorted(
+                {_identifier(name, "asset context column") for name in required_columns}
+            )
+        )
+        key = self._key if not required else self._key + ":" + json.dumps(required)
+        if key in scope._asset_results:
+            return cast(AssetData, scope._asset_results[key])
         source = None
         budget = _memory_bytes(scope.runtime.memory_limit)
         if self._table is not None:
-            table = self._table
+            table = self._table.select(
+                self._input_columns(self._table.schema, required)
+            )
         elif self._path is not None:
             pinned, resource = scope.pin_local(self._path)
             source = SourceIdentity(
@@ -379,15 +403,22 @@ class Assets:
                         column_types={self._id_column: pa.string()}
                     ),
                 ) as reader:
-                    table = self._collect(reader, reader.schema, budget)
+                    keep = self._input_columns(reader.schema, required)
+                    table = self._collect(reader, reader.schema, keep, budget)
             elif self._path.suffix.lower() in {".parquet", ".pq"}:
                 with pq.ParquetFile(pinned) as parquet:
-                    columns = self._input_columns(parquet.schema_arrow)
-                    table = self._collect(
+                    keep = self._input_columns(parquet.schema_arrow, required)
+                    batches = (
                         parquet.iter_batches(
-                            batch_size=scope.runtime.batch_rows, columns=list(columns)
-                        ),
+                            batch_size=scope.runtime.batch_rows, columns=list(keep)
+                        )
+                        if parquet.num_row_groups
+                        else ()
+                    )
+                    table = self._collect(
+                        batches,
                         parquet.schema_arrow,
+                        keep,
                         budget,
                     )
             else:
@@ -404,7 +435,8 @@ class Assets:
             with connection.sql(self._query).to_arrow_reader(
                 batch_size=scope.runtime.batch_rows
             ) as reader:
-                table = self._collect(reader, reader.schema, budget)
+                keep = self._input_columns(reader.schema, required)
+                table = self._collect(reader, reader.schema, keep, budget)
             table = snapshot_table(table)
         if len(set(table.column_names)) != len(table.column_names):
             raise ValueError("asset column names must be unique")
@@ -467,17 +499,26 @@ class Assets:
                         "asset geometry must be valid two-dimensional WGS84 geometry"
                     )
                 geometry.append(value)
+        context = table.select(required)
         if self._columns is not None:
             keep = tuple(dict.fromkeys((self._id_column, *self._columns)))
             missing = set(keep) - set(table.column_names)
             if missing:
                 raise ValueError(f"unknown retained asset columns: {sorted(missing)}")
             table = table.select(keep)
-        if budget is not None and table.nbytes + sum(map(len, geometry)) > budget:
+        context_only = context.select(
+            [name for name in required if name not in table.column_names]
+        )
+        if (
+            budget is not None
+            and table.nbytes + context_only.nbytes + sum(map(len, geometry)) > budget
+        ):
             raise MemoryError(
                 "Assets exceed Runtime(memory_limit=...). Reduce retained columns "
                 "or increase the limit."
             )
-        result = AssetData(table, self._id_column, location, tuple(geometry), source)
-        scope._asset_results[self._key] = result
+        result = AssetData(
+            table, context, self._id_column, location, tuple(geometry), source
+        )
+        scope._asset_results[key] = result
         return result

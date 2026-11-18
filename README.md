@@ -56,6 +56,9 @@ an impact or fit implicitly.
   explicit fitting, previews, reusable executions, streaming, and atomic writes.
 - [Sources and native evidence](docs/sources.md): typed providers, temporal
   aggregation, user evidence, and explicit asset inputs.
+- [Collections](docs/collections.md): selected scientific members and portable bundles.
+- [Evaluation](docs/evaluation.md): match assets, query event levels, and add
+  calibrated named responses.
 - [Python interface contract](docs/api-reference.md): canonical imports and
   installed-package enforcement.
 - [Development](docs/development.md): setup, checks, generated contracts, and

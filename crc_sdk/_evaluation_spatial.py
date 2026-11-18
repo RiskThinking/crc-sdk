@@ -1,0 +1,314 @@
+"""Matching against the declared spatial support of a scientific series."""
+
+from __future__ import annotations
+
+import math
+from collections.abc import Sequence
+from dataclasses import dataclass
+from enum import Enum
+from typing import cast
+
+from h3.api import basic_int as h3  # type: ignore[import-untyped]
+from shapely import STRtree, from_wkb  # type: ignore[import-untyped]
+from shapely.affinity import translate  # type: ignore[import-untyped]
+from shapely.geometry import Point, box  # type: ignore[import-untyped]
+from shapely.geometry.base import BaseGeometry  # type: ignore[import-untyped]
+
+from ._dataset_schema import _number, _object
+from ._errors import CapabilityError
+from ._geometry.h3 import cell_polygon
+from ._schema.dataset import DatasetRow
+from ._selection import _angle, _vector
+
+# H3 uses an authalic sphere. Recover its radius from a quarter-circle arc.
+_RADIUS_METRES = float(h3.great_circle_distance((0, 0), (0, 90), unit="m")) / (
+    math.pi / 2
+)
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class Distance:
+    """An explicit nonnegative physical distance."""
+
+    value_metres: float
+
+    def __init__(self) -> None:
+        raise TypeError("use Distance.metres(value) or Distance.kilometres(value)")
+
+    @classmethod
+    def metres(cls, value: float) -> Distance:
+        value = _number(value, "distance")
+        if value < 0:
+            raise ValueError("distance must be nonnegative")
+        result = object.__new__(cls)
+        object.__setattr__(result, "value_metres", 0.0 if value == 0 else value)
+        return result
+
+    @classmethod
+    def kilometres(cls, value: float) -> Distance:
+        return cls.metres(_number(value, "distance") * 1000)
+
+
+class SpatialMatchKind(Enum):
+    COVERING = "covering"
+    NEAREST = "nearest"
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class SpatialMatch:
+    """Match declared coverage or request an explicit bounded point search."""
+
+    kind: SpatialMatchKind
+    max_distance: Distance | None
+
+    def __init__(self) -> None:
+        raise TypeError("use SpatialMatch.covering() or SpatialMatch.nearest(...)")
+
+    @classmethod
+    def covering(cls) -> SpatialMatch:
+        result = object.__new__(cls)
+        object.__setattr__(result, "kind", SpatialMatchKind.COVERING)
+        object.__setattr__(result, "max_distance", None)
+        return result
+
+    @classmethod
+    def nearest(cls, *, max_distance: Distance) -> SpatialMatch:
+        if not isinstance(max_distance, Distance):
+            raise TypeError(
+                "max_distance must be Distance.metres(...) or .kilometres(...)"
+            )
+        result = object.__new__(cls)
+        object.__setattr__(result, "kind", SpatialMatchKind.NEAREST)
+        object.__setattr__(result, "max_distance", max_distance)
+        return result
+
+    def _document(self) -> dict[str, object]:
+        document: dict[str, object] = {"kind": self.kind.value}
+        if self.max_distance is not None:
+            document["max_distance_metres"] = self.max_distance.value_metres
+        return document
+
+
+def spatial_match_from_document(value: object) -> SpatialMatch:
+    fields = _object(value, {"kind"}, {"max_distance_metres"})
+    if fields == {"kind": SpatialMatchKind.COVERING.value}:
+        return SpatialMatch.covering()
+    if (
+        fields["kind"] == SpatialMatchKind.NEAREST.value
+        and "max_distance_metres" in fields
+    ):
+        return SpatialMatch.nearest(
+            max_distance=Distance.metres(
+                _number(fields["max_distance_metres"], "max_distance_metres")
+            )
+        )
+    raise ValueError("invalid spatial matching policy")
+
+
+class SpatialMatchError(CapabilityError):
+    """A matching policy cannot resolve the requested support."""
+
+    def __init__(self, code: str, message: str) -> None:
+        self.code = code
+        super().__init__(message)
+
+
+@dataclass(frozen=True, slots=True)
+class MatchResult:
+    row: DatasetRow | None
+    distance_metres: float | None = None
+    failure_code: str | None = None
+
+
+def _point_key(point: Point) -> tuple[float, float]:
+    latitude, longitude = float(point.y), float(point.x)
+    if abs(latitude) == 90:
+        return latitude, 0.0
+    return latitude, -180.0 if longitude == 180 else longitude
+
+
+class SpatialIndex:
+    """Spatial candidates for one member and one series."""
+
+    def __init__(self, rows: Sequence[DatasetRow], policy: SpatialMatch) -> None:
+        self._policy = policy
+        self._rows = tuple(rows)
+        self._points: dict[tuple[float, float], list[int]] = {}
+        self._cells: dict[int, dict[int, list[int]]] = {}
+        self._areas: list[BaseGeometry] = []
+        self._area_rows: list[int] = []
+        self._point_tree: STRtree | None = None
+        self._cell_tree: STRtree | None = None
+        self._cell_shapes: list[BaseGeometry] = []
+        self._cell_rows: list[int] = []
+        if policy.kind is SpatialMatchKind.NEAREST:
+            self._prepare_nearest()
+            return
+        for index, row in enumerate(self._rows):
+            if row.geometry is None:
+                resolution = int(h3.get_resolution(row.cell_id))
+                self._cells.setdefault(resolution, {}).setdefault(
+                    row.cell_id, []
+                ).append(index)
+                continue
+            shape = from_wkb(row.geometry)
+            if isinstance(shape, Point):
+                self._points.setdefault(_point_key(shape), []).append(index)
+            else:
+                self._areas.append(shape)
+                self._area_rows.append(index)
+        self._area_tree = STRtree(self._areas)
+
+    def _prepare_nearest(self) -> None:
+        points: list[Point] = []
+        coordinates: list[tuple[float, float]] = []
+        for row in self._rows:
+            shape = None if row.geometry is None else from_wkb(row.geometry)
+            if not isinstance(shape, Point):
+                raise SpatialMatchError(
+                    "nearest_requires_points",
+                    "SpatialMatch.nearest(...) requires point-supported series. "
+                    "Use SpatialMatch.covering() for polygon or H3 support.",
+                )
+            latitude, longitude = _point_key(shape)
+            points.append(Point(longitude, latitude))
+            coordinates.append((latitude, longitude))
+        self._nearest_coordinates = tuple(coordinates)
+        self._nearest_vectors = tuple(_vector(*point) for point in coordinates)
+        self._point_tree = STRtree(points)
+
+    def _prepare_cells(self) -> None:
+        for cells in self._cells.values():
+            for cell, indices in cells.items():
+                shape = cell_polygon(cell)
+                for index in indices:
+                    self._cell_shapes.append(shape)
+                    self._cell_rows.append(index)
+        self._cell_tree = STRtree(self._cell_shapes)
+
+    @staticmethod
+    def _query_covering(
+        tree: STRtree,
+        shapes: Sequence[BaseGeometry],
+        indices: Sequence[int],
+        asset: BaseGeometry,
+    ) -> set[int]:
+        west, _, east, _ = asset.bounds
+        candidates = [asset]
+        if west == -180:
+            candidates.append(translate(asset, xoff=360))
+        if east == 180:
+            candidates.append(translate(asset, xoff=-360))
+        return {
+            indices[int(index)]
+            for candidate in candidates
+            for index in tree.query(candidate)
+            if shapes[int(index)].covers(candidate)
+        }
+
+    def _covering(self, asset: BaseGeometry) -> MatchResult:
+        indices = self._query_covering(
+            self._area_tree, self._areas, self._area_rows, asset
+        )
+        if isinstance(asset, Point):
+            latitude, longitude = _point_key(asset)
+            indices.update(self._points.get((latitude, longitude), ()))
+            for resolution, cells in self._cells.items():
+                cell = int(h3.latlng_to_cell(latitude, longitude, resolution))
+                indices.update(cells.get(cell, ()))
+        elif self._cells:
+            if self._cell_tree is None:
+                self._prepare_cells()
+            assert self._cell_tree is not None
+            indices.update(
+                self._query_covering(
+                    self._cell_tree, self._cell_shapes, self._cell_rows, asset
+                )
+            )
+        if len(indices) > 1:
+            raise self._ambiguity("overlapping_supports", indices)
+        if not indices:
+            return MatchResult(None, failure_code="no_covering_support")
+        return MatchResult(self._rows[next(iter(indices))])
+
+    def _nearest(self, asset: BaseGeometry) -> MatchResult:
+        if not isinstance(asset, Point):
+            raise SpatialMatchError(
+                "nearest_requires_point_assets",
+                "SpatialMatch.nearest(...) requires point asset locations. Supply "
+                "point geometry or evaluate with SpatialMatch.covering().",
+            )
+        assert self._point_tree is not None and self._policy.max_distance is not None
+        latitude, longitude = _point_key(asset)
+        limit = self._policy.max_distance.value_metres
+        angle = limit / _RADIUS_METRES
+        degrees = math.degrees(min(math.pi, angle)) + 1e-12
+        south, north = max(-90.0, latitude - degrees), min(90.0, latitude + degrees)
+        if south == -90 or north == 90:
+            windows = (box(-180, south, 180, north),)
+        else:
+            longitude_delta = (
+                math.degrees(
+                    math.asin(
+                        min(1.0, math.sin(angle) / math.cos(math.radians(latitude)))
+                    )
+                )
+                + 1e-12
+            )
+            windows = tuple(
+                box(
+                    longitude + offset - longitude_delta,
+                    south,
+                    longitude + offset + longitude_delta,
+                    north,
+                )
+                for offset in (-360, 0, 360)
+            )
+        candidates = {
+            int(index) for window in windows for index in self._point_tree.query(window)
+        }
+        vector = _vector(latitude, longitude)
+        distances = [
+            (
+                _RADIUS_METRES * _angle(vector, self._nearest_vectors[index]),
+                index,
+            )
+            for index in candidates
+        ]
+        within = [
+            (distance, index) for distance, index in distances if distance <= limit
+        ]
+        if not within:
+            return MatchResult(None, failure_code="outside_max_distance")
+        distance, best = min(within)
+        tied = [
+            index
+            for candidate, index in within
+            if math.isclose(candidate, distance, rel_tol=1e-12, abs_tol=1e-7)
+        ]
+        if len(tied) > 1:
+            raise self._ambiguity("nearest_support_tie", tied)
+        return MatchResult(self._rows[best], distance)
+
+    def _ambiguity(
+        self, code: str, candidates: Sequence[int] | set[int]
+    ) -> SpatialMatchError:
+        names = sorted(
+            (self._rows[index].support_id, self._rows[index].cell_id)
+            for index in candidates
+        )
+        reason = (
+            "Multiple declared supports cover the asset"
+            if code == "overlapping_supports"
+            else "Multiple point supports are tied at the nearest distance"
+        )
+        return SpatialMatchError(
+            code,
+            f"{reason}: {names!r}. Select a series with unambiguous spatial support.",
+        )
+
+    def match(self, asset_geometry: bytes) -> MatchResult:
+        asset = cast(BaseGeometry, from_wkb(asset_geometry))
+        if self._policy.kind is SpatialMatchKind.NEAREST:
+            return self._nearest(asset)
+        return self._covering(asset)

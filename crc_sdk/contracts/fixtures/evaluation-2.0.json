@@ -1,0 +1,3110 @@
+{
+  "schema_version": "2.0",
+  "accepted": [
+    {
+      "name": "direct-ordered-return-periods",
+      "document": {
+        "metadata": {
+          "asset_fields": "/////3gAAAAQAAAAAAAKAAwABgAFAAgACgAAAAABBAAMAAAACAAIAAAABAAIAAAABAAAAAEAAAAUAAAAEAAUAAgAAAAHAAwAAAAQABAAAAAAAAAFEAAAACAAAAAEAAAAAAAAAAgAAABhc3NldF9pZAAAAAAEAAQABAAAAAAAAAA=",
+          "asset_ids": [
+            "a"
+          ],
+          "include_exposure": true,
+          "inputs": [
+            {
+              "member_id": null,
+              "metadata": {
+                "provenance": [],
+                "report": {
+                  "complete": true,
+                  "counts": {
+                    "incomplete_years": 0,
+                    "matched_assets": 0,
+                    "no_data": 0,
+                    "produced": 1,
+                    "requested": 1,
+                    "skipped": 0,
+                    "unmatched_assets": 0,
+                    "usable_years": 0
+                  },
+                  "diagnostics": [],
+                  "source_identities": [],
+                  "valid": true
+                },
+                "schema_version": "2.0",
+                "spatial": {
+                  "index_resolution": 9,
+                  "supports": [
+                    "point"
+                  ]
+                },
+                "spec": {
+                  "periods": [],
+                  "scenarios": [],
+                  "series": [
+                    {
+                      "period_id": null,
+                      "probability": {
+                        "kind": "annual",
+                        "tail": "upper"
+                      },
+                      "scenario_id": null,
+                      "variable_id": "project:depth"
+                    }
+                  ],
+                  "variables": [
+                    {
+                      "id": "project:depth",
+                      "measurement": {
+                        "kind": "depth_above_ground",
+                        "unit": "m"
+                      }
+                    }
+                  ]
+                }
+              },
+              "resource_id": null
+            }
+          ],
+          "query": {
+            "kind": "return_period",
+            "values": [
+              100.0,
+              10.0
+            ]
+          },
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 1,
+              "no_data": 0,
+              "produced": 2,
+              "requested": 2,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [],
+            "source_identities": [],
+            "valid": true
+          },
+          "resolutions": [],
+          "responses": [],
+          "schema_version": "2.0",
+          "spatial": {
+            "kind": "covering"
+          }
+        },
+        "rows": [
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": null,
+            "resolution_id": null,
+            "query_value": 100.0,
+            "value": 1.6,
+            "failure": null
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": null,
+            "resolution_id": null,
+            "query_value": 10.0,
+            "value": 0.8,
+            "failure": null
+          }
+        ]
+      }
+    },
+    {
+      "name": "named-and-contextual-responses",
+      "document": {
+        "metadata": {
+          "asset_fields": "/////3gAAAAQAAAAAAAKAAwABgAFAAgACgAAAAABBAAMAAAACAAIAAAABAAIAAAABAAAAAEAAAAUAAAAEAAUAAgAAAAHAAwAAAAQABAAAAAAAAAFEAAAACAAAAAEAAAAAAAAAAgAAABhc3NldF9pZAAAAAAEAAQABAAAAAAAAAA=",
+          "asset_ids": [
+            "a"
+          ],
+          "include_exposure": true,
+          "inputs": [
+            {
+              "member_id": null,
+              "metadata": {
+                "provenance": [],
+                "report": {
+                  "complete": true,
+                  "counts": {
+                    "incomplete_years": 0,
+                    "matched_assets": 0,
+                    "no_data": 0,
+                    "produced": 1,
+                    "requested": 1,
+                    "skipped": 0,
+                    "unmatched_assets": 0,
+                    "usable_years": 0
+                  },
+                  "diagnostics": [],
+                  "source_identities": [],
+                  "valid": true
+                },
+                "schema_version": "2.0",
+                "spatial": {
+                  "index_resolution": 9,
+                  "supports": [
+                    "point"
+                  ]
+                },
+                "spec": {
+                  "periods": [],
+                  "scenarios": [],
+                  "series": [
+                    {
+                      "period_id": null,
+                      "probability": {
+                        "kind": "annual",
+                        "tail": "upper"
+                      },
+                      "scenario_id": null,
+                      "variable_id": "project:depth"
+                    }
+                  ],
+                  "variables": [
+                    {
+                      "id": "project:depth",
+                      "measurement": {
+                        "kind": "depth_above_ground",
+                        "unit": "m"
+                      }
+                    }
+                  ]
+                }
+              },
+              "resource_id": null
+            }
+          ],
+          "query": {
+            "kind": "return_period",
+            "values": [
+              100.0,
+              10.0
+            ]
+          },
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 1,
+              "no_data": 0,
+              "produced": 6,
+              "requested": 6,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [],
+            "source_identities": [],
+            "valid": true
+          },
+          "resolutions": [
+            {
+              "id": "sha256:18d84700ae94c5de55c8bbd9a91ee672c575871022559cf7a5cd3b7393ef8e0e",
+              "impact": {
+                "input": {
+                  "kind": "depth_above_ground",
+                  "unit": "m"
+                },
+                "model": {
+                  "interpolation": "linear",
+                  "kind": "tabulated",
+                  "outside_domain": "clamp",
+                  "points": [
+                    {
+                      "x": 0,
+                      "y": 0
+                    },
+                    {
+                      "x": 0.5,
+                      "y": 0.25
+                    },
+                    {
+                      "x": 1,
+                      "y": 0.4000000059604645
+                    },
+                    {
+                      "x": 1.5,
+                      "y": 0.5
+                    },
+                    {
+                      "x": 2,
+                      "y": 0.6000000238418579
+                    },
+                    {
+                      "x": 3,
+                      "y": 0.75
+                    },
+                    {
+                      "x": 4,
+                      "y": 0.8500000238418579
+                    },
+                    {
+                      "x": 5,
+                      "y": 0.949999988079071
+                    },
+                    {
+                      "x": 6,
+                      "y": 1
+                    }
+                  ]
+                },
+                "output": {
+                  "kind": "ratio",
+                  "unit": "1"
+                },
+                "provenance": {
+                  "context": {
+                    "asset_type": "residential",
+                    "kind": "inundation_context",
+                    "region": "europe"
+                  },
+                  "model": {
+                    "id": "crc:inundation",
+                    "manifest_sha256": "sha256:f9e7e2521ef5542c8ec398f5c949a4bcdff6f5fbe31f74f1553cd32ca2867ff7",
+                    "schema_version": "2.0",
+                    "version": "2026.10.1"
+                  }
+                },
+                "schema_version": "2.0"
+              },
+              "response_id": "damage"
+            }
+          ],
+          "responses": [
+            {
+              "model": {
+                "input": {
+                  "kind": "depth_above_ground",
+                  "unit": "m"
+                },
+                "model": {
+                  "intercept": 0,
+                  "kind": "linear",
+                  "slope": 2
+                },
+                "output": {
+                  "kind": "time_duration",
+                  "unit": "d"
+                },
+                "schema_version": "2.0"
+              },
+              "name": "downtime",
+              "variable_id": "project:depth"
+            },
+            {
+              "context": {
+                "asset_type": "residential",
+                "kind": "inundation_context",
+                "region": "europe"
+              },
+              "model": {
+                "id": "crc:inundation",
+                "manifest_sha256": "sha256:f9e7e2521ef5542c8ec398f5c949a4bcdff6f5fbe31f74f1553cd32ca2867ff7",
+                "schema_version": "2.0",
+                "version": "2026.10.1"
+              },
+              "name": "damage",
+              "variable_id": "project:depth"
+            }
+          ],
+          "schema_version": "2.0",
+          "spatial": {
+            "kind": "covering"
+          }
+        },
+        "rows": [
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": null,
+            "resolution_id": null,
+            "query_value": 100.0,
+            "value": 1.6,
+            "failure": null
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": null,
+            "resolution_id": null,
+            "query_value": 10.0,
+            "value": 0.8,
+            "failure": null
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": "downtime",
+            "resolution_id": null,
+            "query_value": 100.0,
+            "value": 3.2,
+            "failure": null
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": "downtime",
+            "resolution_id": null,
+            "query_value": 10.0,
+            "value": 1.6,
+            "failure": null
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": "damage",
+            "resolution_id": "sha256:18d84700ae94c5de55c8bbd9a91ee672c575871022559cf7a5cd3b7393ef8e0e",
+            "query_value": 100.0,
+            "value": 0.5200000047683716,
+            "failure": null
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": "damage",
+            "resolution_id": "sha256:18d84700ae94c5de55c8bbd9a91ee672c575871022559cf7a5cd3b7393ef8e0e",
+            "query_value": 10.0,
+            "value": 0.3400000035762787,
+            "failure": null
+          }
+        ]
+      }
+    },
+    {
+      "name": "unmatched-assets-retained",
+      "document": {
+        "metadata": {
+          "asset_fields": "/////3gAAAAQAAAAAAAKAAwABgAFAAgACgAAAAABBAAMAAAACAAIAAAABAAIAAAABAAAAAEAAAAUAAAAEAAUAAgAAAAHAAwAAAAQABAAAAAAAAAFEAAAACAAAAAEAAAAAAAAAAgAAABhc3NldF9pZAAAAAAEAAQABAAAAAAAAAA=",
+          "asset_ids": [
+            "a"
+          ],
+          "include_exposure": true,
+          "inputs": [
+            {
+              "member_id": null,
+              "metadata": {
+                "provenance": [],
+                "report": {
+                  "complete": true,
+                  "counts": {
+                    "incomplete_years": 0,
+                    "matched_assets": 0,
+                    "no_data": 0,
+                    "produced": 1,
+                    "requested": 1,
+                    "skipped": 0,
+                    "unmatched_assets": 0,
+                    "usable_years": 0
+                  },
+                  "diagnostics": [],
+                  "source_identities": [],
+                  "valid": true
+                },
+                "schema_version": "2.0",
+                "spatial": {
+                  "index_resolution": 9,
+                  "supports": [
+                    "point"
+                  ]
+                },
+                "spec": {
+                  "periods": [],
+                  "scenarios": [],
+                  "series": [
+                    {
+                      "period_id": null,
+                      "probability": {
+                        "kind": "annual",
+                        "tail": "upper"
+                      },
+                      "scenario_id": null,
+                      "variable_id": "project:depth"
+                    }
+                  ],
+                  "variables": [
+                    {
+                      "id": "project:depth",
+                      "measurement": {
+                        "kind": "depth_above_ground",
+                        "unit": "m"
+                      }
+                    }
+                  ]
+                }
+              },
+              "resource_id": null
+            }
+          ],
+          "query": {
+            "kind": "return_period",
+            "values": [
+              100.0,
+              10.0
+            ]
+          },
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 0,
+              "no_data": 2,
+              "produced": 2,
+              "requested": 2,
+              "skipped": 0,
+              "unmatched_assets": 1,
+              "usable_years": 0
+            },
+            "diagnostics": [],
+            "source_identities": [],
+            "valid": true
+          },
+          "resolutions": [],
+          "responses": [],
+          "schema_version": "2.0",
+          "spatial": {
+            "kind": "covering"
+          }
+        },
+        "rows": [
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": null,
+            "distance_metres": null,
+            "response_id": null,
+            "resolution_id": null,
+            "query_value": 100.0,
+            "value": null,
+            "failure": {
+              "code": "no_covering_support",
+              "message": "No covering support."
+            }
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": null,
+            "distance_metres": null,
+            "response_id": null,
+            "resolution_id": null,
+            "query_value": 10.0,
+            "value": null,
+            "failure": {
+              "code": "no_covering_support",
+              "message": "No covering support."
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "explicit-empty",
+      "document": {
+        "metadata": {
+          "asset_ids": [],
+          "include_exposure": false,
+          "inputs": [],
+          "query": {
+            "kind": "return_period",
+            "values": [
+              100.0,
+              10.0
+            ]
+          },
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 0,
+              "no_data": 0,
+              "produced": 0,
+              "requested": 0,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [],
+            "source_identities": [],
+            "valid": true
+          },
+          "resolutions": [],
+          "responses": [],
+          "schema_version": "2.0",
+          "spatial": {
+            "kind": "covering"
+          }
+        },
+        "rows": []
+      }
+    }
+  ],
+  "rejected": [
+    {
+      "name": "old-version",
+      "document": {
+        "metadata": {
+          "asset_fields": "/////3gAAAAQAAAAAAAKAAwABgAFAAgACgAAAAABBAAMAAAACAAIAAAABAAIAAAABAAAAAEAAAAUAAAAEAAUAAgAAAAHAAwAAAAQABAAAAAAAAAFEAAAACAAAAAEAAAAAAAAAAgAAABhc3NldF9pZAAAAAAEAAQABAAAAAAAAAA=",
+          "asset_ids": [
+            "a"
+          ],
+          "include_exposure": true,
+          "inputs": [
+            {
+              "member_id": null,
+              "metadata": {
+                "provenance": [],
+                "report": {
+                  "complete": true,
+                  "counts": {
+                    "incomplete_years": 0,
+                    "matched_assets": 0,
+                    "no_data": 0,
+                    "produced": 1,
+                    "requested": 1,
+                    "skipped": 0,
+                    "unmatched_assets": 0,
+                    "usable_years": 0
+                  },
+                  "diagnostics": [],
+                  "source_identities": [],
+                  "valid": true
+                },
+                "schema_version": "2.0",
+                "spatial": {
+                  "index_resolution": 9,
+                  "supports": [
+                    "point"
+                  ]
+                },
+                "spec": {
+                  "periods": [],
+                  "scenarios": [],
+                  "series": [
+                    {
+                      "period_id": null,
+                      "probability": {
+                        "kind": "annual",
+                        "tail": "upper"
+                      },
+                      "scenario_id": null,
+                      "variable_id": "project:depth"
+                    }
+                  ],
+                  "variables": [
+                    {
+                      "id": "project:depth",
+                      "measurement": {
+                        "kind": "depth_above_ground",
+                        "unit": "m"
+                      }
+                    }
+                  ]
+                }
+              },
+              "resource_id": null
+            }
+          ],
+          "query": {
+            "kind": "return_period",
+            "values": [
+              100.0,
+              10.0
+            ]
+          },
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 1,
+              "no_data": 0,
+              "produced": 2,
+              "requested": 2,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [],
+            "source_identities": [],
+            "valid": true
+          },
+          "resolutions": [],
+          "responses": [],
+          "schema_version": "1.0",
+          "spatial": {
+            "kind": "covering"
+          }
+        },
+        "rows": [
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": null,
+            "resolution_id": null,
+            "query_value": 100.0,
+            "value": 1.6,
+            "failure": null
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": null,
+            "resolution_id": null,
+            "query_value": 10.0,
+            "value": 0.8,
+            "failure": null
+          }
+        ]
+      },
+      "structural": true
+    },
+    {
+      "name": "redundant-probability-field",
+      "document": {
+        "metadata": {
+          "asset_fields": "/////3gAAAAQAAAAAAAKAAwABgAFAAgACgAAAAABBAAMAAAACAAIAAAABAAIAAAABAAAAAEAAAAUAAAAEAAUAAgAAAAHAAwAAAAQABAAAAAAAAAFEAAAACAAAAAEAAAAAAAAAAgAAABhc3NldF9pZAAAAAAEAAQABAAAAAAAAAA=",
+          "asset_ids": [
+            "a"
+          ],
+          "include_exposure": true,
+          "inputs": [
+            {
+              "member_id": null,
+              "metadata": {
+                "provenance": [],
+                "report": {
+                  "complete": true,
+                  "counts": {
+                    "incomplete_years": 0,
+                    "matched_assets": 0,
+                    "no_data": 0,
+                    "produced": 1,
+                    "requested": 1,
+                    "skipped": 0,
+                    "unmatched_assets": 0,
+                    "usable_years": 0
+                  },
+                  "diagnostics": [],
+                  "source_identities": [],
+                  "valid": true
+                },
+                "schema_version": "2.0",
+                "spatial": {
+                  "index_resolution": 9,
+                  "supports": [
+                    "point"
+                  ]
+                },
+                "spec": {
+                  "periods": [],
+                  "scenarios": [],
+                  "series": [
+                    {
+                      "period_id": null,
+                      "probability": {
+                        "kind": "annual",
+                        "tail": "upper"
+                      },
+                      "scenario_id": null,
+                      "variable_id": "project:depth"
+                    }
+                  ],
+                  "variables": [
+                    {
+                      "id": "project:depth",
+                      "measurement": {
+                        "kind": "depth_above_ground",
+                        "unit": "m"
+                      }
+                    }
+                  ]
+                }
+              },
+              "resource_id": null
+            }
+          ],
+          "query": {
+            "kind": "return_period",
+            "values": [
+              100.0,
+              10.0
+            ]
+          },
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 1,
+              "no_data": 0,
+              "produced": 2,
+              "requested": 2,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [],
+            "source_identities": [],
+            "valid": true
+          },
+          "resolutions": [],
+          "responses": [],
+          "schema_version": "2.0",
+          "spatial": {
+            "kind": "covering"
+          }
+        },
+        "rows": [
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": null,
+            "resolution_id": null,
+            "query_value": 100.0,
+            "value": 1.6,
+            "failure": null,
+            "probability": 0.99
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": null,
+            "resolution_id": null,
+            "query_value": 10.0,
+            "value": 0.8,
+            "failure": null
+          }
+        ]
+      },
+      "structural": true
+    },
+    {
+      "name": "duplicate-query-coordinates",
+      "document": {
+        "metadata": {
+          "asset_fields": "/////3gAAAAQAAAAAAAKAAwABgAFAAgACgAAAAABBAAMAAAACAAIAAAABAAIAAAABAAAAAEAAAAUAAAAEAAUAAgAAAAHAAwAAAAQABAAAAAAAAAFEAAAACAAAAAEAAAAAAAAAAgAAABhc3NldF9pZAAAAAAEAAQABAAAAAAAAAA=",
+          "asset_ids": [
+            "a"
+          ],
+          "include_exposure": true,
+          "inputs": [
+            {
+              "member_id": null,
+              "metadata": {
+                "provenance": [],
+                "report": {
+                  "complete": true,
+                  "counts": {
+                    "incomplete_years": 0,
+                    "matched_assets": 0,
+                    "no_data": 0,
+                    "produced": 1,
+                    "requested": 1,
+                    "skipped": 0,
+                    "unmatched_assets": 0,
+                    "usable_years": 0
+                  },
+                  "diagnostics": [],
+                  "source_identities": [],
+                  "valid": true
+                },
+                "schema_version": "2.0",
+                "spatial": {
+                  "index_resolution": 9,
+                  "supports": [
+                    "point"
+                  ]
+                },
+                "spec": {
+                  "periods": [],
+                  "scenarios": [],
+                  "series": [
+                    {
+                      "period_id": null,
+                      "probability": {
+                        "kind": "annual",
+                        "tail": "upper"
+                      },
+                      "scenario_id": null,
+                      "variable_id": "project:depth"
+                    }
+                  ],
+                  "variables": [
+                    {
+                      "id": "project:depth",
+                      "measurement": {
+                        "kind": "depth_above_ground",
+                        "unit": "m"
+                      }
+                    }
+                  ]
+                }
+              },
+              "resource_id": null
+            }
+          ],
+          "query": {
+            "kind": "return_period",
+            "values": [
+              100.0,
+              100.0
+            ]
+          },
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 1,
+              "no_data": 0,
+              "produced": 2,
+              "requested": 2,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [],
+            "source_identities": [],
+            "valid": true
+          },
+          "resolutions": [],
+          "responses": [],
+          "schema_version": "2.0",
+          "spatial": {
+            "kind": "covering"
+          }
+        },
+        "rows": [
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": null,
+            "resolution_id": null,
+            "query_value": 100.0,
+            "value": 1.6,
+            "failure": null
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": null,
+            "resolution_id": null,
+            "query_value": 10.0,
+            "value": 0.8,
+            "failure": null
+          }
+        ]
+      },
+      "structural": true
+    },
+    {
+      "name": "failure-with-value",
+      "document": {
+        "metadata": {
+          "asset_fields": "/////3gAAAAQAAAAAAAKAAwABgAFAAgACgAAAAABBAAMAAAACAAIAAAABAAIAAAABAAAAAEAAAAUAAAAEAAUAAgAAAAHAAwAAAAQABAAAAAAAAAFEAAAACAAAAAEAAAAAAAAAAgAAABhc3NldF9pZAAAAAAEAAQABAAAAAAAAAA=",
+          "asset_ids": [
+            "a"
+          ],
+          "include_exposure": true,
+          "inputs": [
+            {
+              "member_id": null,
+              "metadata": {
+                "provenance": [],
+                "report": {
+                  "complete": true,
+                  "counts": {
+                    "incomplete_years": 0,
+                    "matched_assets": 0,
+                    "no_data": 0,
+                    "produced": 1,
+                    "requested": 1,
+                    "skipped": 0,
+                    "unmatched_assets": 0,
+                    "usable_years": 0
+                  },
+                  "diagnostics": [],
+                  "source_identities": [],
+                  "valid": true
+                },
+                "schema_version": "2.0",
+                "spatial": {
+                  "index_resolution": 9,
+                  "supports": [
+                    "point"
+                  ]
+                },
+                "spec": {
+                  "periods": [],
+                  "scenarios": [],
+                  "series": [
+                    {
+                      "period_id": null,
+                      "probability": {
+                        "kind": "annual",
+                        "tail": "upper"
+                      },
+                      "scenario_id": null,
+                      "variable_id": "project:depth"
+                    }
+                  ],
+                  "variables": [
+                    {
+                      "id": "project:depth",
+                      "measurement": {
+                        "kind": "depth_above_ground",
+                        "unit": "m"
+                      }
+                    }
+                  ]
+                }
+              },
+              "resource_id": null
+            }
+          ],
+          "query": {
+            "kind": "return_period",
+            "values": [
+              100.0,
+              10.0
+            ]
+          },
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 1,
+              "no_data": 0,
+              "produced": 2,
+              "requested": 2,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [],
+            "source_identities": [],
+            "valid": true
+          },
+          "resolutions": [],
+          "responses": [],
+          "schema_version": "2.0",
+          "spatial": {
+            "kind": "covering"
+          }
+        },
+        "rows": [
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": null,
+            "resolution_id": null,
+            "query_value": 100.0,
+            "value": 1.6,
+            "failure": {
+              "code": "x",
+              "message": "Contradiction"
+            }
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": null,
+            "resolution_id": null,
+            "query_value": 10.0,
+            "value": 0.8,
+            "failure": null
+          }
+        ]
+      },
+      "structural": true
+    },
+    {
+      "name": "missing-query-row",
+      "document": {
+        "metadata": {
+          "asset_fields": "/////3gAAAAQAAAAAAAKAAwABgAFAAgACgAAAAABBAAMAAAACAAIAAAABAAIAAAABAAAAAEAAAAUAAAAEAAUAAgAAAAHAAwAAAAQABAAAAAAAAAFEAAAACAAAAAEAAAAAAAAAAgAAABhc3NldF9pZAAAAAAEAAQABAAAAAAAAAA=",
+          "asset_ids": [
+            "a"
+          ],
+          "include_exposure": true,
+          "inputs": [
+            {
+              "member_id": null,
+              "metadata": {
+                "provenance": [],
+                "report": {
+                  "complete": true,
+                  "counts": {
+                    "incomplete_years": 0,
+                    "matched_assets": 0,
+                    "no_data": 0,
+                    "produced": 1,
+                    "requested": 1,
+                    "skipped": 0,
+                    "unmatched_assets": 0,
+                    "usable_years": 0
+                  },
+                  "diagnostics": [],
+                  "source_identities": [],
+                  "valid": true
+                },
+                "schema_version": "2.0",
+                "spatial": {
+                  "index_resolution": 9,
+                  "supports": [
+                    "point"
+                  ]
+                },
+                "spec": {
+                  "periods": [],
+                  "scenarios": [],
+                  "series": [
+                    {
+                      "period_id": null,
+                      "probability": {
+                        "kind": "annual",
+                        "tail": "upper"
+                      },
+                      "scenario_id": null,
+                      "variable_id": "project:depth"
+                    }
+                  ],
+                  "variables": [
+                    {
+                      "id": "project:depth",
+                      "measurement": {
+                        "kind": "depth_above_ground",
+                        "unit": "m"
+                      }
+                    }
+                  ]
+                }
+              },
+              "resource_id": null
+            }
+          ],
+          "query": {
+            "kind": "return_period",
+            "values": [
+              100.0,
+              10.0
+            ]
+          },
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 1,
+              "no_data": 0,
+              "produced": 2,
+              "requested": 2,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [],
+            "source_identities": [],
+            "valid": true
+          },
+          "resolutions": [],
+          "responses": [],
+          "schema_version": "2.0",
+          "spatial": {
+            "kind": "covering"
+          }
+        },
+        "rows": [
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": null,
+            "resolution_id": null,
+            "query_value": 100.0,
+            "value": 1.6,
+            "failure": null
+          }
+        ]
+      },
+      "structural": false
+    },
+    {
+      "name": "duplicate-scientific-row",
+      "document": {
+        "metadata": {
+          "asset_fields": "/////3gAAAAQAAAAAAAKAAwABgAFAAgACgAAAAABBAAMAAAACAAIAAAABAAIAAAABAAAAAEAAAAUAAAAEAAUAAgAAAAHAAwAAAAQABAAAAAAAAAFEAAAACAAAAAEAAAAAAAAAAgAAABhc3NldF9pZAAAAAAEAAQABAAAAAAAAAA=",
+          "asset_ids": [
+            "a"
+          ],
+          "include_exposure": true,
+          "inputs": [
+            {
+              "member_id": null,
+              "metadata": {
+                "provenance": [],
+                "report": {
+                  "complete": true,
+                  "counts": {
+                    "incomplete_years": 0,
+                    "matched_assets": 0,
+                    "no_data": 0,
+                    "produced": 1,
+                    "requested": 1,
+                    "skipped": 0,
+                    "unmatched_assets": 0,
+                    "usable_years": 0
+                  },
+                  "diagnostics": [],
+                  "source_identities": [],
+                  "valid": true
+                },
+                "schema_version": "2.0",
+                "spatial": {
+                  "index_resolution": 9,
+                  "supports": [
+                    "point"
+                  ]
+                },
+                "spec": {
+                  "periods": [],
+                  "scenarios": [],
+                  "series": [
+                    {
+                      "period_id": null,
+                      "probability": {
+                        "kind": "annual",
+                        "tail": "upper"
+                      },
+                      "scenario_id": null,
+                      "variable_id": "project:depth"
+                    }
+                  ],
+                  "variables": [
+                    {
+                      "id": "project:depth",
+                      "measurement": {
+                        "kind": "depth_above_ground",
+                        "unit": "m"
+                      }
+                    }
+                  ]
+                }
+              },
+              "resource_id": null
+            }
+          ],
+          "query": {
+            "kind": "return_period",
+            "values": [
+              100.0,
+              10.0
+            ]
+          },
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 1,
+              "no_data": 0,
+              "produced": 2,
+              "requested": 2,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [],
+            "source_identities": [],
+            "valid": true
+          },
+          "resolutions": [],
+          "responses": [],
+          "schema_version": "2.0",
+          "spatial": {
+            "kind": "covering"
+          }
+        },
+        "rows": [
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": null,
+            "resolution_id": null,
+            "query_value": 100.0,
+            "value": 1.6,
+            "failure": null
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": null,
+            "resolution_id": null,
+            "query_value": 100.0,
+            "value": 1.6,
+            "failure": null
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": null,
+            "resolution_id": null,
+            "query_value": 10.0,
+            "value": 0.8,
+            "failure": null
+          }
+        ]
+      },
+      "structural": false
+    },
+    {
+      "name": "out-of-order-query",
+      "document": {
+        "metadata": {
+          "asset_fields": "/////3gAAAAQAAAAAAAKAAwABgAFAAgACgAAAAABBAAMAAAACAAIAAAABAAIAAAABAAAAAEAAAAUAAAAEAAUAAgAAAAHAAwAAAAQABAAAAAAAAAFEAAAACAAAAAEAAAAAAAAAAgAAABhc3NldF9pZAAAAAAEAAQABAAAAAAAAAA=",
+          "asset_ids": [
+            "a"
+          ],
+          "include_exposure": true,
+          "inputs": [
+            {
+              "member_id": null,
+              "metadata": {
+                "provenance": [],
+                "report": {
+                  "complete": true,
+                  "counts": {
+                    "incomplete_years": 0,
+                    "matched_assets": 0,
+                    "no_data": 0,
+                    "produced": 1,
+                    "requested": 1,
+                    "skipped": 0,
+                    "unmatched_assets": 0,
+                    "usable_years": 0
+                  },
+                  "diagnostics": [],
+                  "source_identities": [],
+                  "valid": true
+                },
+                "schema_version": "2.0",
+                "spatial": {
+                  "index_resolution": 9,
+                  "supports": [
+                    "point"
+                  ]
+                },
+                "spec": {
+                  "periods": [],
+                  "scenarios": [],
+                  "series": [
+                    {
+                      "period_id": null,
+                      "probability": {
+                        "kind": "annual",
+                        "tail": "upper"
+                      },
+                      "scenario_id": null,
+                      "variable_id": "project:depth"
+                    }
+                  ],
+                  "variables": [
+                    {
+                      "id": "project:depth",
+                      "measurement": {
+                        "kind": "depth_above_ground",
+                        "unit": "m"
+                      }
+                    }
+                  ]
+                }
+              },
+              "resource_id": null
+            }
+          ],
+          "query": {
+            "kind": "return_period",
+            "values": [
+              100.0,
+              10.0
+            ]
+          },
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 1,
+              "no_data": 0,
+              "produced": 2,
+              "requested": 2,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [],
+            "source_identities": [],
+            "valid": true
+          },
+          "resolutions": [],
+          "responses": [],
+          "schema_version": "2.0",
+          "spatial": {
+            "kind": "covering"
+          }
+        },
+        "rows": [
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": null,
+            "resolution_id": null,
+            "query_value": 10.0,
+            "value": 0.8,
+            "failure": null
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": null,
+            "resolution_id": null,
+            "query_value": 100.0,
+            "value": 1.6,
+            "failure": null
+          }
+        ]
+      },
+      "structural": false
+    },
+    {
+      "name": "wrong-scientific-member",
+      "document": {
+        "metadata": {
+          "asset_fields": "/////3gAAAAQAAAAAAAKAAwABgAFAAgACgAAAAABBAAMAAAACAAIAAAABAAIAAAABAAAAAEAAAAUAAAAEAAUAAgAAAAHAAwAAAAQABAAAAAAAAAFEAAAACAAAAAEAAAAAAAAAAgAAABhc3NldF9pZAAAAAAEAAQABAAAAAAAAAA=",
+          "asset_ids": [
+            "a"
+          ],
+          "include_exposure": true,
+          "inputs": [
+            {
+              "member_id": null,
+              "metadata": {
+                "provenance": [],
+                "report": {
+                  "complete": true,
+                  "counts": {
+                    "incomplete_years": 0,
+                    "matched_assets": 0,
+                    "no_data": 0,
+                    "produced": 1,
+                    "requested": 1,
+                    "skipped": 0,
+                    "unmatched_assets": 0,
+                    "usable_years": 0
+                  },
+                  "diagnostics": [],
+                  "source_identities": [],
+                  "valid": true
+                },
+                "schema_version": "2.0",
+                "spatial": {
+                  "index_resolution": 9,
+                  "supports": [
+                    "point"
+                  ]
+                },
+                "spec": {
+                  "periods": [],
+                  "scenarios": [],
+                  "series": [
+                    {
+                      "period_id": null,
+                      "probability": {
+                        "kind": "annual",
+                        "tail": "upper"
+                      },
+                      "scenario_id": null,
+                      "variable_id": "project:depth"
+                    }
+                  ],
+                  "variables": [
+                    {
+                      "id": "project:depth",
+                      "measurement": {
+                        "kind": "depth_above_ground",
+                        "unit": "m"
+                      }
+                    }
+                  ]
+                }
+              },
+              "resource_id": null
+            }
+          ],
+          "query": {
+            "kind": "return_period",
+            "values": [
+              100.0,
+              10.0
+            ]
+          },
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 1,
+              "no_data": 0,
+              "produced": 2,
+              "requested": 2,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [],
+            "source_identities": [],
+            "valid": true
+          },
+          "resolutions": [],
+          "responses": [],
+          "schema_version": "2.0",
+          "spatial": {
+            "kind": "covering"
+          }
+        },
+        "rows": [
+          {
+            "asset_id": "a",
+            "member_id": "undeclared",
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": null,
+            "resolution_id": null,
+            "query_value": 100.0,
+            "value": 1.6,
+            "failure": null
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": null,
+            "resolution_id": null,
+            "query_value": 10.0,
+            "value": 0.8,
+            "failure": null
+          }
+        ]
+      },
+      "structural": false
+    },
+    {
+      "name": "wrong-asset-reference",
+      "document": {
+        "metadata": {
+          "asset_fields": "/////3gAAAAQAAAAAAAKAAwABgAFAAgACgAAAAABBAAMAAAACAAIAAAABAAIAAAABAAAAAEAAAAUAAAAEAAUAAgAAAAHAAwAAAAQABAAAAAAAAAFEAAAACAAAAAEAAAAAAAAAAgAAABhc3NldF9pZAAAAAAEAAQABAAAAAAAAAA=",
+          "asset_ids": [
+            "a"
+          ],
+          "include_exposure": true,
+          "inputs": [
+            {
+              "member_id": null,
+              "metadata": {
+                "provenance": [],
+                "report": {
+                  "complete": true,
+                  "counts": {
+                    "incomplete_years": 0,
+                    "matched_assets": 0,
+                    "no_data": 0,
+                    "produced": 1,
+                    "requested": 1,
+                    "skipped": 0,
+                    "unmatched_assets": 0,
+                    "usable_years": 0
+                  },
+                  "diagnostics": [],
+                  "source_identities": [],
+                  "valid": true
+                },
+                "schema_version": "2.0",
+                "spatial": {
+                  "index_resolution": 9,
+                  "supports": [
+                    "point"
+                  ]
+                },
+                "spec": {
+                  "periods": [],
+                  "scenarios": [],
+                  "series": [
+                    {
+                      "period_id": null,
+                      "probability": {
+                        "kind": "annual",
+                        "tail": "upper"
+                      },
+                      "scenario_id": null,
+                      "variable_id": "project:depth"
+                    }
+                  ],
+                  "variables": [
+                    {
+                      "id": "project:depth",
+                      "measurement": {
+                        "kind": "depth_above_ground",
+                        "unit": "m"
+                      }
+                    }
+                  ]
+                }
+              },
+              "resource_id": null
+            }
+          ],
+          "query": {
+            "kind": "return_period",
+            "values": [
+              100.0,
+              10.0
+            ]
+          },
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 1,
+              "no_data": 0,
+              "produced": 2,
+              "requested": 2,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [],
+            "source_identities": [],
+            "valid": true
+          },
+          "resolutions": [],
+          "responses": [],
+          "schema_version": "2.0",
+          "spatial": {
+            "kind": "covering"
+          }
+        },
+        "rows": [
+          {
+            "asset_id": "unknown",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": null,
+            "resolution_id": null,
+            "query_value": 100.0,
+            "value": 1.6,
+            "failure": null
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": null,
+            "resolution_id": null,
+            "query_value": 10.0,
+            "value": 0.8,
+            "failure": null
+          }
+        ]
+      },
+      "structural": false
+    },
+    {
+      "name": "wrong-context-resolution",
+      "document": {
+        "metadata": {
+          "asset_fields": "/////3gAAAAQAAAAAAAKAAwABgAFAAgACgAAAAABBAAMAAAACAAIAAAABAAIAAAABAAAAAEAAAAUAAAAEAAUAAgAAAAHAAwAAAAQABAAAAAAAAAFEAAAACAAAAAEAAAAAAAAAAgAAABhc3NldF9pZAAAAAAEAAQABAAAAAAAAAA=",
+          "asset_ids": [
+            "a"
+          ],
+          "include_exposure": true,
+          "inputs": [
+            {
+              "member_id": null,
+              "metadata": {
+                "provenance": [],
+                "report": {
+                  "complete": true,
+                  "counts": {
+                    "incomplete_years": 0,
+                    "matched_assets": 0,
+                    "no_data": 0,
+                    "produced": 1,
+                    "requested": 1,
+                    "skipped": 0,
+                    "unmatched_assets": 0,
+                    "usable_years": 0
+                  },
+                  "diagnostics": [],
+                  "source_identities": [],
+                  "valid": true
+                },
+                "schema_version": "2.0",
+                "spatial": {
+                  "index_resolution": 9,
+                  "supports": [
+                    "point"
+                  ]
+                },
+                "spec": {
+                  "periods": [],
+                  "scenarios": [],
+                  "series": [
+                    {
+                      "period_id": null,
+                      "probability": {
+                        "kind": "annual",
+                        "tail": "upper"
+                      },
+                      "scenario_id": null,
+                      "variable_id": "project:depth"
+                    }
+                  ],
+                  "variables": [
+                    {
+                      "id": "project:depth",
+                      "measurement": {
+                        "kind": "depth_above_ground",
+                        "unit": "m"
+                      }
+                    }
+                  ]
+                }
+              },
+              "resource_id": null
+            }
+          ],
+          "query": {
+            "kind": "return_period",
+            "values": [
+              100.0,
+              10.0
+            ]
+          },
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 1,
+              "no_data": 0,
+              "produced": 6,
+              "requested": 6,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [],
+            "source_identities": [],
+            "valid": true
+          },
+          "resolutions": [
+            {
+              "id": "sha256:18d84700ae94c5de55c8bbd9a91ee672c575871022559cf7a5cd3b7393ef8e0e",
+              "impact": {
+                "input": {
+                  "kind": "depth_above_ground",
+                  "unit": "m"
+                },
+                "model": {
+                  "interpolation": "linear",
+                  "kind": "tabulated",
+                  "outside_domain": "clamp",
+                  "points": [
+                    {
+                      "x": 0,
+                      "y": 0
+                    },
+                    {
+                      "x": 0.5,
+                      "y": 0.25
+                    },
+                    {
+                      "x": 1,
+                      "y": 0.4000000059604645
+                    },
+                    {
+                      "x": 1.5,
+                      "y": 0.5
+                    },
+                    {
+                      "x": 2,
+                      "y": 0.6000000238418579
+                    },
+                    {
+                      "x": 3,
+                      "y": 0.75
+                    },
+                    {
+                      "x": 4,
+                      "y": 0.8500000238418579
+                    },
+                    {
+                      "x": 5,
+                      "y": 0.949999988079071
+                    },
+                    {
+                      "x": 6,
+                      "y": 1
+                    }
+                  ]
+                },
+                "output": {
+                  "kind": "ratio",
+                  "unit": "1"
+                },
+                "provenance": {
+                  "context": {
+                    "asset_type": "residential",
+                    "kind": "inundation_context",
+                    "region": "europe"
+                  },
+                  "model": {
+                    "id": "crc:inundation",
+                    "manifest_sha256": "sha256:f9e7e2521ef5542c8ec398f5c949a4bcdff6f5fbe31f74f1553cd32ca2867ff7",
+                    "schema_version": "2.0",
+                    "version": "2026.10.1"
+                  }
+                },
+                "schema_version": "2.0"
+              },
+              "response_id": "damage"
+            }
+          ],
+          "responses": [
+            {
+              "model": {
+                "input": {
+                  "kind": "depth_above_ground",
+                  "unit": "m"
+                },
+                "model": {
+                  "intercept": 0,
+                  "kind": "linear",
+                  "slope": 2
+                },
+                "output": {
+                  "kind": "time_duration",
+                  "unit": "d"
+                },
+                "schema_version": "2.0"
+              },
+              "name": "downtime",
+              "variable_id": "project:depth"
+            },
+            {
+              "context": {
+                "asset_type": "residential",
+                "kind": "inundation_context",
+                "region": "europe"
+              },
+              "model": {
+                "id": "crc:inundation",
+                "manifest_sha256": "sha256:f9e7e2521ef5542c8ec398f5c949a4bcdff6f5fbe31f74f1553cd32ca2867ff7",
+                "schema_version": "2.0",
+                "version": "2026.10.1"
+              },
+              "name": "damage",
+              "variable_id": "project:depth"
+            }
+          ],
+          "schema_version": "2.0",
+          "spatial": {
+            "kind": "covering"
+          }
+        },
+        "rows": [
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": null,
+            "resolution_id": null,
+            "query_value": 100.0,
+            "value": 1.6,
+            "failure": null
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": null,
+            "resolution_id": null,
+            "query_value": 10.0,
+            "value": 0.8,
+            "failure": null
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": "downtime",
+            "resolution_id": null,
+            "query_value": 100.0,
+            "value": 3.2,
+            "failure": null
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": "downtime",
+            "resolution_id": null,
+            "query_value": 10.0,
+            "value": 1.6,
+            "failure": null
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": "damage",
+            "resolution_id": "sha256:18d84700ae94c5de55c8bbd9a91ee672c575871022559cf7a5cd3b7393ef8e0e",
+            "query_value": 100.0,
+            "value": 0.5200000047683716,
+            "failure": null
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": "damage",
+            "resolution_id": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "query_value": 10.0,
+            "value": 0.3400000035762787,
+            "failure": null
+          }
+        ]
+      },
+      "structural": false
+    },
+    {
+      "name": "forged-resolution-hash",
+      "document": {
+        "metadata": {
+          "asset_fields": "/////3gAAAAQAAAAAAAKAAwABgAFAAgACgAAAAABBAAMAAAACAAIAAAABAAIAAAABAAAAAEAAAAUAAAAEAAUAAgAAAAHAAwAAAAQABAAAAAAAAAFEAAAACAAAAAEAAAAAAAAAAgAAABhc3NldF9pZAAAAAAEAAQABAAAAAAAAAA=",
+          "asset_ids": [
+            "a"
+          ],
+          "include_exposure": true,
+          "inputs": [
+            {
+              "member_id": null,
+              "metadata": {
+                "provenance": [],
+                "report": {
+                  "complete": true,
+                  "counts": {
+                    "incomplete_years": 0,
+                    "matched_assets": 0,
+                    "no_data": 0,
+                    "produced": 1,
+                    "requested": 1,
+                    "skipped": 0,
+                    "unmatched_assets": 0,
+                    "usable_years": 0
+                  },
+                  "diagnostics": [],
+                  "source_identities": [],
+                  "valid": true
+                },
+                "schema_version": "2.0",
+                "spatial": {
+                  "index_resolution": 9,
+                  "supports": [
+                    "point"
+                  ]
+                },
+                "spec": {
+                  "periods": [],
+                  "scenarios": [],
+                  "series": [
+                    {
+                      "period_id": null,
+                      "probability": {
+                        "kind": "annual",
+                        "tail": "upper"
+                      },
+                      "scenario_id": null,
+                      "variable_id": "project:depth"
+                    }
+                  ],
+                  "variables": [
+                    {
+                      "id": "project:depth",
+                      "measurement": {
+                        "kind": "depth_above_ground",
+                        "unit": "m"
+                      }
+                    }
+                  ]
+                }
+              },
+              "resource_id": null
+            }
+          ],
+          "query": {
+            "kind": "return_period",
+            "values": [
+              100.0,
+              10.0
+            ]
+          },
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 1,
+              "no_data": 0,
+              "produced": 6,
+              "requested": 6,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [],
+            "source_identities": [],
+            "valid": true
+          },
+          "resolutions": [
+            {
+              "id": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "impact": {
+                "input": {
+                  "kind": "depth_above_ground",
+                  "unit": "m"
+                },
+                "model": {
+                  "interpolation": "linear",
+                  "kind": "tabulated",
+                  "outside_domain": "clamp",
+                  "points": [
+                    {
+                      "x": 0,
+                      "y": 0
+                    },
+                    {
+                      "x": 0.5,
+                      "y": 0.25
+                    },
+                    {
+                      "x": 1,
+                      "y": 0.4000000059604645
+                    },
+                    {
+                      "x": 1.5,
+                      "y": 0.5
+                    },
+                    {
+                      "x": 2,
+                      "y": 0.6000000238418579
+                    },
+                    {
+                      "x": 3,
+                      "y": 0.75
+                    },
+                    {
+                      "x": 4,
+                      "y": 0.8500000238418579
+                    },
+                    {
+                      "x": 5,
+                      "y": 0.949999988079071
+                    },
+                    {
+                      "x": 6,
+                      "y": 1
+                    }
+                  ]
+                },
+                "output": {
+                  "kind": "ratio",
+                  "unit": "1"
+                },
+                "provenance": {
+                  "context": {
+                    "asset_type": "residential",
+                    "kind": "inundation_context",
+                    "region": "europe"
+                  },
+                  "model": {
+                    "id": "crc:inundation",
+                    "manifest_sha256": "sha256:f9e7e2521ef5542c8ec398f5c949a4bcdff6f5fbe31f74f1553cd32ca2867ff7",
+                    "schema_version": "2.0",
+                    "version": "2026.10.1"
+                  }
+                },
+                "schema_version": "2.0"
+              },
+              "response_id": "damage"
+            }
+          ],
+          "responses": [
+            {
+              "model": {
+                "input": {
+                  "kind": "depth_above_ground",
+                  "unit": "m"
+                },
+                "model": {
+                  "intercept": 0,
+                  "kind": "linear",
+                  "slope": 2
+                },
+                "output": {
+                  "kind": "time_duration",
+                  "unit": "d"
+                },
+                "schema_version": "2.0"
+              },
+              "name": "downtime",
+              "variable_id": "project:depth"
+            },
+            {
+              "context": {
+                "asset_type": "residential",
+                "kind": "inundation_context",
+                "region": "europe"
+              },
+              "model": {
+                "id": "crc:inundation",
+                "manifest_sha256": "sha256:f9e7e2521ef5542c8ec398f5c949a4bcdff6f5fbe31f74f1553cd32ca2867ff7",
+                "schema_version": "2.0",
+                "version": "2026.10.1"
+              },
+              "name": "damage",
+              "variable_id": "project:depth"
+            }
+          ],
+          "schema_version": "2.0",
+          "spatial": {
+            "kind": "covering"
+          }
+        },
+        "rows": [
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": null,
+            "resolution_id": null,
+            "query_value": 100.0,
+            "value": 1.6,
+            "failure": null
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": null,
+            "resolution_id": null,
+            "query_value": 10.0,
+            "value": 0.8,
+            "failure": null
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": "downtime",
+            "resolution_id": null,
+            "query_value": 100.0,
+            "value": 3.2,
+            "failure": null
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": "downtime",
+            "resolution_id": null,
+            "query_value": 10.0,
+            "value": 1.6,
+            "failure": null
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": "damage",
+            "resolution_id": "sha256:18d84700ae94c5de55c8bbd9a91ee672c575871022559cf7a5cd3b7393ef8e0e",
+            "query_value": 100.0,
+            "value": 0.5200000047683716,
+            "failure": null
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": "damage",
+            "resolution_id": "sha256:18d84700ae94c5de55c8bbd9a91ee672c575871022559cf7a5cd3b7393ef8e0e",
+            "query_value": 10.0,
+            "value": 0.3400000035762787,
+            "failure": null
+          }
+        ]
+      },
+      "structural": false
+    },
+    {
+      "name": "wrong-resolved-context",
+      "document": {
+        "metadata": {
+          "asset_fields": "/////3gAAAAQAAAAAAAKAAwABgAFAAgACgAAAAABBAAMAAAACAAIAAAABAAIAAAABAAAAAEAAAAUAAAAEAAUAAgAAAAHAAwAAAAQABAAAAAAAAAFEAAAACAAAAAEAAAAAAAAAAgAAABhc3NldF9pZAAAAAAEAAQABAAAAAAAAAA=",
+          "asset_ids": [
+            "a"
+          ],
+          "include_exposure": true,
+          "inputs": [
+            {
+              "member_id": null,
+              "metadata": {
+                "provenance": [],
+                "report": {
+                  "complete": true,
+                  "counts": {
+                    "incomplete_years": 0,
+                    "matched_assets": 0,
+                    "no_data": 0,
+                    "produced": 1,
+                    "requested": 1,
+                    "skipped": 0,
+                    "unmatched_assets": 0,
+                    "usable_years": 0
+                  },
+                  "diagnostics": [],
+                  "source_identities": [],
+                  "valid": true
+                },
+                "schema_version": "2.0",
+                "spatial": {
+                  "index_resolution": 9,
+                  "supports": [
+                    "point"
+                  ]
+                },
+                "spec": {
+                  "periods": [],
+                  "scenarios": [],
+                  "series": [
+                    {
+                      "period_id": null,
+                      "probability": {
+                        "kind": "annual",
+                        "tail": "upper"
+                      },
+                      "scenario_id": null,
+                      "variable_id": "project:depth"
+                    }
+                  ],
+                  "variables": [
+                    {
+                      "id": "project:depth",
+                      "measurement": {
+                        "kind": "depth_above_ground",
+                        "unit": "m"
+                      }
+                    }
+                  ]
+                }
+              },
+              "resource_id": null
+            }
+          ],
+          "query": {
+            "kind": "return_period",
+            "values": [
+              100.0,
+              10.0
+            ]
+          },
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 1,
+              "no_data": 0,
+              "produced": 6,
+              "requested": 6,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [],
+            "source_identities": [],
+            "valid": true
+          },
+          "resolutions": [
+            {
+              "id": "sha256:18d84700ae94c5de55c8bbd9a91ee672c575871022559cf7a5cd3b7393ef8e0e",
+              "impact": {
+                "input": {
+                  "kind": "depth_above_ground",
+                  "unit": "m"
+                },
+                "model": {
+                  "interpolation": "linear",
+                  "kind": "tabulated",
+                  "outside_domain": "clamp",
+                  "points": [
+                    {
+                      "x": 0,
+                      "y": 0
+                    },
+                    {
+                      "x": 0.5,
+                      "y": 0.25
+                    },
+                    {
+                      "x": 1,
+                      "y": 0.4000000059604645
+                    },
+                    {
+                      "x": 1.5,
+                      "y": 0.5
+                    },
+                    {
+                      "x": 2,
+                      "y": 0.6000000238418579
+                    },
+                    {
+                      "x": 3,
+                      "y": 0.75
+                    },
+                    {
+                      "x": 4,
+                      "y": 0.8500000238418579
+                    },
+                    {
+                      "x": 5,
+                      "y": 0.949999988079071
+                    },
+                    {
+                      "x": 6,
+                      "y": 1
+                    }
+                  ]
+                },
+                "output": {
+                  "kind": "ratio",
+                  "unit": "1"
+                },
+                "provenance": {
+                  "context": {
+                    "asset_type": "residential",
+                    "kind": "inundation_context",
+                    "region": "europe"
+                  },
+                  "model": {
+                    "id": "crc:inundation",
+                    "manifest_sha256": "sha256:f9e7e2521ef5542c8ec398f5c949a4bcdff6f5fbe31f74f1553cd32ca2867ff7",
+                    "schema_version": "2.0",
+                    "version": "2026.10.1"
+                  }
+                },
+                "schema_version": "2.0"
+              },
+              "response_id": "damage"
+            }
+          ],
+          "responses": [
+            {
+              "model": {
+                "input": {
+                  "kind": "depth_above_ground",
+                  "unit": "m"
+                },
+                "model": {
+                  "intercept": 0,
+                  "kind": "linear",
+                  "slope": 2
+                },
+                "output": {
+                  "kind": "time_duration",
+                  "unit": "d"
+                },
+                "schema_version": "2.0"
+              },
+              "name": "downtime",
+              "variable_id": "project:depth"
+            },
+            {
+              "context": {
+                "asset_type": "residential",
+                "kind": "inundation_context",
+                "region": "asia"
+              },
+              "model": {
+                "id": "crc:inundation",
+                "manifest_sha256": "sha256:f9e7e2521ef5542c8ec398f5c949a4bcdff6f5fbe31f74f1553cd32ca2867ff7",
+                "schema_version": "2.0",
+                "version": "2026.10.1"
+              },
+              "name": "damage",
+              "variable_id": "project:depth"
+            }
+          ],
+          "schema_version": "2.0",
+          "spatial": {
+            "kind": "covering"
+          }
+        },
+        "rows": [
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": null,
+            "resolution_id": null,
+            "query_value": 100.0,
+            "value": 1.6,
+            "failure": null
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": null,
+            "resolution_id": null,
+            "query_value": 10.0,
+            "value": 0.8,
+            "failure": null
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": "downtime",
+            "resolution_id": null,
+            "query_value": 100.0,
+            "value": 3.2,
+            "failure": null
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": "downtime",
+            "resolution_id": null,
+            "query_value": 10.0,
+            "value": 1.6,
+            "failure": null
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": "damage",
+            "resolution_id": "sha256:18d84700ae94c5de55c8bbd9a91ee672c575871022559cf7a5cd3b7393ef8e0e",
+            "query_value": 100.0,
+            "value": 0.5200000047683716,
+            "failure": null
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": "damage",
+            "resolution_id": "sha256:18d84700ae94c5de55c8bbd9a91ee672c575871022559cf7a5cd3b7393ef8e0e",
+            "query_value": 10.0,
+            "value": 0.3400000035762787,
+            "failure": null
+          }
+        ]
+      },
+      "structural": false
+    },
+    {
+      "name": "response-calibration-mismatch",
+      "document": {
+        "metadata": {
+          "asset_fields": "/////3gAAAAQAAAAAAAKAAwABgAFAAgACgAAAAABBAAMAAAACAAIAAAABAAIAAAABAAAAAEAAAAUAAAAEAAUAAgAAAAHAAwAAAAQABAAAAAAAAAFEAAAACAAAAAEAAAAAAAAAAgAAABhc3NldF9pZAAAAAAEAAQABAAAAAAAAAA=",
+          "asset_ids": [
+            "a"
+          ],
+          "include_exposure": true,
+          "inputs": [
+            {
+              "member_id": null,
+              "metadata": {
+                "provenance": [],
+                "report": {
+                  "complete": true,
+                  "counts": {
+                    "incomplete_years": 0,
+                    "matched_assets": 0,
+                    "no_data": 0,
+                    "produced": 1,
+                    "requested": 1,
+                    "skipped": 0,
+                    "unmatched_assets": 0,
+                    "usable_years": 0
+                  },
+                  "diagnostics": [],
+                  "source_identities": [],
+                  "valid": true
+                },
+                "schema_version": "2.0",
+                "spatial": {
+                  "index_resolution": 9,
+                  "supports": [
+                    "point"
+                  ]
+                },
+                "spec": {
+                  "periods": [],
+                  "scenarios": [],
+                  "series": [
+                    {
+                      "period_id": null,
+                      "probability": {
+                        "kind": "annual",
+                        "tail": "upper"
+                      },
+                      "scenario_id": null,
+                      "variable_id": "project:depth"
+                    }
+                  ],
+                  "variables": [
+                    {
+                      "id": "project:depth",
+                      "measurement": {
+                        "kind": "depth_above_ground",
+                        "unit": "cm"
+                      }
+                    }
+                  ]
+                }
+              },
+              "resource_id": null
+            }
+          ],
+          "query": {
+            "kind": "return_period",
+            "values": [
+              100.0,
+              10.0
+            ]
+          },
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 1,
+              "no_data": 0,
+              "produced": 6,
+              "requested": 6,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [],
+            "source_identities": [],
+            "valid": true
+          },
+          "resolutions": [
+            {
+              "id": "sha256:18d84700ae94c5de55c8bbd9a91ee672c575871022559cf7a5cd3b7393ef8e0e",
+              "impact": {
+                "input": {
+                  "kind": "depth_above_ground",
+                  "unit": "m"
+                },
+                "model": {
+                  "interpolation": "linear",
+                  "kind": "tabulated",
+                  "outside_domain": "clamp",
+                  "points": [
+                    {
+                      "x": 0,
+                      "y": 0
+                    },
+                    {
+                      "x": 0.5,
+                      "y": 0.25
+                    },
+                    {
+                      "x": 1,
+                      "y": 0.4000000059604645
+                    },
+                    {
+                      "x": 1.5,
+                      "y": 0.5
+                    },
+                    {
+                      "x": 2,
+                      "y": 0.6000000238418579
+                    },
+                    {
+                      "x": 3,
+                      "y": 0.75
+                    },
+                    {
+                      "x": 4,
+                      "y": 0.8500000238418579
+                    },
+                    {
+                      "x": 5,
+                      "y": 0.949999988079071
+                    },
+                    {
+                      "x": 6,
+                      "y": 1
+                    }
+                  ]
+                },
+                "output": {
+                  "kind": "ratio",
+                  "unit": "1"
+                },
+                "provenance": {
+                  "context": {
+                    "asset_type": "residential",
+                    "kind": "inundation_context",
+                    "region": "europe"
+                  },
+                  "model": {
+                    "id": "crc:inundation",
+                    "manifest_sha256": "sha256:f9e7e2521ef5542c8ec398f5c949a4bcdff6f5fbe31f74f1553cd32ca2867ff7",
+                    "schema_version": "2.0",
+                    "version": "2026.10.1"
+                  }
+                },
+                "schema_version": "2.0"
+              },
+              "response_id": "damage"
+            }
+          ],
+          "responses": [
+            {
+              "model": {
+                "input": {
+                  "kind": "depth_above_ground",
+                  "unit": "m"
+                },
+                "model": {
+                  "intercept": 0,
+                  "kind": "linear",
+                  "slope": 2
+                },
+                "output": {
+                  "kind": "time_duration",
+                  "unit": "d"
+                },
+                "schema_version": "2.0"
+              },
+              "name": "downtime",
+              "variable_id": "project:depth"
+            },
+            {
+              "context": {
+                "asset_type": "residential",
+                "kind": "inundation_context",
+                "region": "europe"
+              },
+              "model": {
+                "id": "crc:inundation",
+                "manifest_sha256": "sha256:f9e7e2521ef5542c8ec398f5c949a4bcdff6f5fbe31f74f1553cd32ca2867ff7",
+                "schema_version": "2.0",
+                "version": "2026.10.1"
+              },
+              "name": "damage",
+              "variable_id": "project:depth"
+            }
+          ],
+          "schema_version": "2.0",
+          "spatial": {
+            "kind": "covering"
+          }
+        },
+        "rows": [
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": null,
+            "resolution_id": null,
+            "query_value": 100.0,
+            "value": 1.6,
+            "failure": null
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": null,
+            "resolution_id": null,
+            "query_value": 10.0,
+            "value": 0.8,
+            "failure": null
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": "downtime",
+            "resolution_id": null,
+            "query_value": 100.0,
+            "value": 3.2,
+            "failure": null
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": "downtime",
+            "resolution_id": null,
+            "query_value": 10.0,
+            "value": 1.6,
+            "failure": null
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": "damage",
+            "resolution_id": "sha256:18d84700ae94c5de55c8bbd9a91ee672c575871022559cf7a5cd3b7393ef8e0e",
+            "query_value": 100.0,
+            "value": 0.5200000047683716,
+            "failure": null
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": "damage",
+            "resolution_id": "sha256:18d84700ae94c5de55c8bbd9a91ee672c575871022559cf7a5cd3b7393ef8e0e",
+            "query_value": 10.0,
+            "value": 0.3400000035762787,
+            "failure": null
+          }
+        ]
+      },
+      "structural": false
+    },
+    {
+      "name": "unmatched-count-mismatch",
+      "document": {
+        "metadata": {
+          "asset_fields": "/////3gAAAAQAAAAAAAKAAwABgAFAAgACgAAAAABBAAMAAAACAAIAAAABAAIAAAABAAAAAEAAAAUAAAAEAAUAAgAAAAHAAwAAAAQABAAAAAAAAAFEAAAACAAAAAEAAAAAAAAAAgAAABhc3NldF9pZAAAAAAEAAQABAAAAAAAAAA=",
+          "asset_ids": [
+            "a"
+          ],
+          "include_exposure": true,
+          "inputs": [
+            {
+              "member_id": null,
+              "metadata": {
+                "provenance": [],
+                "report": {
+                  "complete": true,
+                  "counts": {
+                    "incomplete_years": 0,
+                    "matched_assets": 0,
+                    "no_data": 0,
+                    "produced": 1,
+                    "requested": 1,
+                    "skipped": 0,
+                    "unmatched_assets": 0,
+                    "usable_years": 0
+                  },
+                  "diagnostics": [],
+                  "source_identities": [],
+                  "valid": true
+                },
+                "schema_version": "2.0",
+                "spatial": {
+                  "index_resolution": 9,
+                  "supports": [
+                    "point"
+                  ]
+                },
+                "spec": {
+                  "periods": [],
+                  "scenarios": [],
+                  "series": [
+                    {
+                      "period_id": null,
+                      "probability": {
+                        "kind": "annual",
+                        "tail": "upper"
+                      },
+                      "scenario_id": null,
+                      "variable_id": "project:depth"
+                    }
+                  ],
+                  "variables": [
+                    {
+                      "id": "project:depth",
+                      "measurement": {
+                        "kind": "depth_above_ground",
+                        "unit": "m"
+                      }
+                    }
+                  ]
+                }
+              },
+              "resource_id": null
+            }
+          ],
+          "query": {
+            "kind": "return_period",
+            "values": [
+              100.0,
+              10.0
+            ]
+          },
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 1,
+              "no_data": 2,
+              "produced": 2,
+              "requested": 2,
+              "skipped": 0,
+              "unmatched_assets": 1,
+              "usable_years": 0
+            },
+            "diagnostics": [],
+            "source_identities": [],
+            "valid": true
+          },
+          "resolutions": [],
+          "responses": [],
+          "schema_version": "2.0",
+          "spatial": {
+            "kind": "covering"
+          }
+        },
+        "rows": [
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": null,
+            "distance_metres": null,
+            "response_id": null,
+            "resolution_id": null,
+            "query_value": 100.0,
+            "value": null,
+            "failure": {
+              "code": "no_covering_support",
+              "message": "No covering support."
+            }
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": null,
+            "distance_metres": null,
+            "response_id": null,
+            "resolution_id": null,
+            "query_value": 10.0,
+            "value": null,
+            "failure": {
+              "code": "no_covering_support",
+              "message": "No covering support."
+            }
+          }
+        ]
+      },
+      "structural": false
+    }
+  ]
+}
