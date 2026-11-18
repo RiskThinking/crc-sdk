@@ -52,7 +52,12 @@ from ._providers import jrc as flood
 from ._recipes import Dataset, _checked_stream, _key
 from ._runtime import _memory_bytes
 from ._schema import DatasetRow, dataset_arrow_schema, rows_to_table
-from ._selection import SelectionState, participating_spec, selected_metadata
+from ._selection import (
+    SelectionState,
+    _validate_static_selection,
+    participating_spec,
+    selected_metadata,
+)
 from ._source_io import (
     SourceNode,
     fetch,
@@ -238,9 +243,7 @@ class _FloodNode(SourceNode[DatasetMetadata]):
         products = tuple(JRC.Product) if product is None else (product,)
         return frozenset(_flood_variable(p).id for p in products)
 
-    def _pending_payload_release(self) -> ReleaseReference | None:
-        _, pins = payload_selection(self.state, self.release)
-        return pins.payload
+    _publishes_payload_release = True
 
     def _product(self) -> JRC.Product | None:
         if self.product is not None:
@@ -297,11 +300,8 @@ class _FloodNode(SourceNode[DatasetMetadata]):
         product = self._product()
         state, requested = payload_selection(self.state, self.release)
         products = tuple(JRC.Product) if product is None else (product,)
-        spec = (
-            DataSpec([], series=[])
-            if _empty_requested(state)
-            else state.resolve(_flood_spec(products)).spec
-        )
+        selection = state.resolve(_flood_spec(products))
+        spec = DataSpec([], series=[]) if selection.empty else selection.spec
         selected = {v.id for v in spec.variables}
         products = tuple(p for p in products if _flood_variable(p).id in selected)
         sources = tuple(self._discovery(scope, p)[1] for p in products)
@@ -358,7 +358,11 @@ class _FloodNode(SourceNode[DatasetMetadata]):
 
     def open(self, scope: ExecutionScope) -> NodeStream[DatasetMetadata]:
         product = self._product()
-        if _empty_requested(self.state):
+        state, release = payload_selection(self.state, self.release)
+        products = tuple(JRC.Product) if product is None else (product,)
+        spec = _flood_spec(products)
+        selection = state.resolve(spec)
+        if selection.empty:
             empty = DatasetMetadata(
                 spec=DataSpec([], series=[]),
                 spatial=SpatialContract(
@@ -367,15 +371,11 @@ class _FloodNode(SourceNode[DatasetMetadata]):
                 report=ExecutionReport(False, None),
             )
             return _checked_stream(scope, empty, iter(()))
-        state, release = payload_selection(self.state, self.release)
         if product is None:
-            state.resolve(_flood_spec(tuple(JRC.Product)))
             raise CapabilityError(
                 "Choose JRC(product=JRC.Product.EFAS) or "
                 "JRC.Product.GLOFAS before reading."
             )
-        spec = _flood_spec((product,))
-        selection = state.resolve(spec)
         dataset, source = self._discovery(scope, product)
         assert source.release is not None
         variable = _flood_variable(product)
@@ -1036,7 +1036,9 @@ class _EDONode(SourceNode[EvidenceMetadata]):
             Capability.BATCHES,
             Capability.WRITE,
         )
-        if _empty_requested(self.state):
+        state, release = payload_selection(self.state, self.release)
+        if _empty_requested(state):
+            _validate_static_selection(state, (_edo_variable(),))
             return Inspection(
                 schema=evidence_arrow_schema(self._empty_metadata()),
                 capabilities=capabilities,
@@ -1044,7 +1046,6 @@ class _EDONode(SourceNode[EvidenceMetadata]):
 
         source, years = self._discovery(scope)
         assert source.release is not None
-        state, release = payload_selection(self.state, self.release)
         inventory_payload_pin(source.release, release)
         metadata = self._metadata(source, years)
         selection = replace(state, time=selected_source_time(state)).resolve(
@@ -1091,7 +1092,9 @@ class _EDONode(SourceNode[EvidenceMetadata]):
         from ._providers.cmip6 import decode_time_ordinals
         from ._providers.jrc_edo import SMI
 
-        if _empty_requested(self.state):
+        state, release = payload_selection(self.state, self.release)
+        if _empty_requested(state):
+            _validate_static_selection(state, (_edo_variable(),))
             empty = self._empty_metadata()
             return NodeStream(evidence_arrow_schema(empty), empty, iter(()))
         if self.state.area is None:
@@ -1099,7 +1102,6 @@ class _EDONode(SourceNode[EvidenceMetadata]):
         source, years = self._discovery(scope)
         assert source.release is not None
         metadata = self._metadata(source, years)
-        state, release = payload_selection(self.state, self.release)
         pin = inventory_payload_pin(source.release, release)
         selection = replace(state, time=selected_source_time(state)).resolve(
             metadata.spec, source=source

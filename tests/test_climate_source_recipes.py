@@ -21,6 +21,7 @@ from crc_sdk import (
     ReleaseReference,
     Runtime,
     ValidationError,
+    Variable,
 )
 from crc_sdk._aggregation import (
     AnnualMaximum,
@@ -274,6 +275,15 @@ def test_collection_replays_its_inspected_publication_after_fitting(
     assert reference.release in {
         item.release for item in result.report.source_identities
     }
+    exact = replace(reference, release=source.release)
+    exact_selection = collection.select(series=exact)
+    assert exact_selection.inspect().series == (reference,)
+    assert exact_selection.read().table.equals(result.table, check_metadata=False)
+    assert (
+        exact_selection.read()
+        .table.drop(["member_id", "resource_id"])
+        .equals(fitted.select(series=exact).read().table, check_metadata=False)
+    )
 
     destination = tmp_path / "collection"
     selected.write(destination)
@@ -924,6 +934,7 @@ def test_jrc_preserves_published_quantile_knots_and_native_pixel_support(
         table = exact_collection.read().table.drop(["member_id", "resource_id"])
         assert table.equals(result.table, check_metadata=False)
     pinned = JRC(product=JRC.Product.EFAS, release=release).select(area=AREA)
+    archived = recipe.write(tmp_path / "archived.parquet")
     assert pinned.read(runtime=Runtime(cache=Cache.offline(cache))).table.equals(
         result.table, check_metadata=False
     )
@@ -936,6 +947,16 @@ def test_jrc_preserves_published_quantile_knots_and_native_pixel_support(
         file.write(np.full((2, 2), 11.0), 1)
     with pytest.raises(OSError, match="release changed"):
         pinned.read(limit=1)
+    mixed = DatasetCollection({"live": recipe, "archived": archived}).select(
+        series=exact
+    )
+    readme = root / "README.txt"
+    backup = readme.rename(root / "archived-README.txt")
+    try:
+        assert len(mixed.inspect().series) == 1
+        assert mixed.read().table["member_id"].to_pylist() == ["archived"]
+    finally:
+        backup.rename(readme)
     stale = collection.select(series=exact, area=AREA)
     with stale.batches() as batches, pytest.raises(OSError, match="release changed"):
         next(iter(batches))
@@ -964,6 +985,32 @@ def test_jrc_empty_selection_avoids_acquisition(
     inspection = selected.inspect()
     assert not (inspection.series or inspection.releases or inspection.requirements)
     assert selected.read().table.num_rows == 0
+
+
+@pytest.mark.parametrize(
+    ("provider", "variable_id"),
+    [(JRC(), "jrc:efas:flood_depth"), (EDO(), "edo:soil_moisture_index")],
+)
+def test_empty_climate_selection_validates_known_variable_science(
+    provider: JRC | EDO, variable_id: str, tmp_path: Path
+) -> None:
+    runtime = Runtime(cache=Cache.offline(tmp_path))
+    valid = provider.select(series=[], variables=variable_id)
+    assert not valid.inspect(runtime=runtime).series
+    assert valid.read(runtime=runtime).table.num_rows == 0
+
+    for variable, match in (
+        ("typo", "unknown requested identity"),
+        (
+            Variable(variable_id, measurement=cf.TimeDuration(unit=cf.TimeUnit.DAY)),
+            "conflicting scientific definition",
+        ),
+    ):
+        invalid = provider.select(series=[], variables=variable)
+        with pytest.raises(ValueError, match=match):
+            invalid.inspect(runtime=runtime)
+        with pytest.raises(ValueError, match=match):
+            invalid.read(runtime=runtime)
 
 
 def test_edo_reuses_inventory_period_and_streams_before_next_file(

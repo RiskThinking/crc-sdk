@@ -179,7 +179,10 @@ named-only selection, each response row retains the source value or failure in
 its `exposure` field for validation. Validation also checks retained asset
 attributes, recorded source releases, and diagnostics for missing results.
 Rows that share a source support agree on its fit outcome and on the exposure
-at each query coordinate.
+at each query coordinate. Validation checks that exposure quantiles are
+nondecreasing in non-exceedance order and that supported queries form one
+contiguous range. The upstream no-data count bounds the number of failed fits
+represented in the results.
 The evaluation report carries acquired input checksums, upstream diagnostics,
 skipped counts, and annual completeness counts from the input reports. Reopening
 checks those inherited facts against the embedded input metadata.

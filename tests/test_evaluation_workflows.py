@@ -413,10 +413,12 @@ def test_collection_projection_does_not_discover_unrelated_source(
     assert selected.inspect().requirements == ()
     assert selected.explain().requirements == ()
     renamed = collection.rename(variables={VARIABLE.id: "renamed"})
+    renamed_scenario = collection.rename(scenarios={scenario.id: "renamed"})
     for filtered in (
         selected.select(periods=WINDOW),
         selected.select(scenarios=scenario),
         renamed.select(members="depth"),
+        renamed_scenario.select(members="depth"),
         renamed.select(variables="renamed", periods=WINDOW, scenarios=scenario),
     ):
         assert filtered.inspect().requirements == ()
@@ -435,6 +437,21 @@ def test_collection_projection_does_not_discover_unrelated_source(
     )
     assert response.inspect().requirements == ()
     assert response.read().table["value"].to_pylist() == [2.0]
+    model = cf.Impact.linear(input=DEPTH, output=cf.Ratio(), slope=2)
+    response_projection = (
+        collection.evaluate(sites(0))
+        .probabilities([0.9])
+        .impact("ratio", model, variable=VARIABLE)
+        .select(
+            variables=[VARIABLE, "era5:annual_maximum_daily_maximum_temperature"],
+            responses="ratio",
+        )
+    )
+    assert response_projection.explain().requirements == ()
+    empty = collection.evaluate(sites(0)).probabilities([0.9]).select(responses=[])
+    assert empty.explain().requirements == empty.inspect().requirements == ()
+    assert not any(op.stage is Stage.JOINING for op in empty.explain().operations)
+    assert empty.read().table.num_rows == 0
 
     renamed_response = (
         renamed.evaluate(sites(0))
@@ -701,6 +718,77 @@ def test_saved_support_cannot_mix_a_failed_fit_and_successful_query(
     assert artifact.validate().valid is False
     with pytest.raises(ValidationError, match="inconsistent resource or fit failure"):
         artifact.read()
+
+    # The complete original failure grid also needs upstream failed-fit evidence.
+    upstream = document["inputs"][0]["metadata"]["report"]
+    assert upstream["counts"]["no_data"] == 1
+    upstream["counts"]["no_data"] = 0
+    document["report"]["counts"]["no_data"] = 2
+    headers[b"crc.evaluation"] = json.dumps(document).encode()
+    inconsistent = tmp_path / "inconsistent-input.parquet"
+    pq.write_table(table.replace_schema_metadata(headers), inconsistent)
+    artifact = EvaluationArtifact.open(inconsistent)
+    assert artifact.validate().valid is False
+    with pytest.raises(ValidationError, match="fit failures exceed the input"):
+        artifact.read()
+
+
+@pytest.mark.parametrize("tail", [None, cf.Tail.LOWER, cf.Tail.UPPER])
+def test_saved_exposures_have_ordered_quantiles_and_continuous_support(
+    tmp_path: Path, tail: cf.Tail | None
+) -> None:
+    probability = None if tail is None else Probability.annual(tail=tail)
+    recipe = data(probability, coordinates=(0.1, 0.9)).evaluate(sites(0))
+    evaluation = (
+        recipe.probabilities([0.8, 0.2, 0.5])
+        if tail is None
+        else recipe.return_periods([4, 2, 3])
+    )
+    original = evaluation.write(tmp_path / "events.parquet")
+    assert original.validate().valid is True
+    table = pq.read_table(original.path)
+    for change, expected in (
+        ("decreasing", "exposure quantiles decrease"),
+        ("hole", "query support has a gap"),
+    ):
+        rows = table.to_pylist()
+        headers = dict(table.schema.metadata)
+        if change == "decreasing":
+            highest = 1 if tail is cf.Tail.LOWER else 0
+            rows[highest]["value"] = 0.0
+        else:
+            row = rows[2]
+            message = "Query lies outside the supplied interval."
+            row.update(
+                value=None,
+                failure={
+                    "code": "query_outside_support",
+                    "message": message,
+                    "record": None,
+                },
+            )
+            document = json.loads(headers[b"crc.evaluation"])
+            document["report"]["counts"]["no_data"] = 1
+            document["report"]["diagnostics"].append(
+                {
+                    "code": "query_outside_support",
+                    "message": message,
+                    "severity": "warning",
+                    "stage": "evaluation",
+                    "support_id": row["support_id"],
+                    "query_value": row["query_value"],
+                }
+            )
+            headers[b"crc.evaluation"] = json.dumps(document).encode()
+        altered = tmp_path / f"{change}.parquet"
+        pq.write_table(
+            pa.Table.from_pylist(rows, schema=table.schema.with_metadata(headers)),
+            altered,
+        )
+        artifact = EvaluationArtifact.open(altered)
+        assert artifact.validate().valid is False
+        with pytest.raises(ValidationError, match=expected):
+            artifact.read()
 
 
 @pytest.mark.parametrize(

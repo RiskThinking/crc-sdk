@@ -321,6 +321,22 @@ class SelectionState:
         )
 
 
+def _validate_static_selection(
+    state: SelectionState, variables: Sequence[Variable]
+) -> None:
+    """Validate known variable and series science before catalogue acquisition."""
+    spec = DataSpec(variables, series=[SeriesSpec(v) for v in variables])
+    # The catalogue establishes the actual coverage periods and release.
+    series = (
+        None
+        if state.series is None
+        else tuple(replace(ref, period=None, release=None) for ref in state.series)
+    )
+    SelectionState(
+        variables=state.variables, scenarios=state.scenarios, series=series
+    ).resolve(spec)
+
+
 def _resolve_ids(
     requested: Sequence[str | Variable | Scenario | Period] | None,
     descriptors: Sequence[Variable | Scenario | Period],

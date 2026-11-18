@@ -30,7 +30,6 @@ from ._dataset_schema import (
     ExecutionReport,
     FittingDiagnostic,
     ObservationTimeSelection,
-    ReleaseReference,
     SourceIdentity,
     Stage,
     UnavailableStationYear,
@@ -1353,7 +1352,9 @@ def _bounded_node(
             if available is not None:
                 required = set(bounded.requirements())
                 references = tuple(
-                    ref for ref in state.series or () if ref.variable.id in available
+                    replace(ref, release=None)
+                    for ref in state.series or ()
+                    if ref.variable.id in available
                 )
                 variables = tuple(
                     var
@@ -1362,10 +1363,7 @@ def _bounded_node(
                 )
                 if len(references) == 1 and selected.series is None:
                     candidate = bounded.selected(replace(selected, series=references))
-                    if (
-                        candidate._pending_payload_release() is not None
-                        or set(candidate.requirements()) < required
-                    ):
+                    if set(candidate.requirements()) < required:
                         return candidate
                 if len(variables) == 1 and selected.variables is None:
                     candidate = bounded.selected(replace(selected, variables=variables))
@@ -1403,13 +1401,13 @@ def _bounded_node(
     return parent
 
 
-def _pending_payload_release(node: Node[object]) -> ReleaseReference | None:
+def _payload_source(node: Node[object]) -> SourceNode[object] | None:
     while not isinstance(node, SourceNode):
         parent = getattr(node, "parent", None)
         if not isinstance(parent, Node):
             return None
         node = parent
-    return node._pending_payload_release()
+    return node if node._publishes_payload_release else None
 
 
 def _select_node(parent: Node[MetadataT], state: SelectionState) -> Node[MetadataT]:
@@ -1466,24 +1464,48 @@ def _inspection_view(
     return None
 
 
-def _declared_variable_ids(node: Node[object]) -> frozenset[str] | None:
+def _declared_ids(
+    node: Node[object], dimension: Literal["variables", "scenarios"]
+) -> frozenset[str] | None:
     """Find a safe upper bound without acquiring resources or running a model."""
     from ._evidence_recipes import _AggregationNode
 
     if isinstance(node, SourceNode):
-        return node._variable_ids()
+        return (
+            node._variable_ids() if dimension == "variables" else node._scenario_ids()
+        )
     if isinstance(node, (_TableNode, _ParquetNode)):
         metadata = node.metadata_value
         if metadata is not None:
-            return frozenset(variable.id for variable in metadata.spec.variables)
+            declarations = (
+                metadata.spec.variables
+                if dimension == "variables"
+                else metadata.spec.scenarios
+            )
+            return frozenset(item.id for item in declarations)
         return None
     if not isinstance(
         node, (_AggregationNode, _FitNode, _SelectionNode, _TransformNode)
     ):
         return None
-    ids = _declared_variable_ids(cast(Node[object], node.parent))
+    ids = _declared_ids(cast(Node[object], node.parent), dimension)
+    if (
+        dimension == "scenarios"
+        and isinstance(node, _TransformNode)
+        and node.operation == "declare"
+    ):
+        scenario = node.arguments["scenario"]
+        spec = node.arguments["spec"]
+        if isinstance(scenario, Scenario):
+            return frozenset((scenario.id,))
+        if isinstance(spec, DataSpec):
+            declared = frozenset(item.id for item in spec.scenarios)
+            if all(item.scenario is not None for item in spec.series):
+                return declared
+            if ids is not None:
+                return ids | declared
     if isinstance(node, _TransformNode) and node.operation == "rename":
-        mapping = cast(Mapping[str, str] | None, node.arguments["variables"])
+        mapping = cast(Mapping[str, str] | None, node.arguments[dimension])
         if ids is not None and mapping is not None:
             return frozenset(mapping.get(name, name) for name in ids)
     state = (
@@ -1494,13 +1516,22 @@ def _declared_variable_ids(node: Node[object]) -> frozenset[str] | None:
         else None
     )
     if state is not None:
-        if state.variables is not None:
+        choices = state.variables if dimension == "variables" else state.scenarios
+        if choices is not None:
             selected = frozenset(
-                item if isinstance(item, str) else item.id for item in state.variables
+                item if isinstance(item, str) else item.id for item in choices
             )
             ids = selected if ids is None else ids & selected
         if state.series is not None:
-            selected = frozenset(item.variable.id for item in state.series)
+            selected = (
+                frozenset(item.variable.id for item in state.series)
+                if dimension == "variables"
+                else frozenset(
+                    item.scenario.id
+                    for item in state.series
+                    if item.scenario is not None
+                )
+            )
             ids = selected if ids is None else ids & selected
     return ids
 

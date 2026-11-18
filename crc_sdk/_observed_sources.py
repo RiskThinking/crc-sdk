@@ -1605,9 +1605,8 @@ class _WaterLevelNode(SourceNode[DatasetMetadata | EvidenceMetadata]):
         )
 
     def _publication(
-        self, scope: ExecutionScope
+        self, scope: ExecutionScope, requested: ReleasePins
     ) -> tuple[tuple[StationReference, ...], SourceIdentity, ReleaseReference | None]:
-        _, requested = payload_selection(self.state, self.release)
         stations, resources = _catalogue(scope, "noaa_water", self.state)
         release = inventory_release(resources, id=self._release_id)
         return (
@@ -1621,6 +1620,31 @@ class _WaterLevelNode(SourceNode[DatasetMetadata | EvidenceMetadata]):
             inventory_payload_pin(release, requested),
         )
 
+    def _station_variables(
+        self,
+        state: SelectionState,
+        station_ids: tuple[str, ...],
+        probability: Probability,
+    ) -> frozenset[str]:
+        # Station IDs determine the variables; their datums are in the payloads.
+        variables = tuple(Variable(self._level_variable_id(i)) for i in station_ids)
+        available = DataSpec(
+            variables,
+            series=[SeriesSpec(v, probability=probability) for v in variables],
+        )
+        selection = replace(
+            state,
+            variables=None
+            if state.variables is None
+            else tuple(v if isinstance(v, str) else v.id for v in state.variables),
+            series=None
+            if state.series is None
+            else tuple(
+                replace(ref, variable=Variable(ref.variable.id)) for ref in state.series
+            ),
+        ).resolve(available)
+        return frozenset(v.id for v in selection.spec.variables)
+
     def _resolve(
         self, scope: ExecutionScope
     ) -> tuple[DatasetMetadata | EvidenceMetadata, list[dict[str, object]]]:
@@ -1631,7 +1655,14 @@ class _WaterLevelNode(SourceNode[DatasetMetadata | EvidenceMetadata]):
                 "observations and explicitly aggregate and fit them "
                 "instead."
             )
-        if _empty_state(self.state):
+        state, requested = payload_selection(self.state, self.release)
+        probability = (
+            Probability.confidence()
+            if self.confidence
+            else Probability.annual(tail=cf.Tail.UPPER)
+        )
+        if _empty_state(state):
+            self._station_variables(state, state.stations or (), probability)
             source = publication = None
             records: list[dict[str, object]] = []
             variables: list[Variable] = []
@@ -1641,7 +1672,10 @@ class _WaterLevelNode(SourceNode[DatasetMetadata | EvidenceMetadata]):
                     "Choose NOAA stations from inspect().stations or "
                     "select(area=Bounds(...))."
                 )
-            selected, publication, pin = self._publication(scope)
+            selected, publication, pin = self._publication(scope, requested)
+            active = self._station_variables(
+                state, tuple(station.id for station in selected), probability
+            )
             catalogue_uri = (
                 _NOAA_PRODUCT
                 + "?"
@@ -1663,6 +1697,9 @@ class _WaterLevelNode(SourceNode[DatasetMetadata | EvidenceMetadata]):
             resources = list(publication.resources)
             records, variables = [], []
             for station in selected:
+                variable_id = self._level_variable_id(station.id)
+                if variable_id not in active:
+                    continue
                 uri = (
                     _NOAA_PRODUCT
                     + "?"
@@ -1702,7 +1739,7 @@ class _WaterLevelNode(SourceNode[DatasetMetadata | EvidenceMetadata]):
                         station_rows[station.id].get("epoch"), "NOAA tidal datum epoch"
                     )
                     variable = Variable(
-                        self._level_variable_id(station.id),
+                        variable_id,
                         measurement=cf.WaterSurfaceElevation(
                             unit=cf.LengthUnit.METRE,
                             datum=f"noaa:{station.id}:{datum}:{epoch}",
@@ -1788,15 +1825,25 @@ class _WaterLevelNode(SourceNode[DatasetMetadata | EvidenceMetadata]):
             actual = release_snapshot(resources, id=self._release_id)
             check_release(actual, pin)
             source = replace(publication, release=actual, resources=tuple(resources))
-        probability = (
-            Probability.confidence()
-            if self.confidence
-            else Probability.annual(tail=cf.Tail.UPPER)
-        )
         spec = DataSpec(
             variables,
             series=[SeriesSpec(v, probability=probability) for v in variables],
         )
+        if variables:
+            acquired = {v.id for v in variables}
+            # Only type-check datum declarations whose stations contributed data.
+            SelectionState(
+                variables=tuple(
+                    v
+                    for v in state.variables or ()
+                    if (v if isinstance(v, str) else v.id) in acquired
+                )
+                or None,
+                series=tuple(
+                    ref for ref in state.series or () if ref.variable.id in acquired
+                )
+                or None,
+            ).resolve(spec, source=source)
         report = ExecutionReport(
             False,
             None,
@@ -1825,7 +1872,8 @@ class _WaterLevelNode(SourceNode[DatasetMetadata | EvidenceMetadata]):
             and self.state.stations is None
             and self.state.area is None
         ):
-            stations, publication, _ = self._publication(scope)
+            _, requested = payload_selection(self.state, self.release)
+            stations, publication, _ = self._publication(scope, requested)
             assert publication.release is not None
             return Inspection(
                 source=publication,
@@ -1849,11 +1897,6 @@ class _WaterLevelNode(SourceNode[DatasetMetadata | EvidenceMetadata]):
                 ),
             )
         metadata, _ = self._resolve(scope)
-        state, _ = payload_selection(self.state, self.release)
-        metadata = replace(
-            metadata,
-            spec=state.resolve(metadata.spec, source=metadata.source).spec,
-        )
         from ._schema import dataset_arrow_schema
 
         return Inspection(
@@ -1885,9 +1928,6 @@ class _WaterLevelNode(SourceNode[DatasetMetadata | EvidenceMetadata]):
         self, scope: ExecutionScope
     ) -> NodeStream[DatasetMetadata | EvidenceMetadata]:
         metadata, records = self._resolve(scope)
-        state, _ = payload_selection(self.state, self.release)
-        resolved = state.resolve(metadata.spec, source=metadata.source)
-        metadata = replace(metadata, spec=resolved.spec)
         count = 0
 
         def batches() -> Iterator[pa.RecordBatch]:
@@ -1895,10 +1935,6 @@ class _WaterLevelNode(SourceNode[DatasetMetadata | EvidenceMetadata]):
             if self.confidence:
                 output = []
                 for row in records:
-                    if row["variable_id"] not in {
-                        item.variable.id for item in resolved.spec.series
-                    }:
-                        continue
                     row = dict(row)
                     row.pop("q")
                     output.append(row)
@@ -1919,10 +1955,6 @@ class _WaterLevelNode(SourceNode[DatasetMetadata | EvidenceMetadata]):
                     ).append(row)
                 dataset_output: list[DatasetRow] = []
                 for (variable, support, cell), values in grouped.items():
-                    if variable not in {
-                        item.variable.id for item in resolved.spec.series
-                    }:
-                        continue
                     values.sort(key=lambda row: cast(float, row["q"]))
                     curve = cf.QuantileCurve(
                         [cast(float, row["q"]) for row in values],
