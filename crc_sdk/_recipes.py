@@ -13,12 +13,14 @@ from contextlib import AbstractContextManager
 from dataclasses import replace
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Generic, Literal, Self, TypeAlias, TypeVar, cast
+from typing import Generic, Literal, Self, TypeAlias, TypeVar, cast
 
 import crc_framework
 import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
 from shapely import from_wkb  # type: ignore[import-untyped]
+
+import crc_sdk
 
 from ._aggregation import Sampling
 from ._dataset_schema import (
@@ -96,17 +98,11 @@ from ._table_input import (
 from ._terminals import (
     BatchStream,
     Execution,
-    PersistedArtifact,
     ReadResult,
     _publication_path,
     _schema,
     _with_report,
 )
-
-if TYPE_CHECKING:
-    from ._assets import Assets
-    from ._evaluation import Evaluation
-    from ._evaluation_spatial import SpatialMatch
 
 Metadata: TypeAlias = DatasetMetadata | EvidenceMetadata
 MetadataT = TypeVar("MetadataT", bound=Metadata)
@@ -1574,6 +1570,8 @@ class _RecipeBase(Generic[MetadataT, CanonicalT]):
                     release=None
                     if metadata.source is None
                     else metadata.source.release,
+                    model=None if metadata.source is None else metadata.source.model,
+                    member=None if metadata.source is None else metadata.source.member,
                 )
                 for item in metadata.spec.series
             ),
@@ -1603,7 +1601,9 @@ class _RecipeBase(Generic[MetadataT, CanonicalT]):
         with self.execute(runtime=runtime) as execution:
             return execution.validate()
 
-    def execute(self, *, runtime: Runtime | None = None) -> Execution[MetadataT]:
+    def execute(
+        self, *, runtime: Runtime | None = None
+    ) -> Execution[MetadataT, CanonicalT]:
         return Execution(self, runtime=runtime)
 
     def write(
@@ -1612,29 +1612,13 @@ class _RecipeBase(Generic[MetadataT, CanonicalT]):
         *,
         overwrite: bool = False,
         runtime: Runtime | None = None,
-    ) -> PersistedArtifact:
+    ) -> CanonicalT:
         _publication_path(path, overwrite)
         with self.execute(runtime=runtime) as execution:
             return execution.write(path, overwrite=overwrite)
 
-    def _saved(self, path: Path, metadata: MetadataT, digest: str) -> PersistedArtifact:
-        from ._evidence_recipes import Layer, Observations, Projections
-
-        if isinstance(metadata, DatasetMetadata):
-            recipe: type[_RecipeBase[MetadataT, CanonicalT]] = cast(
-                type[_RecipeBase[MetadataT, CanonicalT]], Dataset
-            )
-        else:
-            recipe = cast(
-                type[_RecipeBase[MetadataT, CanonicalT]],
-                {
-                    EvidenceKind.SAMPLES: Samples,
-                    EvidenceKind.OBSERVATIONS: Observations,
-                    EvidenceKind.PROJECTIONS: Projections,
-                    EvidenceKind.LAYER: Layer,
-                }[metadata.kind],
-            )
-        saved = recipe._create(
+    def _saved(self, path: Path, metadata: MetadataT, digest: str) -> CanonicalT:
+        saved = self._canonical_type()._create(
             _ParquetNode[MetadataT](
                 path,
                 type(metadata),
@@ -1648,7 +1632,7 @@ class _RecipeBase(Generic[MetadataT, CanonicalT]):
             path=path,
             metadata=metadata,
         )
-        return cast(PersistedArtifact, saved)
+        return cast(CanonicalT, saved)
 
     def _canonical_type(self) -> type[_RecipeBase[MetadataT, CanonicalT]]:
         raise NotImplementedError
@@ -1765,7 +1749,7 @@ class Dataset(_RecipeBase[DatasetMetadata, "Dataset"]):
         rasters: Mapping[float, LocalPath],
         *,
         variable: Variable,
-        probability: Probability,
+        probability: Probability | None = None,
         scenario: Scenario | None = None,
         period: Period | None = None,
     ) -> Dataset:
@@ -1783,15 +1767,6 @@ class Dataset(_RecipeBase[DatasetMetadata, "Dataset"]):
                 Operation(Stage.DECODING, "Read supplied quantile raster pixels"),
             ),
         )
-
-    def write(
-        self,
-        path: LocalPath,
-        *,
-        overwrite: bool = False,
-        runtime: Runtime | None = None,
-    ) -> Dataset:
-        return cast(Dataset, super().write(path, overwrite=overwrite, runtime=runtime))
 
     @classmethod
     def open(cls, path: LocalPath) -> Dataset:
@@ -1843,8 +1818,8 @@ class Dataset(_RecipeBase[DatasetMetadata, "Dataset"]):
         )
 
     def evaluate(
-        self, assets: Assets, *, spatial: SpatialMatch | None = None
-    ) -> Evaluation:
+        self, assets: crc_sdk.Assets, *, spatial: crc_sdk.SpatialMatch | None = None
+    ) -> crc_sdk.Evaluation:
         from ._evaluation import Evaluation
 
         return Evaluation._create(self, assets, spatial)
@@ -1900,15 +1875,6 @@ class Samples(_RecipeBase[EvidenceMetadata[Literal[EvidenceKind.SAMPLES]], "Samp
 
     def _canonical_type(self) -> type[Samples]:
         return Samples
-
-    def write(
-        self,
-        path: LocalPath,
-        *,
-        overwrite: bool = False,
-        runtime: Runtime | None = None,
-    ) -> Samples:
-        return cast(Samples, super().write(path, overwrite=overwrite, runtime=runtime))
 
     @classmethod
     def open(cls, path: LocalPath) -> Samples:

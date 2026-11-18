@@ -12,6 +12,7 @@ from crc_framework import (
     DiagnosticSeverity,
     DistributionFamily,
     FitError,
+    FitFailureDiagnostic,
     SampleFit,
     fit_samples,
 )
@@ -114,7 +115,9 @@ def test_default_fit_failure_validation_retains_the_record_after_scope_exit() ->
         with pytest.raises(ValidationError) as raised:
             execution.read()
         assert raised.value.report.diagnostics == report.diagnostics
-    assert diagnostics[0].record.attempts[0].reason is not None
+    outcome = diagnostics[0].record.attempts[0].diagnostic
+    assert isinstance(outcome, FitFailureDiagnostic)
+    assert outcome.message
     assert report.valid is False
 
 

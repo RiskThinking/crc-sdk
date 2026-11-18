@@ -148,9 +148,7 @@ class _SampleFitError(FitError):
         source: str | None,
         requested: int,
     ) -> None:
-        super().__init__(
-            error.message, record=error.record, diagnostics=error.diagnostics
-        )
+        super().__init__(error.message, record=error.record)
         self.code = error.code
         self.variable_id = _identifier(variable_id, "variable_id")
         self.support_id = (
@@ -632,7 +630,6 @@ def fit_sample_table(
                 evidence_count=count,
                 excluded_count=count - original.record.used_count,
             ),
-            diagnostics=original.diagnostics,
         )
         error.code = original.code
         if on_failure is FitFailure.RAISE:
@@ -683,16 +680,15 @@ def fit_sample_table(
                 excluded_count=len(records) - result.record.used_count,
             )
             rows.append(DatasetRow(**common, curve=result.distribution, fit=record))
-            diagnostics.extend(
+            diagnostics.append(
                 ExecutionDiagnostic(
-                    code=d.code,
-                    severity=d.severity,
+                    code="fit.samples",
+                    severity=DiagnosticSeverity.INFO,
                     stage=Stage.FITTING,
-                    message=d.message,
+                    message="Requested sample estimator converged",
                     source=source,
                     support_id=cast(str, support),
                 )
-                for d in result.diagnostics
             )
         except FitError as original_error:
             error = record_failure(

@@ -5,13 +5,14 @@ from __future__ import annotations
 import argparse
 import json
 from copy import deepcopy
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 import crc_framework as cf
 import pyarrow as pa
 
+from crc_sdk import ColumnBinding, ContextualImpact, ResponseContext, SpatialMatch
 from crc_sdk._dataset_schema import (
     DatasetMetadata,
     ExecutionCounts,
@@ -131,6 +132,39 @@ def fixture_cases() -> dict[str, object]:
         ],
     }
 
+    @dataclass(frozen=True)
+    class Facility(ResponseContext):
+        use: str | ColumnBinding
+
+    depot = Facility("depot")
+    repair = cf.Impact.linear(
+        slope=3, input=depth, output=cf.TimeDuration(unit=cf.TimeUnit.DAY)
+    )
+    contextual = ContextualImpact([(depot, repair)])
+    resolution = EvaluationResolution("repair", repair, asset_ids=("a",), context=depot)
+    contextual_metadata = replace(
+        artifact,
+        query=EvaluationQuery(QueryKind.RETURN_PERIOD, (100.0,)),
+        spatial=SpatialMatch.covering(preferred_supports=["site", "regional"]),
+        responses=(
+            EvaluationResponse(
+                "repair", variable.id, contextual, Facility(ColumnBinding("facility"))
+            ),
+        ),
+        resolutions=(resolution,),
+    )
+    case_result: dict[str, Any] = {
+        "metadata": json.loads(contextual_metadata.to_json()),
+        "rows": [
+            _row(),
+            _row(
+                response_id="repair",
+                resolution_id=resolution.id,
+                value=repair.evaluate(1.6),
+            ),
+        ],
+    }
+
     unmatched = deepcopy(direct)
     unmatched["metadata"]["report"]["counts"].update(
         matched_assets=0, unmatched_assets=1, no_data=2
@@ -157,6 +191,7 @@ def fixture_cases() -> dict[str, object]:
         {"name": "named-and-contextual-responses", "document": composed},
         {"name": "unmatched-assets-retained", "document": unmatched},
         {"name": "explicit-empty", "document": empty},
+        {"name": "calibrated-user-case-and-covering-priority", "document": case_result},
     ]
 
     rejected = []
@@ -226,6 +261,11 @@ def fixture_cases() -> dict[str, object]:
     wrong_value = deepcopy(invalid_value)
     wrong_value["rows"][1]["value"] = 12.0
     reject("response-value-mismatch", wrong_value)
+    no_case_context = deepcopy(case_result)
+    no_case_context["metadata"]["responses"][0].pop("context")
+    reject(
+        "custom-response-without-configured-context", no_case_context, structural=True
+    )
     wrong_counts = deepcopy(unmatched)
     wrong_counts["metadata"]["report"]["counts"]["matched_assets"] = 1
     reject("unmatched-count-mismatch", wrong_counts)

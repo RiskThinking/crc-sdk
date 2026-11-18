@@ -101,6 +101,31 @@ def test_duplicate_covering_supports_fail_without_implied_priority() -> None:
     assert "'a'" in str(error.value) and "'b'" in str(error.value)
 
 
+def test_covering_priority_uses_only_matching_supports() -> None:
+    first, second, elsewhere = (
+        _point("first", 0),
+        _point("second", 0),
+        _point("elsewhere", 10),
+    )
+    policy = SpatialMatch.covering(preferred_supports=["elsewhere", "second", "first"])
+    assert policy.preferred_supports == ("elsewhere", "second", "first")
+    assert (
+        spatial_match_from_document(
+            {"kind": "covering", "preferred_supports": ["elsewhere", "second", "first"]}
+        )
+        == policy
+    )
+    asset = Point(0, 0).wkb
+    for rows in ([first, second, elsewhere], [elsewhere, second, first]):
+        assert SpatialIndex(rows, policy).match(asset).row is second
+    with pytest.raises(SpatialMatchError, match="highest priority support"):
+        SpatialIndex(
+            [first, second], SpatialMatch.covering(preferred_supports=["elsewhere"])
+        ).match(asset)
+    with pytest.raises(ValueError, match="unique support IDs"):
+        SpatialMatch.covering(preferred_supports=["first", "first"])
+
+
 def test_nearest_uses_great_circle_metres_across_antimeridian() -> None:
     asset = Point(-179.99, 30)
     match = _point("regional", 179.99, 30)

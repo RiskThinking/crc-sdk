@@ -187,12 +187,15 @@ class SourceIdentity:
     release: ReleaseReference | None = None
     resources: tuple[ResourceIdentity, ...] = ()
     member: str | None = None
+    model: str | None = None
 
     def __post_init__(self) -> None:
         _identifier(self.provider, "provider")
         _identifier(self.product, "product")
         if self.member is not None:
             _identifier(self.member, "member")
+        if self.model is not None:
+            _identifier(self.model, "model")
         if self.release is not None and not isinstance(self.release, ReleaseReference):
             raise TypeError("release must be ReleaseReference")
         if not isinstance(self.resources, tuple) or not all(
@@ -212,6 +215,8 @@ class SourceIdentity:
             value["release"] = self.release._document()
         if self.member is not None:
             value["member"] = self.member
+        if self.model is not None:
+            value["model"] = self.model
         return value
 
 
@@ -240,13 +245,16 @@ def _release(value: object) -> ReleaseReference:
 
 
 def _source(value: object) -> SourceIdentity:
-    v = _object(value, {"provider", "product", "resources"}, {"release", "member"})
+    v = _object(
+        value, {"provider", "product", "resources"}, {"release", "member", "model"}
+    )
     return SourceIdentity(
         _identifier(v["provider"], "provider"),
         _identifier(v["product"], "product"),
         _release(v["release"]) if "release" in v else None,
         tuple(_resource(r) for r in _array(v["resources"], "resources")),
         _identifier(v["member"], "member") if "member" in v else None,
+        _identifier(v["model"], "model") if "model" in v else None,
     )
 
 

@@ -203,6 +203,7 @@ def fixture_cases() -> dict[str, object]:
                 ResourceIdentity("s3://example/observations", "sha256:" + "a" * 64),
             ),
             member="member:1",
+            model="model:1",
         ),
     )
     accepted.append(
@@ -376,6 +377,9 @@ def fixture_cases() -> dict[str, object]:
     value = json.loads(dataset_to_json([row], source_info))
     value["metadata"]["source"]["resources"][0]["sha256"] = "not-a-hash"
     reject("invalid-resource-digest", value, True)
+    value = json.loads(dataset_to_json([row], source_info))
+    value["metadata"]["source"]["model"] = " padded-model"
+    reject("invalid-source-model-id", value, True)
     geometry_cases = json.loads(
         (ROOT / "crc_sdk/contracts/fixtures/geometry-cases.json").read_text()
     )

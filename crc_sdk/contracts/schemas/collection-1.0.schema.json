@@ -368,6 +368,11 @@
           "minLength": 1,
           "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
         },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+        },
         "release": {
           "$ref": "#/$defs/release"
         },

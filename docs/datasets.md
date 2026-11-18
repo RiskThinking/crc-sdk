@@ -64,8 +64,10 @@ depth = Dataset.from_raster(
 assert depth.explain().operations
 ```
 
-The probability keys are supplied data. All rasters must declare the same grid
-and coordinate system. No fitting or tail completion is implicit. A pixel with
+The probability keys are supplied data. Supply `probability=` when the series
+has a declared annual interpretation for return-period queries. All rasters
+must declare the same grid and coordinate system. No fitting or tail completion
+is implicit. A pixel with
 at least two valid knots retains those knots; insufficient pixels are counted
 as skipped with a diagnostic.
 

@@ -223,7 +223,7 @@
               "asset_ids": [
                 "a"
               ],
-              "id": "sha256:18d84700ae94c5de55c8bbd9a91ee672c575871022559cf7a5cd3b7393ef8e0e",
+              "id": "sha256:0755d6b285037b00c9eadcaeaef8534e39ca7aa7e8491af8af45d7baa3cb9437",
               "impact": {
                 "input": {
                   "kind": "depth_above_ground",
@@ -284,7 +284,7 @@
                   },
                   "model": {
                     "id": "crc:inundation",
-                    "manifest_sha256": "sha256:f9e7e2521ef5542c8ec398f5c949a4bcdff6f5fbe31f74f1553cd32ca2867ff7",
+                    "manifest_sha256": "sha256:aee900a83e9316e98922996abfae5b9b2752d763c9161c59edfadf1a9cfbbcc6",
                     "schema_version": "2.0",
                     "version": "2026.10.1"
                   }
@@ -323,7 +323,7 @@
               },
               "model": {
                 "id": "crc:inundation",
-                "manifest_sha256": "sha256:f9e7e2521ef5542c8ec398f5c949a4bcdff6f5fbe31f74f1553cd32ca2867ff7",
+                "manifest_sha256": "sha256:aee900a83e9316e98922996abfae5b9b2752d763c9161c59edfadf1a9cfbbcc6",
                 "schema_version": "2.0",
                 "version": "2026.10.1"
               },
@@ -407,7 +407,7 @@
             "support_id": "site",
             "distance_metres": null,
             "response_id": "damage",
-            "resolution_id": "sha256:18d84700ae94c5de55c8bbd9a91ee672c575871022559cf7a5cd3b7393ef8e0e",
+            "resolution_id": "sha256:0755d6b285037b00c9eadcaeaef8534e39ca7aa7e8491af8af45d7baa3cb9437",
             "query_value": 100.0,
             "value": 0.5200000047683716,
             "failure": null
@@ -422,7 +422,7 @@
             "support_id": "site",
             "distance_metres": null,
             "response_id": "damage",
-            "resolution_id": "sha256:18d84700ae94c5de55c8bbd9a91ee672c575871022559cf7a5cd3b7393ef8e0e",
+            "resolution_id": "sha256:0755d6b285037b00c9eadcaeaef8534e39ca7aa7e8491af8af45d7baa3cb9437",
             "query_value": 10.0,
             "value": 0.3400000035762787,
             "failure": null
@@ -603,6 +603,210 @@
           }
         },
         "rows": []
+      }
+    },
+    {
+      "name": "calibrated-user-case-and-covering-priority",
+      "document": {
+        "metadata": {
+          "asset_fields": "/////3gAAAAQAAAAAAAKAAwABgAFAAgACgAAAAABBAAMAAAACAAIAAAABAAIAAAABAAAAAEAAAAUAAAAEAAUAAgAAAAHAAwAAAAQABAAAAAAAAAFEAAAACAAAAAEAAAAAAAAAAgAAABhc3NldF9pZAAAAAAEAAQABAAAAAAAAAA=",
+          "asset_ids": [
+            "a"
+          ],
+          "include_exposure": true,
+          "inputs": [
+            {
+              "member_id": null,
+              "metadata": {
+                "provenance": [],
+                "report": {
+                  "complete": true,
+                  "counts": {
+                    "incomplete_years": 0,
+                    "matched_assets": 0,
+                    "no_data": 0,
+                    "produced": 1,
+                    "requested": 1,
+                    "skipped": 0,
+                    "unmatched_assets": 0,
+                    "usable_years": 0
+                  },
+                  "diagnostics": [],
+                  "source_identities": [],
+                  "valid": true
+                },
+                "schema_version": "2.0",
+                "spatial": {
+                  "index_resolution": 9,
+                  "supports": [
+                    "point"
+                  ]
+                },
+                "spec": {
+                  "periods": [],
+                  "scenarios": [],
+                  "series": [
+                    {
+                      "period_id": null,
+                      "probability": {
+                        "kind": "annual",
+                        "tail": "upper"
+                      },
+                      "scenario_id": null,
+                      "variable_id": "project:depth"
+                    }
+                  ],
+                  "variables": [
+                    {
+                      "id": "project:depth",
+                      "measurement": {
+                        "kind": "depth_above_ground",
+                        "unit": "m"
+                      }
+                    }
+                  ]
+                }
+              },
+              "resource_id": null
+            }
+          ],
+          "query": {
+            "kind": "return_period",
+            "values": [
+              100.0
+            ]
+          },
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 1,
+              "no_data": 0,
+              "produced": 2,
+              "requested": 2,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [],
+            "source_identities": [],
+            "valid": true
+          },
+          "resolutions": [
+            {
+              "asset_ids": [
+                "a"
+              ],
+              "context": {
+                "kind": "response_context",
+                "values": {
+                  "use": "depot"
+                }
+              },
+              "id": "sha256:d045e470002428a555bb7fd6be03c01a929f076dccc756b08f2b96d238d1d4b6",
+              "impact": {
+                "input": {
+                  "kind": "depth_above_ground",
+                  "unit": "m"
+                },
+                "model": {
+                  "intercept": 0,
+                  "kind": "linear",
+                  "slope": 3
+                },
+                "output": {
+                  "kind": "time_duration",
+                  "unit": "d"
+                },
+                "schema_version": "2.0"
+              },
+              "response_id": "repair"
+            }
+          ],
+          "responses": [
+            {
+              "context": {
+                "kind": "response_context",
+                "values": {
+                  "use": {
+                    "column": "facility"
+                  }
+                }
+              },
+              "model": {
+                "cases": [
+                  {
+                    "context": {
+                      "kind": "response_context",
+                      "values": {
+                        "use": "depot"
+                      }
+                    },
+                    "impact": {
+                      "input": {
+                        "kind": "depth_above_ground",
+                        "unit": "m"
+                      },
+                      "model": {
+                        "intercept": 0,
+                        "kind": "linear",
+                        "slope": 3
+                      },
+                      "output": {
+                        "kind": "time_duration",
+                        "unit": "d"
+                      },
+                      "schema_version": "2.0"
+                    }
+                  }
+                ],
+                "kind": "contextual"
+              },
+              "name": "repair",
+              "variable_id": "project:depth"
+            }
+          ],
+          "schema_version": "2.0",
+          "spatial": {
+            "kind": "covering",
+            "preferred_supports": [
+              "site",
+              "regional"
+            ]
+          }
+        },
+        "rows": [
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": null,
+            "resolution_id": null,
+            "query_value": 100.0,
+            "value": 1.6,
+            "failure": null
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": "repair",
+            "resolution_id": "sha256:d045e470002428a555bb7fd6be03c01a929f076dccc756b08f2b96d238d1d4b6",
+            "query_value": 100.0,
+            "value": 4.800000000000001,
+            "failure": null
+          }
+        ]
       }
     }
   ],
@@ -1874,7 +2078,7 @@
               "asset_ids": [
                 "a"
               ],
-              "id": "sha256:18d84700ae94c5de55c8bbd9a91ee672c575871022559cf7a5cd3b7393ef8e0e",
+              "id": "sha256:0755d6b285037b00c9eadcaeaef8534e39ca7aa7e8491af8af45d7baa3cb9437",
               "impact": {
                 "input": {
                   "kind": "depth_above_ground",
@@ -1935,7 +2139,7 @@
                   },
                   "model": {
                     "id": "crc:inundation",
-                    "manifest_sha256": "sha256:f9e7e2521ef5542c8ec398f5c949a4bcdff6f5fbe31f74f1553cd32ca2867ff7",
+                    "manifest_sha256": "sha256:aee900a83e9316e98922996abfae5b9b2752d763c9161c59edfadf1a9cfbbcc6",
                     "schema_version": "2.0",
                     "version": "2026.10.1"
                   }
@@ -1974,7 +2178,7 @@
               },
               "model": {
                 "id": "crc:inundation",
-                "manifest_sha256": "sha256:f9e7e2521ef5542c8ec398f5c949a4bcdff6f5fbe31f74f1553cd32ca2867ff7",
+                "manifest_sha256": "sha256:aee900a83e9316e98922996abfae5b9b2752d763c9161c59edfadf1a9cfbbcc6",
                 "schema_version": "2.0",
                 "version": "2026.10.1"
               },
@@ -2058,7 +2262,7 @@
             "support_id": "site",
             "distance_metres": null,
             "response_id": "damage",
-            "resolution_id": "sha256:18d84700ae94c5de55c8bbd9a91ee672c575871022559cf7a5cd3b7393ef8e0e",
+            "resolution_id": "sha256:0755d6b285037b00c9eadcaeaef8534e39ca7aa7e8491af8af45d7baa3cb9437",
             "query_value": 100.0,
             "value": 0.5200000047683716,
             "failure": null
@@ -2236,7 +2440,7 @@
                   },
                   "model": {
                     "id": "crc:inundation",
-                    "manifest_sha256": "sha256:f9e7e2521ef5542c8ec398f5c949a4bcdff6f5fbe31f74f1553cd32ca2867ff7",
+                    "manifest_sha256": "sha256:aee900a83e9316e98922996abfae5b9b2752d763c9161c59edfadf1a9cfbbcc6",
                     "schema_version": "2.0",
                     "version": "2026.10.1"
                   }
@@ -2275,7 +2479,7 @@
               },
               "model": {
                 "id": "crc:inundation",
-                "manifest_sha256": "sha256:f9e7e2521ef5542c8ec398f5c949a4bcdff6f5fbe31f74f1553cd32ca2867ff7",
+                "manifest_sha256": "sha256:aee900a83e9316e98922996abfae5b9b2752d763c9161c59edfadf1a9cfbbcc6",
                 "schema_version": "2.0",
                 "version": "2026.10.1"
               },
@@ -2359,7 +2563,7 @@
             "support_id": "site",
             "distance_metres": null,
             "response_id": "damage",
-            "resolution_id": "sha256:18d84700ae94c5de55c8bbd9a91ee672c575871022559cf7a5cd3b7393ef8e0e",
+            "resolution_id": "sha256:0755d6b285037b00c9eadcaeaef8534e39ca7aa7e8491af8af45d7baa3cb9437",
             "query_value": 100.0,
             "value": 0.5200000047683716,
             "failure": null
@@ -2374,7 +2578,7 @@
             "support_id": "site",
             "distance_metres": null,
             "response_id": "damage",
-            "resolution_id": "sha256:18d84700ae94c5de55c8bbd9a91ee672c575871022559cf7a5cd3b7393ef8e0e",
+            "resolution_id": "sha256:0755d6b285037b00c9eadcaeaef8534e39ca7aa7e8491af8af45d7baa3cb9437",
             "query_value": 10.0,
             "value": 0.3400000035762787,
             "failure": null
@@ -2476,7 +2680,7 @@
               "asset_ids": [
                 "unknown"
               ],
-              "id": "sha256:18d84700ae94c5de55c8bbd9a91ee672c575871022559cf7a5cd3b7393ef8e0e",
+              "id": "sha256:0755d6b285037b00c9eadcaeaef8534e39ca7aa7e8491af8af45d7baa3cb9437",
               "impact": {
                 "input": {
                   "kind": "depth_above_ground",
@@ -2537,7 +2741,7 @@
                   },
                   "model": {
                     "id": "crc:inundation",
-                    "manifest_sha256": "sha256:f9e7e2521ef5542c8ec398f5c949a4bcdff6f5fbe31f74f1553cd32ca2867ff7",
+                    "manifest_sha256": "sha256:aee900a83e9316e98922996abfae5b9b2752d763c9161c59edfadf1a9cfbbcc6",
                     "schema_version": "2.0",
                     "version": "2026.10.1"
                   }
@@ -2576,7 +2780,7 @@
               },
               "model": {
                 "id": "crc:inundation",
-                "manifest_sha256": "sha256:f9e7e2521ef5542c8ec398f5c949a4bcdff6f5fbe31f74f1553cd32ca2867ff7",
+                "manifest_sha256": "sha256:aee900a83e9316e98922996abfae5b9b2752d763c9161c59edfadf1a9cfbbcc6",
                 "schema_version": "2.0",
                 "version": "2026.10.1"
               },
@@ -2660,7 +2864,7 @@
             "support_id": "site",
             "distance_metres": null,
             "response_id": "damage",
-            "resolution_id": "sha256:18d84700ae94c5de55c8bbd9a91ee672c575871022559cf7a5cd3b7393ef8e0e",
+            "resolution_id": "sha256:0755d6b285037b00c9eadcaeaef8534e39ca7aa7e8491af8af45d7baa3cb9437",
             "query_value": 100.0,
             "value": 0.5200000047683716,
             "failure": null
@@ -2675,7 +2879,7 @@
             "support_id": "site",
             "distance_metres": null,
             "response_id": "damage",
-            "resolution_id": "sha256:18d84700ae94c5de55c8bbd9a91ee672c575871022559cf7a5cd3b7393ef8e0e",
+            "resolution_id": "sha256:0755d6b285037b00c9eadcaeaef8534e39ca7aa7e8491af8af45d7baa3cb9437",
             "query_value": 10.0,
             "value": 0.3400000035762787,
             "failure": null
@@ -2774,7 +2978,7 @@
           },
           "resolutions": [
             {
-              "id": "sha256:18d84700ae94c5de55c8bbd9a91ee672c575871022559cf7a5cd3b7393ef8e0e",
+              "id": "sha256:0755d6b285037b00c9eadcaeaef8534e39ca7aa7e8491af8af45d7baa3cb9437",
               "impact": {
                 "input": {
                   "kind": "depth_above_ground",
@@ -2835,7 +3039,7 @@
                   },
                   "model": {
                     "id": "crc:inundation",
-                    "manifest_sha256": "sha256:f9e7e2521ef5542c8ec398f5c949a4bcdff6f5fbe31f74f1553cd32ca2867ff7",
+                    "manifest_sha256": "sha256:aee900a83e9316e98922996abfae5b9b2752d763c9161c59edfadf1a9cfbbcc6",
                     "schema_version": "2.0",
                     "version": "2026.10.1"
                   }
@@ -2874,7 +3078,7 @@
               },
               "model": {
                 "id": "crc:inundation",
-                "manifest_sha256": "sha256:f9e7e2521ef5542c8ec398f5c949a4bcdff6f5fbe31f74f1553cd32ca2867ff7",
+                "manifest_sha256": "sha256:aee900a83e9316e98922996abfae5b9b2752d763c9161c59edfadf1a9cfbbcc6",
                 "schema_version": "2.0",
                 "version": "2026.10.1"
               },
@@ -2958,7 +3162,7 @@
             "support_id": "site",
             "distance_metres": null,
             "response_id": "damage",
-            "resolution_id": "sha256:18d84700ae94c5de55c8bbd9a91ee672c575871022559cf7a5cd3b7393ef8e0e",
+            "resolution_id": "sha256:0755d6b285037b00c9eadcaeaef8534e39ca7aa7e8491af8af45d7baa3cb9437",
             "query_value": 100.0,
             "value": 0.5200000047683716,
             "failure": null
@@ -2973,7 +3177,7 @@
             "support_id": "site",
             "distance_metres": null,
             "response_id": "damage",
-            "resolution_id": "sha256:18d84700ae94c5de55c8bbd9a91ee672c575871022559cf7a5cd3b7393ef8e0e",
+            "resolution_id": "sha256:0755d6b285037b00c9eadcaeaef8534e39ca7aa7e8491af8af45d7baa3cb9437",
             "query_value": 10.0,
             "value": 0.3400000035762787,
             "failure": null
@@ -3075,7 +3279,7 @@
               "asset_ids": [
                 "a"
               ],
-              "id": "sha256:18d84700ae94c5de55c8bbd9a91ee672c575871022559cf7a5cd3b7393ef8e0e",
+              "id": "sha256:0755d6b285037b00c9eadcaeaef8534e39ca7aa7e8491af8af45d7baa3cb9437",
               "impact": {
                 "input": {
                   "kind": "depth_above_ground",
@@ -3136,7 +3340,7 @@
                   },
                   "model": {
                     "id": "crc:inundation",
-                    "manifest_sha256": "sha256:f9e7e2521ef5542c8ec398f5c949a4bcdff6f5fbe31f74f1553cd32ca2867ff7",
+                    "manifest_sha256": "sha256:aee900a83e9316e98922996abfae5b9b2752d763c9161c59edfadf1a9cfbbcc6",
                     "schema_version": "2.0",
                     "version": "2026.10.1"
                   }
@@ -3175,7 +3379,7 @@
               },
               "model": {
                 "id": "crc:inundation",
-                "manifest_sha256": "sha256:f9e7e2521ef5542c8ec398f5c949a4bcdff6f5fbe31f74f1553cd32ca2867ff7",
+                "manifest_sha256": "sha256:aee900a83e9316e98922996abfae5b9b2752d763c9161c59edfadf1a9cfbbcc6",
                 "schema_version": "2.0",
                 "version": "2026.10.1"
               },
@@ -3259,7 +3463,7 @@
             "support_id": "site",
             "distance_metres": null,
             "response_id": "damage",
-            "resolution_id": "sha256:18d84700ae94c5de55c8bbd9a91ee672c575871022559cf7a5cd3b7393ef8e0e",
+            "resolution_id": "sha256:0755d6b285037b00c9eadcaeaef8534e39ca7aa7e8491af8af45d7baa3cb9437",
             "query_value": 100.0,
             "value": 0.5200000047683716,
             "failure": null
@@ -3274,7 +3478,7 @@
             "support_id": "site",
             "distance_metres": null,
             "response_id": "damage",
-            "resolution_id": "sha256:18d84700ae94c5de55c8bbd9a91ee672c575871022559cf7a5cd3b7393ef8e0e",
+            "resolution_id": "sha256:0755d6b285037b00c9eadcaeaef8534e39ca7aa7e8491af8af45d7baa3cb9437",
             "query_value": 10.0,
             "value": 0.3400000035762787,
             "failure": null
@@ -3376,7 +3580,7 @@
               "asset_ids": [
                 "a"
               ],
-              "id": "sha256:18d84700ae94c5de55c8bbd9a91ee672c575871022559cf7a5cd3b7393ef8e0e",
+              "id": "sha256:0755d6b285037b00c9eadcaeaef8534e39ca7aa7e8491af8af45d7baa3cb9437",
               "impact": {
                 "input": {
                   "kind": "depth_above_ground",
@@ -3437,7 +3641,7 @@
                   },
                   "model": {
                     "id": "crc:inundation",
-                    "manifest_sha256": "sha256:f9e7e2521ef5542c8ec398f5c949a4bcdff6f5fbe31f74f1553cd32ca2867ff7",
+                    "manifest_sha256": "sha256:aee900a83e9316e98922996abfae5b9b2752d763c9161c59edfadf1a9cfbbcc6",
                     "schema_version": "2.0",
                     "version": "2026.10.1"
                   }
@@ -3476,7 +3680,7 @@
               },
               "model": {
                 "id": "crc:inundation",
-                "manifest_sha256": "sha256:f9e7e2521ef5542c8ec398f5c949a4bcdff6f5fbe31f74f1553cd32ca2867ff7",
+                "manifest_sha256": "sha256:aee900a83e9316e98922996abfae5b9b2752d763c9161c59edfadf1a9cfbbcc6",
                 "schema_version": "2.0",
                 "version": "2026.10.1"
               },
@@ -3560,7 +3764,7 @@
             "support_id": "site",
             "distance_metres": null,
             "response_id": "damage",
-            "resolution_id": "sha256:18d84700ae94c5de55c8bbd9a91ee672c575871022559cf7a5cd3b7393ef8e0e",
+            "resolution_id": "sha256:0755d6b285037b00c9eadcaeaef8534e39ca7aa7e8491af8af45d7baa3cb9437",
             "query_value": 100.0,
             "value": 0.5200000047683716,
             "failure": null
@@ -3575,7 +3779,7 @@
             "support_id": "site",
             "distance_metres": null,
             "response_id": "damage",
-            "resolution_id": "sha256:18d84700ae94c5de55c8bbd9a91ee672c575871022559cf7a5cd3b7393ef8e0e",
+            "resolution_id": "sha256:0755d6b285037b00c9eadcaeaef8534e39ca7aa7e8491af8af45d7baa3cb9437",
             "query_value": 10.0,
             "value": 0.3400000035762787,
             "failure": null
@@ -3883,6 +4087,203 @@
         ]
       },
       "structural": false
+    },
+    {
+      "name": "custom-response-without-configured-context",
+      "document": {
+        "metadata": {
+          "asset_fields": "/////3gAAAAQAAAAAAAKAAwABgAFAAgACgAAAAABBAAMAAAACAAIAAAABAAIAAAABAAAAAEAAAAUAAAAEAAUAAgAAAAHAAwAAAAQABAAAAAAAAAFEAAAACAAAAAEAAAAAAAAAAgAAABhc3NldF9pZAAAAAAEAAQABAAAAAAAAAA=",
+          "asset_ids": [
+            "a"
+          ],
+          "include_exposure": true,
+          "inputs": [
+            {
+              "member_id": null,
+              "metadata": {
+                "provenance": [],
+                "report": {
+                  "complete": true,
+                  "counts": {
+                    "incomplete_years": 0,
+                    "matched_assets": 0,
+                    "no_data": 0,
+                    "produced": 1,
+                    "requested": 1,
+                    "skipped": 0,
+                    "unmatched_assets": 0,
+                    "usable_years": 0
+                  },
+                  "diagnostics": [],
+                  "source_identities": [],
+                  "valid": true
+                },
+                "schema_version": "2.0",
+                "spatial": {
+                  "index_resolution": 9,
+                  "supports": [
+                    "point"
+                  ]
+                },
+                "spec": {
+                  "periods": [],
+                  "scenarios": [],
+                  "series": [
+                    {
+                      "period_id": null,
+                      "probability": {
+                        "kind": "annual",
+                        "tail": "upper"
+                      },
+                      "scenario_id": null,
+                      "variable_id": "project:depth"
+                    }
+                  ],
+                  "variables": [
+                    {
+                      "id": "project:depth",
+                      "measurement": {
+                        "kind": "depth_above_ground",
+                        "unit": "m"
+                      }
+                    }
+                  ]
+                }
+              },
+              "resource_id": null
+            }
+          ],
+          "query": {
+            "kind": "return_period",
+            "values": [
+              100.0
+            ]
+          },
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 1,
+              "no_data": 0,
+              "produced": 2,
+              "requested": 2,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [],
+            "source_identities": [],
+            "valid": true
+          },
+          "resolutions": [
+            {
+              "asset_ids": [
+                "a"
+              ],
+              "context": {
+                "kind": "response_context",
+                "values": {
+                  "use": "depot"
+                }
+              },
+              "id": "sha256:d045e470002428a555bb7fd6be03c01a929f076dccc756b08f2b96d238d1d4b6",
+              "impact": {
+                "input": {
+                  "kind": "depth_above_ground",
+                  "unit": "m"
+                },
+                "model": {
+                  "intercept": 0,
+                  "kind": "linear",
+                  "slope": 3
+                },
+                "output": {
+                  "kind": "time_duration",
+                  "unit": "d"
+                },
+                "schema_version": "2.0"
+              },
+              "response_id": "repair"
+            }
+          ],
+          "responses": [
+            {
+              "model": {
+                "cases": [
+                  {
+                    "context": {
+                      "kind": "response_context",
+                      "values": {
+                        "use": "depot"
+                      }
+                    },
+                    "impact": {
+                      "input": {
+                        "kind": "depth_above_ground",
+                        "unit": "m"
+                      },
+                      "model": {
+                        "intercept": 0,
+                        "kind": "linear",
+                        "slope": 3
+                      },
+                      "output": {
+                        "kind": "time_duration",
+                        "unit": "d"
+                      },
+                      "schema_version": "2.0"
+                    }
+                  }
+                ],
+                "kind": "contextual"
+              },
+              "name": "repair",
+              "variable_id": "project:depth"
+            }
+          ],
+          "schema_version": "2.0",
+          "spatial": {
+            "kind": "covering",
+            "preferred_supports": [
+              "site",
+              "regional"
+            ]
+          }
+        },
+        "rows": [
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": null,
+            "resolution_id": null,
+            "query_value": 100.0,
+            "value": 1.6,
+            "failure": null
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": "repair",
+            "resolution_id": "sha256:d045e470002428a555bb7fd6be03c01a929f076dccc756b08f2b96d238d1d4b6",
+            "query_value": 100.0,
+            "value": 4.800000000000001,
+            "failure": null
+          }
+        ]
+      },
+      "structural": true
     },
     {
       "name": "unmatched-count-mismatch",

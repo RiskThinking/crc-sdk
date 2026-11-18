@@ -36,7 +36,7 @@ from ._source_io import SourceNode, fetch, native_data, release_snapshot
 class _RasterNode(SourceNode[DatasetMetadata]):
     rasters: tuple[tuple[float, Path], ...]
     variable: Variable
-    probability: Probability
+    probability: Probability | None
     scenario: Scenario | None
     period: Period | None
     state: SelectionState = SelectionState()
@@ -50,7 +50,7 @@ class _RasterNode(SourceNode[DatasetMetadata]):
                 "user-quantile-rasters",
                 [(q, str(path)) for q, path in self.rasters],
                 self.variable._document(),
-                self.probability._document(),
+                None if self.probability is None else self.probability._document(),
                 None if self.scenario is None else self.scenario._document(),
                 None if self.period is None else self.period._document(),
                 self.state.document(),
@@ -225,7 +225,7 @@ def raster_node(
     rasters: Mapping[float, LocalPath],
     *,
     variable: Variable,
-    probability: Probability,
+    probability: Probability | None,
     scenario: Scenario | None = None,
     period: Period | None = None,
 ) -> SourceNode[DatasetMetadata]:
@@ -233,8 +233,10 @@ def raster_node(
         raise ValueError(
             "rasters requires at least two probability-to-local-path entries"
         )
-    if not isinstance(variable, Variable) or not isinstance(probability, Probability):
-        raise TypeError("raster science requires Variable and Probability")
+    if not isinstance(variable, Variable):
+        raise TypeError("variable must be Variable")
+    if probability is not None and not isinstance(probability, Probability):
+        raise TypeError("probability must be Probability")
     if scenario is not None and not isinstance(scenario, Scenario):
         raise TypeError("scenario must be Scenario")
     if period is not None and not isinstance(period, Period):

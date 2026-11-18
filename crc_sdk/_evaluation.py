@@ -17,6 +17,7 @@ import pyarrow.parquet as pq  # type: ignore[import-untyped]
 from ._assets import Assets
 from ._collection import DatasetCollection, _CollectionNode
 from ._collection_schema import CollectionMetadata
+from ._contextual_impact import ContextualImpact, ResponseContext
 from ._dataset_schema import (
     DatasetMetadata,
     ExecutionDiagnostic,
@@ -39,6 +40,7 @@ from ._evaluation_schema import (
     EvaluationValidator,
     QueryKind,
     _apply_response,
+    _resolution_id,
     evaluation_arrow_schema,
     evaluation_metadata_from_schema,
     evaluation_table,
@@ -436,10 +438,7 @@ class _EvaluationNode(Node[EvaluationMetadata]):
             "evaluation",
             self.parent.key,
             plan.assets._key,
-            plan.spatial.kind.value,
-            None
-            if plan.spatial.max_distance is None
-            else plan.spatial.max_distance.value_metres,
+            plan.spatial._document(),
             None if plan.query is None else (plan.query.kind.value, plan.query.values),
             plan.selection.responses,
             [
@@ -501,7 +500,10 @@ class _EvaluationNode(Node[EvaluationMetadata]):
             source=declaration.source,
         )
         diagnostics: dict[str, ExecutionDiagnostic] = {}
-        resolutions: dict[tuple[str, str], tuple[cf.Impact, dict[AssetId, None]]] = {}
+        resolutions: dict[
+            tuple[str, str],
+            tuple[cf.Impact, ResponseContext | None, dict[AssetId, None]],
+        ] = {}
         resolved_models: dict[tuple[str, str], cf.Impact] = {}
         produced = no_data = matched = unmatched = 0
         requested = (
@@ -545,8 +547,14 @@ class _EvaluationNode(Node[EvaluationMetadata]):
                 planned,
                 inputs=current_inputs,
                 resolutions=tuple(
-                    EvaluationResolution(name, impact, asset_ids=tuple(assigned_assets))
-                    for (name, _), (impact, assigned_assets) in resolutions.items()
+                    EvaluationResolution(
+                        name, impact, asset_ids=tuple(assigned_assets), context=context
+                    )
+                    for (name, _), (
+                        impact,
+                        context,
+                        assigned_assets,
+                    ) in resolutions.items()
                 ),
                 report=outcome,
             )
@@ -641,7 +649,9 @@ class _EvaluationNode(Node[EvaluationMetadata]):
                             and finite_exposure
                         ):
                             try:
-                                resolved = response.resolve(context, resolved_models)
+                                resolved, case_context = response.resolve(
+                                    context, resolved_models
+                                )
                             except cf.ImpactError as error:
                                 raise _diagnostic(
                                     error.code,
@@ -650,16 +660,23 @@ class _EvaluationNode(Node[EvaluationMetadata]):
                                     stage=Stage.EVALUATION,
                                     support_id=support.support_id,
                                 ) from error
-                            if isinstance(response.model, cf.ImpactReference):
-                                resolution_id = resolved.sha256
+                            if not isinstance(response.model, cf.Impact):
+                                resolution_id = _resolution_id(resolved, case_context)
                                 resolution_key = (response.name, resolution_id)
                                 if resolution_key not in resolutions:
                                     record = EvaluationResolution(
-                                        response.name, resolved, asset_ids=(asset_id,)
+                                        response.name,
+                                        resolved,
+                                        asset_ids=(asset_id,),
+                                        context=case_context,
                                     )
                                     validator.register_resolution(record)
-                                    resolutions[resolution_key] = (resolved, {})
-                                _, assigned_assets = resolutions[resolution_key]
+                                    resolutions[resolution_key] = (
+                                        resolved,
+                                        case_context,
+                                        {},
+                                    )
+                                _, _, assigned_assets = resolutions[resolution_key]
                                 assigned_assets.setdefault(asset_id, None)
                         for value, (result, failure) in zip(
                             query.values,
@@ -941,7 +958,7 @@ class Evaluation(_Results):
     def impact(
         self,
         name: str,
-        model: cf.Impact | cf.ImpactReference,
+        model: cf.Impact | cf.ImpactReference | ContextualImpact,
         *,
         variable: Variable | str,
         context: cf.ImpactContext | None = None,
@@ -1064,7 +1081,7 @@ class Evaluation(_Results):
 
     def execute(
         self, *, runtime: Runtime | None = None
-    ) -> Execution[EvaluationMetadata]:
+    ) -> Execution[EvaluationMetadata, EvaluationArtifact]:
         return Execution(self, runtime=runtime)
 
     def write(
@@ -1075,7 +1092,7 @@ class Evaluation(_Results):
         runtime: Runtime | None = None,
     ) -> EvaluationArtifact:
         with self.execute(runtime=runtime) as execution:
-            return cast(EvaluationArtifact, execution.write(path, overwrite=overwrite))
+            return execution.write(path, overwrite=overwrite)
 
 
 class _EvaluationFile(Node[EvaluationMetadata]):

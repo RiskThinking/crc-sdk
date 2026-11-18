@@ -14,7 +14,7 @@ from shapely.affinity import translate  # type: ignore[import-untyped]
 from shapely.geometry import Point, box  # type: ignore[import-untyped]
 from shapely.geometry.base import BaseGeometry  # type: ignore[import-untyped]
 
-from ._dataset_schema import _number, _object
+from ._dataset_schema import _array, _identifier, _number, _object
 from ._errors import CapabilityError
 from ._geometry import cell_polygon
 from ._schema.dataset import DatasetRow
@@ -60,15 +60,27 @@ class SpatialMatch:
 
     kind: SpatialMatchKind
     max_distance: Distance | None
+    preferred_supports: tuple[str, ...]
 
     def __init__(self) -> None:
         raise TypeError("use SpatialMatch.covering() or SpatialMatch.nearest(...)")
 
     @classmethod
-    def covering(cls) -> SpatialMatch:
+    def covering(cls, *, preferred_supports: Sequence[str] = ()) -> SpatialMatch:
+        """Match declared coverage, resolving overlaps by explicit support priority."""
+        if not isinstance(preferred_supports, Sequence) or isinstance(
+            preferred_supports, (str, bytes)
+        ):
+            raise TypeError(
+                "preferred_supports must be a sequence of exact support IDs"
+            )
+        supports = tuple(_identifier(id_, "support ID") for id_ in preferred_supports)
+        if len(set(supports)) != len(supports):
+            raise ValueError("preferred_supports must contain unique support IDs")
         result = object.__new__(cls)
         object.__setattr__(result, "kind", SpatialMatchKind.COVERING)
         object.__setattr__(result, "max_distance", None)
+        object.__setattr__(result, "preferred_supports", supports)
         return result
 
     @classmethod
@@ -80,23 +92,38 @@ class SpatialMatch:
         result = object.__new__(cls)
         object.__setattr__(result, "kind", SpatialMatchKind.NEAREST)
         object.__setattr__(result, "max_distance", max_distance)
+        object.__setattr__(result, "preferred_supports", ())
         return result
 
     def _document(self) -> dict[str, object]:
         document: dict[str, object] = {"kind": self.kind.value}
         if self.max_distance is not None:
             document["max_distance_metres"] = self.max_distance.value_metres
+        if self.preferred_supports:
+            document["preferred_supports"] = list(self.preferred_supports)
         return document
 
 
 def spatial_match_from_document(value: object) -> SpatialMatch:
-    fields = _object(value, {"kind"}, {"max_distance_metres"})
-    if fields == {"kind": SpatialMatchKind.COVERING.value}:
-        return SpatialMatch.covering()
+    fields = _object(value, {"kind"}, {"max_distance_metres", "preferred_supports"})
     if (
-        fields["kind"] == SpatialMatchKind.NEAREST.value
-        and "max_distance_metres" in fields
+        fields["kind"] == SpatialMatchKind.COVERING.value
+        and "max_distance_metres" not in fields
     ):
+        if "preferred_supports" not in fields:
+            return SpatialMatch.covering()
+        order = _array(fields["preferred_supports"], "preferred_supports")
+        if not order:
+            raise ValueError(
+                "omit preferred_supports when no priorities are configured"
+            )
+        return SpatialMatch.covering(
+            preferred_supports=tuple(_identifier(id_, "support ID") for id_ in order)
+        )
+    if fields["kind"] == SpatialMatchKind.NEAREST.value and fields.keys() == {
+        "kind",
+        "max_distance_metres",
+    }:
         return SpatialMatch.nearest(
             max_distance=Distance.metres(
                 _number(fields["max_distance_metres"], "max_distance_metres")
@@ -132,6 +159,9 @@ class SpatialIndex:
 
     def __init__(self, rows: Sequence[DatasetRow], policy: SpatialMatch) -> None:
         self._policy = policy
+        self._support_priority = {
+            support: rank for rank, support in enumerate(policy.preferred_supports)
+        }
         self._rows = tuple(rows)
         self._points: dict[tuple[float, float], list[int]] = {}
         self._cells: dict[int, dict[int, list[int]]] = {}
@@ -226,6 +256,15 @@ class SpatialIndex:
                 )
             )
         if len(indices) > 1:
+            ranked = [
+                (self._support_priority[support], index)
+                for index in indices
+                if (support := self._rows[index].support_id) in self._support_priority
+            ]
+            if ranked:
+                rank, preferred = min(ranked)
+                if sum(priority == rank for priority, _ in ranked) == 1:
+                    return MatchResult(self._rows[preferred])
             raise self._ambiguity("overlapping_supports", indices)
         if not indices:
             return MatchResult(None, failure_code="no_covering_support")
@@ -304,7 +343,13 @@ class SpatialIndex:
         )
         return SpatialMatchError(
             code,
-            f"{reason}: {names!r}. Select a series with unambiguous spatial support.",
+            f"{reason}: {names!r}. "
+            + (
+                "Set SpatialMatch.covering(preferred_supports=[...]) with a unique "
+                "highest priority support."
+                if code == "overlapping_supports"
+                else "Select a series with unambiguous spatial support."
+            ),
         )
 
     def match(self, asset_geometry: bytes) -> MatchResult:

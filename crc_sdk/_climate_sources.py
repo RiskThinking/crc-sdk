@@ -11,12 +11,14 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, TypeAlias, TypeVar, cast
+from typing import Any, Literal, TypeAlias, TypeVar, cast
 
 import crc_framework as cf
 import pyarrow as pa  # type: ignore[import-untyped]
 from h3.api import basic_int as h3  # type: ignore[import-untyped]
 from shapely.geometry import Point, shape  # type: ignore[import-untyped]
+
+import crc_sdk
 
 from ._climate_io import raster_quantile_rows, raster_views, raster_window_snapshot
 from ._dataset_schema import (
@@ -57,10 +59,6 @@ from ._source_io import (
     selected_source_time,
     verify_payload,
 )
-
-if TYPE_CHECKING:
-    from ._evidence_recipes import Projections
-
 
 MetadataT = TypeVar("MetadataT")
 _IDFMetadata: TypeAlias = (
@@ -486,7 +484,7 @@ class ECCCIDF(Dataset):
             "Read published ECCC rainfall IDF evidence",
         )
 
-    def confidence_intervals(self) -> Projections:
+    def confidence_intervals(self) -> crc_sdk.Projections:
         from ._evidence_recipes import Projections
 
         node = cast(_IDFNode, self._base)

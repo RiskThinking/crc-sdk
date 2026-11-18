@@ -35,8 +35,9 @@ def test_binding_only_asset_columns_resolve_without_publishing_them() -> None:
     cache: dict[tuple[str, str], cf.Impact] = {}
     with ExecutionScope() as scope:
         data = assets._materialize(scope, required_columns=response.columns)
-        actual = response.resolve(data.context.to_pylist()[0], cache)
-        assert response.resolve(data.context.to_pylist()[0], cache) is actual
+        actual, context = response.resolve(data.context.to_pylist()[0], cache)
+        assert context is None
+        assert response.resolve(data.context.to_pylist()[0], cache)[0] is actual
         assert data.table.column_names == ["asset_id"]
         assert sorted(data.context.column_names) == ["region", "use"]
     expected = reference.resolve(

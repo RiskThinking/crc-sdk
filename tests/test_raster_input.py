@@ -71,6 +71,14 @@ def _recipe(paths: dict[float, Path]) -> Dataset:
     return Dataset.from_raster(paths, variable=_VARIABLE, probability=_PROBABILITY)
 
 
+def test_raster_quantiles_do_not_require_annual_probability_meaning(
+    rasters: dict[float, Path],
+) -> None:
+    recipe = Dataset.from_raster(rasters, variable=_VARIABLE)
+    assert recipe.inspect().series[0].probability is None
+    assert recipe.read().metadata.spec.series[0].probability is None
+
+
 def test_raster_builder_and_inspection_are_pure_immutable_and_empty_no_io(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

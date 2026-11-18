@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass, replace
+from enum import Enum
 from pathlib import Path
 
 import crc_framework as cf
@@ -12,9 +14,13 @@ import pytest
 
 from crc_sdk import (
     Assets,
+    ColumnBinding,
+    ContextualImpact,
     Dataset,
     EvaluationArtifact,
+    EvaluationResolution,
     Probability,
+    ResponseContext,
     Runtime,
     Stage,
     ValidationError,
@@ -54,6 +60,86 @@ def _context() -> cf.InundationContext:
     return cf.InundationContext(
         region=cf.FloodRegion.EUROPE, asset_type=cf.AssetType.RESIDENTIAL
     )
+
+
+def test_contextual_impact_persists_verified_user_cases(tmp_path: Path) -> None:
+    class Use(Enum):
+        DEPOT = "depot"
+        OFFICE = "office"
+
+    @dataclass(frozen=True)
+    class Facility(ResponseContext):
+        use: Use | ColumnBinding
+
+    measurement = cf.DepthAboveGround(unit=cf.LengthUnit.METRE)
+    days = cf.TimeDuration(unit=cf.TimeUnit.DAY)
+    depot = cf.Impact.linear(slope=2, input=measurement, output=days)
+    office = cf.Impact.tabulated(
+        [(0, 0), (1, 3), (2, 5)], input=measurement, output=days
+    )
+    cases = [(Facility(Use.DEPOT), depot), (Facility(Use.OFFICE), office)]
+    model = ContextualImpact(cases)
+    assert model.requirements.context_type is Facility
+    assert model.requirements.context_fields[0].choices == ("depot", "office")
+    assert model.sha256 == ContextualImpact(list(reversed(cases))).sha256
+    assert ContextualImpact.from_json(model.to_json()).to_json() == model.to_json()
+    assets = Assets(
+        {
+            "asset_id": ["A01", "A02"],
+            "longitude": [24.0, 24.0],
+            "latitude": [60.0, 60.0],
+            "use": [Use.DEPOT.value, Use.OFFICE.value],
+        },
+        columns=[],
+    )
+    recipe = (
+        _depth(measurement)
+        .evaluate(assets)
+        .probabilities([0.5])
+        .impact(
+            "closure", model, variable=_DEPTH, context=Facility(assets.column("use"))
+        )
+    )
+    saved = recipe.write(tmp_path / "cases.parquet")
+    result = EvaluationArtifact.open(saved.path).read(runtime=Runtime(batch_rows=1))
+    assert result.table["value"].to_pylist() == pytest.approx([1.0, 2.0, 1.0, 3.0])
+    assert "asset" not in result.table.column_names
+    first, second = result.metadata.resolutions
+    assert first.id != second.id
+    assert first.asset_ids == ("A01",) and second.asset_ids == ("A02",)
+    assert (
+        first.context is not None and first.context.to_json() == cases[0][0].to_json()
+    )
+    forged = replace(first, impact=office)
+    with pytest.raises(ValueError, match="contradicts the calibrated case"):
+        replace(result.metadata, resolutions=(forged, second))
+
+
+def test_contextual_impact_checks_measurements_and_unknown_cases() -> None:
+    @dataclass(frozen=True)
+    class Facility(ResponseContext):
+        use: str
+        district: str
+
+    input = cf.DepthAboveGround(unit=cf.LengthUnit.METRE)
+    slope = cf.Impact.linear(slope=1, input=input, output=cf.Ratio())
+    day = cf.Impact.linear(
+        slope=1, input=input, output=cf.TimeDuration(unit=cf.TimeUnit.DAY)
+    )
+    first, second = Facility("depot", "north"), Facility("office", "south")
+    with pytest.raises(ValueError, match="identical input and output"):
+        ContextualImpact([(first, slope), (second, day)])
+    with pytest.raises(ValueError, match="duplicate response context"):
+        ContextualImpact([(first, slope), (first, slope)])
+    model = ContextualImpact([(first, slope), (second, slope)])
+    assert (
+        EvaluationResolution("repair", slope, asset_ids=("a",), context=first).id
+        != EvaluationResolution("repair", slope, asset_ids=("b",), context=second).id
+    )
+    with pytest.raises(cf.ImpactError, match="unknown_context_case"):
+        model.resolve(Facility("depot", "south"))
+    with pytest.raises(cf.ImpactError, match="invalid_context_value"):
+        model.resolve(Facility("Depot", "north"))
 
 
 def test_bound_column_resolves_once_and_artifact_keeps_model_proof(
@@ -112,6 +198,7 @@ def test_bound_column_resolves_once_and_artifact_keeps_model_proof(
     assert json.loads(response.context.to_json())["region"] == {"column": "region"}
     (resolution,) = result.metadata.resolutions
     assert resolution.impact.to_json() == resolved.to_json()
+    assert resolution.context == _context()
     assert resolution.asset_ids == ("A01", "A02")
 
     reopened = EvaluationArtifact.open(path).read()

@@ -369,23 +369,14 @@
             "fit": {
               "attempts": [
                 {
-                  "diagnostics": [
-                    {
-                      "code": "fit.samples",
-                      "details": {
-                        "evaluations": 0,
-                        "iterations": 0,
-                        "ks_pvalue": 0.9974677102535184,
-                        "ks_statistic": 0.140420243641746,
-                        "r_squared": 0.9744486788389933,
-                        "rmse": 0.04578216698659895
-                      },
-                      "message": "Requested sample estimator converged",
-                      "path": "",
-                      "severity": "info"
-                    }
-                  ],
-                  "reason": null,
+                  "diagnostic": {
+                    "evaluations": 0,
+                    "iterations": 0,
+                    "ks_pvalue": 0.9974677102535184,
+                    "ks_statistic": 0.140420243641746,
+                    "r_squared": 0.9744486788389933,
+                    "rmse": 0.04578216698659895
+                  },
                   "specification": {
                     "constraints": null,
                     "estimator": "lmoments",
@@ -480,16 +471,9 @@
               "record": {
                 "attempts": [
                   {
-                    "diagnostics": [
-                      {
-                        "code": "fit.failed",
-                        "details": {},
-                        "message": "unsupported operation: gumbel_r has no feasible likelihood fit under the supplied constraints",
-                        "path": "",
-                        "severity": "error"
-                      }
-                    ],
-                    "reason": "unsupported operation: gumbel_r has no feasible likelihood fit under the supplied constraints",
+                    "diagnostic": {
+                      "message": "unsupported operation: gumbel_r has no feasible likelihood fit under the supplied constraints"
+                    },
                     "specification": {
                       "constraints": null,
                       "estimator": "mle",
@@ -555,16 +539,9 @@
                 "record": {
                   "attempts": [
                     {
-                      "diagnostics": [
-                        {
-                          "code": "fit.failed",
-                          "details": {},
-                          "message": "unsupported operation: gumbel_r has no feasible likelihood fit under the supplied constraints",
-                          "path": "",
-                          "severity": "error"
-                        }
-                      ],
-                      "reason": "unsupported operation: gumbel_r has no feasible likelihood fit under the supplied constraints",
+                      "diagnostic": {
+                        "message": "unsupported operation: gumbel_r has no feasible likelihood fit under the supplied constraints"
+                      },
                       "specification": {
                         "constraints": null,
                         "estimator": "mle",
@@ -638,16 +615,9 @@
               "record": {
                 "attempts": [
                   {
-                    "diagnostics": [
-                      {
-                        "code": "fit.failed",
-                        "details": {},
-                        "message": "unsupported operation: gumbel_r has no feasible likelihood fit under the supplied constraints",
-                        "path": "",
-                        "severity": "error"
-                      }
-                    ],
-                    "reason": "unsupported operation: gumbel_r has no feasible likelihood fit under the supplied constraints",
+                    "diagnostic": {
+                      "message": "unsupported operation: gumbel_r has no feasible likelihood fit under the supplied constraints"
+                    },
                     "specification": {
                       "constraints": null,
                       "estimator": "mle",
@@ -771,6 +741,7 @@
           "schema_version": "2.0",
           "source": {
             "member": "member:1",
+            "model": "model:1",
             "product": "product:user",
             "provider": "provider:user",
             "resources": [
@@ -1539,6 +1510,7 @@
           "schema_version": "2.0",
           "source": {
             "member": "member:1",
+            "model": "model:1",
             "product": "product:user",
             "provider": "provider:user",
             "resources": [
@@ -1614,6 +1586,7 @@
           "schema_version": "2.0",
           "source": {
             "member": "member:1",
+            "model": "model:1",
             "product": "product:user",
             "provider": "provider:user",
             "resources": [
@@ -3250,16 +3223,9 @@
               "record": {
                 "attempts": [
                   {
-                    "diagnostics": [
-                      {
-                        "code": "fit.failed",
-                        "details": {},
-                        "message": "unsupported operation: gumbel_r has no feasible likelihood fit under the supplied constraints",
-                        "path": "",
-                        "severity": "error"
-                      }
-                    ],
-                    "reason": "unsupported operation: gumbel_r has no feasible likelihood fit under the supplied constraints",
+                    "diagnostic": {
+                      "message": "unsupported operation: gumbel_r has no feasible likelihood fit under the supplied constraints"
+                    },
                     "specification": {
                       "constraints": null,
                       "estimator": "mle",
@@ -3971,23 +3937,14 @@
             "fit": {
               "attempts": [
                 {
-                  "diagnostics": [
-                    {
-                      "code": "fit.samples",
-                      "details": {
-                        "evaluations": 0,
-                        "iterations": 0,
-                        "ks_pvalue": 0.9974677102535184,
-                        "ks_statistic": 0.140420243641746,
-                        "r_squared": 0.9744486788389933,
-                        "rmse": 0.04578216698659895
-                      },
-                      "message": "Requested sample estimator converged",
-                      "path": "",
-                      "severity": "info"
-                    }
-                  ],
-                  "reason": null,
+                  "diagnostic": {
+                    "evaluations": 0,
+                    "iterations": 0,
+                    "ks_pvalue": 0.9974677102535184,
+                    "ks_statistic": 0.140420243641746,
+                    "r_squared": 0.9744486788389933,
+                    "rmse": 0.04578216698659895
+                  },
                   "specification": {
                     "constraints": null,
                     "estimator": "lmoments",
@@ -4053,16 +4010,9 @@
                 "record": {
                   "attempts": [
                     {
-                      "diagnostics": [
-                        {
-                          "code": "fit.failed",
-                          "details": {},
-                          "message": "unsupported operation: gumbel_r has no feasible likelihood fit under the supplied constraints",
-                          "path": "",
-                          "severity": "error"
-                        }
-                      ],
-                      "reason": "unsupported operation: gumbel_r has no feasible likelihood fit under the supplied constraints",
+                      "diagnostic": {
+                        "message": "unsupported operation: gumbel_r has no feasible likelihood fit under the supplied constraints"
+                      },
                       "specification": {
                         "constraints": null,
                         "estimator": "mle",
@@ -4136,16 +4086,9 @@
               "record": {
                 "attempts": [
                   {
-                    "diagnostics": [
-                      {
-                        "code": "fit.failed",
-                        "details": {},
-                        "message": "unsupported operation: gumbel_r has no feasible likelihood fit under the supplied constraints",
-                        "path": "",
-                        "severity": "error"
-                      }
-                    ],
-                    "reason": "unsupported operation: gumbel_r has no feasible likelihood fit under the supplied constraints",
+                    "diagnostic": {
+                      "message": "unsupported operation: gumbel_r has no feasible likelihood fit under the supplied constraints"
+                    },
                     "specification": {
                       "constraints": null,
                       "estimator": "mle",
@@ -4212,16 +4155,9 @@
                 "record": {
                   "attempts": [
                     {
-                      "diagnostics": [
-                        {
-                          "code": "fit.failed",
-                          "details": {},
-                          "message": "unsupported operation: gumbel_r has no feasible likelihood fit under the supplied constraints",
-                          "path": "",
-                          "severity": "error"
-                        }
-                      ],
-                      "reason": "unsupported operation: gumbel_r has no feasible likelihood fit under the supplied constraints",
+                      "diagnostic": {
+                        "message": "unsupported operation: gumbel_r has no feasible likelihood fit under the supplied constraints"
+                      },
                       "specification": {
                         "constraints": null,
                         "estimator": "mle",
@@ -4295,16 +4231,9 @@
               "record": {
                 "attempts": [
                   {
-                    "diagnostics": [
-                      {
-                        "code": "fit.failed",
-                        "details": {},
-                        "message": "unsupported operation: gumbel_r has no feasible likelihood fit under the supplied constraints",
-                        "path": "",
-                        "severity": "error"
-                      }
-                    ],
-                    "reason": "unsupported operation: gumbel_r has no feasible likelihood fit under the supplied constraints",
+                    "diagnostic": {
+                      "message": "unsupported operation: gumbel_r has no feasible likelihood fit under the supplied constraints"
+                    },
                     "specification": {
                       "constraints": null,
                       "estimator": "mle",
@@ -4431,11 +4360,87 @@
           "schema_version": "2.0",
           "source": {
             "member": "member:1",
+            "model": "model:1",
             "product": "product:user",
             "provider": "provider:user",
             "resources": [
               {
                 "sha256": "not-a-hash",
+                "uri": "s3://example/observations"
+              }
+            ]
+          },
+          "spatial": {
+            "index_resolution": 4,
+            "supports": [
+              "cell"
+            ]
+          },
+          "spec": {
+            "periods": [],
+            "scenarios": [],
+            "series": [
+              {
+                "period_id": null,
+                "scenario_id": null,
+                "variable_id": "user:depth"
+              }
+            ],
+            "variables": [
+              {
+                "id": "user:depth"
+              }
+            ]
+          }
+        },
+        "rows": [
+          {
+            "cell_id": 594475228122316799,
+            "curve": {
+              "kind": "point_mass",
+              "object": "distribution",
+              "schema_version": "1.0",
+              "value": 1.0
+            },
+            "period_id": null,
+            "scenario_id": null,
+            "support_id": "user:support",
+            "variable_id": "user:depth"
+          }
+        ]
+      }
+    },
+    {
+      "name": "invalid-source-model-id",
+      "structural": true,
+      "document": {
+        "metadata": {
+          "provenance": [],
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 0,
+              "no_data": 0,
+              "produced": 1,
+              "requested": 1,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [],
+            "source_identities": [],
+            "valid": true
+          },
+          "schema_version": "2.0",
+          "source": {
+            "member": "member:1",
+            "model": " padded-model",
+            "product": "product:user",
+            "provider": "provider:user",
+            "resources": [
+              {
+                "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "uri": "s3://example/observations"
               }
             ]
@@ -4847,6 +4852,7 @@
           "schema_version": "2.0",
           "source": {
             "member": "member:1",
+            "model": "model:1",
             "product": "product:user",
             "provider": "provider:user",
             "resources": [
@@ -4922,6 +4928,7 @@
           "schema_version": "2.0",
           "source": {
             "member": "member:1",
+            "model": "model:1",
             "product": "product:user",
             "provider": "provider:user",
             "resources": [
@@ -4997,6 +5004,7 @@
           "schema_version": "2.0",
           "source": {
             "member": "member:1",
+            "model": "model:1",
             "product": "product:user",
             "provider": "provider:user",
             "resources": [

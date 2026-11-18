@@ -17,7 +17,6 @@ from typing import (
     Literal,
     Protocol,
     Self,
-    TypeAlias,
     TypeVar,
     overload,
 )
@@ -26,34 +25,22 @@ import crc_framework
 import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
 
+import crc_sdk
+
 from ._aggregation import Aggregation, AnnualMaximum, AnnualMinimum, DailyTotal
 from ._dataset_schema import DatasetMetadata, ExecutionReport, Stage
 from ._errors import CapabilityError, ValidationError
 from ._evidence import EvidenceKind, EvidenceMetadata, FitFailure
 from ._graph import DataValidationError, ExecutionScope, Node
+from ._inspection import ArtifactMetadata
 from ._runtime import LocalPath, Runtime, _local_path, _memory_bytes, _positive
 from ._schema import dataset_arrow_schema
 
 if TYPE_CHECKING:
     import pandas  # type: ignore[import-untyped]
 
-    from ._assets import Assets
-    from ._collection import DatasetCollection
-    from ._collection_schema import CollectionMetadata
-    from ._evaluation import Evaluation, EvaluationArtifact
-    from ._evaluation_schema import EvaluationMetadata
-    from ._evaluation_spatial import SpatialMatch
-    from ._evidence_recipes import Layer, Observations, Projections
-    from ._recipes import Dataset, Samples
-
-ArtifactMetadata: TypeAlias = (
-    "DatasetMetadata | EvidenceMetadata | CollectionMetadata | EvaluationMetadata"
-)
 MetadataT = TypeVar("MetadataT", bound=ArtifactMetadata)
-PersistedArtifact: TypeAlias = (
-    "Dataset | Samples | Observations | Projections | Layer | "
-    "EvaluationArtifact | DatasetCollection"
-)
+ArtifactT = TypeVar("ArtifactT", covariant=True)
 
 
 def _with_report(metadata: MetadataT, report: ExecutionReport) -> MetadataT:
@@ -87,13 +74,11 @@ def _limit(value: int | None) -> int | None:
     return value
 
 
-class _Recipe(Protocol[MetadataT]):
+class _Recipe(Protocol[MetadataT, ArtifactT]):
     @property
     def _node(self) -> Node[MetadataT]: ...
 
-    def _saved(
-        self, path: Path, metadata: MetadataT, digest: str
-    ) -> PersistedArtifact: ...
+    def _saved(self, path: Path, metadata: MetadataT, digest: str) -> ArtifactT: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,7 +93,7 @@ class ReadResult(Generic[MetadataT]):
         spec: crc_framework.FitSpec,
         *,
         on_failure: FitFailure = FitFailure.RAISE,
-    ) -> Dataset:
+    ) -> crc_sdk.Dataset:
         if not self.report.complete:
             raise CapabilityError(
                 "A bounded preview is incomplete evidence. Call read() without a "
@@ -135,24 +120,24 @@ class ReadResult(Generic[MetadataT]):
     def aggregate(
         self: ReadResult[EvidenceMetadata[Literal[EvidenceKind.OBSERVATIONS]]],
         spec: DailyTotal,
-    ) -> Observations: ...
+    ) -> crc_sdk.Observations: ...
 
     @overload
     def aggregate(
         self: ReadResult[EvidenceMetadata[Literal[EvidenceKind.OBSERVATIONS]]],
         spec: AnnualMaximum | AnnualMinimum,
-    ) -> Samples: ...
+    ) -> crc_sdk.Samples: ...
 
     @overload
     def aggregate(
         self: ReadResult[EvidenceMetadata[Literal[EvidenceKind.OBSERVATIONS]]],
         spec: Aggregation,
-    ) -> Samples | Observations: ...
+    ) -> crc_sdk.Samples | crc_sdk.Observations: ...
 
     def aggregate(
         self: ReadResult[EvidenceMetadata[Literal[EvidenceKind.OBSERVATIONS]]],
         spec: Aggregation,
-    ) -> Samples | Observations:
+    ) -> crc_sdk.Samples | crc_sdk.Observations:
         if not self.report.complete:
             raise CapabilityError(
                 "A bounded preview is incomplete evidence. "
@@ -174,11 +159,11 @@ class ReadResult(Generic[MetadataT]):
         return frame
 
     def evaluate(
-        self: ReadResult[DatasetMetadata] | ReadResult[CollectionMetadata],
-        assets: Assets,
+        self: ReadResult[DatasetMetadata] | ReadResult[crc_sdk.CollectionMetadata],
+        assets: crc_sdk.Assets,
         *,
-        spatial: SpatialMatch | None = None,
-    ) -> Evaluation:
+        spatial: crc_sdk.SpatialMatch | None = None,
+    ) -> crc_sdk.Evaluation:
         if not self.report.complete:
             raise CapabilityError(
                 "Call read() without a limit before evaluating collected data."
@@ -371,11 +356,11 @@ class BatchStream(Generic[MetadataT]):
         return self._snapshot_report()
 
 
-class Execution(Generic[MetadataT]):
+class Execution(Generic[MetadataT, ArtifactT]):
     def __init__(
-        self, recipe: _Recipe[MetadataT], *, runtime: Runtime | None = None
+        self, recipe: _Recipe[MetadataT, ArtifactT], *, runtime: Runtime | None = None
     ) -> None:
-        self._recipe: _Recipe[MetadataT] = recipe
+        self._recipe = recipe
         self._scope = ExecutionScope(runtime)
         self._entered = False
         self._closed = False
@@ -476,7 +461,7 @@ class Execution(Generic[MetadataT]):
             pass
         return self.report
 
-    def write(self, path: LocalPath, *, overwrite: bool = False) -> PersistedArtifact:
+    def write(self, path: LocalPath, *, overwrite: bool = False) -> ArtifactT:
         self._active()
         destination = _publication_path(path, overwrite)
         node = self._recipe._node

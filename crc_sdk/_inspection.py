@@ -5,17 +5,23 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING
+from typing import TypeAlias, Union
 
 import crc_framework
 import pyarrow as pa  # type: ignore[import-untyped]
 
+import crc_sdk
+
 from ._dataset_schema import ReleaseReference, SourceIdentity, Stage, _identifier, _text
 from ._declarations import Period, Probability, Scenario, Variable
+from ._runtime import Cache
 
-if TYPE_CHECKING:
-    from ._runtime import Cache
-    from ._terminals import ArtifactMetadata
+ArtifactMetadata: TypeAlias = Union[
+    "crc_sdk.DatasetMetadata",
+    "crc_sdk.EvidenceMetadata",
+    "crc_sdk.CollectionMetadata",
+    "crc_sdk.EvaluationMetadata",
+]
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -82,10 +88,16 @@ class SeriesReference:
     period: Period | None = None
     release: ReleaseReference | None = None
     probability: Probability | None = None
+    model: str | None = None
+    member: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.variable, Variable):
             raise TypeError("series variable must be Variable")
+        for name in ("model", "member"):
+            value = getattr(self, name)
+            if value is not None:
+                _identifier(value, f"series {name}")
         for name, expected in (
             ("scenario", Scenario),
             ("period", Period),

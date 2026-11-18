@@ -9,10 +9,11 @@ from typing import TypeAlias, cast
 
 import crc_framework as cf
 
+from ._contextual_impact import ContextualImpact, ResponseContext
 from ._dataset_schema import _dump, _identifier, _load
 from ._declarations import Variable
 
-Model: TypeAlias = cf.Impact | cf.ImpactReference
+Model: TypeAlias = cf.Impact | cf.ImpactReference | ContextualImpact
 ResolutionCache: TypeAlias = MutableMapping[tuple[str, str], cf.Impact]
 
 
@@ -20,7 +21,11 @@ def response_context(
     model: Model, context: cf.ImpactContext | None
 ) -> cf.ImpactContext | None:
     """Check the declared context and own its column-binding names."""
+    if isinstance(model, ContextualImpact) and type(model) is ContextualImpact:
+        return model._context(context)
     if isinstance(model, cf.Impact):
+        if type(model) is not cf.Impact:
+            raise TypeError("use an exact framework Impact for a resolved response")
         if context is not None:
             raise cf.ImpactError(
                 "unexpected_context",
@@ -29,9 +34,12 @@ def response_context(
                 "Supply context with an ImpactReference.",
             )
         return None
-    if not isinstance(model, cf.ImpactReference):
+    if (
+        not isinstance(model, cf.ImpactReference)
+        or type(model) is not cf.ImpactReference
+    ):
         raise TypeError(
-            "model must be a calibrated framework Impact or ImpactReference"
+            "model must be a calibrated Impact, ImpactReference, or ContextualImpact"
         )
     requirements = model.requirements
     constructor = requirements.context_type
@@ -53,9 +61,7 @@ def bind_response(model: Model, measurement: cf.Measurement | None) -> None:
     """Validate complete source science against the calibrated input."""
     if measurement is None:
         expected = (
-            model.requirements.input
-            if isinstance(model, cf.ImpactReference)
-            else model.input
+            model.input if isinstance(model, cf.Impact) else model.requirements.input
         )
         raise cf.ImpactError(
             "missing_measurement",
@@ -63,6 +69,11 @@ def bind_response(model: Model, measurement: cf.Measurement | None) -> None:
             f"This response requires {expected!r}. "
             "Declare the input measurement with Variable(..., measurement=...).",
         )
+    if isinstance(model, ContextualImpact):
+        model.requirements.bind(measurement)
+        for impact in model._cases.values():
+            bind_response(impact, measurement)
+        return
     if isinstance(model, cf.ImpactReference):
         model.requirements.bind(measurement)
         return
@@ -97,10 +108,19 @@ def _context_bindings(
     )
 
 
+def _wire_context_values(context: cf.ImpactContext) -> dict[str, object]:
+    document = _load(context.to_json())
+    return (
+        _load(_dump(document["values"]))
+        if isinstance(context, ResponseContext)
+        else document
+    )
+
+
 def context_columns(context: cf.ImpactContext | None) -> tuple[str, ...]:
     if context is None:
         return ()
-    bindings = _context_bindings(_load(context.to_json()))
+    bindings = _context_bindings(_wire_context_values(context))
     return tuple(dict.fromkeys(column for _, column in bindings))
 
 
@@ -108,7 +128,7 @@ def _concrete_context(
     context: cf.ImpactContext,
     asset: Mapping[str, object],
 ) -> cf.ImpactContext:
-    document = _load(context.to_json())
+    document = _wire_context_values(context)
     bindings = _context_bindings(document)
     if not bindings:
         return context
@@ -132,6 +152,10 @@ def _concrete_context(
         # numeric context fields use finite JSON numbers and consume doubles.
         document[field] = float(value) if isinstance(value, Decimal) else value
     try:
+        if isinstance(context, ResponseContext):
+            return ResponseContext.from_json(
+                _dump({"kind": "response_context", "values": document})
+            )
         return cf.ImpactContext.from_json(_dump(document))
     except (TypeError, ValueError) as error:
         columns = ", ".join(f"{field} from {column!r}" for field, column in bindings)
@@ -147,16 +171,21 @@ def resolve_response(
     context: cf.ImpactContext | None,
     asset: Mapping[str, object],
     cache: ResolutionCache,
-) -> cf.Impact:
+) -> tuple[cf.Impact, ResponseContext | None]:
     if isinstance(model, cf.Impact):
-        return model
+        return model, None
     concrete = (
         cf.EmptyContext() if context is None else _concrete_context(context, asset)
     )
     key = (model.sha256, concrete.to_json())
+    if isinstance(model, ContextualImpact):
+        assert isinstance(concrete, ResponseContext)
+        if key not in cache:
+            cache[key] = model.resolve(concrete)
+        return cache[key], concrete
     if key not in cache:
         cache[key] = model.resolve(concrete)
-    return cache[key]
+    return cache[key], None
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,5 +216,7 @@ class Response:
     def bind(self, measurement: cf.Measurement | None) -> None:
         bind_response(self.model, measurement)
 
-    def resolve(self, asset: Mapping[str, object], cache: ResolutionCache) -> cf.Impact:
+    def resolve(
+        self, asset: Mapping[str, object], cache: ResolutionCache
+    ) -> tuple[cf.Impact, ResponseContext | None]:
         return resolve_response(self.model, self.context, asset, cache)
