@@ -314,10 +314,13 @@ replayed = selected.read(runtime=Runtime(cache=Cache.offline(".release-cache")))
 assert replayed.table.equals(published.table, check_metadata=False)
 ```
 
-A selected file must match both its checksum and the scientific metadata in
-the index. Pass a returned series reference directly to `select` to pin that
-exact choice. For a known published variable or scenario, use a provider enum
-such as `CRCOpen.Variable.ANNUAL_MAXIMUM_DAILY_PRECIPITATION` or
+A read checks each participating file's checksum, Arrow schema, indexed
+scientific metadata, and complete row counts before delivering rows. It
+retains the transformation history needed to replay fitted curves. Files
+combined in one read must agree on the history of any shared variable or
+scenario identity. Pass a returned series reference directly to `select` to
+pin that exact choice. For a known published variable or scenario, use a
+provider enum such as `CRCOpen.Variable.ANNUAL_MAXIMUM_DAILY_PRECIPITATION` or
 `CRCOpen.Scenario.SSP585` in the corresponding selector. User-owned IDs in a
 release can be selected by their exact values.
 

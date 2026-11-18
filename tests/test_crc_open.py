@@ -8,18 +8,51 @@ from pathlib import Path
 
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
 import pytest
-from crc_framework import DepthAboveGround, LengthUnit, Tail
+from crc_framework import (
+    DepthAboveGround,
+    DistributionFamily,
+    LengthUnit,
+    SampleFit,
+    Tail,
+)
 
 from crc_sdk import (
+    Assets,
+    Bounds,
     Cache,
     CRCOpen,
     Dataset,
+    IdentityRename,
     Period,
     Probability,
     Runtime,
+    Samples,
+    SpatialMatch,
     ValidationError,
     Variable,
 )
+
+
+def _release_index(tmp_path: Path, *datasets: Dataset) -> Path:
+    resources = []
+    for dataset in datasets:
+        assert dataset.path is not None and dataset.metadata is not None
+        resources.append(
+            {
+                "id": dataset.path.stem,
+                "uri": dataset.path.name,
+                "sha256": "sha256:"
+                + hashlib.sha256(dataset.path.read_bytes()).hexdigest(),
+                "metadata": json.loads(dataset.metadata.to_json()),
+            }
+        )
+    index = tmp_path / "_INDEX.json"
+    index.write_text(
+        json.dumps(
+            {"schema_version": "1.0", "id": "fixture-release", "datasets": resources}
+        )
+    )
+    return index
 
 
 def release(tmp_path: Path) -> tuple[CRCOpen, Path, Path]:
@@ -38,25 +71,8 @@ def release(tmp_path: Path) -> tuple[CRCOpen, Path, Path]:
         probability=Probability.annual(tail=Tail.UPPER),
         period=Period.window(2000, 2020),
     ).write(tmp_path / "depth.parquet")
-    assert dataset.path is not None and dataset.metadata is not None
-    index = tmp_path / "_INDEX.json"
-    index.write_text(
-        json.dumps(
-            {
-                "schema_version": "1.0",
-                "id": "fixture-release",
-                "datasets": [
-                    {
-                        "id": "depth",
-                        "uri": dataset.path.name,
-                        "sha256": "sha256:"
-                        + hashlib.sha256(dataset.path.read_bytes()).hexdigest(),
-                        "metadata": json.loads(dataset.metadata.to_json()),
-                    }
-                ],
-            }
-        )
-    )
+    index = _release_index(tmp_path, dataset)
+    assert dataset.path is not None
     return CRCOpen(catalog=index), index, dataset.path
 
 
@@ -143,6 +159,168 @@ def test_dataset_checksum_and_header_must_match_index(tmp_path: Path) -> None:
     with pytest.raises(ValidationError, match="header differs"):
         recipe.read()
     assert pq.ParquetFile(artifact).metadata.num_rows == 1
+
+
+def _converted_fit(variable_id: str, support: str, *, unit: LengthUnit) -> Dataset:
+    variable = Variable(
+        variable_id, measurement=DepthAboveGround(unit=LengthUnit.METRE)
+    )
+    return (
+        Samples.from_table(
+            {
+                "support_id": [support] * 5,
+                "longitude": [24.0] * 5,
+                "latitude": [60.0] * 5,
+                "time": [2000, 2001, 2002, 2003, 2004],
+                "value": [1.0, 2.0, 4.0, 5.0, 8.0],
+            },
+            variable=variable,
+        )
+        .fit(SampleFit(family=DistributionFamily.GUMBEL_RIGHT))
+        .convert_units(variable=variable, unit=unit)
+    )
+
+
+def test_release_replays_fitted_conversions_across_distinct_series_and_shards(
+    tmp_path: Path,
+) -> None:
+    first = (
+        _converted_fit("company:harbour", "first", unit=LengthUnit.CENTIMETRE)
+        .rename(variables={"company:harbour": "company:coast"})
+        .write(tmp_path / "coast.parquet")
+    )
+    shard = (
+        _converted_fit("company:harbour", "second", unit=LengthUnit.CENTIMETRE)
+        .rename(variables={"company:harbour": "company:coast"})
+        .write(tmp_path / "coast-shard.parquet")
+    )
+    other = _converted_fit("company:river", "third", unit=LengthUnit.MILLIMETRE).write(
+        tmp_path / "river.parquet"
+    )
+    assert first.metadata is not None and other.metadata is not None
+    source = CRCOpen(catalog=_release_index(tmp_path, first, shard, other))
+    reference = source.inspect().series[0]
+    assert reference.variable.id == "company:coast"
+    published = source.read()
+    assert published.report.valid is True
+    assert published.metadata.provenance == (
+        *first.metadata.provenance,
+        *other.metadata.provenance,
+    )
+    assert published.table["support_id"].to_pylist() == ["first", "second", "third"]
+    written = source.write(tmp_path / "replayed.parquet").read()
+    assert written.table.equals(published.table, check_metadata=False)
+    assert written.metadata.provenance == published.metadata.provenance
+
+    assert other.path is not None
+    other.path.unlink()
+    selected = source.select(series=reference)
+    result = selected.read()
+    assert result.table["support_id"].to_pylist() == ["first", "second"]
+    assert result.metadata.provenance == first.metadata.provenance
+
+    assets = Assets({"asset_id": ["site"], "longitude": [24.0], "latitude": [60.0]})
+    evaluated = (
+        selected.evaluate(
+            assets, spatial=SpatialMatch.covering(preferred_supports=["first"])
+        )
+        .probabilities([0.9])
+        .read()
+    )
+    assert evaluated.report.valid is True
+    assert evaluated.table["support_id"].to_pylist() == ["first"]
+
+
+def test_release_combines_atomic_rename_projected_across_payloads(
+    tmp_path: Path,
+) -> None:
+    first = (
+        _converted_fit("company:coast", "coast", unit=LengthUnit.CENTIMETRE)
+        .rename(variables={"company:coast": "company:river"})
+        .write(tmp_path / "coast.parquet")
+    )
+    second = (
+        _converted_fit("company:river", "river", unit=LengthUnit.MILLIMETRE)
+        .rename(variables={"company:river": "company:coast"})
+        .write(tmp_path / "river.parquet")
+    )
+    result = CRCOpen(catalog=_release_index(tmp_path, first, second)).read()
+    assert result.report.valid is True
+    assert result.table["variable_id"].to_pylist() == ["company:river", "company:coast"]
+    rename = result.metadata.provenance[-1]
+    assert isinstance(rename, IdentityRename)
+    assert rename.mapping == {
+        "company:coast": "company:river",
+        "company:river": "company:coast",
+    }
+
+
+def test_release_inspects_series_with_conflicting_combined_history(
+    tmp_path: Path,
+) -> None:
+    variable = "company:depth"
+    first = (
+        _converted_fit(variable, "first", unit=LengthUnit.CENTIMETRE)
+        .declare(period=Period.window(2000, 2004))
+        .write(tmp_path / "first.parquet")
+    )
+    second = (
+        _converted_fit(variable, "second", unit=LengthUnit.MILLIMETRE)
+        .convert_units(variable=variable, unit=LengthUnit.CENTIMETRE)
+        .declare(period=Period.window(2005, 2009))
+        .write(tmp_path / "second.parquet")
+    )
+    source = CRCOpen(catalog=_release_index(tmp_path, first, second))
+    references = source.inspect().series
+    assert len(references) == 2
+    with pytest.raises(
+        ValidationError, match="Conflicting release provenance for variable"
+    ):
+        source.read()
+    assert source.select(series=references[1]).read().table[
+        "support_id"
+    ].to_pylist() == ["second"]
+
+
+@pytest.mark.parametrize(
+    ("damage", "message"),
+    [
+        ("zero_rows", "produced count disagrees with the Parquet footer"),
+        ("field", "Arrow schema contradicts its indexed declaration"),
+        ("incomplete", "requires a complete, valid report"),
+        ("no_data", "report counts disagree with the consumed rows"),
+    ],
+)
+def test_selected_release_payload_requires_complete_consistent_counts_and_schema(
+    tmp_path: Path, damage: str, message: str
+) -> None:
+    recipe, index, artifact = release(tmp_path)
+    table = pq.read_table(artifact)
+    document = json.loads(index.read_text())
+    indexed = document["datasets"][0]
+    if damage == "zero_rows":
+        table = table.slice(0, 0)
+    elif damage == "field":
+        table = table.drop(["failure"])
+    else:
+        report = indexed["metadata"]["report"]
+        if damage == "incomplete":
+            report.update(complete=False, valid=None)
+        else:
+            report["counts"]["no_data"] = 1
+        table = table.replace_schema_metadata(
+            {b"crc.dataset": json.dumps(indexed["metadata"]).encode()}
+        )
+    pq.write_table(table, artifact)
+    indexed["sha256"] = "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest()
+    index.write_text(json.dumps(document))
+
+    assert recipe.inspect().series
+    assert recipe.validate().valid is False
+    with pytest.raises(ValidationError, match=message):
+        recipe.read(limit=1)
+    with pytest.raises(ValidationError, match=message):
+        recipe.select(area=Bounds(west=-1.0, south=-1.0, east=1.0, north=1.0)).read()
 
 
 def test_historical_indexes_are_not_admitted_and_empty_does_not_acquire(

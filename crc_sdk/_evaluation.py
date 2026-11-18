@@ -543,14 +543,15 @@ class _EvaluationNode(Node[EvaluationMetadata]):
             )
         )
         current_inputs = planned.inputs
+        current_source = declaration.source
         validator = EvaluationValidator(planned, scope_directory=scope.directory)
         scope.callback(validator.close)
 
         def report() -> ExecutionReport:
             upstream = scope.report(parent)
             sources = list(upstream.source_identities)
-            if declaration.source is not None and declaration.source not in sources:
-                sources.append(declaration.source)
+            if current_source is not None and current_source not in sources:
+                sources.append(current_source)
             if assets.source is not None and assets.source not in sources:
                 sources.append(assets.source)
             return ExecutionReport(
@@ -575,6 +576,7 @@ class _EvaluationNode(Node[EvaluationMetadata]):
             return _replace(
                 planned,
                 inputs=current_inputs,
+                source=current_source,
                 resolutions=tuple(
                     EvaluationResolution(
                         name, impact, asset_ids=tuple(assigned_assets), context=context
@@ -604,7 +606,8 @@ class _EvaluationNode(Node[EvaluationMetadata]):
             )
 
         def batches() -> Iterator[pa.RecordBatch]:
-            nonlocal current_inputs, produced, no_data, matched, unmatched
+            nonlocal current_inputs, current_source
+            nonlocal produced, no_data, matched, unmatched
             if ids:
                 scope.emit(Stage.JOINING, 0)
                 grouped, resources = _index_inputs(scope, parent, inputs, groups)
@@ -612,10 +615,16 @@ class _EvaluationNode(Node[EvaluationMetadata]):
                 for _ in scope.iter_batches(parent):
                     pass
                 grouped, resources = {}, {}
-            current_inputs = _response_inputs(_inputs(scope.metadata(parent)), groups)
             upstream = scope.report(parent)
             if upstream.valid is False:
                 raise DataValidationError(upstream.diagnostics)
+            completed = scope.metadata(parent)
+            if isinstance(completed, DatasetMetadata):
+                # Native streams can publish source metadata and validation
+                # reports separately. Embed the report for the exhausted stream.
+                completed = _replace(completed, report=upstream)
+            current_inputs = _response_inputs(_inputs(completed), groups)
+            current_source = completed.source
             if not ids:
                 with native_data(scope=scope, source="evaluation"):
                     validator.finish(metadata(complete=True))

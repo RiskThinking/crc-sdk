@@ -12,6 +12,7 @@ import pytest
 import zarr
 
 from crc_sdk import (
+    Assets,
     Bounds,
     Cache,
     Calendar,
@@ -918,6 +919,13 @@ def test_jrc_preserves_published_quantile_knots_and_native_pixel_support(
     release = result.metadata.source.release
     assert release is not None
     assert reference.release != release
+    assets = Assets({"asset_id": ["site"], "longitude": [0.0], "latitude": [0.0]})
+    evaluation = recipe.evaluate(assets).return_periods([10]).read()
+    assert evaluation.table["value"].to_pylist() == [1.0]
+    assert evaluation.metadata.source is not None
+    assert evaluation.metadata.source.release is not None
+    assert evaluation.metadata.source.release.sha256 == release.sha256
+    assert evaluation.metadata.inputs[0].metadata.report.valid is True
     assert (
         JRC()
         .select(series=reference, area=AREA)
@@ -967,11 +975,23 @@ def test_jrc_preserves_published_quantile_knots_and_native_pixel_support(
         .read(runtime=Runtime(cache=Cache.offline(cache)))
         .table.equals(result.table, check_metadata=False)
     )
-    matching = DatasetCollection({"archived": archived, "pinned": pinned}).select(
-        series=exact
-    )
-    assert len(matching.inspect().series) == 2
-    assert matching.read().table["member_id"].to_pylist() == ["archived", "pinned"]
+    for live in (pinned, recipe):
+        matching = DatasetCollection({"archived": archived, "live": live}).select(
+            series=exact
+        )
+        assert len(matching.inspect().series) == 2
+        assert matching.read().table["member_id"].to_pylist() == ["archived", "live"]
+
+    unbounded_source = JRC(product=JRC.Product.EFAS)
+    unbounded = DatasetCollection(
+        {"unbounded": unbounded_source, "pinned": pinned}
+    ).select(series=exact)
+    unbounded_inspection = unbounded.inspect()
+    assert len(unbounded_inspection.series) == 1
+    assert not unbounded_inspection.requirements
+    assert unbounded.read().table["member_id"].to_pylist() == ["pinned"]
+    with pytest.raises(CapabilityError, match=r"requires \.select\(area="):
+        DatasetCollection({"unbounded": unbounded_source}).select(series=exact).read()
 
     other = JRC(product=JRC.Product.EFAS).select(
         area=Bounds(west=0.2, east=0.3, south=0.2, north=0.3)
@@ -997,6 +1017,19 @@ def test_jrc_preserves_published_quantile_knots_and_native_pixel_support(
     mixed = DatasetCollection({"live": recipe, "archived": archived}).select(
         series=exact
     )
+    assert mixed.inspect().series == (exact,)
+    assert mixed.read().table["member_id"].to_pylist() == ["archived"]
+    with pytest.raises(OSError, match="release changed"):
+        DatasetCollection({"archived": archived, "pinned": pinned}).select(
+            series=exact
+        ).read()
+    raster = root / "rp100.tif"
+    backup = raster.rename(root / "archived-rp100.tif")
+    try:
+        assert mixed.inspect().series == (exact,)
+        assert mixed.read().table["member_id"].to_pylist() == ["archived"]
+    finally:
+        backup.rename(raster)
     readme = root / "README.txt"
     backup = readme.rename(root / "archived-README.txt")
     try:
