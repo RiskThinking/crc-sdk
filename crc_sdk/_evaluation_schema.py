@@ -1450,15 +1450,20 @@ class EvaluationValidator:
                 self._verified_failure_codes.add(failure.code)
 
     def _check_exposure_grid(self, metadata: EvaluationMetadata) -> None:
-        declared_failures = {
-            (item.member_id, item.resource_id): item.metadata.report.counts.no_data
+        declared_counts = {
+            (item.member_id, item.resource_id): item.metadata.report.counts
             for item in metadata.inputs
         }
-        for member, resource, count in self._db.execute(
-            "SELECT member, resource, count(*) FROM source_supports "
-            "WHERE fit_failure IS NOT NULL GROUP BY member, resource"
+        for member, resource, total, failed in self._db.execute(
+            "SELECT member, resource, count(*), count(fit_failure) "
+            "FROM source_supports GROUP BY member, resource"
         ):
-            if count > declared_failures[member, resource]:
+            counts = declared_counts[member, resource]
+            if total > counts.produced:
+                raise ValueError(
+                    "evaluation matched supports exceed the input row count"
+                )
+            if failed > counts.no_data:
                 raise ValueError(
                     "evaluation fit failures exceed the input no-data count"
                 )

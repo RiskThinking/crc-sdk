@@ -23,6 +23,7 @@ from crc_sdk import (
     EvidenceMetadata,
     FitFailure,
     FittingDiagnostic,
+    Probability,
     ReadResult,
     ReleaseReference,
     Samples,
@@ -743,6 +744,32 @@ def test_noaa_annual_observations_central_curves_and_confidence_evidence_stay_di
     curve = table_to_rows(central.table)[0].curve
     assert curve is not None
     np.testing.assert_equal(curve.quantile([0.9, 0.99]), [1.5, 2.5])
+
+
+def test_noaa_published_references_preserve_probability_semantics(
+    transport: NativeTransport,
+) -> None:
+    source = NOAAWaterLevels().select(stations="8518750")
+    levels = source.levels()
+    intervals = source.confidence_intervals()
+    (annual_ref,) = levels.inspect().series
+    (confidence_ref,) = intervals.inspect().series
+    assert annual_ref.probability == Probability.annual(tail=cf.Tail.UPPER)
+    assert confidence_ref.probability == Probability.confidence()
+    assert levels.select(series=annual_ref).read().table.num_rows == 1
+    assert intervals.select(series=confidence_ref).read().table.num_rows == 2
+    for incompatible in (
+        levels.select(series=confidence_ref),
+        intervals.select(series=annual_ref),
+    ):
+        with pytest.raises(
+            ValueError, match="conflicting scientific series definition"
+        ):
+            incompatible.inspect()
+        with pytest.raises(
+            ValueError, match="conflicting scientific series definition"
+        ):
+            incompatible.read()
 
 
 @pytest.mark.parametrize("confidence", [False, True])

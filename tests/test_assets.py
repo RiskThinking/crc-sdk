@@ -287,6 +287,45 @@ def test_sql_snapshot_ignores_bitmap_padding_and_slice_offsets(
     assert first.source.resources[0].sha256 == second.source.resources[0].sha256
 
 
+@pytest.mark.parametrize("row_count", [0, 37])
+def test_sql_snapshot_owns_scalar_and_nested_arrow_views(row_count: int) -> None:
+    assets = Assets.sql(
+        "SELECT i AS asset_id, 0.0 AS longitude, 0.0 AS latitude, "
+        "repeat('a', 16 + i::INTEGER) AS label, "
+        "CASE WHEN i % 7 = 0 THEN NULL ELSE "
+        "{'values': [repeat('b', 16 + i::INTEGER), NULL]} END AS nested "
+        f"FROM range({row_count}) r(i) ORDER BY i",
+        location=PointColumns(),
+    )
+    results = []
+    with duckdb.connect(
+        config={
+            "arrow_output_version": "1.4",
+            "produce_arrow_string_view": True,
+            "arrow_output_list_view": True,
+        }
+    ) as connection:
+        for batch_rows in (7, 128):
+            with ExecutionScope(
+                Runtime(connection=connection, batch_rows=batch_rows)
+            ) as scope:
+                results.append(assets._materialize(scope))
+        settings = connection.execute(
+            "SELECT current_setting('produce_arrow_string_view'), "
+            "current_setting('arrow_output_list_view')"
+        ).fetchone()
+    assert settings == (True, True)
+    first, second = results
+    assert first.table.equals(second.table, check_metadata=True)
+    assert first.table["label"].type == pa.string()
+    assert first.table["nested"].to_pylist() == [
+        None if i % 7 == 0 else {"values": ["b" * (16 + i), None]}
+        for i in range(row_count)
+    ]
+    assert first.source is not None and second.source is not None
+    assert first.source.resources[0].sha256 == second.source.resources[0].sha256
+
+
 def test_offline_sql_cannot_open_an_external_reader(tmp_path: Path) -> None:
     assets = Assets.sql(
         "SELECT * FROM read_csv_auto('http://127.0.0.1:1/assets.csv')",

@@ -863,6 +863,19 @@ def test_edo_empty_selection_avoids_offline_metadata_lookup(tmp_path: Path) -> N
     assert selected.read(runtime=offline).table.num_rows == 0
 
 
+def test_edo_rejects_station_selection_without_acquisition(tmp_path: Path) -> None:
+    offline = Runtime(cache=Cache.offline(tmp_path))
+    recipe = EDO().select(area=AREA)
+    selected = recipe.select(stations="not-present")
+    with pytest.raises(CapabilityError, match="EDO uses a grid"):
+        selected.inspect(runtime=offline)
+    with pytest.raises(CapabilityError, match="EDO uses a grid"):
+        selected.read(runtime=offline)
+    empty = recipe.select(stations=[])
+    assert not empty.inspect(runtime=offline).series
+    assert empty.read(runtime=offline).table.num_rows == 0
+
+
 def test_jrc_preserves_published_quantile_knots_and_native_pixel_support(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -915,6 +928,17 @@ def test_jrc_preserves_published_quantile_knots_and_native_pixel_support(
         selected = JRC().select(variables=variable, area=AREA)
         assert selected.inspect().series == (reference,)
         assert selected.read().table.equals(result.table, check_metadata=False)
+    glofas = "jrc:glofas:flood_depth"
+    combined = JRC().select(
+        series=reference, variables=[reference.variable.id, glofas], area=AREA
+    )
+    assert combined.inspect().series == (reference,)
+    assert combined.read().table.equals(result.table, check_metadata=False)
+    disjoint = JRC().select(series=reference, variables=glofas, area=AREA)
+    offline = Runtime(cache=Cache.offline(tmp_path / "empty-cache"))
+    assert not disjoint.explain().requirements
+    assert not disjoint.inspect(runtime=offline).series
+    assert disjoint.read(runtime=offline).table.num_rows == 0
     collection = DatasetCollection({"river": JRC()})
     for composed in (
         collection.select(series=reference, area=AREA),
@@ -943,6 +967,29 @@ def test_jrc_preserves_published_quantile_knots_and_native_pixel_support(
         .read(runtime=Runtime(cache=Cache.offline(cache)))
         .table.equals(result.table, check_metadata=False)
     )
+    matching = DatasetCollection({"archived": archived, "pinned": pinned}).select(
+        series=exact
+    )
+    assert len(matching.inspect().series) == 2
+    assert matching.read().table["member_id"].to_pylist() == ["archived", "pinned"]
+
+    other = JRC(product=JRC.Product.EFAS).select(
+        area=Bounds(west=0.2, east=0.3, south=0.2, north=0.3)
+    )
+    other_source = other.read().metadata.source
+    assert other_source is not None and other_source.release is not None
+    assert other_source.release.id == release.id
+    assert other_source.release.sha256 != release.sha256
+    other_exact = replace(reference, release=other_source.release)
+    different_payloads = DatasetCollection({"first": recipe, "other": other}).select(
+        series=[exact, other_exact],
+    )
+    assert different_payloads.inspect().series == (exact, other_exact)
+    assert different_payloads.read().table["member_id"].to_pylist() == [
+        "first",
+        "other",
+    ]
+
     with rasterio.open(root / "rp100.tif", "r+") as file:
         file.write(np.full((2, 2), 11.0), 1)
     with pytest.raises(OSError, match="release changed"):

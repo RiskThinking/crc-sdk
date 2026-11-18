@@ -528,6 +528,28 @@ class _ClimateNode(SourceNode[EvidenceMetadata]):
         variable = _native_variable if self.raw else _variable
         return frozenset(variable(self.provider, name).id for name in operations)
 
+    def _configured_payload_pin(self) -> ReleaseReference | None:
+        return payload_selection(self.state, self.release)[1].payload
+
+    def _variable_declarations(self) -> tuple[Variable, ...] | None:
+        if self.provider != "era5" or self.raw:
+            return None
+        if self._explicitly_empty():
+            return ()
+        operation = self._operation()
+        operations = _OPERATIONS if operation is None else (operation,)
+        variables = tuple(_variable(self.provider, item) for item in operations)
+        available = self._variable_ids()
+        if self.state.variables is not None:
+            choices = {
+                item if isinstance(item, str) else item.id
+                for item in self.state.variables
+            }
+            available &= choices
+        if self.state.series is not None:
+            available &= {ref.variable.id for ref in self.state.series}
+        return tuple(variable for variable in variables if variable.id in available)
+
     def _scenario_ids(self) -> frozenset[str] | None:
         if self.provider == "era5":
             return frozenset()

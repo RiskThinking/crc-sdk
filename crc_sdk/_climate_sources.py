@@ -53,12 +53,14 @@ from ._recipes import Dataset, _checked_stream, _key
 from ._runtime import _memory_bytes
 from ._schema import DatasetRow, dataset_arrow_schema, rows_to_table
 from ._selection import (
+    ResolvedSelection,
     SelectionState,
     _validate_static_selection,
     participating_spec,
     selected_metadata,
 )
 from ._source_io import (
+    ReleasePins,
     SourceNode,
     fetch,
     inventory_payload_pin,
@@ -214,11 +216,17 @@ class _FloodNode(SourceNode[DatasetMetadata]):
         )
 
     def requirements(self) -> tuple[Requirement, ...]:
-        if _empty_requested(self.state):
+        _, products = self._plan()
+        return self._selection_requirements(products)
+
+    def _selection_requirements(
+        self, products: tuple[JRC.Product, ...]
+    ) -> tuple[Requirement, ...]:
+        if not products:
             return ()
         values = (
             ()
-            if self._product() is not None
+            if len(products) == 1
             else _requirements(
                 ("product", "Choose JRC.Product.EFAS or JRC.Product.GLOFAS.")
             )
@@ -239,35 +247,56 @@ class _FloodNode(SourceNode[DatasetMetadata]):
         return replace(self, state=state)
 
     def _variable_ids(self) -> frozenset[str]:
-        product = self._product()
-        products = tuple(JRC.Product) if product is None else (product,)
+        _, products = self._plan()
         return frozenset(_flood_variable(p).id for p in products)
 
     _publishes_payload_release = True
 
-    def _product(self) -> JRC.Product | None:
+    def _configured_payload_pin(self) -> ReleaseReference | None:
+        _, products = self._plan()
+        return (
+            self._requested_release(products[0]).payload if len(products) == 1 else None
+        )
+
+    def _available_products(self) -> tuple[JRC.Product, ...]:
         if self.product is not None:
-            return self.product
-        requested = self.state.variables
-        if requested is not None and len(requested) == 1:
-            variable = requested[0]
-            identifier = variable if isinstance(variable, str) else variable.id
-            for product in JRC.Product:
-                if identifier == _flood_variable(product).id:
-                    return product
-        references = self.state.series
-        if references is not None and len(references) == 1:
-            for product in JRC.Product:
-                if references[0].variable.id == _flood_variable(product).id:
-                    return product
+            return (self.product,)
         if self.release is not None:
             version = self.release.id.removeprefix("inventory:")
             matches = tuple(
                 p for p in JRC.Product if flood.JRC_DATASETS[p.value].version == version
             )
             if len(matches) == 1:
-                return matches[0]
-        return None
+                return matches
+        return tuple(JRC.Product)
+
+    def _plan(self) -> tuple[ResolvedSelection, tuple[JRC.Product, ...]]:
+        products = self._available_products()
+        # Resolve independent selectors against the declared inventory before
+        # using the intersection to decide which native products are needed.
+        state = self.state
+        if state.series is not None:
+            state = replace(
+                state, series=tuple(replace(ref, release=None) for ref in state.series)
+            )
+        selection = state.resolve(_flood_spec(products))
+        if selection.empty:
+            return selection, ()
+        selected = {v.id for v in selection.spec.variables}
+        return selection, tuple(
+            p for p in products if _flood_variable(p).id in selected
+        )
+
+    def _requested_release(self, product: JRC.Product) -> ReleasePins:
+        variable_id = _flood_variable(product).id
+        state = replace(
+            self.state,
+            series=tuple(
+                ref for ref in self.state.series or () if ref.variable.id == variable_id
+            ),
+        )
+        _, requested = payload_selection(state, self.release)
+        return requested
 
     def _discovery(
         self, scope: ExecutionScope, product: JRC.Product
@@ -297,27 +326,19 @@ class _FloodNode(SourceNode[DatasetMetadata]):
         )
 
     def inspection(self, scope: ExecutionScope) -> Inspection:
-        product = self._product()
-        state, requested = payload_selection(self.state, self.release)
-        products = tuple(JRC.Product) if product is None else (product,)
-        selection = state.resolve(_flood_spec(products))
+        selection, products = self._plan()
         spec = DataSpec([], series=[]) if selection.empty else selection.spec
-        selected = {v.id for v in spec.variables}
-        products = tuple(p for p in products if _flood_variable(p).id in selected)
-        sources = tuple(self._discovery(scope, p)[1] for p in products)
+        discovered = []
+        for product in products:
+            requested = self._requested_release(product)
+            _, identity = self._discovery(scope, product)
+            assert identity.release is not None
+            inventory_payload_pin(identity.release, requested)
+            discovered.append(identity)
+        sources = tuple(discovered)
         releases = tuple(
             release for source in sources if (release := source.release) is not None
         )
-        if requested.publication_id is not None and releases:
-            inventory = next(
-                (
-                    r
-                    for r in releases
-                    if requested.publication_id == r.id.removeprefix("inventory:")
-                ),
-                releases[0],
-            )
-            inventory_payload_pin(inventory, requested)
         source = sources[0] if len(sources) == 1 else None
         metadata = DatasetMetadata(
             spec=spec,
@@ -352,16 +373,12 @@ class _FloodNode(SourceNode[DatasetMetadata]):
                 Capability.WRITE,
                 Capability.FIT,
             ),
-            requirements=self.requirements() if products else (),
+            requirements=self._selection_requirements(products),
             source=source,
         )
 
     def open(self, scope: ExecutionScope) -> NodeStream[DatasetMetadata]:
-        product = self._product()
-        state, release = payload_selection(self.state, self.release)
-        products = tuple(JRC.Product) if product is None else (product,)
-        spec = _flood_spec(products)
-        selection = state.resolve(spec)
+        selection, products = self._plan()
         if selection.empty:
             empty = DatasetMetadata(
                 spec=DataSpec([], series=[]),
@@ -371,16 +388,18 @@ class _FloodNode(SourceNode[DatasetMetadata]):
                 report=ExecutionReport(False, None),
             )
             return _checked_stream(scope, empty, iter(()))
-        if product is None:
+        if len(products) != 1:
             raise CapabilityError(
                 "Choose JRC(product=JRC.Product.EFAS) or "
                 "JRC.Product.GLOFAS before reading."
             )
+        (product,) = products
+        release = self._requested_release(product)
         dataset, source = self._discovery(scope, product)
         assert source.release is not None
         variable = _flood_variable(product)
         metadata = DatasetMetadata(
-            spec=spec,
+            spec=selection.spec,
             spatial=SpatialContract(
                 supports=(SupportKind.POLYGON,), index_resolution=9
             ),
@@ -389,8 +408,6 @@ class _FloodNode(SourceNode[DatasetMetadata]):
         )
         pin = inventory_payload_pin(source.release, release)
         metadata = selected_metadata(metadata, selection)
-        if selection.empty:
-            return _checked_stream(scope, metadata, iter(()))
         if selection.area is None:
             raise CapabilityError(
                 "JRC raster acquisition requires .select(area=Bounds(...))."
@@ -972,6 +989,13 @@ class _EDONode(SourceNode[EvidenceMetadata]):
     def _variable_ids(self) -> frozenset[str]:
         return frozenset((_edo_variable().id,))
 
+    def _requested_selection(self) -> tuple[SelectionState, ReleasePins]:
+        if self.state.stations:
+            raise CapabilityError(
+                "EDO uses a grid. Select coverage with .select(area=Bounds(...))."
+            )
+        return payload_selection(self.state, self.release)
+
     def _discovery(
         self, scope: ExecutionScope
     ) -> tuple[SourceIdentity, dict[int, str]]:
@@ -1036,7 +1060,7 @@ class _EDONode(SourceNode[EvidenceMetadata]):
             Capability.BATCHES,
             Capability.WRITE,
         )
-        state, release = payload_selection(self.state, self.release)
+        state, release = self._requested_selection()
         if _empty_requested(state):
             _validate_static_selection(state, (_edo_variable(),))
             return Inspection(
@@ -1092,7 +1116,7 @@ class _EDONode(SourceNode[EvidenceMetadata]):
         from ._providers.cmip6 import decode_time_ordinals
         from ._providers.jrc_edo import SMI
 
-        state, release = payload_selection(self.state, self.release)
+        state, release = self._requested_selection()
         if _empty_requested(state):
             _validate_static_selection(state, (_edo_variable(),))
             empty = self._empty_metadata()
