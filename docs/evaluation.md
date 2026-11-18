@@ -142,6 +142,9 @@ damage_only = evaluation.select(responses="damage_fraction").read()
 assert set(damage_only.table["response_id"].to_pylist()) == {"damage_fraction"}
 ```
 
+Inspection reports the output schema for in-memory assets. File and SQL asset
+schemas become available when the evaluation runs.
+
 The framework checks the input measurement and context against the calibrated
 model. `damage.requirements.input` shows the measurement the model expects.
 `context_type` names the typed context constructor and `context_fields` lists
@@ -156,7 +159,10 @@ Exposure rows are included by default and have a null `response_id`. Named
 response rows identify their definition in `response_id`. A referenced
 model's concrete numerical model, context, and asset assignments are stored
 in metadata and linked through `resolution_id`. Reopening checks those
-assignments even when the bound columns are omitted from the output.
+assignments even when the bound columns are omitted from the output. Successful
+named responses have finite values. When saved exposure rows are available,
+full validation recomputes each named response and compares its value within a
+relative tolerance of `1e-12`.
 Use `select(responses=...)` to choose
 named rows explicitly. The returned table has one row per asset, participating
 series, requested coordinate, and exposure or named response.

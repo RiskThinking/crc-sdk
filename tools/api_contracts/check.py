@@ -766,10 +766,11 @@ def check_runtime(
             continue
         errors.append(f"{module_name}: removed public module remains importable")
     for name, declaration in contract["exports"].items():
+        where = f"crc_sdk.{name}"
         value = getattr(package, name, None)
         if value is None:
-            continue  # Exact export errors above already identify missing values.
-        where = f"crc_sdk.{name}"
+            errors.append(f"{where}: declared export is missing")
+            continue
         if declaration["kind"] == "enum":
             if not inspect.isclass(value) or not issubclass(value, Enum):
                 errors.append(f"{where}: enum implementation required")

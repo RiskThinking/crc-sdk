@@ -213,6 +213,19 @@ def fixture_cases() -> dict[str, object]:
         "measurement"
     ]["unit"] = "cm"
     reject("response-calibration-mismatch", wrong_science)
+    linear_metadata = replace(
+        artifact,
+        query=EvaluationQuery(QueryKind.RETURN_PERIOD, (100.0,)),
+        responses=(response,),
+    )
+    invalid_value = {
+        "metadata": json.loads(linear_metadata.to_json()),
+        "rows": [_row(), _row(response_id="downtime", value="Infinity")],
+    }
+    reject("infinite-named-response", invalid_value, structural=True)
+    wrong_value = deepcopy(invalid_value)
+    wrong_value["rows"][1]["value"] = 12.0
+    reject("response-value-mismatch", wrong_value)
     wrong_counts = deepcopy(unmatched)
     wrong_counts["metadata"]["report"]["counts"]["matched_assets"] = 1
     reject("unmatched-count-mismatch", wrong_counts)

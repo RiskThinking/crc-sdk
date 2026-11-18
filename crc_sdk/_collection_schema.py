@@ -251,6 +251,9 @@ class CollectionSelection:
             )
         )
 
+    def _has_scientific_filters(self) -> bool:
+        return any((self.variables, self.scenarios, self.periods, self.series))
+
     def _document(self) -> dict[str, object]:
         return {
             "members": None if self.members is None else list(self.members),

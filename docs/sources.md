@@ -175,11 +175,14 @@ units, durations, and reduction choices are typed values.
 
 An annual maximum applied directly to hourly evidence is the largest hourly
 observation. Apply `DailyTotal()` first to compute the wettest day.
-`TimestampPosition.END` assigns an
-accumulation to the interval it actually measured, including midnight totals.
-Native calendars, sampling, completeness, measurement changes, and reductions
-remain in saved metadata. Irregular observations can be read without inventing
-a `Sampling` declaration; generic aggregation requires a known cadence.
+`TimestampPosition.END` assigns an accumulation to the interval it actually
+measured, including midnight totals. Sampling intervals must align with the
+native calendar grid. For example, consecutive hourly precipitation amounts
+beginning at 23:30 cannot be allocated to separate days from the source data.
+Annual reductions retain missing years in an explicit time selection for each
+identified support. Saved metadata retains the calendar, sampling, completeness,
+measurement changes, and reductions. An irregular series can be read without
+`Sampling`. Aggregation requires a known cadence.
 
 ## Discover stations and keep source identities
 
@@ -207,13 +210,13 @@ actual coverage and any failure directly.
 Raw GHCNh/ISD reports remain irregular. Their named annual recipes require all
 24 distinct hours for a complete day and then apply the declared annual rule.
 
-Source selections accept exact inspected `SeriesReference` values. Immutable
-published references include their release identity. Mutable API discovery can
-return an unresolved snapshot requirement: execution pins the actual consumed
-response bytes. It does not turn a volatile API retrieval timestamp into a
-permanent scientific release. Reports retain actual resources, SHA-256 hashes,
-licences, attribution, and retrieval times. `Cache.offline(...)` replays only
-verified cached bytes; it never acquires a missing response.
+GHCNh and ISD also accept an inspected `SeriesReference` in `select(series=...)`.
+The reference selects the indicator and supplies the observation years when it
+contains a dated window. Inspecting saved samples also exposes the verified
+release, so that reference can replay the same source selection. Mutable API
+discovery can leave the release unresolved until execution pins the consumed
+bytes. Reports retain actual resources, SHA-256 hashes, licences, attribution,
+and retrieval times. `Cache.offline(...)` replays verified cached bytes.
 
 Published IDF durations and provinces are typed too:
 

@@ -197,6 +197,7 @@ def evaluation_json_schema() -> dict[str, object]:
         {
             "if": {"properties": {"response_id": null}},
             "then": {"properties": {"resolution_id": null}},
+            "else": {"properties": {"value": {"type": ["number", "null"]}}},
         },
     ]
     definitions["row"] = row

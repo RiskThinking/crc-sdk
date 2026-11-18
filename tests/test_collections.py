@@ -254,6 +254,32 @@ def test_selecting_one_member_still_checks_integrity_of_the_bundle_inventory(
         DatasetCollection.open(path).select(members="first").read()
 
 
+def test_full_terminals_verify_unselected_resource_checksums(tmp_path: Path) -> None:
+    path = tmp_path / "bundle"
+    saved = DatasetCollection(
+        {"first": _dataset(), "second": _dataset(longitude=4)}
+    ).write(path)
+    assert saved.metadata is not None
+    expected = saved.metadata.resources[1].path
+    assert expected is not None
+    resource = path / expected
+    resource.write_bytes(resource.read_bytes() + b"changed")
+
+    selected = DatasetCollection.open(path).select(members="first")
+    preview = selected.read(limit=1)
+    assert preview.table.num_rows == 1
+    assert preview.report.complete is False
+    with pytest.raises(OSError, match="checksum mismatch"):
+        selected.read()
+    with pytest.raises(OSError, match="checksum mismatch"):
+        selected.validate()
+    with pytest.raises(OSError, match="checksum mismatch"):
+        selected.write(tmp_path / "selected")
+    with pytest.raises(OSError, match="checksum mismatch"):
+        saved.select(members=[]).validate()
+    assert not (tmp_path / "selected").exists()
+
+
 def test_only_participating_conflicts_are_reconciled() -> None:
     identifiers = {
         "first": _dataset(_variable(label="first description"), _variable("isolated")),

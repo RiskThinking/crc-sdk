@@ -72,7 +72,13 @@ def test_index_discovery_does_not_read_bulk_and_roundtrips_exact_refs(
     assert reference.release == inspection.releases[0]
     assert reference.probability == Probability.annual(tail=Tail.UPPER)
     assert reference.variable.id == "company:depth"
+    with pytest.raises(FileNotFoundError):
+        recipe.validate()
     artifact.write_bytes(original)
+    report = recipe.validate()
+    assert report.valid and report.counts.produced == 1
+    assert report.source_identities[0].release is not None
+    assert report.source_identities[0].release.sha256 == reference.release.sha256
     selected = recipe.select(series=reference)
     result = selected.read(runtime=Runtime(cache=Cache.reuse(tmp_path / "cache")))
     assert result.report.valid

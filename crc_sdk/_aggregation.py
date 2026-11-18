@@ -619,6 +619,7 @@ def aggregate_table(
         ExecutionCounts,
         ExecutionDiagnostic,
         ExecutionReport,
+        ObservationTimeSelection,
         Stage,
     )
     from ._evidence import evidence_table, validate_evidence
@@ -656,22 +657,29 @@ def aggregate_table(
             )
         )
         ordinal, second = _position(record["time"], sampling)
-        year, month, _ = _date(ordinal, sampling.calendar)
+        year, month, day = _date(ordinal, sampling.calendar)
         bucket = ordinal if daily else year
-        slot = (
-            (
-                (month - 1) // int(sampling.step.value)
-                if sampling.step.unit is cf.TimeUnit.MONTH
-                else 0
-            )
-            if calendar_step
-            else (
-                int(second // interval)
-                if daily
-                else (ordinal - _ordinal(year, 1, 1, sampling.calendar)) * slots
-                + int(second // interval)
-            )
-        )
+        if calendar_step:
+            months = 12 // slots
+            slot = (month - 1) // months
+            if (month - 1) % months or day != 1 or second != 0:
+                raise ValueError(
+                    "Calendar sampling intervals must start at their native "
+                    "month or year boundary"
+                )
+        else:
+            position = second / interval
+            slot = round(position)
+            if slot >= slots or not math.isclose(
+                position, slot, rel_tol=0, abs_tol=1e-9
+            ):
+                boundary = "midnight" if daily else "the native year boundary"
+                raise ValueError(
+                    "Sampling intervals must align with the native calendar grid; "
+                    f"an interval crossing {boundary} cannot be allocated"
+                )
+            if not daily:
+                slot += (ordinal - _ordinal(year, 1, 1, sampling.calendar)) * slots
         occupied = groups.setdefault(identity, {}).setdefault(bucket, {})
         if slot in occupied:
             raise ValueError(
@@ -681,8 +689,24 @@ def aggregate_table(
         templates.setdefault(identity, record)
     records: list[dict[str, object]] = []
     incomplete = usable = 0
+    requested_years = tuple(
+        step.time
+        for step in metadata.provenance
+        if isinstance(step, ObservationTimeSelection)
+    )
+    requested_bounds = None
+    if not daily and requested_years:
+        first = max(cast(int, period.start) for period in requested_years)
+        last = min(cast(int, period.end) for period in requested_years)
+        earliest = 1583 if sampling.calendar is Calendar.GREGORIAN else 1
+        if first < earliest or last > 9999:
+            raise ValueError(
+                f"Requested reduction years for {sampling.calendar.value} "
+                f"must lie in [{earliest}, 9999]"
+            )
+        requested_bounds = first, last
     for identity, buckets in groups.items():
-        first, last = min(buckets), max(buckets)
+        first, last = requested_bounds or (min(buckets), max(buckets))
         for bucket in range(first, last + 1):
             observations = list(buckets.get(bucket, {}).values())
             expected = (

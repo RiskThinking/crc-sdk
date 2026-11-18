@@ -27,6 +27,7 @@ from ._dataset_schema import (
     ExecutionDiagnostic,
     ExecutionReport,
     FittingDiagnostic,
+    ObservationTimeSelection,
     SourceIdentity,
     Stage,
     UnavailableStationYear,
@@ -464,6 +465,11 @@ class _TableNode(_ScientificNode[MetadataT]):
             else metadata.sampling._document(),
             metadata.spatial._document(),
             [
+                step.time._document()
+                for step in metadata.provenance
+                if isinstance(step, ObservationTimeSelection)
+            ],
+            [
                 (d.station_id, d.year)
                 for d in metadata.report.diagnostics
                 if isinstance(d, UnavailableStationYear)
@@ -684,6 +690,28 @@ class _SelectionNode(_ScientificNode[MetadataT]):
         metadata = scope.metadata(self.parent)
         selected = self.state.resolve(metadata.spec, source=metadata.source)
         parent = _select_unavailable_years(parent, selected)
+        if _annual_samples(metadata) and shared.counts.no_data != parent.counts.no_data:
+            diagnostics = tuple(
+                d
+                for d in parent.diagnostics
+                if d.stage is not Stage.REDUCTION
+                or d.code not in {"incomplete_year", "incomplete_years"}
+            )
+            if shared.counts.no_data:
+                diagnostics = (
+                    *diagnostics,
+                    ExecutionDiagnostic(
+                        "incomplete_years",
+                        crc_framework.DiagnosticSeverity.WARNING,
+                        Stage.REDUCTION,
+                        f"{shared.counts.no_data} annual observations did not meet "
+                        "the explicit completeness rule",
+                        source=None
+                        if metadata.source is None
+                        else metadata.source.product,
+                    ),
+                )
+            parent = replace(parent, diagnostics=diagnostics)
         if selected.empty:
             parent = replace(
                 parent, complete=True, valid=False if parent.valid is False else True
@@ -767,6 +795,7 @@ class _SelectionNode(_ScientificNode[MetadataT]):
 
         stream = _checked_stream(scope, metadata, batches())
         own_report = stream.report
+        annual = _annual_samples(metadata)
 
         def report() -> ExecutionReport:
             assert own_report is not None
@@ -777,19 +806,32 @@ class _SelectionNode(_ScientificNode[MetadataT]):
             )
             return replace(
                 own,
-                diagnostics=parent.diagnostics,
                 counts=replace(
                     own.counts,
                     requested=own.counts.requested + unavailable,
                     skipped=parent.counts.skipped,
-                    usable_years=parent.counts.usable_years,
-                    incomplete_years=parent.counts.incomplete_years,
+                    usable_years=own.counts.produced - own.counts.no_data
+                    if annual
+                    else parent.counts.usable_years,
+                    incomplete_years=own.counts.no_data + unavailable
+                    if annual
+                    else parent.counts.incomplete_years,
                 ),
                 source_identities=parent.source_identities,
             )
 
         stream.report = report
         return stream
+
+
+def _annual_samples(metadata: Metadata) -> bool:
+    return (
+        isinstance(metadata, EvidenceMetadata)
+        and metadata.kind is EvidenceKind.SAMPLES
+        and metadata.sampling is not None
+        and metadata.sampling.step.unit is crc_framework.TimeUnit.YEAR
+        and metadata.sampling.step.value == 1
+    )
 
 
 def _support_inventory(node: Node[MetadataT]) -> set[str] | None:

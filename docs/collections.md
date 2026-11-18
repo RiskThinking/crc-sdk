@@ -104,6 +104,9 @@ Reopening the directory reproduces the saved rows and science, even after the
 original sources are removed. The bundle contains the saved selection's data.
 Additional selectors act within that snapshot. An explicit empty selection
 writes a valid empty bundle and remains empty when reopened.
+Full reads, validation, and writes verify every resource checksum in the input
+bundle. The selection controls which resources are decoded and which series are
+reconciled across resources.
 
 The writer validates the complete selection before publishing the directory.
 Writes default to a new path. To replace a bundle, pass `overwrite=True` on a

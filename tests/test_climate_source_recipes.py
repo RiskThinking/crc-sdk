@@ -832,6 +832,10 @@ def test_native_era5_precipitation_retains_interval_end_and_composes_reductions(
     annual = raw.aggregate(DailyTotal()).aggregate(AnnualMaximum()).read()
     assert annual.table["value"].to_pylist() == pytest.approx([24.0])
     assert annual.table["coverage"].to_pylist()[0]["valid"] == 365
+    assert result.metadata.source is not None and result.metadata.source.release
+    assert annual.metadata.source is not None
+    assert annual.metadata.source.release == result.metadata.source.release
+    assert annual.report.source_identities == (annual.metadata.source,)
     late = (
         ERA5(indicator=ERA5.Indicator.ANNUAL_MAXIMUM_DAILY_PRECIPITATION)
         .observations()

@@ -106,6 +106,7 @@ class _Plan:
     metadata: CollectionMetadata
     entries: Mapping[str, _Entry]
     requirements: tuple[Requirement, ...] = ()
+    bundle_resources: tuple[_BundleResourceNode, ...] = ()
 
 
 def _known_ids(
@@ -123,6 +124,7 @@ def _project_entries(
     selection: CollectionSelection,
     *,
     discovery_incomplete: bool,
+    projected_variables: frozenset[str] | None,
 ) -> dict[str, _Entry]:
     variables = _requested_ids(selection.variables)
     scenarios = _requested_ids(selection.scenarios)
@@ -172,13 +174,25 @@ def _project_entries(
                 item.period is None or item.period.id not in periods
             ):
                 continue
+            if (
+                projected_variables is not None
+                and item.variable.id not in projected_variables
+            ):
+                continue
             _typed_match(selection.variables, item.variable)
             _typed_match(selection.scenarios, item.scenario)
             _typed_match(selection.periods, item.period)
             selected.append(item)
         if not selected:
             if not original.spec.series and all(
-                value is None for value in (variables, scenarios, periods, references)
+                value is None
+                for value in (
+                    variables,
+                    scenarios,
+                    periods,
+                    references,
+                    projected_variables,
+                )
             ):
                 projected[resource_id] = entry
             continue
@@ -304,25 +318,23 @@ class _BundleResourceNode(Node[DatasetMetadata]):
             SelectionState(area=area).document()["area"],
         )
 
-    def open(self, scope: ExecutionScope) -> NodeStream[DatasetMetadata]:
-        metadata = self.resource.metadata
+    def verified_path(self, scope: ExecutionScope) -> Path:
         assert self.resource.path is not None
         path = self.directory / self.resource.path
+        if self.directory.is_symlink() or path.parent.is_symlink() or path.is_symlink():
+            raise _invalid(ValueError("collection resources must be owned local files"))
+        pinned, identity = scope.pin_local(path)
+        if identity.sha256 != self.resource.sha256:
+            raise OSError(
+                f"collection resource checksum mismatch for {self.resource.id!r}"
+            )
+        return pinned
+
+    def open(self, scope: ExecutionScope) -> NodeStream[DatasetMetadata]:
+        metadata = self.resource.metadata
 
         def batches() -> Iterator[pa.RecordBatch]:
-            if (
-                self.directory.is_symlink()
-                or path.parent.is_symlink()
-                or path.is_symlink()
-            ):
-                raise _invalid(
-                    ValueError("collection resources must be owned local files")
-                )
-            pinned, identity = scope.pin_local(path)
-            if identity.sha256 != self.resource.sha256:
-                raise OSError(
-                    f"collection resource checksum mismatch for {self.resource.id!r}"
-                )
+            pinned = self.verified_path(scope)
             with (
                 native_data(scope=scope, source=self.resource.id),
                 pq.ParquetFile(pinned) as reader,
@@ -368,12 +380,22 @@ class _BundleResourceNode(Node[DatasetMetadata]):
 
 
 class _CollectionNode(Node[CollectionMetadata]):
-    def __init__(self, recipe: DatasetCollection) -> None:
+    def __init__(
+        self,
+        recipe: DatasetCollection,
+        *,
+        projected_variables: frozenset[str] | None = None,
+    ) -> None:
         self.recipe = recipe
-        self.key = recipe._key
+        self.projected_variables = projected_variables
+        self.key = (
+            recipe._key
+            if projected_variables is None
+            else _key("collection-projection", recipe._key, sorted(projected_variables))
+        )
 
     def open(self, scope: ExecutionScope) -> NodeStream[CollectionMetadata]:
-        plan = self.recipe._plan(scope)
+        plan = self.recipe._plan(scope, projected_variables=self.projected_variables)
         metadata = plan.metadata
         started: list[_Entry] = []
         produced = 0
@@ -439,6 +461,10 @@ class _CollectionNode(Node[CollectionMetadata]):
                                 f"collection resource {resource_id!r} is invalid"
                             )
                         )
+            # A full read verifies the physical bundle independently of the
+            # series it decodes. Participating resources reuse their pinned bytes.
+            for resource in plan.bundle_resources:
+                resource.verified_path(scope)
 
         def report() -> ExecutionReport:
             reports = [scope.report(entry.node) for entry in started]
@@ -737,33 +763,38 @@ class DatasetCollection:
         if self._collected_entries is not None:
             return _Plan(manifest, self._collected_entries)
         assert self._path is not None
-        entries = {
-            resource.id: _Entry(
-                resource,
-                _BundleResourceNode(self._path, resource, manifest.selection.area),
-            )
+        resources = tuple(
+            _BundleResourceNode(self._path, resource, manifest.selection.area)
             for resource in manifest.resources
-        }
-        return _Plan(manifest, entries)
-
-    def _memory_inputs(self, scope: ExecutionScope, inspect: bool) -> _Plan:
-        ids = tuple(name for name, _ in self._inputs)
-        _known_ids(
-            _requested_ids(self._selection.members), set(ids), dimension="member"
         )
+        entries = {node.resource.id: _Entry(node.resource, node) for node in resources}
+        return _Plan(manifest, entries, bundle_resources=resources)
+
+    def _memory_inputs(
+        self,
+        scope: ExecutionScope,
+        inspect: bool,
+        projected_variables: frozenset[str] | None,
+    ) -> _Plan:
+        ids = tuple(name for name, _ in self._inputs)
+        requested_members = _requested_ids(self._selection.members)
+        _known_ids(requested_members, set(ids), dimension="member")
+        scientific_filters = self._selection._has_scientific_filters()
         names = (
             set(ids)
-            if self._selection.members is None
-            else set(self._selection.members)
+            if requested_members is None
+            or (not requested_members and scientific_filters)
+            else requested_members
         )
         members = []
         entries = {}
         requirements: list[Requirement] = []
         discovered: dict[int, Inspection] = {}
+        empty = self._selection._empty()
         for name, dataset in self._inputs:
             if name not in names:
                 continue
-            if self._selection._empty():
+            if empty and not scientific_filters:
                 members.append(CollectionMember(id=name, resource_ids=()))
                 continue
             if isinstance(dataset, Dataset):
@@ -772,7 +803,7 @@ class DatasetCollection:
                     node = _bounded_node(
                         node, SelectionState(area=self._selection.area)
                     )
-                if inspect:
+                if inspect or empty:
                     identity = id(dataset)
                     if identity not in discovered:
                         temporary = Dataset._create(node, operations=())
@@ -814,6 +845,7 @@ class DatasetCollection:
             entries,
             CollectionSelection(),
             tuple(requirements),
+            projected_variables=projected_variables,
         )
 
     def _participating(
@@ -823,20 +855,27 @@ class DatasetCollection:
         previous: CollectionSelection,
         requirements: tuple[Requirement, ...],
         source: SourceIdentity | None = None,
+        bundle_resources: tuple[_BundleResourceNode, ...] = (),
+        projected_variables: frozenset[str] | None = None,
     ) -> _Plan:
         allowed = _requested_ids(self._selection.members)
         _known_ids(allowed, {member.id for member in members}, dimension="member")
+        inventory = members
         members = tuple(
             member for member in members if allowed is None or member.id in allowed
         )
-        used = {key for member in members for key in member.resource_ids}
+        if self._selection.members != ():
+            inventory = members
+        used = {key for member in inventory for key in member.resource_ids}
+        empty = self._selection._empty()
         selected = (
             {}
-            if self._selection._empty()
+            if empty and not self._selection._has_scientific_filters()
             else _project_entries(
                 {key: value for key, value in entries.items() if key in used},
                 self._selection,
                 discovery_incomplete=bool(requirements),
+                projected_variables=frozenset() if empty else projected_variables,
             )
         )
         names = set(selected)
@@ -861,9 +900,17 @@ class DatasetCollection:
             )
         except (ValueError, TypeError) as error:
             raise _invalid(error, stage=Stage.SELECTION) from error
-        return _Plan(metadata, selected, tuple(dict.fromkeys(requirements)))
+        return _Plan(
+            metadata, selected, tuple(dict.fromkeys(requirements)), bundle_resources
+        )
 
-    def _plan(self, scope: ExecutionScope, *, inspect: bool = False) -> _Plan:
+    def _plan(
+        self,
+        scope: ExecutionScope,
+        *,
+        inspect: bool = False,
+        projected_variables: frozenset[str] | None = None,
+    ) -> _Plan:
         if self._path is not None or self._collected_entries is not None:
             base = self._manifest_inputs()
         elif self._parent is not None:
@@ -906,19 +953,28 @@ class DatasetCollection:
                 ),
                 base.requirements,
                 base.metadata.source,
+                base.bundle_resources,
+                projected_variables,
             )
         else:
-            return self._memory_inputs(scope, inspect)
+            return self._memory_inputs(scope, inspect, projected_variables)
         return self._participating(
             base.metadata.members,
             base.entries,
             base.metadata.selection,
             base.requirements,
             base.metadata.source,
+            base.bundle_resources,
+            projected_variables,
         )
 
-    def _inspect(self, scope: ExecutionScope) -> Inspection:
-        plan = self._plan(scope, inspect=True)
+    def _inspect(
+        self,
+        scope: ExecutionScope,
+        *,
+        projected_variables: frozenset[str] | None = None,
+    ) -> Inspection:
+        plan = self._plan(scope, inspect=True, projected_variables=projected_variables)
         metadata = plan.metadata
         references = tuple(
             SeriesReference(

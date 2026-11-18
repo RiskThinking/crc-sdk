@@ -791,6 +791,32 @@ def test_inspection_exposes_typed_inventory_and_does_no_station_modelling(
     assert len(transport.calls) == 2
 
 
+@pytest.mark.parametrize("provider", [GHCNh, ISD])
+def test_inspected_series_selects_station_indicator_and_native_years(
+    transport: NativeTransport, provider: type[GHCNh] | type[ISD], tmp_path: Path
+) -> None:
+    inventory = provider().inspect()
+    station = inventory.stations[0]
+    recipe = provider().select(
+        series=inventory.series[0],
+        stations=station,
+        time=Period.window(2020, 2020),
+    )
+    configured = recipe.inspect()
+    reference = configured.series[0]
+    assert reference.period == _year()
+    direct = recipe.read()
+    assert direct.metadata.source is not None and direct.metadata.source.release
+    assert direct.table["time"].to_pylist() == ["2020"]
+    saved = recipe.write(tmp_path / "annual.parquet")
+    pinned = saved.inspect().series[0]
+    assert pinned.release == direct.metadata.source.release
+    replay = provider().select(series=pinned, stations=station).read()
+    assert replay.table.equals(direct.table, check_metadata=False)
+    assert replay.metadata.source is not None
+    assert replay.metadata.source.release == pinned.release
+
+
 def test_unknown_static_variables_fail_before_any_source_acquisition(
     transport: NativeTransport,
 ) -> None:

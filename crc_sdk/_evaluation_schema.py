@@ -258,6 +258,20 @@ class EvaluationFailure:
         }
 
 
+def _apply_response(
+    exposure: float, impact: cf.Impact | None
+) -> tuple[float | None, EvaluationFailure | None]:
+    if not math.isfinite(exposure):
+        return None, EvaluationFailure(
+            "nonfinite_exposure", "The impact requires a finite exposure value."
+        )
+    assert impact is not None
+    try:
+        return cast(float, impact.evaluate(exposure)), None
+    except cf.ImpactError as error:
+        return None, EvaluationFailure(error.code, error.message)
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class EvaluationRow:
     asset_id: AssetId
@@ -886,7 +900,7 @@ def _validate_response(
 
 
 class EvaluationValidator:
-    """Verify row references and the full ordered grid across batches."""
+    """Verify row references, the ordered grid, and saved response calculations."""
 
     def __init__(
         self, metadata: EvaluationMetadata, *, scope_directory: Path | None = None
@@ -900,6 +914,13 @@ class EvaluationValidator:
         }
         self._assets = frozenset(metadata.asset_ids or ())
         self._contexts = dict(metadata._resolved_contexts)
+        # Live rows already execute the response kernel. Verify it on replay
+        # when the artifact carries both the exposures and the named outcomes.
+        self._response_variables = (
+            frozenset(response.variable_id for response in metadata.responses)
+            if metadata.include_exposure and metadata.report.complete
+            else frozenset()
+        )
         self._produced = 0
         self._no_data = 0
         self._path: Path | None = None
@@ -919,6 +940,14 @@ class EvaluationValidator:
             CREATE TABLE matches (identity TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE matched_assets (identity TEXT PRIMARY KEY);
             CREATE TABLE contexts (identity TEXT PRIMARY KEY, resolution TEXT NOT NULL);
+            CREATE TABLE outcomes (
+                event TEXT NOT NULL,
+                response TEXT NOT NULL,
+                resolution TEXT,
+                value REAL,
+                failure TEXT,
+                PRIMARY KEY (event, response)
+            );
             """
         )
 
@@ -1016,6 +1045,12 @@ class EvaluationValidator:
         response, resolution = _validate_response(
             row, metadata, variable, failure, self._contexts
         )
+        if (
+            response is not None
+            and isinstance(value, float)
+            and not math.isfinite(value)
+        ):
+            raise ValueError("a successful named response requires a finite value")
         match_key = _dump((asset_id, member, *series))
         match_record = _dump(match)
         self._db.execute(
@@ -1066,8 +1101,67 @@ class EvaluationValidator:
                 raise ValueError(
                     "one asset response cannot resolve multiple actual contexts"
                 )
+        if variable in self._response_variables:
+            self._db.execute(
+                "INSERT INTO outcomes VALUES (?, ?, ?, ?, ?)",
+                (
+                    _dump((asset_id, member, *series, query_position)),
+                    response or "",
+                    resolution,
+                    value,
+                    None if failure is None else _dump(failure._arrow()),
+                ),
+            )
         self._produced += 1
         self._no_data += int(failure is not None)
+
+    def _check_response_values(self, metadata: EvaluationMetadata) -> None:
+        impacts = {
+            (item.response_id, item.id): item.impact for item in metadata.resolutions
+        }
+        pairs = self._db.execute(
+            """
+            SELECT result.event, result.response, result.resolution, result.value,
+                result.failure, exposure.value, exposure.failure
+            FROM outcomes AS result
+            JOIN outcomes AS exposure ON exposure.event = result.event
+            WHERE result.response != '' AND exposure.response = ''
+            """
+        )
+        for event, name, resolution, value, failure, exposure, source_failure in pairs:
+            if source_failure is not None:
+                if failure != source_failure:
+                    raise ValueError(
+                        f"response {name!r} contradicts its exposure failure "
+                        f"for {event}"
+                    )
+                continue
+            model = metadata._response_by_id[name].model
+            impact = (
+                model
+                if isinstance(model, cf.Impact)
+                else impacts.get((name, resolution))
+            )
+            if impact is None and math.isfinite(exposure):
+                raise ValueError(
+                    f"response {name!r} lacks the resolution for its finite exposure "
+                    f"for {event}"
+                )
+            expected, problem = _apply_response(exposure, impact)
+            if problem is not None:
+                actual = {} if failure is None else _load(failure)
+                matches = (
+                    actual.get("code") == problem.code and actual.get("record") is None
+                )
+            else:
+                assert expected is not None
+                matches = value is not None and math.isclose(
+                    value, expected, rel_tol=1e-12
+                )
+            if not matches:
+                raise ValueError(
+                    f"response {name!r} contradicts its model and exposure for {event}"
+                )
 
     def finish(self, metadata: EvaluationMetadata | None = None) -> None:
         current = self._metadata if metadata is None else metadata
@@ -1096,6 +1190,8 @@ class EvaluationValidator:
                 raise ValueError(
                     "evaluation resolution assignments disagree with its rows"
                 )
+        if self._response_variables:
+            self._check_response_values(current)
         if current.report.complete:
             matched = self._db.execute(
                 "SELECT count(*) FROM matched_assets"

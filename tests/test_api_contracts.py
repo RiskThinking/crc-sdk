@@ -447,6 +447,12 @@ def test_function_exports_validate_their_signature(
 
     monkeypatch.setattr(checker.importlib, "import_module", missing)
     checker.check_runtime(contract, release)
+    delattr(package, "identity")
+    with pytest.raises(
+        checker.ContractError, match="crc_sdk.identity: declared export is missing"
+    ):
+        checker.check_runtime(contract, release)
+    setattr(package, "identity", identity)
     contract["exports"]["identity"]["returns"] = "int"
     (resources / "public-api.json").write_text(json.dumps(contract))
     with pytest.raises(checker.ContractError, match="return annotation differs"):
