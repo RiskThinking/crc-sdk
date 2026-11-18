@@ -392,11 +392,8 @@
               "engine_version": "crc-framework/1.0.0",
               "estimator": "lmoments",
               "evidence_count": 8,
-              "evidence_support": [
-                1.0,
-                8.0
-              ],
               "excluded_count": 0,
+              "probability_interval": null,
               "selected_attempt": 0,
               "specification": {
                 "constraints": null,
@@ -407,7 +404,138 @@
                 "minimum_samples": 3
               },
               "used_count": 8,
+              "value_interval": [
+                1.0,
+                8.0
+              ],
               "weights": null
+            },
+            "period_id": null,
+            "scenario_id": null,
+            "support_id": "user:support",
+            "variable_id": "user:depth"
+          }
+        ]
+      }
+    },
+    {
+      "name": "fitted-quantile-value-interval",
+      "document": {
+        "metadata": {
+          "provenance": [],
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 0,
+              "no_data": 0,
+              "produced": 1,
+              "requested": 1,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [],
+            "source_identities": [],
+            "valid": true
+          },
+          "schema_version": "2.0",
+          "spatial": {
+            "index_resolution": 4,
+            "supports": [
+              "cell"
+            ]
+          },
+          "spec": {
+            "periods": [],
+            "scenarios": [],
+            "series": [
+              {
+                "period_id": null,
+                "scenario_id": null,
+                "variable_id": "user:depth"
+              }
+            ],
+            "variables": [
+              {
+                "id": "user:depth"
+              }
+            ]
+          }
+        },
+        "rows": [
+          {
+            "cell_id": 594475228122316799,
+            "curve": {
+              "family": "weibull_min",
+              "kind": "parametric",
+              "location": -1.6853725757227294,
+              "object": "distribution",
+              "scale": 5.219205254580983,
+              "schema_version": "1.0",
+              "shape": 3.4356298627501207
+            },
+            "fit": {
+              "attempts": [
+                {
+                  "diagnostic": {
+                    "evaluations": 707,
+                    "iterations": 280,
+                    "maximum_absolute_residual": 0.05438938459077658,
+                    "normalization_scale": 4.0,
+                    "normalized_rmse": 0.009722260171152821,
+                    "rmse": 0.038889040684611284,
+                    "weighted_r_squared": 0.9992438212573154
+                  },
+                  "specification": {
+                    "constraints": {
+                      "maximum_value": null,
+                      "minimum_value": null,
+                      "probability": null,
+                      "require_sample_support": true
+                    },
+                    "family": "weibull_min",
+                    "kind": "quantiles",
+                    "minimum_knots": 4,
+                    "weights": null
+                  },
+                  "status": "converged"
+                }
+              ],
+              "converged": true,
+              "engine_version": "crc-framework/1.0.0",
+              "estimator": null,
+              "evidence_count": 5,
+              "excluded_count": 0,
+              "probability_interval": [
+                0.1,
+                0.9
+              ],
+              "selected_attempt": 0,
+              "specification": {
+                "constraints": {
+                  "maximum_value": null,
+                  "minimum_value": null,
+                  "probability": null,
+                  "require_sample_support": true
+                },
+                "family": "weibull_min",
+                "kind": "quantiles",
+                "minimum_knots": 4,
+                "weights": null
+              },
+              "used_count": 5,
+              "value_interval": [
+                1.0,
+                5.0
+              ],
+              "weights": [
+                0.2,
+                0.2,
+                0.2,
+                0.2,
+                0.2
+              ]
             },
             "period_id": null,
             "scenario_id": null,
@@ -512,11 +640,11 @@
               "engine_version": "crc-framework/1.0.0",
               "estimator": null,
               "evidence_count": 8,
-              "evidence_support": [
+              "excluded_count": 0,
+              "probability_interval": [
                 0.1,
                 0.99
               ],
-              "excluded_count": 0,
               "selected_attempt": 0,
               "specification": {
                 "atom_location": 0,
@@ -532,6 +660,10 @@
                 "minimum_knots": 4
               },
               "used_count": 8,
+              "value_interval": [
+                0.0,
+                4.771934247457316
+              ],
               "weights": [
                 0.125,
                 0.125,
@@ -623,11 +755,8 @@
                 "engine_version": "crc-framework/1.0.0",
                 "estimator": null,
                 "evidence_count": 8,
-                "evidence_support": [
-                  1.0,
-                  1.0
-                ],
                 "excluded_count": 0,
+                "probability_interval": null,
                 "selected_attempt": null,
                 "specification": {
                   "constraints": null,
@@ -638,6 +767,10 @@
                   "minimum_samples": 3
                 },
                 "used_count": 8,
+                "value_interval": [
+                  1.0,
+                  1.0
+                ],
                 "weights": null
               }
             },
@@ -691,11 +824,8 @@
                   "engine_version": "crc-framework/1.0.0",
                   "estimator": null,
                   "evidence_count": 8,
-                  "evidence_support": [
-                    1.0,
-                    1.0
-                  ],
                   "excluded_count": 0,
+                  "probability_interval": null,
                   "selected_attempt": null,
                   "specification": {
                     "constraints": null,
@@ -706,6 +836,10 @@
                     "minimum_samples": 3
                   },
                   "used_count": 8,
+                  "value_interval": [
+                    1.0,
+                    1.0
+                  ],
                   "weights": null
                 },
                 "severity": "warning",
@@ -767,11 +901,8 @@
                 "engine_version": "crc-framework/1.0.0",
                 "estimator": null,
                 "evidence_count": 8,
-                "evidence_support": [
-                  1.0,
-                  1.0
-                ],
                 "excluded_count": 0,
+                "probability_interval": null,
                 "selected_attempt": null,
                 "specification": {
                   "constraints": null,
@@ -782,6 +913,10 @@
                   "minimum_samples": 3
                 },
                 "used_count": 8,
+                "value_interval": [
+                  1.0,
+                  1.0
+                ],
                 "weights": null
               }
             },
@@ -3375,11 +3510,8 @@
                 "engine_version": "crc-framework/1.0.0",
                 "estimator": null,
                 "evidence_count": 8,
-                "evidence_support": [
-                  1.0,
-                  1.0
-                ],
                 "excluded_count": 0,
+                "probability_interval": null,
                 "selected_attempt": null,
                 "specification": {
                   "constraints": null,
@@ -3390,6 +3522,10 @@
                   "minimum_samples": 3
                 },
                 "used_count": 8,
+                "value_interval": [
+                  1.0,
+                  1.0
+                ],
                 "weights": null
               }
             }
@@ -4094,11 +4230,8 @@
               "engine_version": "crc-framework/1.0.0",
               "estimator": "lmoments",
               "evidence_count": 8,
-              "evidence_support": [
-                1.0,
-                8.0
-              ],
               "excluded_count": 0,
+              "probability_interval": null,
               "selected_attempt": 0,
               "specification": {
                 "constraints": null,
@@ -4109,6 +4242,10 @@
                 "minimum_samples": 3
               },
               "used_count": 8,
+              "value_interval": [
+                1.0,
+                8.0
+              ],
               "weights": null
             },
             "period_id": null,
@@ -4202,11 +4339,8 @@
               "engine_version": "crc-framework/1.0.0",
               "estimator": "lmoments",
               "evidence_count": 8,
-              "evidence_support": [
-                1.0,
-                8.0
-              ],
               "excluded_count": 5,
+              "probability_interval": null,
               "selected_attempt": 0,
               "specification": {
                 "constraints": null,
@@ -4217,6 +4351,10 @@
                 "minimum_samples": 3
               },
               "used_count": 3,
+              "value_interval": [
+                1.0,
+                8.0
+              ],
               "weights": null
             },
             "period_id": null,
@@ -4310,8 +4448,8 @@
               "engine_version": "crc-framework/1.0.0",
               "estimator": "lmoments",
               "evidence_count": 8,
-              "evidence_support": null,
               "excluded_count": 0,
+              "probability_interval": null,
               "selected_attempt": 0,
               "specification": {
                 "constraints": null,
@@ -4322,6 +4460,7 @@
                 "minimum_samples": 3
               },
               "used_count": 8,
+              "value_interval": null,
               "weights": null
             },
             "period_id": null,
@@ -4423,11 +4562,11 @@
               "engine_version": "crc-framework/1.0.0",
               "estimator": null,
               "evidence_count": 8,
-              "evidence_support": [
+              "excluded_count": 0,
+              "probability_interval": [
                 0.1,
                 0.99
               ],
-              "excluded_count": 0,
               "selected_attempt": 0,
               "specification": {
                 "atom_location": 0,
@@ -4443,6 +4582,10 @@
                 "minimum_knots": 4
               },
               "used_count": 8,
+              "value_interval": [
+                0.0,
+                4.771934247457316
+              ],
               "weights": [
                 0.125,
                 0.125,
@@ -4558,11 +4701,11 @@
               "engine_version": "crc-framework/1.0.0",
               "estimator": null,
               "evidence_count": 8,
-              "evidence_support": [
+              "excluded_count": 0,
+              "probability_interval": [
                 0.1,
                 0.99
               ],
-              "excluded_count": 0,
               "selected_attempt": 0,
               "specification": {
                 "atom_location": 0,
@@ -4578,6 +4721,10 @@
                 "minimum_knots": 4
               },
               "used_count": 8,
+              "value_interval": [
+                0.0,
+                4.771934247457316
+              ],
               "weights": [
                 0.125,
                 0.125,
@@ -4693,11 +4840,11 @@
               "engine_version": "crc-framework/1.0.0",
               "estimator": null,
               "evidence_count": 8,
-              "evidence_support": [
+              "excluded_count": 0,
+              "probability_interval": [
                 0,
                 1
               ],
-              "excluded_count": 0,
               "selected_attempt": 0,
               "specification": {
                 "atom_location": 0,
@@ -4713,6 +4860,10 @@
                 "minimum_knots": 4
               },
               "used_count": 8,
+              "value_interval": [
+                0.0,
+                4.771934247457316
+              ],
               "weights": [
                 0.125,
                 0.125,
@@ -4722,6 +4873,134 @@
                 0.125,
                 0.125,
                 0.125
+              ]
+            },
+            "period_id": null,
+            "scenario_id": null,
+            "support_id": "user:support",
+            "variable_id": "user:depth"
+          }
+        ]
+      }
+    },
+    {
+      "name": "fit-excludes-observed-quantile-values",
+      "structural": false,
+      "document": {
+        "metadata": {
+          "provenance": [],
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 0,
+              "no_data": 0,
+              "produced": 1,
+              "requested": 1,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [],
+            "source_identities": [],
+            "valid": true
+          },
+          "schema_version": "2.0",
+          "spatial": {
+            "index_resolution": 4,
+            "supports": [
+              "cell"
+            ]
+          },
+          "spec": {
+            "periods": [],
+            "scenarios": [],
+            "series": [
+              {
+                "period_id": null,
+                "scenario_id": null,
+                "variable_id": "user:depth"
+              }
+            ],
+            "variables": [
+              {
+                "id": "user:depth"
+              }
+            ]
+          }
+        },
+        "rows": [
+          {
+            "cell_id": 594475228122316799,
+            "curve": {
+              "family": "weibull_min",
+              "kind": "parametric",
+              "location": 100,
+              "object": "distribution",
+              "scale": 5.219205254580983,
+              "schema_version": "1.0",
+              "shape": 3.4356298627501207
+            },
+            "fit": {
+              "attempts": [
+                {
+                  "diagnostic": {
+                    "evaluations": 707,
+                    "iterations": 280,
+                    "maximum_absolute_residual": 0.05438938459077658,
+                    "normalization_scale": 4.0,
+                    "normalized_rmse": 0.009722260171152821,
+                    "rmse": 0.038889040684611284,
+                    "weighted_r_squared": 0.9992438212573154
+                  },
+                  "specification": {
+                    "constraints": {
+                      "maximum_value": null,
+                      "minimum_value": null,
+                      "probability": null,
+                      "require_sample_support": true
+                    },
+                    "family": "weibull_min",
+                    "kind": "quantiles",
+                    "minimum_knots": 4,
+                    "weights": null
+                  },
+                  "status": "converged"
+                }
+              ],
+              "converged": true,
+              "engine_version": "crc-framework/1.0.0",
+              "estimator": null,
+              "evidence_count": 5,
+              "excluded_count": 0,
+              "probability_interval": [
+                0.1,
+                0.9
+              ],
+              "selected_attempt": 0,
+              "specification": {
+                "constraints": {
+                  "maximum_value": null,
+                  "minimum_value": null,
+                  "probability": null,
+                  "require_sample_support": true
+                },
+                "family": "weibull_min",
+                "kind": "quantiles",
+                "minimum_knots": 4,
+                "weights": null
+              },
+              "used_count": 5,
+              "value_interval": [
+                1.0,
+                5.0
+              ],
+              "weights": [
+                0.2,
+                0.2,
+                0.2,
+                0.2,
+                0.2
               ]
             },
             "period_id": null,
@@ -4828,11 +5107,11 @@
               "engine_version": "crc-framework/1.0.0",
               "estimator": null,
               "evidence_count": 8,
-              "evidence_support": [
+              "excluded_count": 0,
+              "probability_interval": [
                 0.1,
                 0.99
               ],
-              "excluded_count": 0,
               "selected_attempt": 0,
               "specification": {
                 "atom_location": 0,
@@ -4848,6 +5127,10 @@
                 "minimum_knots": 4
               },
               "used_count": 8,
+              "value_interval": [
+                0.0,
+                4.771934247457316
+              ],
               "weights": [
                 0.125,
                 0.125,
@@ -4910,11 +5193,8 @@
                   "engine_version": "crc-framework/1.0.0",
                   "estimator": null,
                   "evidence_count": 8,
-                  "evidence_support": [
-                    1.0,
-                    1.0
-                  ],
                   "excluded_count": 0,
+                  "probability_interval": null,
                   "selected_attempt": null,
                   "specification": {
                     "constraints": null,
@@ -4925,6 +5205,10 @@
                     "minimum_samples": 3
                   },
                   "used_count": 8,
+                  "value_interval": [
+                    1.0,
+                    1.0
+                  ],
                   "weights": null
                 },
                 "severity": "warning",
@@ -4986,11 +5270,8 @@
                 "engine_version": "crc-framework/1.0.0",
                 "estimator": null,
                 "evidence_count": 8,
-                "evidence_support": [
-                  1.0,
-                  1.0
-                ],
                 "excluded_count": 0,
+                "probability_interval": null,
                 "selected_attempt": null,
                 "specification": {
                   "constraints": null,
@@ -5001,6 +5282,10 @@
                   "minimum_samples": 3
                 },
                 "used_count": 8,
+                "value_interval": [
+                  1.0,
+                  1.0
+                ],
                 "weights": null
               }
             },
@@ -5055,11 +5340,8 @@
                   "engine_version": "crc-framework/1.0.0",
                   "estimator": null,
                   "evidence_count": 9,
-                  "evidence_support": [
-                    1.0,
-                    1.0
-                  ],
                   "excluded_count": 0,
+                  "probability_interval": null,
                   "selected_attempt": null,
                   "specification": {
                     "constraints": null,
@@ -5070,6 +5352,10 @@
                     "minimum_samples": 3
                   },
                   "used_count": 8,
+                  "value_interval": [
+                    1.0,
+                    1.0
+                  ],
                   "weights": null
                 },
                 "severity": "warning",
@@ -5131,11 +5417,8 @@
                 "engine_version": "crc-framework/1.0.0",
                 "estimator": null,
                 "evidence_count": 8,
-                "evidence_support": [
-                  1.0,
-                  1.0
-                ],
                 "excluded_count": 0,
+                "probability_interval": null,
                 "selected_attempt": null,
                 "specification": {
                   "constraints": null,
@@ -5146,6 +5429,10 @@
                   "minimum_samples": 3
                 },
                 "used_count": 8,
+                "value_interval": [
+                  1.0,
+                  1.0
+                ],
                 "weights": null
               }
             },
@@ -5361,6 +5648,291 @@
             },
             "period_id": null,
             "scenario_id": null,
+            "support_id": "user:support",
+            "variable_id": "user:depth"
+          }
+        ]
+      }
+    },
+    {
+      "name": "duplicate-resource-uri-in-source",
+      "structural": false,
+      "document": {
+        "metadata": {
+          "provenance": [],
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 0,
+              "no_data": 0,
+              "produced": 1,
+              "requested": 1,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [],
+            "source_identities": [],
+            "valid": true
+          },
+          "schema_version": "2.0",
+          "source": {
+            "member": "member:1",
+            "model": "model:1",
+            "product": "product:user",
+            "provider": "provider:user",
+            "resources": [
+              {
+                "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "uri": "s3://example/observations"
+              },
+              {
+                "sha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "uri": "s3://example/observations"
+              }
+            ]
+          },
+          "spatial": {
+            "index_resolution": 4,
+            "supports": [
+              "cell"
+            ]
+          },
+          "spec": {
+            "periods": [],
+            "scenarios": [],
+            "series": [
+              {
+                "period_id": null,
+                "scenario_id": null,
+                "variable_id": "user:depth"
+              }
+            ],
+            "variables": [
+              {
+                "id": "user:depth"
+              }
+            ]
+          }
+        },
+        "rows": [
+          {
+            "cell_id": 594475228122316799,
+            "curve": {
+              "kind": "point_mass",
+              "object": "distribution",
+              "schema_version": "1.0",
+              "value": 1.0
+            },
+            "period_id": null,
+            "scenario_id": null,
+            "support_id": "user:support",
+            "variable_id": "user:depth"
+          }
+        ]
+      }
+    },
+    {
+      "name": "duplicate-resource-uri-in-report",
+      "structural": false,
+      "document": {
+        "metadata": {
+          "provenance": [],
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 0,
+              "no_data": 0,
+              "produced": 1,
+              "requested": 1,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [],
+            "source_identities": [
+              {
+                "member": "member:1",
+                "model": "model:1",
+                "product": "product:user",
+                "provider": "provider:user",
+                "resources": [
+                  {
+                    "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "uri": "s3://example/observations"
+                  },
+                  {
+                    "sha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    "uri": "s3://example/observations"
+                  }
+                ]
+              }
+            ],
+            "valid": true
+          },
+          "schema_version": "2.0",
+          "spatial": {
+            "index_resolution": 4,
+            "supports": [
+              "cell"
+            ]
+          },
+          "spec": {
+            "periods": [],
+            "scenarios": [],
+            "series": [
+              {
+                "period_id": null,
+                "scenario_id": null,
+                "variable_id": "user:depth"
+              }
+            ],
+            "variables": [
+              {
+                "id": "user:depth"
+              }
+            ]
+          }
+        },
+        "rows": [
+          {
+            "cell_id": 594475228122316799,
+            "curve": {
+              "kind": "point_mass",
+              "object": "distribution",
+              "schema_version": "1.0",
+              "value": 1.0
+            },
+            "period_id": null,
+            "scenario_id": null,
+            "support_id": "user:support",
+            "variable_id": "user:depth"
+          }
+        ]
+      }
+    },
+    {
+      "name": "scenario-rename-collides-with-unchanged-identity",
+      "structural": false,
+      "document": {
+        "metadata": {
+          "provenance": [
+            {
+              "kind": "rename",
+              "dimension": "scenario",
+              "mapping": {
+                "user:scenario": "user:other-scenario"
+              }
+            }
+          ],
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 0,
+              "no_data": 0,
+              "produced": 2,
+              "requested": 2,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [],
+            "source_identities": [],
+            "valid": true
+          },
+          "schema_version": "2.0",
+          "spatial": {
+            "index_resolution": 4,
+            "supports": [
+              "cell"
+            ]
+          },
+          "spec": {
+            "periods": [
+              {
+                "end": 2050,
+                "id": "period:0382a10ecac0ba546cc3f6ae45947d6b383589718bf288a01e5639f6f570dcd9",
+                "kind": "window",
+                "start": 2030
+              }
+            ],
+            "scenarios": [
+              {
+                "definition": {
+                  "warming": 2
+                },
+                "id": "user:scenario"
+              },
+              {
+                "id": "user:other-scenario"
+              }
+            ],
+            "series": [
+              {
+                "period_id": "period:0382a10ecac0ba546cc3f6ae45947d6b383589718bf288a01e5639f6f570dcd9",
+                "probability": {
+                  "kind": "annual",
+                  "tail": "upper"
+                },
+                "scenario_id": "user:scenario",
+                "variable_id": "user:depth"
+              },
+              {
+                "period_id": "period:0382a10ecac0ba546cc3f6ae45947d6b383589718bf288a01e5639f6f570dcd9",
+                "probability": {
+                  "kind": "annual",
+                  "tail": "upper"
+                },
+                "scenario_id": "user:other-scenario",
+                "variable_id": "user:depth"
+              }
+            ],
+            "variables": [
+              {
+                "id": "user:depth"
+              }
+            ]
+          }
+        },
+        "rows": [
+          {
+            "cell_id": 594475228122316799,
+            "curve": {
+              "object": "quantile_curve",
+              "probabilities": [
+                0.9,
+                0.99
+              ],
+              "schema_version": "1.0",
+              "values": [
+                0.5,
+                2.0
+              ]
+            },
+            "period_id": "period:0382a10ecac0ba546cc3f6ae45947d6b383589718bf288a01e5639f6f570dcd9",
+            "scenario_id": "user:scenario",
+            "support_id": "user:support",
+            "variable_id": "user:depth"
+          },
+          {
+            "cell_id": 594475228122316799,
+            "curve": {
+              "object": "quantile_curve",
+              "probabilities": [
+                0.9,
+                0.99
+              ],
+              "schema_version": "1.0",
+              "values": [
+                0.5,
+                2.0
+              ]
+            },
+            "period_id": "period:0382a10ecac0ba546cc3f6ae45947d6b383589718bf288a01e5639f6f570dcd9",
+            "scenario_id": "user:other-scenario",
             "support_id": "user:support",
             "variable_id": "user:depth"
           }

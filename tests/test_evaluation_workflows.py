@@ -121,6 +121,14 @@ def test_upper_return_period_distinguishes_the_end_of_supplied_evidence() -> Non
     assert result.table["value"].to_pylist() == pytest.approx([-2e282], rel=1e-13)
 
 
+def test_upper_return_period_bounds_use_the_unrounded_tail() -> None:
+    endpoint = math.nextafter(1.0, 0.0)
+    source = data(Probability.annual(tail=cf.Tail.UPPER), coordinates=(0.1, endpoint))
+    result = source.evaluate(sites(0)).return_periods([2**53, 1e16]).read()
+    assert result.table["value"].to_pylist() == [2.0, None]
+    assert result.table["failure"].to_pylist()[1]["code"] == "query_outside_support"
+
+
 def sites(*longitudes: float) -> Assets:
     return Assets(
         {
@@ -464,6 +472,7 @@ def test_named_responses_share_the_input_event_and_survive_reopening(
     ("include_exposure", "value", "diagnostic"),
     [
         (True, 9999.0, "contradicts its model and exposure"),
+        (False, 9999.0, "contradicts its model and exposure"),
         (False, float("inf"), "requires a finite value"),
     ],
 )
@@ -518,6 +527,7 @@ def test_reopened_artifact_preserves_overflow_as_response_failure(
     ("change", "diagnostic"),
     [
         ("release", "source version disagrees"),
+        ("release_without_assets", "source version disagrees"),
         ("diagnostics", "report omits diagnostics"),
     ],
 )
@@ -536,9 +546,22 @@ def test_reopened_evaluation_checks_source_versions_and_diagnostics(
         result.table.replace_schema_metadata(dataset_arrow_schema(metadata).metadata),
         base,
     )
+    assets = (
+        Assets(
+            pa.table(
+                {
+                    "asset_id": pa.array([], type=pa.string()),
+                    "longitude": pa.array([], type=pa.float64()),
+                    "latitude": pa.array([], type=pa.float64()),
+                }
+            )
+        )
+        if change == "release_without_assets"
+        else sites(0)
+    )
     saved = (
         Dataset.open(base)
-        .evaluate(sites(0))
+        .evaluate(assets)
         .probabilities([0.5, 0.9])
         .write(tmp_path / "events.parquet")
     )
@@ -546,7 +569,7 @@ def test_reopened_evaluation_checks_source_versions_and_diagnostics(
     evaluation = pq.read_table(saved.path)
     headers = dict(evaluation.schema.metadata)
     document = json.loads(headers[b"crc.evaluation"])
-    if change == "release":
+    if change.startswith("release"):
         document["inputs"][0]["metadata"]["source"]["release"]["id"] = "second"
     else:
         document["report"]["diagnostics"] = []

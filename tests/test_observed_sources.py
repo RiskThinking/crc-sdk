@@ -84,6 +84,8 @@ class NativeTransport:
         self.absent_year: int | None = None
         self.field = self._fields()
         self.raster: bytes | None = None
+        self.raster_calls: list[str] = []
+        self.unavailable_raster: str | None = None
 
     @staticmethod
     def _fields() -> bytes:
@@ -404,7 +406,11 @@ def transport(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> NativeTranspor
     ) -> tuple[Path, ResourceIdentity]:
         # Exercise the real range/window cache against native fixture bytes. GDAL
         # reads a local source; the identity truthfully names that fixture object.
-        path = tmp_path / Path(urlsplit(uri).path).name
+        filename = Path(urlsplit(uri).path).name
+        result.raster_calls.append(filename)
+        if filename == result.unavailable_raster:
+            raise FileNotFoundError(uri)
+        path = tmp_path / filename
         if not path.exists():
             if result.raster is None:
                 result.raster = result._raster()
@@ -642,7 +648,7 @@ def test_unlocated_station_year_follows_each_fit_policy(
                 == 0
             )
             assert diagnostic.record.used_count == 0 and not diagnostic.record.converged
-            assert diagnostic.record.evidence_support is None
+            assert diagnostic.record.value_interval is None
     if input_kind != "recipe":
         assert len(transport.calls) == calls_before_fitting
 
@@ -761,6 +767,46 @@ def test_chirps_reads_monthly_precipitation_actual_pixel_support_and_nodata(
         result.metadata.spec.variables[0].measurement.accumulation_duration.unit.value
         == "month"
     )
+
+
+def test_chirps_preview_does_not_acquire_later_months(
+    transport: NativeTransport,
+) -> None:
+    transport.unavailable_raster = "chirps-v3.0.2020.02.cog"
+    recipe = CHIRPS().select(
+        area=Bounds(west=-79.5, south=43.7, east=-79.3, north=43.8), time=_year()
+    )
+    preview = recipe.read(limit=1)
+    assert preview.table["time"].to_pylist() == ["2020-01-01"]
+    assert preview.report.complete is False
+    assert transport.raster_calls == ["chirps-v3.0.2020.01.cog"]
+    assert preview.metadata.source is not None
+    assert preview.metadata.source.release is None
+    assert len(preview.metadata.source.resources) == 1
+    with pytest.raises(FileNotFoundError, match=r"2020\.02\.cog"):
+        recipe.read()
+
+
+def test_chirps_pinned_read_verifies_the_last_month_before_yielding(
+    transport: NativeTransport, tmp_path: Path
+) -> None:
+    rasterio = pytest.importorskip("rasterio")
+    area = Bounds(west=-79.5, south=43.7, east=-79.3, north=43.8)
+    verified = CHIRPS().select(area=area, time=_year()).read()
+    assert verified.metadata.source is not None
+    release = verified.metadata.source.release
+    assert release is not None
+    pinned = CHIRPS(release=release).select(area=area, time=_year())
+    assert pinned.read(limit=1).table["time"].to_pylist() == ["2020-01-01"]
+    with rasterio.open(tmp_path / "chirps-v3.0.2020.12.cog", "r+") as raster:
+        pixels = raster.read(1)
+        pixels[0, 0] = 21
+        raster.write(pixels, 1)
+    with (
+        pinned.batches() as stream,
+        pytest.raises(OSError, match="source release changed"),
+    ):
+        next(iter(stream))
 
 
 def test_field_boundaries_metrics_and_published_checksum(

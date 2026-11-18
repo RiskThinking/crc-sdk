@@ -170,7 +170,7 @@ def _project_entries(
                     index
                     for index, reference in enumerate(references)
                     if _reference_matches(
-                        item, reference, original.source, check_science=False
+                        item, reference, original, check_science=False
                     )
                 }
                 matching_references.update(matches)
@@ -193,7 +193,7 @@ def _project_entries(
                 continue
             if references is not None:
                 for index in matches:
-                    _reference_matches(item, references[index], original.source)
+                    _reference_matches(item, references[index], original)
             _typed_match(selection.variables, item.variable)
             _typed_match(selection.scenarios, item.scenario)
             _typed_match(selection.periods, item.period)
@@ -420,9 +420,10 @@ class _CollectionNode(Node[CollectionMetadata]):
         started: list[_Entry] = []
         produced = 0
         no_data = 0
+        completed: CollectionMetadata | None = None
 
         def batches() -> Iterator[pa.RecordBatch]:
-            nonlocal produced, no_data
+            nonlocal produced, no_data, completed
             for member in metadata.members:
                 member_check = (
                     _Checked(
@@ -473,6 +474,11 @@ class _CollectionNode(Node[CollectionMetadata]):
             # series it decodes. Participating resources reuse their pinned bytes.
             for resource in plan.bundle_resources:
                 resource.verified_path(scope)
+            with native_data(scope=scope, source="collection"):
+                completed = replace(
+                    final_metadata(),
+                    report=replace(report(), complete=True, valid=True),
+                )
 
         def report() -> ExecutionReport:
             combined = _collection_report(scope.report(entry.node) for entry in started)
@@ -482,6 +488,8 @@ class _CollectionNode(Node[CollectionMetadata]):
             )
 
         def final_metadata() -> CollectionMetadata:
+            if completed is not None:
+                return completed
             resources = []
             reported = {entry.resource.id for entry in started}
             for resource in metadata.resources:

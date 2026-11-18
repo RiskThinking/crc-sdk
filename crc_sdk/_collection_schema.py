@@ -54,6 +54,7 @@ from ._selection import (
     VariableSelector,
     _series_key,
 )
+from ._source_io import release_snapshot
 
 _METADATA_KEY = b"crc.collection"
 _RESOURCE_PATH = re.compile(r"resources/[0-9a-f]{64}\.parquet")
@@ -150,16 +151,16 @@ def _typed_match(
 def _reference_matches(
     item: SeriesSpec,
     reference: SeriesReference,
-    source: SourceIdentity | None,
+    metadata: DatasetMetadata,
     *,
     check_science: bool = True,
 ) -> bool:
     if _series_key(item) != _series_key(reference):
         return False
-    release = None if source is None else source.release
-    if reference.release is not None and _release_key(
-        reference.release
-    ) != _release_key(release):
+    source = metadata.source
+    if reference.release is not None and not _release_matches(
+        metadata, reference.release
+    ):
         return False
     if any(
         getattr(reference, name) is not None
@@ -184,6 +185,34 @@ def _reference_matches(
                 f"conflicting scientific series definition {_series_key(item)!r}"
             )
     return True
+
+
+def _release_matches(metadata: DatasetMetadata, requested: ReleaseReference) -> bool:
+    source = metadata.source
+    if source is None or source.release is None:
+        return False
+    if _release_key(source.release) == _release_key(requested):
+        return True
+    if requested.id != "inventory:" + source.release.id or not source.resources:
+        return False
+
+    # A completed payload can satisfy an inspected publication pin when its
+    # provenance proves that it includes the exact discovery resources.
+    resources = {(item.uri, item.sha256) for item in source.resources}
+    return any(
+        _release_key(publication.release) == _release_key(requested)
+        and all(
+            getattr(publication, field) == getattr(source, field)
+            for field in ("provider", "product", "model", "member")
+        )
+        and bool(publication.resources)
+        and all((item.uri, item.sha256) in resources for item in publication.resources)
+        and release_snapshot(publication.resources, id=requested.id).sha256
+        == requested.sha256
+        and release_snapshot(source.resources, id=source.release.id).sha256
+        == source.release.sha256
+        for publication in metadata.report.source_identities
+    )
 
 
 def _series_document(reference: SeriesReference) -> dict[str, object]:
@@ -507,7 +536,7 @@ class CollectionMetadata:
                         )
                     _typed_match(descriptors, actual)
                 if selection.series is not None and not any(
-                    _reference_matches(item, reference, metadata.source)
+                    _reference_matches(item, reference, metadata)
                     for reference in selection.series
                 ):
                     raise ValueError(

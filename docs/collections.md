@@ -53,7 +53,10 @@ across a member's resources. Inspection metadata describes the member,
 resource, and series relationships without running fitting stages.
 An inspected series retains its source release, model, and ensemble member when
 available. Passing that reference to `select(series=...)` keeps those qualifiers
-through reading and saving. `select(members=...)` uses the collection's own labels.
+through reading and saving. A provider's publication reference remains usable
+after acquisition and reopening. The member's provenance keeps the publication
+resources and the checksum of the acquired payload. `select(members=...)` uses
+the collection's own labels.
 
 Collections reconcile the scientific definitions of participating series.
 Select one member or the series you need when independent inputs use the same

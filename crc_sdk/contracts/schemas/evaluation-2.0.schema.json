@@ -19,6 +19,41 @@
     "rows"
   ],
   "additionalProperties": false,
+  "if": {
+    "properties": {
+      "metadata": {
+        "properties": {
+          "include_exposure": {
+            "const": true
+          }
+        }
+      }
+    }
+  },
+  "then": {
+    "properties": {
+      "rows": {
+        "items": {
+          "not": {
+            "required": [
+              "exposure"
+            ]
+          }
+        }
+      }
+    }
+  },
+  "else": {
+    "properties": {
+      "rows": {
+        "items": {
+          "required": [
+            "exposure"
+          ]
+        }
+      }
+    }
+  },
   "$defs": {
     "query": {
       "oneOf": [
@@ -633,6 +668,65 @@
         },
         "asset": {
           "type": "object"
+        },
+        "exposure": {
+          "type": "object",
+          "properties": {
+            "value": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "enum": [
+                    "-Infinity",
+                    "Infinity"
+                  ]
+                }
+              ]
+            },
+            "failure": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/failure"
+                }
+              ]
+            }
+          },
+          "required": [
+            "value",
+            "failure"
+          ],
+          "additionalProperties": false,
+          "if": {
+            "properties": {
+              "failure": {
+                "type": "null"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "value": {
+                "not": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "value": {
+                "type": "null"
+              }
+            }
+          }
         }
       },
       "required": [

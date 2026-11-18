@@ -11,6 +11,7 @@ import pyarrow.parquet as pq  # type: ignore[import-untyped]
 import pytest
 from shapely.geometry import Polygon  # type: ignore[import-untyped]
 
+from crc_sdk import Runtime
 from crc_sdk._aggregation import (
     AnnualMaximum,
     AnnualMinimum,
@@ -46,6 +47,7 @@ def observations(
     step: cf.Duration | None = None,
     timestamp: TimestampPosition = TimestampPosition.START,
     measurement: cf.Measurement | None = None,
+    period: Period | None = None,
 ) -> Observations:
     return Observations.from_table(
         {
@@ -59,6 +61,7 @@ def observations(
             "user:value",
             measurement=measurement or cf.Temperature(unit=cf.TemperatureUnit.CELSIUS),
         ),
+        period=period,
         sampling=Sampling(
             calendar=calendar,
             step=step or cf.Duration(1, unit=cf.TimeUnit.DAY),
@@ -142,6 +145,71 @@ def test_annual_maximum_hourly_amount_is_not_the_wettest_day() -> None:
     assert len(daily.metadata.provenance) == 2
 
 
+@pytest.mark.parametrize(
+    "step",
+    [cf.Duration(1, unit=cf.TimeUnit.YEAR), cf.Duration(12, unit=cf.TimeUnit.MONTH)],
+)
+def test_annual_samples_allow_only_one_observation_per_support_and_year(
+    tmp_path: Path, step: cf.Duration
+) -> None:
+    table = {
+        "support_id": ["a", "a"],
+        "longitude": [0, 0],
+        "latitude": [0, 0],
+        "time": ["2000-01-10", "2000-05-01"],
+        "value": [1.0, 2.0],
+    }
+    sampling = Sampling(calendar=Calendar.GREGORIAN, step=step)
+    with pytest.raises(ValueError, match="duplicate evidence record"):
+        Samples.from_table(table, variable=Variable("wind"), sampling=sampling)
+    valid = Samples.from_table(
+        {**table, "time": ["2000-01-10", "2001-05-01"]},
+        variable=Variable("wind"),
+        sampling=sampling,
+    ).read()
+    assert valid.report.counts.usable_years == 2
+    records = valid.table.to_pylist()
+    records[1]["time"] = "2000-05-01"
+    path = tmp_path / "duplicate-annual-sample.parquet"
+    pq.write_table(pa.Table.from_pylist(records, schema=valid.table.schema), path)
+    reopened = Samples.open(path)
+    runtime = Runtime(batch_rows=1)
+    assert reopened.validate(runtime=runtime).valid is False
+    with pytest.raises(ValidationError, match="duplicate scientific row key"):
+        reopened.read(runtime=runtime)
+
+
+def test_observations_reject_years_outside_the_declared_period(
+    tmp_path: Path,
+) -> None:
+    period = Period.window(2010, 2010)
+    with pytest.raises(ValueError, match=r"2000.*declared period \[2010, 2010\]"):
+        observations(["2000-01-01"], [1.0], period=period)
+    valid = observations(["2010-01-01"], [1.0], period=period).read()
+    records = valid.table.to_pylist()
+    records[0]["time"] = "2000-01-01"
+    path = tmp_path / "wrong-window.parquet"
+    pq.write_table(pa.Table.from_pylist(records, schema=valid.table.schema), path)
+    reopened = Observations.open(path)
+    assert reopened.validate().valid is False
+    with pytest.raises(ValidationError, match="outside its declared period"):
+        reopened.aggregate(AnnualMaximum()).read()
+
+
+def test_annual_reduction_uses_interval_year_and_declared_bounds() -> None:
+    source = observations(
+        ["2001-01-01"],
+        [2.0],
+        step=cf.Duration(1, unit=cf.TimeUnit.YEAR),
+        timestamp=TimestampPosition.END,
+        period=Period.window(2000, 2000),
+    )
+    annual = source.select(time=Period.window(1999, 2001)).aggregate(AnnualMaximum())
+    result = annual.read()
+    assert result.table["time"].to_pylist() == ["2000"]
+    assert result.table["value"].to_pylist() == [2.0]
+
+
 @pytest.mark.parametrize("calendar", list(Calendar))
 def test_native_calendar_full_year_completeness(calendar: Calendar) -> None:
     count = sum(days_in_month(2000, month, calendar) for month in range(1, 13))
@@ -174,7 +242,7 @@ def test_incomplete_year_is_retained_and_not_fitted_as_a_valid_observation() -> 
     failure = next(d for d in report.diagnostics if isinstance(d, FittingDiagnostic))
     assert failure.record.evidence_count == failure.record.excluded_count == 0
     assert failure.record.used_count == 0
-    assert failure.record.evidence_support is None
+    assert failure.record.value_interval is None
     assert report.counts.incomplete_years == 1
     kept = annual.fit(specification, on_failure=FitFailure.KEEP_NO_DATA).read()
     row = table_to_rows(kept.table)[0]

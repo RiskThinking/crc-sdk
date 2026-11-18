@@ -61,7 +61,9 @@ directly. An annual
 `return_periods` query uses years and requires each selected series to declare
 its annual probability and tail. The upper tail uses `q = 1 - 1 / T` and keeps
 `1 / T` directly during inversion, so a finite period can resolve past the
-largest floating-point probability below one. The lower tail uses `q = 1 / T`.
+largest floating-point probability below one. Supplied upper-tail knot endpoints
+allow a relative comparison tolerance of `1e-12` in the tail probability to
+account for conversion rounding. The lower tail uses `q = 1 / T`.
 Query order is preserved. A query outside
 the supplied quantile interval retains a row with a null value and the
 `query_outside_support` failure code. [Scientific declarations](scientific-data.md)
@@ -171,10 +173,11 @@ response rows identify their definition in `response_id`. A referenced
 model's concrete numerical model, context, and asset assignments are stored
 in metadata and linked through `resolution_id`. Reopening checks those
 assignments even when the bound columns are omitted from the output. Successful
-named responses have finite values. When saved exposure rows are available,
-full validation recomputes each named response and compares its value within a
-relative tolerance of `1e-12`. Validation also checks retained asset attributes,
-recorded source releases, and diagnostics for missing results.
+named responses have finite values. Full validation recomputes each named
+response and compares its value within a relative tolerance of `1e-12`. With a
+named-only selection, each response row retains the source value or failure in
+its `exposure` field for validation. Validation also checks retained asset
+attributes, recorded source releases, and diagnostics for missing results.
 Use `select(responses=...)` to choose named rows explicitly. Source filters also
 limit the responses in the default selection. The returned table has one row
 per asset, participating series, requested coordinate, and exposure or named

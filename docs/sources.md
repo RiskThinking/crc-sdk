@@ -157,6 +157,8 @@ preview = raw.read(limit=24, runtime=runtime)
 
 A preview is incomplete until the selected source is exhausted. It cannot be
 silently fitted or aggregated as if it were the complete observation record.
+An unpinned CHIRPS preview acquires monthly rasters as it needs them. A pinned
+read verifies all selected months before returning its first batch.
 
 ## Supply and aggregate your own observations
 
@@ -208,12 +210,14 @@ measured, including midnight totals. Sampling intervals must align with the
 native calendar grid. For example, consecutive hourly precipitation amounts
 beginning at 23:30 cannot be allocated to separate days from the source data.
 Annual reductions retain missing years in an explicit time selection for each
-identified support. Saved metadata retains the calendar, sampling, completeness,
+identified support within the declared period. Rows outside a declared period
+are invalid. A calendar-year sampling step allows at most one observation per
+support and year. Saved metadata retains the calendar, sampling, completeness,
 measurement changes, and reductions. An irregular series can be read without
 `Sampling`. Aggregation requires a known cadence.
-When an ERA5 selection has no hourly records, annual reduction in the same
-recipe can still report missing years for the known grid cells. The raw view has
-no source observations for those years.
+When an ERA5 selection has no hourly records, raw evidence retains its known
+grid cells through collection and reopening. Annual reduction can then report
+missing years for those cells.
 
 ## Discover stations and keep source identities
 
@@ -323,3 +327,9 @@ latitude, H3 cell, or WKB geometry columns are inferred only when unambiguous;
 `CellColumn` and `GeometryColumn` provide explicit mappings. IDs must be unique
 and non-null. Locations must be valid WGS84; conflicting declared CRS is
 rejected. Retained columns always include the asset ID.
+
+SQL assets record the query identity and checksum of the materialized input
+columns. Offline execution disables external access for SDK-owned DuckDB
+connections. For offline use with a caller-owned connection, pass a materialized
+asset table or local file as `Assets(...)`. This lets the SDK verify the exact
+asset input without running caller-defined SQL functions or extensions.

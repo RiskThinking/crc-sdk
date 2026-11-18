@@ -749,7 +749,7 @@ class _ClimateNode(SourceNode[EvidenceMetadata]):
                         usable_years=0 if self.raw else count - missing,
                         incomplete_years=0 if self.raw else missing,
                     ),
-                    (actual_source,),
+                    (source.identity, actual_source) if consumed else (actual_source,),
                 ),
             )
 
@@ -1409,7 +1409,7 @@ def _cmip_source(
         "cmip6",
         dataset.dataset_id,
         release=publication,
-        resources=actual_resources(),
+        resources=(record,),
         member=dataset.member_id,
         model=dataset.source_id,
     )
@@ -1513,6 +1513,7 @@ def _nex_listing(
 ) -> tuple[dict[str, str | None], tuple[ResourceIdentity, ...]]:
     objects: dict[str, str | None] = {}
     resources = []
+    seen_tokens: set[str] = set()
     token: str | None = None
     while True:
         uri = NEX_BUCKET + "/?list-type=2&prefix=" + quote(prefix, safe="")
@@ -1531,9 +1532,19 @@ def _nex_listing(
                     raise ValueError(
                         "NEX inventory describes conflicting object revisions"
                     )
+        truncated = tree.findtext("{*}IsTruncated", "").strip()
         token = tree.findtext("{*}NextContinuationToken")
-        if token is None:
+        if truncated == "false":
+            if token is not None:
+                raise ValueError("Complete NEX inventory page has a continuation token")
             return objects, tuple(resources)
+        if truncated != "true":
+            raise ValueError("NEX inventory page must declare whether it is truncated")
+        if not token or not token.strip():
+            raise ValueError("Truncated NEX inventory page has no continuation token")
+        if token in seen_tokens:
+            raise ValueError("NEX inventory repeats a continuation token")
+        seen_tokens.add(token)
 
 
 def _nex_files(objects: dict[str, str | None]) -> dict[int, tuple[str, str | None]]:
@@ -1553,15 +1564,15 @@ def _nex_files(objects: dict[str, str | None]) -> dict[int, tuple[str, str | Non
     return files
 
 
-def _nex_release(files: dict[int, tuple[str, str | None]], id: str) -> ReleaseReference:
-    identity = ResourceIdentity(
+def _nex_record(files: dict[int, tuple[str, str | None]], id: str) -> ResourceIdentity:
+    return ResourceIdentity(
         NEX_BUCKET + "/" + NEX_PREFIX + id + "/",
         "sha256:"
         + hashlib.sha256(
             json.dumps(sorted(files.items()), separators=(",", ":")).encode()
         ).hexdigest(),
+        attribution="NASA Earth Exchange NEX-GDDP-CMIP6",
     )
-    return inventory_release((identity,), id=id)
 
 
 def _discovery_variables(node: _ClimateNode) -> dict[str, list[str]]:
@@ -1689,7 +1700,9 @@ def _nex_catalogue(
         ):
             entries.setdefault((model, experiment, member, variable), {})[key] = etag
     return {
-        key: _nex_release(_nex_files(objects), "/".join(key))
+        key: inventory_release(
+            (_nex_record(_nex_files(objects), "/".join(key)),), id="/".join(key)
+        )
         for key, objects in entries.items()
     }, resources
 
@@ -1715,7 +1728,9 @@ def _nex_source(
     )
     if not files:
         raise LookupError("The selected NEX source contains no annual NetCDF resources")
-    publication = _nex_release(files, release_id)
+    record = _nex_record(files, release_id)
+    publication = inventory_release((record,), id=release_id)
+    resources.append(record)
     _, requested = payload_selection(node.state, node.release)
     inventory_payload_pin(publication, requested)
     header, header_resource = netcdf_header_snapshot(
@@ -1732,7 +1747,7 @@ def _nex_source(
         "nex",
         "NEX-GDDP-CMIP6",
         release=publication,
-        resources=tuple(resources),
+        resources=(record,),
         member=node.member,
         model=node.model,
     )

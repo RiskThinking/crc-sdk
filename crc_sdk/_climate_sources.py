@@ -141,10 +141,19 @@ def _stream_rows(
                 ),
             )
         )
+        report = _report(len(rows), source, skipped=skipped, diagnostics=diagnostics)
+        publication = metadata.source
+        if (
+            publication is not None
+            and publication.release is not None
+            and publication.release.id.startswith("inventory:")
+            and publication.release != source.release
+        ):
+            report = replace(report, source_identities=(publication, source))
         current = replace(
             metadata,
             source=source,
-            report=_report(len(rows), source, skipped=skipped, diagnostics=diagnostics),
+            report=report,
         )
         table = rows_to_table(rows, current)
         yield from table.to_batches(max_chunksize=scope.runtime.batch_rows)
@@ -1160,7 +1169,9 @@ class _EDONode(SourceNode[EvidenceMetadata]):
                     counts=ExecutionCounts(
                         requested=count, produced=count, no_data=missing
                     ),
-                    source_identities=(actual,),
+                    source_identities=(actual,)
+                    if actual.release == source.release
+                    else (source, actual),
                 ),
             )
 

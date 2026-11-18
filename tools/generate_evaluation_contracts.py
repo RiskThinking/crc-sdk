@@ -131,6 +131,15 @@ def fixture_cases() -> dict[str, object]:
             ),
         ],
     }
+    projected = deepcopy(composed)
+    projected["metadata"]["include_exposure"] = False
+    projected["metadata"]["report"]["counts"].update(requested=4, produced=4)
+    projected["rows"] = projected["rows"][2:]
+    for row in projected["rows"]:
+        exposure = next(
+            item for item in direct["rows"] if item["query_value"] == row["query_value"]
+        )
+        row["exposure"] = {"value": exposure["value"], "failure": exposure["failure"]}
 
     @dataclass(frozen=True)
     class Facility(ResponseContext):
@@ -201,6 +210,7 @@ def fixture_cases() -> dict[str, object]:
         {"name": "unmatched-assets-retained", "document": unmatched},
         {"name": "explicit-empty", "document": empty},
         {"name": "calibrated-user-case-and-covering-priority", "document": case_result},
+        {"name": "named-only-with-exposure-proof", "document": projected},
     ]
 
     rejected = []
@@ -225,6 +235,17 @@ def fixture_cases() -> dict[str, object]:
     missing = deepcopy(direct)
     missing["rows"].pop()
     reject("missing-query-row", missing)
+    wrong_projection = deepcopy(projected)
+    wrong_projection["rows"][0]["value"] = 99.0
+    reject("named-only-contradicts-model", wrong_projection)
+    missing_proof = deepcopy(projected)
+    missing_proof["rows"][0].pop("exposure")
+    reject("named-only-missing-exposure-proof", missing_proof, structural=True)
+    conflicting_proof = deepcopy(projected)
+    conflicting_proof["rows"][0].update(
+        value=6.0, exposure={"value": 3.0, "failure": None}
+    )
+    reject("contradictory-exposure-proofs", conflicting_proof)
     duplicate_row = deepcopy(direct)
     duplicate_row["rows"].insert(1, deepcopy(duplicate_row["rows"][0]))
     reject("duplicate-scientific-row", duplicate_row)

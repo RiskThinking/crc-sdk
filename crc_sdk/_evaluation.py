@@ -705,11 +705,12 @@ class _EvaluationNode(Node[EvaluationMetadata]):
                                     )
                                 _, _, assigned_assets = resolutions[resolution_key]
                                 assigned_assets.setdefault(asset_id, None)
-                        for value, (result, failure) in zip(
+                        for value, source_exposure in zip(
                             query.values,
                             exposures,
                             strict=True,
                         ):
+                            result, failure = source_exposure
                             if response is not None and failure is None:
                                 assert result is not None
                                 result, failure = _apply_response(result, resolved)
@@ -742,6 +743,7 @@ class _EvaluationNode(Node[EvaluationMetadata]):
                                     query_value=value,
                                     value=result,
                                     failure=failure,
+                                    exposure=None if exposure else source_exposure,
                                 )
                             )
                             if asset_values is not None:
@@ -855,16 +857,23 @@ def _value(
     assert row.curve is not None
     coordinate, tail = query._coordinate(value, series)
     upper = tail is cf.Tail.UPPER
+    if upper:
+        if isinstance(row.curve, cf.Distribution):
+            return row.curve._inverse_survival(coordinate), None
+        try:
+            return row.curve._inverse_survival(coordinate), None
+        except ValueError as error:
+            return None, EvaluationFailure(
+                "query_outside_support", f"Return period {value:g} years: {error}."
+            )
     if isinstance(row.curve, cf.QuantileCurve):
         lo, hi = row.curve.probability_interval
-        q = 1.0 - coordinate if upper else coordinate
-        if q < lo or q > hi:
+        if coordinate < lo or coordinate > hi:
             return None, EvaluationFailure(
                 "query_outside_support",
-                f"Probability {q:g} lies outside supplied interval [{lo:g}, {hi:g}].",
+                f"Probability {coordinate:g} lies outside supplied interval "
+                f"[{lo:g}, {hi:g}].",
             )
-    if upper:
-        return row.curve._inverse_survival(coordinate), None
     return cast(float, row.curve.quantile(coordinate)), None
 
 

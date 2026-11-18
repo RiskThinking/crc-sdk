@@ -724,6 +724,7 @@ class DatasetMetadata:
             else json.loads(variable.measurement.to_json())
             for variable in self.spec.variables
         }
+        scenario_ids = {scenario.id for scenario in self.spec.scenarios}
         for step in reversed(self.provenance):
             if isinstance(step, TemporalReduction):
                 for change in step.measurements:
@@ -751,11 +752,16 @@ class DatasetMetadata:
                     **measurement,
                     "unit": step.source_unit,
                 }
-            elif (
-                isinstance(step, IdentityRename)
-                and step.dimension is IdentityKind.VARIABLE
-            ):
+            elif isinstance(step, IdentityRename):
                 inverse = {new: old for old, new in step.mapping.items()}
+                if step.dimension is IdentityKind.SCENARIO:
+                    prior = {inverse.get(id, id) for id in scenario_ids}
+                    if len(prior) != len(scenario_ids):
+                        raise ValueError(
+                            "rename provenance conflicts with participating scenarios"
+                        )
+                    scenario_ids = prior
+                    continue
                 before = {
                     inverse.get(name, name): measurement
                     for name, measurement in measurements.items()

@@ -22,6 +22,7 @@ from crc_framework import (
     PrecipitationRate,
     PrecipitationRateUnit,
     QuantileCurve,
+    QuantileFit,
     SampleEstimator,
     SampleFit,
     Tail,
@@ -141,6 +142,28 @@ def fixture_cases() -> dict[str, object]:
         )
     )
     accepted.append({"name": "authoritative-fit-record", "document": fitted})
+    bounded_quantile_fit = fit_quantiles(
+        QuantileCurve([0.1, 0.25, 0.5, 0.75, 0.9], [1, 2, 3, 4, 5]),
+        QuantileFit(
+            family=DistributionFamily.WEIBULL_MINIMUM,
+            constraints=FitConstraints(require_sample_support=True),
+        ),
+    )
+    fitted_quantiles = json.loads(
+        dataset_to_json(
+            [
+                replace(
+                    row,
+                    curve=bounded_quantile_fit.distribution,
+                    fit=bounded_quantile_fit.record,
+                )
+            ],
+            metadata,
+        )
+    )
+    accepted.append(
+        {"name": "fitted-quantile-value-interval", "document": fitted_quantiles}
+    )
     hurdle = Distribution.hurdle(law, atom_probability=0.25)
     probabilities = [0.1, 0.2, 0.25, 0.4, 0.6, 0.8, 0.9, 0.99]
     hurdle_fit = fit_quantiles(
@@ -389,7 +412,7 @@ def fixture_cases() -> dict[str, object]:
     value["rows"][0]["fit"].update(used_count=3, excluded_count=5)
     reject("fit-sample-invented-exclusions", value, False)
     value = deepcopy(fitted)
-    value["rows"][0]["fit"]["evidence_support"] = None
+    value["rows"][0]["fit"]["value_interval"] = None
     reject("fit-sample-missing-observed-support", value, False)
     value = deepcopy(fitted_hurdle)
     base = value["rows"][0]["curve"]["base"]
@@ -399,8 +422,11 @@ def fixture_cases() -> dict[str, object]:
     value["rows"][0]["curve"]["atom_probability"] = 0.9
     reject("fit-hurdle-atom-changed", value, False)
     value = deepcopy(fitted_hurdle)
-    value["rows"][0]["fit"]["evidence_support"] = [0, 1]
+    value["rows"][0]["fit"]["probability_interval"] = [0, 1]
     reject("fit-active-probability-endpoints", value, False)
+    value = deepcopy(fitted_quantiles)
+    value["rows"][0]["curve"]["location"] = 100
+    reject("fit-excludes-observed-quantile-values", value, False)
     value = deepcopy(fitted_hurdle)
     record = value["rows"][0]["fit"]
     for specification in (
@@ -424,6 +450,31 @@ def fixture_cases() -> dict[str, object]:
     value = json.loads(dataset_to_json([row], source_info))
     value["metadata"]["source"]["model"] = " padded-model"
     reject("invalid-source-model-id", value, True)
+    for field in ("source", "report"):
+        value = json.loads(dataset_to_json([row], source_info))
+        identity = value["metadata"]["source"]
+        identity["resources"].append(
+            {**identity["resources"][0], "sha256": "sha256:" + "b" * 64}
+        )
+        if field == "report":
+            del value["metadata"]["source"]
+            value["metadata"]["report"]["source_identities"] = [identity]
+        reject(f"duplicate-resource-uri-in-{field}", value, False)
+    value = deepcopy(annual)
+    other_scenario = "user:other-scenario"
+    spec = value["metadata"]["spec"]
+    spec["scenarios"].append({"id": other_scenario})
+    spec["series"].append({**spec["series"][0], "scenario_id": other_scenario})
+    value["rows"].append({**value["rows"][0], "scenario_id": other_scenario})
+    value["metadata"]["report"]["counts"].update(requested=2, produced=2)
+    value["metadata"]["provenance"] = [
+        {
+            "kind": "rename",
+            "dimension": "scenario",
+            "mapping": {scenario.id: other_scenario},
+        }
+    ]
+    reject("scenario-rename-collides-with-unchanged-identity", value, False)
     geometry_cases = json.loads(
         (ROOT / "crc_sdk/contracts/fixtures/geometry-cases.json").read_text()
     )
