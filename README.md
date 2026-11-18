@@ -18,33 +18,39 @@ Python 3.11 or later is required. H3 and geometry validation are part of the cor
 package. Source-format extras are `raster`, `netcdf`, and `zarr`.
 Source readers import those dependencies only when needed.
 
-## Declare the science you know
+## Query a dataset
+
+Supply quantile values as columns in a Python mapping. This example has two
+depth values in metres at the same point and queries the 10-year and 100-year
+event levels at a colocated asset.
 
 ```python
 from crc_framework import DepthAboveGround, LengthUnit, Tail
-from crc_sdk import DataSpec, Period, Probability, SeriesSpec, Variable
+from crc_sdk import Assets, Dataset, Probability, Variable
 
-water_depth = Variable(
-    "company:water-depth",
-    measurement=DepthAboveGround(unit=LengthUnit.METRE),
-)
-series = SeriesSpec(
-    water_depth,
-    period=Period.window(2030, 2050),
+depth = Dataset.from_quantiles(
+    {
+        "support_id": ["station-a", "station-a"],
+        "longitude": [24.0, 24.0],
+        "latitude": [60.0, 60.0],
+        "probability": [0.90, 0.99],
+        "value": [0.3, 0.85],
+    },
+    variable=Variable(
+        "company:water-depth",
+        measurement=DepthAboveGround(unit=LengthUnit.METRE),
+    ),
     probability=Probability.annual(tail=Tail.UPPER),
 )
-spec = DataSpec([water_depth], series=[series])
-assert spec.series[0].scenario is None
+assets = Assets({"asset_id": ["warehouse"], "longitude": [24.0], "latitude": [60.0]})
+
+events = depth.evaluate(assets).return_periods([10, 100]).read()
+assert events.table["value"].to_pylist() == [0.3, 0.85]
 ```
 
-Custom variable and scenario IDs require no taxonomy registration. Scenario,
-period, and measurement meaning can be omitted when unknown or unnecessary for
-the operation. No placeholder scenario, center year, or artifact-envelope
-construction is required to describe one measured series.
-
-An optional immutable `Catalog` reconciles exact scientific definitions and
-explicit framework fitting presets. It never normalizes identifiers or chooses
-an impact or fit implicitly.
+The final `read()` validates the inputs, matches the asset, and evaluates the
+two supplied knots. Use your own variable, support, and asset IDs. Supply a
+scenario or period when your source establishes those facts. [Evaluation guide](docs/evaluation.md)
 
 ## Documentation
 
@@ -63,6 +69,7 @@ an impact or fit implicitly.
   installed-package enforcement.
 - [Development](docs/development.md): setup, checks, generated contracts, and
   releases.
+- [Release notes](docs/release-notes.md)
 
 ## Contributors
 

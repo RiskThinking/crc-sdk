@@ -16,7 +16,7 @@ from shapely.geometry.base import BaseGeometry  # type: ignore[import-untyped]
 
 from ._dataset_schema import _number, _object
 from ._errors import CapabilityError
-from ._geometry.h3 import cell_polygon
+from ._geometry import cell_polygon
 from ._schema.dataset import DatasetRow
 from ._selection import _angle, _vector
 

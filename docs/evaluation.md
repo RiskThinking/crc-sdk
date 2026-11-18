@@ -8,12 +8,18 @@ on its rows. [Collections](collections.md)
 ## Query supplied quantiles
 
 This example uses two tables expressed as mappings from column names to lists.
-Each row of the depth table supplies one quantile at the same station point.
-Each row of the asset table supplies a site ID, a WGS84 location, and attributes.
+Each row of the depth table supplies one knot of a curve. Rows for the same
+`support_id` share a WGS84 longitude and latitude and use the declared variable
+and measurement. `probability` is a non-exceedance probability and `value` is
+depth in metres above local ground. With these knots, the curve supports
+10-year and 100-year upper-tail queries.
+
+The asset table has one row per asset. Here `site_id` is a custom ID column.
+One asset shares the station's position and the other is outside point coverage.
 
 ```python
 from crc_framework import DepthAboveGround, FloodRegion, LengthUnit, Tail
-from crc_sdk import Assets, Dataset, Period, Probability, Variable
+from crc_sdk import Assets, Dataset, Probability, QueryKind, Variable
 
 depth_measurement = DepthAboveGround(unit=LengthUnit.METRE)
 depth_variable = Variable("company:flood-depth", measurement=depth_measurement)
@@ -27,7 +33,6 @@ depth_table = {
 depth = Dataset.from_quantiles(
     depth_table,
     variable=depth_variable,
-    period=Period.window(2011, 2030),
     probability=Probability.annual(tail=Tail.UPPER),
 )
 
@@ -40,13 +45,19 @@ asset_table = {
 }
 assets = Assets(asset_table, id_column="site_id", columns=["replacement_cost"])
 
-exposure = depth.evaluate(assets).probabilities([0.5, 0.9])
-result = exposure.read()
+result = depth.evaluate(assets).return_periods([10, 100]).read()
+assert result.metadata.query.kind is QueryKind.RETURN_PERIOD
+assert set(result.table["period_id"].to_pylist()) == {None}
+assert set(result.table["scenario_id"].to_pylist()) == {None}
+matched = [row for row in result.table.to_pylist() if row["support_id"] is not None]
+assert [(row["query_value"], row["value"]) for row in matched] == [(10, 1.0), (100, 1.8)]
 assert result.report.counts.matched_assets == 1
 assert result.report.counts.unmatched_assets == 1
 ```
 
-The `probabilities` query accepts non-exceedance probabilities. An annual
+Each call in the chain describes work until `read()` runs the full recipe.
+You can call `probabilities([0.5, 0.9])` to query non-exceedance probabilities
+directly. An annual
 `return_periods` query uses years and requires each selected series to declare
 its annual probability and tail. The upper tail uses `q = 1 - 1 / T` and
 the lower tail uses `q = 1 / T`. Query order is preserved. A query outside
@@ -73,6 +84,7 @@ spatial = SpatialMatch.nearest(max_distance=Distance.kilometres(5))
 nearby = depth.select(area=area).evaluate(assets, spatial=spatial)
 nearby_result = nearby.return_periods([10, 100]).read()
 assert nearby_result.report.counts.matched_assets == 2
+assert max(nearby_result.table["distance_metres"].to_pylist()) < 5_000
 ```
 
 Select source variables, scenarios, periods, exact series, or an area before
@@ -97,6 +109,9 @@ from crc_framework import (
 from crc_sdk import EvaluationMetadata
 
 damage = Impact.builtin(BuiltinImpact.INUNDATION)
+requirements = damage.requirements
+print(requirements.accepted_units)
+assert requirements.context_type is InundationContext
 downtime = Impact.linear(
     slope=2.0,
     input=depth_measurement,
@@ -128,13 +143,14 @@ assert set(damage_only.table["response_id"].to_pylist()) == {"damage_fraction"}
 ```
 
 The framework checks the input measurement and context against the calibrated
-model. Inspect `damage.requirements` for its input unit, qualifiers, and
-typed context constructor. An asset-column binding reads the column's values
-from the input table. The `columns` argument on `Assets` independently
+model. `damage.requirements.input` shows the measurement the model expects.
+`context_type` names the typed context constructor and `context_fields` lists
+its argument names and choices. An asset-column binding reads the column's
+values from the input table. The `columns` argument on `Assets` independently
 chooses the attributes carried into the nested `asset` field. Here the
 `region` values resolve the built-in response and the output carries
 `replacement_cost`. The configured site IDs appear in `asset_id`.
-[Framework measurement and model requirements](../../crc-framework-rs/docs/measurements.md)
+[Framework measurement and model requirements](https://github.com/RiskThinking/crc-framework-rs/blob/main/docs/measurements.md)
 
 Exposure rows are included by default and have a null `response_id`. Named
 response rows identify their definition in `response_id`. A referenced
@@ -152,14 +168,18 @@ metadata. Another process can open that path and read the saved result.
 ```python
 from crc_sdk import EvaluationArtifact
 
-saved = evaluation.write("events.parquet")
+with evaluation.execute() as execution:
+    report = execution.validate()
+    preview = execution.read(limit=4)
+    saved = execution.write("events.parquet")
+assert report.valid and preview.table.num_rows == 4
 assert saved.path is not None
 reopened = EvaluationArtifact.open(saved.path)
 events = reopened.read()
 assert events.report.complete and events.report.valid
-assert events.metadata.schema_version == "2.0"
 ```
 
-Use `batches()` for a stream or `read(limit=...)` for a bounded preview.
-For several terminals over the same work, an `execute(runtime=...)` scope
-shares the computed rows. [Execution and persistence](execution.md)
+Use `batches()` for a stream, `read(limit=...)` for a bounded preview, or call
+`write()` directly if you only need to save the result. The execution scope
+above shares computed rows across validation, preview, and writing.
+[Execution and persistence](execution.md)

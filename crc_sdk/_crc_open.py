@@ -95,7 +95,7 @@ def release_index(value: object) -> tuple[str, tuple[ReleaseDataset, ...]]:
     obj = _object(value, {"schema_version", "id", "datasets"})
     if obj["schema_version"] != "1.0":
         raise ValueError(
-            "CRC Open requires a current release index and dataset format2.0"
+            "CRC Open requires a current release index and dataset format 2.0"
         )
     if not isinstance(obj["datasets"], list):
         raise ValueError("release datasets must be an array")

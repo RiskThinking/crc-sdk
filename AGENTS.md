@@ -18,14 +18,16 @@ Numerical algorithms live in the `crc-framework` dependency
 
 `_declarations` and `_catalog` define science and exact identity. `_dataset_schema`
 and `_schema` validate artifact metadata, canonical rows, Arrow and Parquet.
-`_providers`, `_connectors`, and `_geometry` contain private source-decoding and
-spatial algorithms. Canonical public imports live at `crc_sdk`.
+`_providers`, `_climate_grid.py`, and `_geometry.py` contain private
+source-decoding and spatial algorithms. Canonical public imports live at
+`crc_sdk`.
 
 ## Checks
 
 ```sh
 uv sync --locked --all-extras
 uv run python tools/api_contracts/check.py
+uv run python -I tools/check_examples.py
 uv run pytest -q
 uv run mypy
 uv run ruff check . && uv run ruff format --check .

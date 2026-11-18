@@ -828,8 +828,12 @@ def test_current_grid_decoder_retains_cf_packing_nodata_and_dateline_footprints(
     group["lon"].attrs["bounds"] = "lon_bnds"
     group["tasmax"][:] = 20.0
     group["tasmax"][1, 0, 0] = -9999.0
+    group["tasmax"][1, 0, 1] = -8888.0
     group["tasmax"].attrs.update(
-        _FillValue=-9999.0, scale_factor=0.1, add_offset=273.15
+        _FillValue=-9999.0,
+        missing_value=[-8888.0, -7777.0],
+        scale_factor=0.1,
+        add_offset=273.15,
     )
     cells = grid_cells(
         group,
@@ -853,7 +857,7 @@ def test_current_grid_decoder_retains_cf_packing_nodata_and_dateline_footprints(
         cells=cells,
     )
     assert values[0].tolist() == pytest.approx([275.15, 275.15])
-    assert np.isnan(values[1, 0]) and values[1, 1] == pytest.approx(275.15)
+    assert np.isnan(values[1]).all()
 
 
 def test_offline_native_chunk_cache_miss_does_not_become_a_source_fill_value(

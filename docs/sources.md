@@ -18,10 +18,11 @@ the entire selected recipe.
 | `Layer` | Numeric or categorical values, labels, or geometry-only boundaries | Read and inspect spatial evidence |
 | `Dataset` | Directly usable supplied quantiles or an explicitly fitted numerical law | Explicit framework quantile fit when needed |
 
-The evidence kinds accept `from_table`; `Dataset` accepts `from_quantiles` or
-`from_raster`. All recipes share `open`, `select`, `read`, `batches`, `validate`,
-`execute`, and `write`.
-Saving an ERA5 sample recipe returns `Samples`.
+The evidence kinds accept `from_table`. Use `Dataset.from_quantiles` or
+`Dataset.from_raster` for supplied curves. Readers share `select`, `read`,
+`batches`, `validate`, `execute`, and `write`. Open a saved file using the
+type returned by `write`. For example, saving an ERA5 sample recipe returns
+`Samples`, so use `Samples.open(path)` to reopen it.
 Scientific transforms such as `rename`, `declare`, and `convert_units` also
 return the canonical data kind. Choose a native product view before transforming
 its scientific output.
@@ -49,11 +50,19 @@ positions. Categorical layers have no fitting method.
 
 ## Read an annual indicator before fitting
 
+Inspect a provider to see its typed indicators, required selections, and
+source details. ERA5 inspection and data access require network access and
+the `zarr` extra. The following example reads ERA5's remote store.
+
+<!-- live-example -->
 ```python
 from crc_framework import DistributionFamily, SampleFit
 from crc_sdk import Bounds, Cache, ERA5, Period, Runtime
 
 runtime = Runtime(cache=Cache.reuse(".crc-cache"))
+for indicator in ERA5().inspect(runtime=runtime).indicators:
+    print(indicator.label, indicator.measurement)
+
 rain = ERA5(
     indicator=ERA5.Indicator.ANNUAL_MAXIMUM_DAILY_PRECIPITATION,
 ).select(
@@ -61,9 +70,10 @@ rain = ERA5(
     time=Period.window(1991, 2020),
 )
 inventory = rain.inspect(runtime=runtime)
-assert inventory.metadata is not None
-declared_operations = inventory.metadata.provenance
+for requirement in inventory.requirements:
+    print(requirement.message)
 annual_observations = rain.read(runtime=runtime)
+print(annual_observations.report)
 fitted = annual_observations.fit(
     SampleFit(family=DistributionFamily.GUMBEL_RIGHT),
 )
@@ -72,7 +82,8 @@ saved = fitted.write("annual-rainfall.parquet")
 
 The recipe decodes the native accumulation convention, produces daily totals,
 and takes the largest daily total in each source-calendar year. The result is
-one annual precipitation **amount** per support and year. The five-day recipe
+one annual precipitation **amount** per support and year. Fitting the collected
+result reuses those values and their pinned source identity. The five-day recipe
 first forms five-day totals. Temperature recipes reduce daily maxima or minima
 before selecting the annual extreme. No fitting occurs until `fit(...)`.
 
@@ -89,8 +100,10 @@ estimate. Cache a deliberate selection before repeating a long calculation.
 CMIP6 and NEX require an actual model, scenario, and member; discovery returns
 the available combinations rather than guessing these scientific choices.
 
-Native evidence remains accessible:
+Access the underlying observations through the same configured provider. This
+example continues the live workflow above.
 
+<!-- live-example -->
 ```python
 raw = rain.observations()
 preview = raw.read(limit=24, runtime=runtime)
@@ -143,7 +156,8 @@ WKB geometry. Column names and user IDs stay ordinary exact strings; calendars,
 units, durations, and reduction choices are typed values.
 
 An annual maximum applied directly to hourly evidence is the largest hourly
-observation. It is not the wettest day. `TimestampPosition.END` assigns an
+observation. Apply `DailyTotal()` first to compute the wettest day.
+`TimestampPosition.END` assigns an
 accumulation to the interval it actually measured, including midnight totals.
 Native calendars, sampling, completeness, measurement changes, and reductions
 remain in saved metadata. Irregular observations can be read without inventing
@@ -151,15 +165,18 @@ a `Sampling` declaration; generic aggregation requires a known cadence.
 
 ## Discover stations and keep source identities
 
-```python
-from crc_sdk import GHCNh, Period
+This example reads the live station inventory. Inspect before choosing a station
+and pass its returned reference to `select`.
 
-source = GHCNh(
+<!-- live-example -->
+```python
+from crc_sdk import GHCNh
+
+inventory = GHCNh().inspect()
+station = next(station for station in inventory.stations if station.period is not None)
+station_data = GHCNh(
     indicator=GHCNh.Indicator.ANNUAL_MAXIMUM_DAILY_MAXIMUM_TEMPERATURE,
-)
-inventory = source.inspect()
-station = inventory.stations[0]
-station_data = source.select(stations=station, time=Period.window(2000, 2020))
+).select(stations=station, time=station.period)
 ```
 
 Station references carry the source ID, label, and known location/record window.
@@ -190,11 +207,39 @@ central_estimates = idf
 confidence_intervals = idf.confidence_intervals()
 ```
 
-CRC Open reads the current release-index protocol with Dataset 2.0 resources.
-Use `CRCOpen(catalog=path)` for an explicit index or current-release pointer.
-Inspection reads the index without fetching its dataset files. Each selected
-file must match its published checksum and indexed metadata. A current-format
-CRC Open publication is required; historical published schemas are rejected.
+## Discover a CRC Open release
+
+Pass the local path or HTTPS URL of a release index or pointer to
+`CRCOpen(catalog=...)`. The index must use release-index format 1.0 and
+point to Dataset 2.0 files. Use the index supplied with your release.
+Publication of a matching production CRC Open dataset is pending.
+[Release notes](release-notes.md#crc-open-availability)
+
+Inspection reads the index and returns actual series combinations, including
+their periods and release identities. This example lists the available
+combinations, reads the first one, and replays it from the verified cache.
+
+```python
+from crc_sdk import CRCOpen, Cache, Runtime
+
+source = CRCOpen(catalog="release-index.json")
+runtime = Runtime(cache=Cache.reuse(".release-cache"))
+inventory = source.inspect(runtime=runtime)
+for series in inventory.series:
+    print(series.variable.id, series.scenario, series.period, series.release)
+
+selected = source.select(series=inventory.series[0])
+published = selected.read(runtime=runtime)
+replayed = selected.read(runtime=Runtime(cache=Cache.offline(".release-cache")))
+assert replayed.table.equals(published.table, check_metadata=False)
+```
+
+A selected file must match both its checksum and the scientific metadata in
+the index. Pass a returned series reference directly to `select` to pin that
+exact choice. For a known published variable or scenario, use a provider enum
+such as `CRCOpen.Variable.ANNUAL_MAXIMUM_DAILY_PRECIPITATION` or
+`CRCOpen.Scenario.SSP585` in the corresponding selector. User-owned IDs in a
+release can be selected by their exact values.
 
 ## Define asset inputs
 

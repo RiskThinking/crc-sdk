@@ -2,14 +2,8 @@
 
 [Docs index](README.md) · [Development](development.md)
 
-The release contract declares one canonical Python interface. Its source is
-[`public-api.json`](../crc_sdk/contracts/api/public-api.json); the independent
-[`release.json`](../crc_sdk/contracts/api/release.json) records package and format
-versions. Publication requires the installed implementation to conform to both.
-
 Use `crc_sdk` for data access and workflows and `crc_framework` for numerical
-distributions, fitting specifications, measurements, units, and impacts. The SDK
-does not re-export the framework's numerical interface.
+distributions, fitting specifications, measurements, units, and impacts.
 
 | Work | Canonical interface |
 | --- | --- |
@@ -69,20 +63,16 @@ effective cache and resource settings without I/O.
 
 ## Verify declarations and installed packages
 
+[`public-api.json`](../crc_sdk/contracts/api/public-api.json) declares exports,
+signatures, enum members, and removals.
+[`release.json`](../crc_sdk/contracts/api/release.json) records package and
+artifact versions.
+
 ```sh
 python tools/api_contracts/check.py
 python tools/api_contracts/check.py --runtime
-python tools/api_contracts/check.py --runtime --package-root /path/to/site-packages
 ```
 
-The first command checks the allowlist, typed signatures, enum choices,
-inheritance, removals, and package/version agreement without importing the SDK
-or acquiring data. The runtime command additionally checks the installed
-package's resources, exports, constructors, methods, properties, defaults,
-annotations, enum members, and removal of superseded import paths. It reports
-missing implementation instead of treating a declaration as implemented code.
-
-API snapshots are not generated from the current implementation. Review an
-intentional contract change in the authoritative declaration, then change the
-implementation and behavior tests together. No separate export-retention
-baseline exists.
+Use the first command to validate the declarations and the second to verify an
+installation. Check the contract when changing the public interface and update
+the implementation and behavior tests together. [Development](development.md#releases)

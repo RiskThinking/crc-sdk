@@ -12,9 +12,8 @@ import pytest
     [
         "crc_sdk",
         "crc_sdk._schema",
-        "crc_sdk._connectors.duckdb",
+        "crc_sdk._geometry",
         "crc_sdk._providers.cmip6",
-        "crc_sdk._geometry.pmtiles",
     ],
 )
 def test_canonical_and_internal_modules_import(module_name: str) -> None:

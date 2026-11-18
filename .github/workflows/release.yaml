@@ -5,57 +5,107 @@ on:
       - "v*"
   workflow_dispatch:
 permissions:
-  contents: write
-  id-token: write
+  contents: read
 jobs:
-  validate:
-    uses: ./.github/workflows/ci.yml
-    permissions:
-      contents: read
-    secrets:
-      CRC_COMPAT_TOKEN: ${{ secrets.CRC_COMPAT_TOKEN }}
-
-  deploy:
-    name: Release
-    needs: validate
-    environment: production
+  versions:
     runs-on: ubuntu-latest
-
+    outputs:
+      framework: ${{ steps.ledger.outputs.framework }}
     steps:
       - uses: actions/checkout@v7
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v10.2.0
+      - uses: actions/setup-python@v7
         with:
-          enable-cache: true
-
-      - name: Verify release tag matches package version
+          python-version: "3.12"
+      - name: Validate the release tag and resolve the framework version
+        id: ledger
         env:
           RELEASE_REF_TYPE: ${{ github.ref_type }}
           RELEASE_REF_NAME: ${{ github.ref_name }}
         run: |
-          uv run --no-project --python 3.12 python -c 'import os, tomllib; version=tomllib.load(open("pyproject.toml", "rb"))["project"]["version"]; expected="v" + version; actual=os.environ["RELEASE_REF_NAME"]; assert os.environ["RELEASE_REF_TYPE"] == "tag" and actual == expected, f"Release must run from tag {expected}; got {actual}"'
+          python tools/api_contracts/check.py
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
 
+          versions = json.loads(Path("crc_sdk/contracts/api/release.json").read_text())["packages"]
+          expected = "v" + versions["sdk"]
+          if os.environ["RELEASE_REF_TYPE"] != "tag" or os.environ["RELEASE_REF_NAME"] != expected:
+              raise SystemExit(f"Release must run from tag {expected}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              print(f'framework={versions["framework"]}', file=output)
+          PY
+
+  validate:
+    needs: versions
+    uses: ./.github/workflows/ci.yml
+    with:
+      framework_ref: v${{ needs.versions.outputs.framework }}
+
+  package:
+    name: Test the release candidate
+    needs: [versions, validate]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
       - name: Build
-        run: uv build --no-sources
+        run: uv build --no-sources --python 3.12
 
       - name: Verify release distributions
         run: |
           uv run --no-project --python 3.12 python -c 'from pathlib import Path; wheels=list(Path("dist").glob("*-py3-none-any.whl")); sdists=list(Path("dist").glob("*.tar.gz")); assert len(wheels) == 1 and len(sdists) == 1, "Expected one universal wheel and one source distribution"; print("Release distributions:", *wheels, *sdists)'
 
-      - name: Install release wheel with its published framework dependency
+      - name: Verify the exact wheel with its published framework dependency
+        env:
+          FRAMEWORK_VERSION: ${{ needs.versions.outputs.framework }}
         run: |
+          set -euo pipefail
           uv venv --python 3.12 "$RUNNER_TEMP/contract-venv"
-          uv pip install --python "$RUNNER_TEMP/contract-venv/bin/python" dist/*.whl
-
-      - name: Verify installed runtime before publication
+          wheel_python="$RUNNER_TEMP/contract-venv/bin/python"
+          wheels=( dist/*.whl )
+          uv pip install --python "$wheel_python" "${wheels[0]}[zarr,netcdf,raster,test]" "crc-framework==$FRAMEWORK_VERSION"
+          uv pip check --python "$wheel_python"
+          cd "$RUNNER_TEMP"
+          "$wheel_python" -I "$GITHUB_WORKSPACE/tools/api_contracts/check.py" --runtime
+          "$wheel_python" -I "$GITHUB_WORKSPACE/tools/check_wheels.py"
+          "$wheel_python" -I -m pytest -q --import-mode=importlib "$GITHUB_WORKSPACE/tests"
+          "$wheel_python" -I "$GITHUB_WORKSPACE/tools/check_examples.py"
+      - name: Verify CRC Open has published a current release index
         working-directory: ${{ runner.temp }}
-        run: '"$RUNNER_TEMP/contract-venv/bin/python" -I "$GITHUB_WORKSPACE/tools/api_contracts/check.py" --runtime'
+        run: |
+          "$RUNNER_TEMP/contract-venv/bin/python" -I - <<'PY'
+          from crc_sdk import CRCOpen
 
+          inspection = CRCOpen().inspect()
+          if not inspection.releases or not inspection.series:
+              raise SystemExit("Publish a current, nonempty CRC Open release before releasing the SDK")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdk-release
+          path: dist/
+          if-no-files-found: error
+
+  deploy:
+    name: Release
+    needs: package
+    environment: production
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: sdk-release
+          path: dist
       - name: Determine prerelease
         id: prerelease
+        env:
+          RELEASE_REF_NAME: ${{ github.ref_name }}
         run: |
-          if [[ "${{ github.ref_name }}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+((a|b|rc)[0-9]+|\.dev[0-9]+)$ ]]; then
+          if [[ "$RELEASE_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+((a|b|rc)[0-9]+|\.dev[0-9]+)$ ]]; then
             echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
           else
             echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
