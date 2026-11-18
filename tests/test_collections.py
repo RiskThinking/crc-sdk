@@ -358,6 +358,20 @@ def test_only_participating_conflicts_are_reconciled() -> None:
     assert len(equal_science.metadata.spec.series) == 1
 
 
+def test_empty_projection_still_checks_typed_science() -> None:
+    dataset = _dataset()
+    (reference,) = dataset.inspect().series
+    wrong = _variable(unit=cf.LengthUnit.CENTIMETRE)
+    collection = DatasetCollection({"a": dataset})
+    for source in (dataset, collection):
+        with pytest.raises(ValueError, match="conflicting scientific definition"):
+            source.select(variables=wrong, periods=[]).read()
+        with pytest.raises(
+            ValueError, match="conflicting scientific series definition"
+        ):
+            source.select(series=replace(reference, variable=wrong), periods=[]).read()
+
+
 def test_rename_rejects_global_collision_with_an_unchanged_member() -> None:
     original = DatasetCollection(
         {

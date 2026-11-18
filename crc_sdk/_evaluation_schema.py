@@ -64,6 +64,7 @@ _SourceKey: TypeAlias = tuple[str | None, str | None]
 _EvaluationSeries: TypeAlias = tuple[str | None, SeriesKey]
 
 _UNMATCHED = frozenset({"no_covering_support", "outside_max_distance"})
+_EXPOSURE_FAILURES_WITHOUT_FIT = _UNMATCHED | {"query_outside_support"}
 
 
 class QueryKind(Enum):
@@ -1000,6 +1001,16 @@ def _validate_match(
     return support, resource, value
 
 
+def _validate_exposure_failure(failure: EvaluationFailure | None) -> None:
+    if failure is None:
+        return
+    requires_fit = failure.code not in _EXPOSURE_FAILURES_WITHOUT_FIT
+    if (failure.record is not None) != requires_fit:
+        raise ValueError(
+            "exposure failure must describe a spatial match, query, or failed fit"
+        )
+
+
 def _validate_response(
     row: Mapping[str, object],
     metadata: EvaluationMetadata,
@@ -1015,6 +1026,7 @@ def _validate_response(
             raise ValueError("exposure was excluded from the evaluation")
         if resolution_id is not None:
             raise ValueError("an exposure row cannot reference a model resolution")
+        _validate_exposure_failure(failure)
         return None, None
     response = metadata._response_by_id.get(response_id)
     if response is None or response.variable_id != variable:
@@ -1105,6 +1117,14 @@ class EvaluationValidator:
                 identity TEXT PRIMARY KEY, digest BLOB NOT NULL
             );
             CREATE TABLE contexts (identity TEXT PRIMARY KEY, resolution TEXT NOT NULL);
+            CREATE TABLE source_supports (
+                identity TEXT PRIMARY KEY, resource TEXT, fit_failure TEXT
+            );
+            CREATE TABLE source_exposures (
+                support TEXT NOT NULL, position INTEGER NOT NULL,
+                value REAL, failure TEXT,
+                PRIMARY KEY (support, position)
+            );
             CREATE TABLE outcomes (
                 event TEXT NOT NULL,
                 response TEXT NOT NULL,
@@ -1200,6 +1220,42 @@ class EvaluationValidator:
                 f"retained attributes disagree across rows for asset {identity!r}"
             )
 
+    def _check_source_exposure(
+        self,
+        key: tuple[str | None, SeriesKey, str],
+        resource: str | None,
+        position: int,
+        value: object,
+        failure: EvaluationFailure | None,
+    ) -> None:
+        identity = _dump(key)
+        outcome = None if failure is None else _dump(failure._arrow())
+        fit_failure = (
+            outcome if failure is not None and failure.record is not None else None
+        )
+        support = (resource, fit_failure)
+        self._db.execute(
+            "INSERT OR IGNORE INTO source_supports VALUES (?, ?, ?)",
+            (identity, *support),
+        )
+        saved = self._db.execute(
+            "SELECT resource, fit_failure FROM source_supports WHERE identity = ?",
+            (identity,),
+        ).fetchone()
+        if saved != support:
+            raise ValueError("source support has inconsistent resource or fit failure")
+        self._db.execute(
+            "INSERT OR IGNORE INTO source_exposures VALUES (?, ?, ?, ?)",
+            (identity, position, value, outcome),
+        )
+        saved = self._db.execute(
+            "SELECT value, failure FROM source_exposures "
+            "WHERE support = ? AND position = ?",
+            (identity, position),
+        ).fetchone()
+        if saved != (value, outcome):
+            raise ValueError("exposures disagree for the same source support and query")
+
     def _check_row(
         self,
         row: Mapping[str, object],
@@ -1273,6 +1329,16 @@ class EvaluationValidator:
             ):
                 raise ValueError("a retained exposure requires one value or failure")
             _validate_match(row, metadata, member, series, exposure_failure)
+            _validate_exposure_failure(exposure_failure)
+        if metadata.report.complete and (support := match[0]) is not None:
+            if response is None or not metadata.include_exposure:
+                self._check_source_exposure(
+                    (member, series, support),
+                    match[1],
+                    query_position,
+                    value if response is None else exposure_value,
+                    failure if response is None else exposure_failure,
+                )
         match_key = _dump((asset_id, member, *series))
         match_record = _dump(match)
         self._db.execute(

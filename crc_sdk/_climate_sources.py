@@ -35,7 +35,7 @@ from ._dataset_schema import (
 )
 from ._declarations import Calendar, DataSpec, Period, Probability, SeriesSpec, Variable
 from ._errors import CapabilityError
-from ._evidence import EvidenceKind, EvidenceMetadata
+from ._evidence import EvidenceKind, EvidenceMetadata, evidence_arrow_schema
 from ._evidence_recipes import Observations
 from ._graph import ExecutionScope, NodeStream
 from ._inspection import (
@@ -52,7 +52,7 @@ from ._providers import jrc as flood
 from ._recipes import Dataset, _checked_stream, _key
 from ._runtime import _memory_bytes
 from ._schema import DatasetRow, dataset_arrow_schema, rows_to_table
-from ._selection import SelectionState, selected_metadata, support_intersects
+from ._selection import SelectionState, participating_spec, selected_metadata
 from ._source_io import (
     SourceNode,
     fetch,
@@ -209,6 +209,8 @@ class _FloodNode(SourceNode[DatasetMetadata]):
         )
 
     def requirements(self) -> tuple[Requirement, ...]:
+        if _empty_requested(self.state):
+            return ()
         values = (
             ()
             if self._product() is not None
@@ -231,14 +233,24 @@ class _FloodNode(SourceNode[DatasetMetadata]):
     def selected(self, state: SelectionState) -> _FloodNode:
         return replace(self, state=state)
 
+    def _variable_ids(self) -> frozenset[str]:
+        product = self._product()
+        products = tuple(JRC.Product) if product is None else (product,)
+        return frozenset(_flood_variable(p).id for p in products)
+
+    def _pending_payload_release(self) -> ReleaseReference | None:
+        _, pins = payload_selection(self.state, self.release)
+        return pins.payload
+
     def _product(self) -> JRC.Product | None:
         if self.product is not None:
             return self.product
-        document = self.state.document()
-        requested = document.get("variables")
-        if isinstance(requested, list) and len(requested) == 1:
+        requested = self.state.variables
+        if requested is not None and len(requested) == 1:
+            variable = requested[0]
+            identifier = variable if isinstance(variable, str) else variable.id
             for product in JRC.Product:
-                if requested[0] == _flood_variable(product).id:
+                if identifier == _flood_variable(product).id:
                     return product
         references = self.state.series
         if references is not None and len(references) == 1:
@@ -282,75 +294,56 @@ class _FloodNode(SourceNode[DatasetMetadata]):
         )
 
     def inspection(self, scope: ExecutionScope) -> Inspection:
-        products = (
-            tuple(JRC.Product)
-            if self._product() is None
-            else (cast(JRC.Product, self._product()),)
+        product = self._product()
+        state, requested = payload_selection(self.state, self.release)
+        products = tuple(JRC.Product) if product is None else (product,)
+        spec = (
+            DataSpec([], series=[])
+            if _empty_requested(state)
+            else state.resolve(_flood_spec(products)).spec
         )
-        sources = [self._discovery(scope, p)[1] for p in products]
+        selected = {v.id for v in spec.variables}
+        products = tuple(p for p in products if _flood_variable(p).id in selected)
+        sources = tuple(self._discovery(scope, p)[1] for p in products)
         releases = tuple(
             release for source in sources if (release := source.release) is not None
         )
-        _state, requested = payload_selection(self.state, self.release)
-        if requested is not None:
+        if requested.publication_id is not None and releases:
             inventory = next(
                 (
                     r
                     for r in releases
-                    if requested.id in (r.id, r.id.removeprefix("inventory:"))
+                    if requested.publication_id == r.id.removeprefix("inventory:")
                 ),
                 releases[0],
             )
             inventory_payload_pin(inventory, requested)
-        requirements = (
-            ()
-            if self._product() is not None
-            else _requirements(
-                ("product", "Choose JRC.Product.EFAS or JRC.Product.GLOFAS.")
-            )
-        )
-        if self.state.area is None:
-            requirements += _requirements(
-                (
-                    "area",
-                    "Select an area with .select(area=Bounds(...)) "
-                    "before acquiring flood rasters.",
-                )
-            )
-        variables = tuple(_flood_variable(p) for p in products)
+        source = sources[0] if len(sources) == 1 else None
         metadata = DatasetMetadata(
-            spec=DataSpec(
-                variables,
-                series=[
-                    SeriesSpec(v, probability=Probability.annual(tail=cf.Tail.UPPER))
-                    for v in variables
-                ],
-            ),
+            spec=spec,
             spatial=SpatialContract(
                 supports=(SupportKind.POLYGON,), index_resolution=9
             ),
-            report=ExecutionReport(False, None, source_identities=tuple(sources)),
-            source=sources[0] if len(sources) == 1 else None,
+            report=ExecutionReport(False, None, source_identities=sources),
+            source=source,
         )
         return Inspection(
             schema=dataset_arrow_schema(metadata),
             series=tuple(
                 SeriesReference(
-                    _flood_variable(p),
-                    probability=Probability.annual(tail=cf.Tail.UPPER),
-                    release=source.release,
+                    s.variable, probability=s.probability, release=identity.release
                 )
-                for p, source in zip(products, sources, strict=True)
+                for s, identity in zip(spec.series, sources, strict=True)
             ),
             releases=releases,
             indicators=tuple(
                 IndicatorReference(
-                    _flood_variable(p).id,
-                    f"{p.name} flood water depth",
-                    _flood_variable(p).measurement,
-                    Probability.annual(tail=cf.Tail.UPPER),
+                    s.variable.id,
+                    s.variable.label or s.variable.id,
+                    s.variable.measurement,
+                    s.probability,
                 )
-                for p in products
+                for s in spec.series
             ),
             capabilities=(
                 Capability.INSPECT,
@@ -359,8 +352,8 @@ class _FloodNode(SourceNode[DatasetMetadata]):
                 Capability.WRITE,
                 Capability.FIT,
             ),
-            requirements=requirements,
-            source=sources[0] if len(sources) == 1 else None,
+            requirements=self.requirements() if products else (),
+            source=source,
         )
 
     def open(self, scope: ExecutionScope) -> NodeStream[DatasetMetadata]:
@@ -374,32 +367,27 @@ class _FloodNode(SourceNode[DatasetMetadata]):
                 report=ExecutionReport(False, None),
             )
             return _checked_stream(scope, empty, iter(()))
+        state, release = payload_selection(self.state, self.release)
         if product is None:
+            state.resolve(_flood_spec(tuple(JRC.Product)))
             raise CapabilityError(
                 "Choose JRC(product=JRC.Product.EFAS) or "
                 "JRC.Product.GLOFAS before reading."
             )
+        spec = _flood_spec((product,))
+        selection = state.resolve(spec)
         dataset, source = self._discovery(scope, product)
         assert source.release is not None
         variable = _flood_variable(product)
         metadata = DatasetMetadata(
-            spec=DataSpec(
-                [variable],
-                series=[
-                    SeriesSpec(
-                        variable, probability=Probability.annual(tail=cf.Tail.UPPER)
-                    )
-                ],
-            ),
+            spec=spec,
             spatial=SpatialContract(
                 supports=(SupportKind.POLYGON,), index_resolution=9
             ),
             report=_report(0, source),
             source=source,
         )
-        state, release = payload_selection(self.state, self.release)
         pin = inventory_payload_pin(source.release, release)
-        selection = state.resolve(metadata.spec, source=source)
         metadata = selected_metadata(metadata, selection)
         if selection.empty:
             return _checked_stream(scope, metadata, iter(()))
@@ -471,6 +459,14 @@ def _flood_variable(product: JRC.Product) -> Variable:
         f"jrc:{product.value}:flood_depth",
         measurement=cf.DepthAboveGround(unit=cf.LengthUnit.METRE),
         label=f"{product.name} flood water depth",
+    )
+
+
+def _flood_spec(products: tuple[JRC.Product, ...]) -> DataSpec:
+    variables = tuple(_flood_variable(product) for product in products)
+    probability = Probability.annual(tail=cf.Tail.UPPER)
+    return DataSpec(
+        variables, series=[SeriesSpec(v, probability=probability) for v in variables]
     )
 
 
@@ -574,12 +570,15 @@ class _IDFNode(SourceNode[_IDFMetadata]):
     def requirements(self) -> tuple[Requirement, ...]:
         return (
             ()
-            if self.province is not None
+            if self.province is not None or _empty_requested(self.state)
             else _requirements(("province", "Choose an exact ECCC province code."))
         )
 
     def selected(self, state: SelectionState) -> _IDFNode:
         return replace(self, state=state)
+
+    def _variable_ids(self) -> frozenset[str]:
+        return frozenset(v.id for v in self._variables())
 
     def _discovery(self, scope: ExecutionScope) -> SourceIdentity:
         path, resource = fetch(
@@ -609,6 +608,41 @@ class _IDFNode(SourceNode[_IDFMetadata]):
         )
         return tuple(_idf_variable(value) for value in durations)
 
+    def _spec(self, periods: tuple[Period | None, ...]) -> DataSpec:
+        variables = self._variables()
+        probability = (
+            None if self.confidence else Probability.annual(tail=cf.Tail.UPPER)
+        )
+        return DataSpec(
+            variables,
+            series=[
+                SeriesSpec(v, period=p, probability=probability)
+                for v in variables
+                for p in periods
+            ],
+        )
+
+    def _metadata(
+        self, spec: DataSpec, source: SourceIdentity | None = None
+    ) -> _IDFMetadata:
+        spatial = SpatialContract(supports=(SupportKind.POINT,), index_resolution=9)
+        report = ExecutionReport(False, None) if source is None else _report(0, source)
+        if self.confidence:
+            return EvidenceMetadata(
+                kind=EvidenceKind.PROJECTIONS,
+                spec=spec,
+                spatial=spatial,
+                report=report,
+                source=source,
+            )
+        return DatasetMetadata(spec=spec, spatial=spatial, report=report, source=source)
+
+    @staticmethod
+    def _schema(metadata: _IDFMetadata) -> pa.Schema:
+        if isinstance(metadata, DatasetMetadata):
+            return dataset_arrow_schema(metadata)
+        return evidence_arrow_schema(metadata)
+
     def _station_records(
         self,
         scope: ExecutionScope,
@@ -630,11 +664,6 @@ class _IDFNode(SourceNode[_IDFMetadata]):
             expected=release,
         )
         records = []
-        requested = (
-            None
-            if self.state.stations is None
-            else {getattr(v, "id", v) for v in self.state.stations}
-        )
         seen = set()
         for member, raw in _idf_station_files(path, self.province):
             match = re.search(
@@ -646,28 +675,61 @@ class _IDFNode(SourceNode[_IDFMetadata]):
             if station in seen:
                 raise ValueError(f"ambiguous ECCC IDF station {station}")
             seen.add(station)
-            if requested is not None and station not in requested:
-                continue
             decoded = idf.parse_station(raw, station, self.province)
-            if self.state.area is not None and not _area_intersects(
-                self.state.area, Point(decoded["longitude"], decoded["latitude"])
-            ):
-                continue
             records.append((member, raw, decoded))
-        if requested is not None and (missing := requested - seen):
+        return source, records
+
+    def _prepare(
+        self, scope: ExecutionScope
+    ) -> tuple[
+        _IDFMetadata,
+        SourceIdentity,
+        list[tuple[str, bytes, dict[str, Any]]],
+    ]:
+        state, pins = payload_selection(self.state, self.release)
+        release = pins.exact_only()
+        source, records = self._station_records(
+            scope, self._discovery(scope), release=release
+        )
+        periods = tuple(dict.fromkeys(_idf_period(d) for _, _, d in records))
+        spec = self._spec(periods)
+        selection = state.resolve(spec, source=source)
+        stations = selection.stations
+        if stations is not None and (
+            missing := set(stations) - {d["station"] for _, _, d in records}
+        ):
             raise ValueError(
                 f"ECCC {self.province} has no requested stations {sorted(missing)}"
             )
-        return source, records
+        selected_periods = set(selection.spec.periods)
+        records = [
+            (member, raw, d)
+            for member, raw, d in records
+            if _idf_period(d) in selected_periods
+            and (stations is None or d["station"] in stations)
+            and (
+                state.area is None
+                or _area_intersects(state.area, Point(d["longitude"], d["latitude"]))
+            )
+        ]
+        in_scope = {_idf_period(d) for _, _, d in records}
+        selected = selected_metadata(self._metadata(spec, source), selection)
+        spec = participating_spec(
+            spec, [s for s in selection.spec.series if s.period in in_scope]
+        )
+        return replace(selected, spec=spec), source, records
 
     def inspection(self, scope: ExecutionScope) -> Inspection:
-        source = self._discovery(scope)
-        variables = self._variables()
         stations: tuple[StationReference, ...] = ()
-        periods: tuple[Period | None, ...] = (None,)
-        if self.province is not None:
-            _, release = payload_selection(self.state, self.release)
-            source, records = self._station_records(scope, source, release=release)
+        if _empty_requested(self.state):
+            metadata = self._metadata(DataSpec([], series=[]))
+        elif self.province is None:
+            # Station records supply the exact period of each series.
+            indicators = replace(self.state, periods=None, series=None)
+            declared = indicators.resolve(self._spec((None,))).spec.variables
+            metadata = self._metadata(DataSpec(declared, series=[]))
+        else:
+            metadata, _, records = self._prepare(scope)
             stations = tuple(
                 StationReference(
                     d["station"],
@@ -678,56 +740,27 @@ class _IDFNode(SourceNode[_IDFMetadata]):
                 )
                 for _, _, d in records
             )
-            periods = tuple(dict.fromkeys(_idf_period(d) for _, _, d in records))
+        source = metadata.source
+        release = None if source is None else source.release
         probability = (
             None if self.confidence else Probability.annual(tail=cf.Tail.UPPER)
         )
-        spec = DataSpec(
-            variables,
-            series=[
-                SeriesSpec(v, period=p, probability=probability)
-                for v in variables
-                for p in periods
-            ],
-        )
-        if self.confidence:
-            from ._evidence import evidence_arrow_schema
-
-            projected = EvidenceMetadata(
-                kind=EvidenceKind.PROJECTIONS,
-                spec=spec,
-                spatial=SpatialContract(
-                    supports=(SupportKind.POINT,), index_resolution=9
-                ),
-                report=_report(0, source),
-                source=source,
-            )
-            schema = evidence_arrow_schema(projected)
-        else:
-            schema = dataset_arrow_schema(
-                DatasetMetadata(
-                    spec=spec,
-                    spatial=SpatialContract(
-                        supports=(SupportKind.POINT,), index_resolution=9
-                    ),
-                    report=_report(0, source),
-                    source=source,
-                )
-            )
         return Inspection(
-            schema=schema,
+            schema=self._schema(metadata),
             series=tuple(
                 SeriesReference(
-                    v, period=p, release=source.release, probability=probability
+                    s.variable,
+                    period=s.period,
+                    release=release,
+                    probability=s.probability,
                 )
-                for v in variables
-                for p in periods
+                for s in metadata.spec.series
             ),
             indicators=tuple(
                 IndicatorReference(v.id, v.label or v.id, v.measurement, probability)
-                for v in variables
+                for v in metadata.spec.variables
             ),
-            releases=() if source.release is None else (source.release,),
+            releases=() if release is None else (release,),
             capabilities=(
                 Capability.INSPECT,
                 Capability.READ,
@@ -741,85 +774,22 @@ class _IDFNode(SourceNode[_IDFMetadata]):
         )
 
     def open(self, scope: ExecutionScope) -> NodeStream[_IDFMetadata]:
-        if _empty_requested(self.state):
-            if self.confidence:
-                from ._evidence import EvidenceKind, evidence_arrow_schema
+        from ._evidence import evidence_table
 
-                empty: _IDFMetadata = EvidenceMetadata(
-                    kind=EvidenceKind.PROJECTIONS,
-                    spec=DataSpec([], series=[]),
-                    spatial=SpatialContract(
-                        supports=(SupportKind.POINT,), index_resolution=9
-                    ),
-                    report=ExecutionReport(False, None),
-                )
-                return NodeStream(
-                    evidence_arrow_schema(
-                        cast(EvidenceMetadata[Literal[EvidenceKind.PROJECTIONS]], empty)
-                    ),
-                    empty,
-                    iter(()),
-                )
-            empty = DatasetMetadata(
-                spec=DataSpec([], series=[]),
-                spatial=SpatialContract(
-                    supports=(SupportKind.POINT,), index_resolution=9
-                ),
-                report=ExecutionReport(False, None),
-            )
-            return _checked_stream(scope, empty, iter(()))
+        if _empty_requested(self.state):
+            metadata = self._metadata(DataSpec([], series=[]))
+            return NodeStream(self._schema(metadata), metadata, iter(()))
         if self.province is None:
             raise CapabilityError("Reading ECCC IDF requires ECCCIDF(province=...).")
-        _, release = payload_selection(self.state, self.release)
-        source, station_records = self._station_records(
-            scope, self._discovery(scope), release=release
-        )
-        variables = self._variables()
-        periods = tuple(dict.fromkeys(_idf_period(d) for _, _, d in station_records))
-        spec = DataSpec(
-            variables,
-            series=[
-                SeriesSpec(
-                    v,
-                    period=p,
-                    probability=None
-                    if self.confidence
-                    else Probability.annual(tail=cf.Tail.UPPER),
-                )
-                for v in variables
-                for p in periods
-            ],
-        )
-        if self.confidence:
-            from ._evidence import EvidenceKind, evidence_arrow_schema, evidence_table
-
-            metadata: _IDFMetadata = EvidenceMetadata(
-                kind=EvidenceKind.PROJECTIONS,
-                spec=spec,
-                spatial=SpatialContract(
-                    supports=(SupportKind.POINT,), index_resolution=9
-                ),
-                report=_report(0, source),
-                source=source,
-            )
-            schema = evidence_arrow_schema(
-                cast(EvidenceMetadata[Literal[EvidenceKind.PROJECTIONS]], metadata)
-            )
-        else:
-            metadata = DatasetMetadata(
-                spec=spec,
-                spatial=SpatialContract(
-                    supports=(SupportKind.POINT,), index_resolution=9
-                ),
-                report=_report(0, source),
-                source=source,
-            )
-            schema = dataset_arrow_schema(metadata)
-        selected = self.state.resolve(metadata.spec, source=source)
-        metadata = selected_metadata(metadata, selected)
-        if selected.empty:
+        metadata, source, station_records = self._prepare(scope)
+        schema = self._schema(metadata)
+        if not station_records:
             return NodeStream(schema, metadata, iter(()))
         current = metadata
+        series = {
+            (s.variable.id, None if s.period is None else s.period.id)
+            for s in metadata.spec.series
+        }
 
         def batches() -> Iterator[pa.RecordBatch]:
             nonlocal current
@@ -828,28 +798,12 @@ class _IDFNode(SourceNode[_IDFMetadata]):
             resources = list(source.resources)
             rows: list[DatasetRow] = []
             records: list[dict[str, object]] = []
-            requested = selected.stations
-            seen: set[str] = set()
             for member, raw, decoded in station_records:
-                match = re.search(
-                    rf"_{self.province}_([A-Z0-9]{{7}})_.+\.txt$", member, re.I
-                )
-                if match is None:
-                    continue
-                station = match[1]
-                if requested is not None and station not in requested:
-                    continue
-                if station in seen:
-                    raise ValueError(f"ambiguous ECCC IDF station {station}")
-                seen.add(station)
+                station = decoded["station"]
                 geometry = Point(decoded["longitude"], decoded["latitude"]).wkb
                 cell = int(
                     h3.latlng_to_cell(decoded["latitude"], decoded["longitude"], 9)
                 )
-                if selected.area is not None and not support_intersects(
-                    selected.area, geometry=geometry, cell_id=cell
-                ):
-                    continue
                 resources.append(
                     ResourceIdentity(
                         archive_resource.uri + "!" + member,
@@ -862,10 +816,7 @@ class _IDFNode(SourceNode[_IDFMetadata]):
                 for curve in decoded["curves"]:
                     variable = _idf_variable(curve["duration_minutes"])
                     period = _idf_period(decoded)
-                    if (variable.id, period.id) not in {
-                        (s.variable.id, None if s.period is None else s.period.id)
-                        for s in metadata.spec.series
-                    }:
+                    if (variable.id, period.id) not in series:
                         continue
                     if self.confidence:
                         for return_period, value, width in zip(
@@ -910,10 +861,6 @@ class _IDFNode(SourceNode[_IDFMetadata]):
                                 ),
                             )
                         )
-            if requested is not None and (missing := set(requested) - seen):
-                raise ValueError(
-                    f"ECCC {self.province} has no requested stations {sorted(missing)}"
-                )
             actual_source = replace(source, resources=tuple(resources))
             current = replace(
                 metadata,
@@ -1013,7 +960,7 @@ class _EDONode(SourceNode[EvidenceMetadata]):
     def requirements(self) -> tuple[Requirement, ...]:
         return (
             ()
-            if self.state.area is not None
+            if self.state.area is not None or _empty_requested(self.state)
             else _requirements(
                 ("area", "Select bounded EDO coverage with .select(area=Bounds(...)).")
             )
@@ -1021,6 +968,9 @@ class _EDONode(SourceNode[EvidenceMetadata]):
 
     def selected(self, state: SelectionState) -> _EDONode:
         return replace(self, state=state)
+
+    def _variable_ids(self) -> frozenset[str]:
+        return frozenset((_edo_variable().id,))
 
     def _discovery(
         self, scope: ExecutionScope
@@ -1080,7 +1030,17 @@ class _EDONode(SourceNode[EvidenceMetadata]):
         )
 
     def inspection(self, scope: ExecutionScope) -> Inspection:
-        from ._evidence import evidence_arrow_schema
+        capabilities = (
+            Capability.INSPECT,
+            Capability.READ,
+            Capability.BATCHES,
+            Capability.WRITE,
+        )
+        if _empty_requested(self.state):
+            return Inspection(
+                schema=evidence_arrow_schema(self._empty_metadata()),
+                capabilities=capabilities,
+            )
 
         source, years = self._discovery(scope)
         assert source.release is not None
@@ -1091,13 +1051,6 @@ class _EDONode(SourceNode[EvidenceMetadata]):
             metadata.spec, source=source
         )
         metadata = selected_metadata(metadata, selection)
-        requirements = (
-            ()
-            if self.state.area is not None
-            else _requirements(
-                ("area", "Select bounded EDO coverage with .select(area=Bounds(...)).")
-            )
-        )
         return Inspection(
             schema=evidence_arrow_schema(metadata),
             series=tuple(
@@ -1112,14 +1065,20 @@ class _EDONode(SourceNode[EvidenceMetadata]):
                     _edo_variable().measurement,
                 ),
             ),
-            requirements=requirements,
-            capabilities=(
-                Capability.INSPECT,
-                Capability.READ,
-                Capability.BATCHES,
-                Capability.WRITE,
-            ),
+            requirements=self.requirements(),
+            capabilities=capabilities,
             source=source,
+        )
+
+    @staticmethod
+    def _empty_metadata() -> EvidenceMetadata:
+        return EvidenceMetadata(
+            kind=EvidenceKind.OBSERVATIONS,
+            spec=DataSpec([], series=[]),
+            spatial=SpatialContract(
+                supports=(SupportKind.POLYGON,), index_resolution=9
+            ),
+            report=ExecutionReport(False, None),
         )
 
     def open(self, scope: ExecutionScope) -> NodeStream[EvidenceMetadata]:
@@ -1128,19 +1087,12 @@ class _EDONode(SourceNode[EvidenceMetadata]):
         from ._climate_grid import calendar_name, cf_calendar, grid_cells, grid_values
         from ._climate_io import netcdf_window_snapshot
         from ._declarations import Calendar
-        from ._evidence import EvidenceKind, evidence_arrow_schema, evidence_table
+        from ._evidence import evidence_table
         from ._providers.cmip6 import decode_time_ordinals
         from ._providers.jrc_edo import SMI
 
         if _empty_requested(self.state):
-            empty = EvidenceMetadata(
-                kind=EvidenceKind.OBSERVATIONS,
-                spec=DataSpec([], series=[]),
-                spatial=SpatialContract(
-                    supports=(SupportKind.POLYGON,), index_resolution=9
-                ),
-                report=ExecutionReport(False, None),
-            )
+            empty = self._empty_metadata()
             return NodeStream(evidence_arrow_schema(empty), empty, iter(()))
         if self.state.area is None:
             raise CapabilityError("EDO acquisition requires .select(area=Bounds(...)).")

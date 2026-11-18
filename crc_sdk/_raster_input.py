@@ -60,6 +60,9 @@ class _RasterNode(SourceNode[DatasetMetadata]):
     def selected(self, state: SelectionState) -> _RasterNode:
         return replace(self, state=state)
 
+    def _variable_ids(self) -> frozenset[str]:
+        return frozenset((self.variable.id,))
+
     def _metadata(self, source: SourceIdentity | None = None) -> DatasetMetadata:
         return DatasetMetadata(
             spec=DataSpec(

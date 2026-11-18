@@ -19,6 +19,7 @@ from shapely import from_wkb  # type: ignore[import-untyped]
 from shapely.geometry import box  # type: ignore[import-untyped]
 
 from crc_sdk import (
+    DatasetCollection,
     EvidenceMetadata,
     FitFailure,
     FittingDiagnostic,
@@ -84,24 +85,25 @@ class NativeTransport:
         self.calls: list[str] = []
         self.absent_year: int | None = None
         self.field = self._fields()
+        self.older_field: bytes | None = None
         self.raster: bytes | None = None
         self.raster_calls: list[str] = []
         self.unavailable_raster: str | None = None
 
     @staticmethod
-    def _fields() -> bytes:
+    def _fields(year: int = 2025) -> bytes:
         target = io.BytesIO()
         pq.write_table(
             pa.Table.from_pylist(
                 [
                     {
                         "id": "field-1",
-                        "collection": "ftw-s2-2025",
+                        "collection": f"ftw-s2-{year}",
                         "geometry": box(-79.41, 43.69, -79.39, 43.71).wkb,
                         "metrics:area": 356.0,
                         "metrics:perimeter": 78.0,
                         "score": 92,
-                        "determination:datetime": "2025-01-01T00:00:00Z",
+                        "determination:datetime": f"{year}-01-01T00:00:00Z",
                     }
                 ]
             ),
@@ -359,33 +361,44 @@ class NativeTransport:
                 self.raster = self._raster()
             data = self.raster
         elif u.path.endswith("/vector/catalog.json"):
-            data = _json(
-                {"links": [{"rel": "child", "href": "./2025/collection.json"}]}
-            )
-        elif u.path.endswith("2025/collection.json"):
+            years = [2025] if self.older_field is None else [2024, 2025]
             data = _json(
                 {
-                    "id": "ftw-s2-2025",
+                    "links": [
+                        {"rel": "child", "href": f"./{y}/collection.json"}
+                        for y in years
+                    ]
+                }
+            )
+        elif u.path.endswith(("2024/collection.json", "2025/collection.json")):
+            publication_year = u.path.split("/")[-2]
+            data = _json(
+                {
+                    "id": f"ftw-s2-{publication_year}",
                     "links": [{"rel": "item", "href": "./utm17/utm17.json"}],
                 }
             )
         elif u.path.endswith("utm17/utm17.json"):
+            publication_year = u.path.split("/")[-3]
+            field = self.field if publication_year == "2025" else self.older_field
+            assert field is not None
             data = _json(
                 {
-                    "collection": "ftw-s2-2025",
+                    "collection": f"ftw-s2-{publication_year}",
                     "bbox": [-79.5, 43.5, -79.0, 44.0],
                     "properties": {"proj:code": "EPSG:4326"},
                     "assets": {
                         "data": {
                             "href": "../zone=17/utm17.parquet",
-                            "file:checksum": "1220"
-                            + hashlib.sha256(self.field).hexdigest(),
+                            "file:checksum": "1220" + hashlib.sha256(field).hexdigest(),
                         }
                     },
                 }
             )
         elif u.path.endswith("utm17.parquet"):
-            data = self.field
+            field = self.field if "/2025/" in u.path else self.older_field
+            assert field is not None
+            data = field
         else:
             raise AssertionError(f"Unplanned acquisition: {uri}")
         path.write_bytes(data)
@@ -897,6 +910,10 @@ def test_inspected_series_selects_station_indicator_and_native_years(
     direct = recipe.read()
     assert direct.metadata.source is not None and direct.metadata.source.release
     assert direct.table["time"].to_pylist() == ["2020"]
+    for variable in (reference.variable, reference.variable.id):
+        selected = provider().select(variables=variable, stations=station, time=_year())
+        assert selected.inspect().series == (reference,)
+        assert selected.read().table.equals(direct.table, check_metadata=False)
     saved = recipe.write(tmp_path / "annual.parquet")
     pinned = saved.inspect().series[0]
     assert pinned.release == direct.metadata.source.release
@@ -1157,11 +1174,41 @@ def test_bulk_evidence_inspection_stays_metadata_only(
     assert len(transport.calls) == 1
     assert transport.calls[0].endswith("isd-history.csv")
     tracks = IBTrACS().inspect()
-    assert tracks.series and tracks.releases == (tracks.series[0].release,)
+    assert tracks.series and all(s.release is None for s in tracks.series)
+    assert not tracks.releases
+    assert tracks.source is not None and not tracks.source.resources
     CHIRPS().select(
         area=Bounds(west=-79.5, south=43.5, east=-79, north=44), time=_year()
     ).inspect()
     assert len(transport.calls) == 1
+
+
+def test_ibtracs_release_hashes_archive_bytes(
+    transport: NativeTransport, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recipe = IBTrACS().select(time=_year())
+    choice = recipe.inspect().series[0]
+    result = recipe.select(series=choice).read()
+    source = result.metadata.source
+    assert source is not None and source.release is not None
+    (resource,) = source.resources
+    assert (
+        resource.retrieved_at is not None and resource.attribution and resource.license
+    )
+    assert result.report.source_identities == (source,)
+    assert transport.calls == [resource.uri]
+
+    def changed_release(uri: str, path: Path) -> int:
+        result = transport(uri, path)
+        path.write_bytes(path.read_bytes().replace(b",80,980", b",81,980"))
+        return result
+
+    monkeypatch.setattr(_source_io, "_download", changed_release)
+    changed = recipe.read().metadata.source
+    assert changed is not None and changed.release != source.release
+    assert changed.resources[0].sha256 != resource.sha256
+    with pytest.raises(OSError, match="release changed"):
+        IBTrACS(release=source.release).select(time=_year()).read(limit=1)
 
 
 @pytest.mark.parametrize("provider", [GHCNh, ISD])
@@ -1270,6 +1317,12 @@ def test_api_station_full_catalogue_pin_survives_narrowing_and_exact_replay(
         .read()
     )
     assert replay.table.equals(result.table, check_metadata=False)
+    checked_replay = (
+        USGS(release=result.metadata.source.release)
+        .select(series=inventory.series[0], stations=station, time=_year())
+        .read()
+    )
+    assert checked_replay.table.equals(result.table, check_metadata=False)
 
 
 def test_chirps_reuses_inspected_gregorian_series_period(
@@ -1291,6 +1344,18 @@ def test_chirps_reuses_inspected_gregorian_series_period(
     assert result.metadata.spec.series[0].period == reference.period
 
 
+def test_chirps_rejects_prepublication_years_before_acquisition(
+    transport: NativeTransport,
+) -> None:
+    area = Bounds(west=-79.5, south=43.7, east=-79.3, north=43.8)
+    source = CHIRPS().select(area=area, time=Period.window(1980, 1980))
+    with pytest.raises(ValueError, match="observations begin in 1981"):
+        source.inspect()
+    with pytest.raises(ValueError, match="observations begin in 1981"):
+        source.read()
+    assert transport.calls == []
+
+
 def test_field_inspection_references_pin_published_assets_without_bulk_read(
     transport: NativeTransport,
 ) -> None:
@@ -1304,6 +1369,43 @@ def test_field_inspection_references_pin_published_assets_without_bulk_read(
     assert result.table.num_rows == 1
     assert result.metadata.source is not None
     assert result.metadata.source.release == inventory.releases[0]
+
+
+def test_field_inspection_scopes_series_by_variable_and_publication_year(
+    transport: NativeTransport,
+) -> None:
+    transport.older_field = transport._fields(2024)
+    area = Bounds(west=-79.5, south=43.5, east=-79, north=44)
+    provider = FieldsOfTheWorld()
+    catalogue = provider.inspect()
+    assert {s.period for s in catalogue.series} == {
+        Period.window(y, y) for y in (2024, 2025)
+    }
+    assert len(catalogue.releases) == 1
+    reference = next(
+        s
+        for s in catalogue.series
+        if s.period == Period.window(2024, 2024) and s.variable.id == "ftw:field_area"
+    )
+    assert reference.release == catalogue.releases[0]
+    assert len(transport.calls) == 1
+    assert {s.period for s in provider.select(area=area).inspect().series} == {
+        Period.window(2025, 2025)
+    }
+    recipe = provider.select(
+        area=area, variables=reference.variable, periods=reference.period
+    )
+    (exact,) = recipe.inspect().series
+    assert exact.variable == reference.variable and exact.period == reference.period
+    assert exact.release != reference.release
+    assert not any(uri.endswith(".parquet") for uri in transport.calls)
+    selected = provider.select(area=area, series=reference).read()
+    assert (
+        selected.metadata.source is not None
+        and selected.metadata.source.release == exact.release
+    )
+    assert selected.table["variable_id"].to_pylist() == [reference.variable.id]
+    assert selected.table["value"].to_pylist() == [356.0]
 
 
 @pytest.mark.parametrize(
@@ -1358,6 +1460,9 @@ def test_published_level_accessors_keep_station_selection_when_further_narrowed(
     levels = NOAAWaterLevels().select(stations="8518750").levels()
     variable = levels.inspect().series[0].variable
     assert levels.select(variables=variable).read().table.num_rows == 1
+    collection = DatasetCollection({"noaa": levels}).select(variables=variable)
+    assert collection.inspect().series[0].variable == variable
+    assert collection.read().table["variable_id"].to_pylist() == [variable.id]
     intervals = NOAAWaterLevels().select(stations="8518750").confidence_intervals()
     assert (
         intervals.select(variables=intervals.inspect().series[0].variable)

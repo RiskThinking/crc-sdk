@@ -89,6 +89,7 @@ from ._recipes import Samples, _key
 from ._runtime import _memory_bytes
 from ._selection import ResolvedSelection, SelectionState, selected_metadata
 from ._source_io import (
+    ReleasePins,
     SourceNode,
     fetch,
     inventory_payload_pin,
@@ -518,6 +519,12 @@ class _ClimateNode(SourceNode[EvidenceMetadata]):
 
     def requirements(self) -> tuple[Requirement, ...]:
         return () if self._explicitly_empty() else self._missing()
+
+    def _variable_ids(self) -> frozenset[str]:
+        operation = self._operation()
+        operations = _OPERATIONS if operation is None else (operation,)
+        variable = _native_variable if self.raw else _variable
+        return frozenset(variable(self.provider, name).id for name in operations)
 
     def _explicitly_empty(self) -> bool:
         state = self.state
@@ -1392,7 +1399,7 @@ def _cmip_datasets(
 
 
 def _cmip_source(
-    scope: ExecutionScope, node: _ClimateNode, *, release: ReleaseReference | None
+    scope: ExecutionScope, node: _ClimateNode, *, release: ReleasePins
 ) -> _GridSource:
     datasets, catalogue = _cmip_datasets(scope, node)
     if not datasets:
@@ -1402,7 +1409,7 @@ def _cmip_source(
     matches = [
         d
         for d in datasets
-        if release is None or d.dataset_id == release.id.removeprefix("inventory:")
+        if release.publication_id is None or d.dataset_id == release.publication_id
     ]
     if not matches:
         raise LookupError("The pinned CMIP6 release is not in the supported catalogue")
@@ -1638,9 +1645,7 @@ def _preferred_cmip_dataset(
 def _discover_climate(scope: ExecutionScope, node: _ClimateNode) -> Inspection:
     supported = _discovery_variables(node)
     _, requested = payload_selection(node.state, node.release)
-    requested_id = (
-        None if requested is None else requested.id.removeprefix("inventory:")
-    )
+    requested_id = requested.publication_id
     if node.provider == "cmip6":
         datasets, catalogue = _cmip_datasets(scope, node)
         by_series: dict[tuple[str, str, str, str], list[cmip.CMIP6Dataset]] = {}
@@ -1665,10 +1670,10 @@ def _discover_climate(scope: ExecutionScope, node: _ClimateNode) -> Inspection:
             if requested_id is None or "/".join(key) == requested_id
         }
         source = SourceIdentity("nex", "NEX-GDDP-CMIP6", resources=resources)
-    if requested is not None:
+    if requested_id is not None:
         if not releases:
             raise OSError(
-                f"source release changed: {requested.id} "
+                f"source release changed: {requested_id} "
                 "is not in the published inventory"
             )
         for release in releases.values():

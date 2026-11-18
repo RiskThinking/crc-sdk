@@ -13,6 +13,7 @@ import pyarrow.parquet as pq  # type: ignore[import-untyped]
 import pytest
 
 from crc_sdk import (
+    ERA5,
     Assets,
     Bounds,
     Calendar,
@@ -31,6 +32,7 @@ from crc_sdk import (
     Runtime,
     Samples,
     Sampling,
+    Scenario,
     SeriesSpec,
     SourceIdentity,
     SpatialMatch,
@@ -38,6 +40,7 @@ from crc_sdk import (
     ValidationError,
     Variable,
 )
+from crc_sdk._climate_sampling import _ClimateNode
 from crc_sdk._dataset_schema import DatasetMetadata
 from crc_sdk._graph import ExecutionScope, Node, NodeStream
 from crc_sdk._schema import dataset_arrow_schema
@@ -389,6 +392,64 @@ def test_response_projection_avoids_conflicts_in_explicit_unrelated_variables() 
     assert response_only.read().table["value"].to_pylist() == [2.0]
 
 
+def test_collection_projection_does_not_discover_unrelated_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    climate = ERA5(
+        indicator=ERA5.Indicator.ANNUAL_MAXIMUM_DAILY_MAXIMUM_TEMPERATURE
+    ).fit(cf.SampleFit(family=cf.DistributionFamily.GUMBEL_RIGHT))
+    scenario = Scenario("company:measured")
+    collection = DatasetCollection(
+        {"depth": annual().declare(scenario=scenario), "climate": climate}
+    )
+
+    def unexpected_inspection(*args: object) -> None:
+        pytest.fail("unrelated ERA5 source was inspected")
+
+    monkeypatch.setattr(_ClimateNode, "inspection", unexpected_inspection)
+    selected = collection.select(variables=VARIABLE)
+    assert selected.read().table["member_id"].to_pylist() == ["depth"]
+    assert [item.variable.id for item in selected.inspect().series] == [VARIABLE.id]
+    assert selected.inspect().requirements == ()
+    assert selected.explain().requirements == ()
+    renamed = collection.rename(variables={VARIABLE.id: "renamed"})
+    for filtered in (
+        selected.select(periods=WINDOW),
+        selected.select(scenarios=scenario),
+        renamed.select(members="depth"),
+        renamed.select(variables="renamed", periods=WINDOW, scenarios=scenario),
+    ):
+        assert filtered.inspect().requirements == ()
+        assert filtered.explain().requirements == ()
+        assert filtered.read().table["member_id"].to_pylist() == ["depth"]
+
+    response = (
+        collection.evaluate(sites(0))
+        .probabilities([0.9])
+        .impact(
+            "ratio",
+            cf.Impact.linear(input=DEPTH, output=cf.Ratio(), slope=2),
+            variable=VARIABLE,
+        )
+        .select(responses="ratio")
+    )
+    assert response.inspect().requirements == ()
+    assert response.read().table["value"].to_pylist() == [2.0]
+
+    renamed_response = (
+        renamed.evaluate(sites(0))
+        .probabilities([0.9])
+        .impact(
+            "ratio",
+            cf.Impact.linear(input=DEPTH, output=cf.Ratio(), slope=2),
+            variable="renamed",
+        )
+        .select(responses="ratio")
+    )
+    assert renamed_response.inspect().requirements == ()
+    assert renamed_response.read().table["value"].to_pylist() == [2.0]
+
+
 def test_direct_response_and_variable_selection_scope_inspection_and_results() -> None:
     other = Variable("other", measurement=DEPTH)
     source = Dataset.from_quantiles(
@@ -524,6 +585,122 @@ def test_reopened_artifact_preserves_overflow_as_response_failure(
     assert result.table["value"].to_pylist() == [1.0, 2.0, 1e308, None]
     assert result.table["failure"][-1].as_py()["code"] == "non_finite_result"
     assert result.report.valid is True
+
+
+@pytest.mark.parametrize("retained", [False, True])
+def test_saved_exposure_rejects_fabricated_response_failure(
+    tmp_path: Path, retained: bool
+) -> None:
+    evaluation = annual().evaluate(sites(0)).probabilities([0.9])
+    if retained:
+        evaluation = evaluation.impact(
+            "ratio",
+            cf.Impact.linear(input=DEPTH, output=cf.Ratio(), slope=2),
+            variable=VARIABLE,
+        ).select(responses="ratio")
+    table = pq.read_table(evaluation.write(tmp_path / "events.parquet").path)
+    rows = table.to_pylist()
+    failure = {
+        "code": "nonfinite_exposure",
+        "message": "The impact requires a finite exposure value.",
+        "record": None,
+    }
+    rows[0].update(value=None, failure=failure)
+    if retained:
+        rows[0]["exposure"] = {"value": None, "failure": failure}
+    headers = dict(table.schema.metadata)
+    document = json.loads(headers[b"crc.evaluation"])
+    document["report"]["counts"]["no_data"] = 1
+    document["report"]["diagnostics"].append(
+        {
+            "code": failure["code"],
+            "severity": "warning",
+            "stage": "evaluation",
+            "message": failure["message"],
+            "support_id": rows[0]["support_id"],
+            "query_value": rows[0]["query_value"],
+        }
+    )
+    headers[b"crc.evaluation"] = json.dumps(document).encode()
+    altered = tmp_path / "altered.parquet"
+    pq.write_table(
+        pa.Table.from_pylist(rows, schema=table.schema.with_metadata(headers)), altered
+    )
+    artifact = EvaluationArtifact.open(altered)
+    assert artifact.validate().valid is False
+    with pytest.raises(ValidationError, match="exposure failure"):
+        artifact.read()
+
+
+@pytest.mark.parametrize("retained", [False, True])
+def test_saved_exposures_agree_across_assets_on_the_same_support(
+    tmp_path: Path, retained: bool
+) -> None:
+    evaluation = annual().evaluate(sites(0, 0)).probabilities([0.9])
+    if retained:
+        evaluation = evaluation.impact(
+            "ratio",
+            cf.Impact.linear(input=DEPTH, output=cf.Ratio(), slope=2),
+            variable=VARIABLE,
+        ).select(responses="ratio")
+    original = evaluation.write(tmp_path / "events.parquet")
+    assert original.validate().valid is True
+    table = pq.read_table(original.path)
+    rows = table.to_pylist()
+    assert rows[0]["support_id"] == rows[1]["support_id"]
+    rows[1]["value"] = 6.0 if retained else 3.0
+    if retained:
+        rows[1]["exposure"]["value"] = 3.0
+    altered = tmp_path / "altered.parquet"
+    pq.write_table(pa.Table.from_pylist(rows, schema=table.schema), altered)
+    artifact = EvaluationArtifact.open(altered)
+    assert artifact.validate().valid is False
+    with pytest.raises(ValidationError, match="exposures disagree"):
+        artifact.read()
+
+
+def test_saved_support_cannot_mix_a_failed_fit_and_successful_query(
+    tmp_path: Path,
+) -> None:
+    fitted = Samples.from_table(
+        {
+            "support_id": ["point"] * 4,
+            "longitude": [0.0] * 4,
+            "latitude": [0.0] * 4,
+            "time": [2000, 2001, 2002, 2003],
+            "value": [1.0] * 4,
+        },
+        variable=VARIABLE,
+        sampling=Sampling(
+            calendar=Calendar.GREGORIAN, step=cf.Duration(1, unit=cf.TimeUnit.YEAR)
+        ),
+    ).fit(
+        cf.SampleFit(family=cf.DistributionFamily.GUMBEL_RIGHT),
+        on_failure=FitFailure.KEEP_NO_DATA,
+    )
+    original = (
+        fitted.evaluate(sites(0))
+        .probabilities([0.5, 0.9])
+        .write(tmp_path / "events.parquet")
+    )
+    assert original.validate().valid is True
+    table = pq.read_table(original.path)
+    rows = table.to_pylist()
+    assert rows[0]["failure"]["record"] is not None
+    assert rows[1]["failure"]["record"] is not None
+    rows[1].update(failure=None, value=123.0)
+    headers = dict(table.schema.metadata)
+    document = json.loads(headers[b"crc.evaluation"])
+    document["report"]["counts"]["no_data"] = 1
+    headers[b"crc.evaluation"] = json.dumps(document).encode()
+    altered = tmp_path / "altered.parquet"
+    pq.write_table(
+        pa.Table.from_pylist(rows, schema=table.schema.with_metadata(headers)), altered
+    )
+    artifact = EvaluationArtifact.open(altered)
+    assert artifact.validate().valid is False
+    with pytest.raises(ValidationError, match="inconsistent resource or fit failure"):
+        artifact.read()
 
 
 @pytest.mark.parametrize(

@@ -809,9 +809,19 @@ def test_edo_native_dekads_are_readable_without_fitting(
         "crc_sdk._source_io._download", lambda *a: pytest.fail("offline acquisition")
     )
     pinned = EDO(release=release).select(area=AREA)
-    assert pinned.read(runtime=Runtime(cache=Cache.offline(cache))).table.equals(
+    offline = Runtime(cache=Cache.offline(cache))
+    (reference,) = pinned.inspect(runtime=offline).series
+    assert reference.release is not None
+    assert reference.release.id == f"inventory:{release.id}"
+    selected = pinned.select(series=reference)
+    assert selected.read(runtime=offline).table.equals(
         result.table, check_metadata=False
     )
+    stale_inventory = replace(reference.release, sha256="sha256:" + "0" * 64)
+    with pytest.raises(OSError, match="source release changed"):
+        pinned.select(series=replace(reference, release=stale_inventory)).inspect(
+            runtime=offline
+        )
     assert result.table["time"].to_pylist() == [
         "2001-01-01",
         "2001-01-11",
@@ -830,7 +840,17 @@ def test_edo_native_dekads_are_readable_without_fitting(
     )
     monkeypatch.setattr("crc_sdk._source_io._download", acquire)
     with pytest.raises(OSError, match="release changed"):
-        pinned.read(limit=1, runtime=Runtime(cache=Cache.refresh(cache)))
+        selected.read(limit=1, runtime=Runtime(cache=Cache.refresh(cache)))
+
+
+def test_edo_empty_selection_avoids_offline_metadata_lookup(tmp_path: Path) -> None:
+    selected = EDO().select(series=[])
+    offline = Runtime(cache=Cache.offline(tmp_path))
+    inspected = selected.inspect(runtime=offline)
+    assert inspected.schema is not None
+    assert not (inspected.series or inspected.releases or inspected.requirements)
+    assert not selected.explain().requirements
+    assert selected.read(runtime=offline).table.num_rows == 0
 
 
 def test_jrc_preserves_published_quantile_knots_and_native_pixel_support(
@@ -881,14 +901,44 @@ def test_jrc_preserves_published_quantile_knots_and_native_pixel_support(
         .read()
         .table.equals(result.table, check_metadata=False)
     )
+    for variable in (reference.variable, reference.variable.id):
+        selected = JRC().select(variables=variable, area=AREA)
+        assert selected.inspect().series == (reference,)
+        assert selected.read().table.equals(result.table, check_metadata=False)
+    collection = DatasetCollection({"river": JRC()})
+    for composed in (
+        collection.select(series=reference, area=AREA),
+        collection.select(variables=reference.variable, area=AREA),
+        collection.select(variables=reference.variable.id, area=AREA),
+    ):
+        assert composed.explain().requirements == ()
+        assert composed.inspect().series == (reference,)
+        table = composed.read().table.drop(["member_id", "resource_id"])
+        assert table.equals(result.table, check_metadata=False)
+    exact = replace(reference, release=release)
+    for member in (JRC(), JRC(product=JRC.Product.EFAS)):
+        exact_collection = DatasetCollection({"river": member}).select(
+            series=exact, area=AREA
+        )
+        assert exact_collection.inspect().series == (reference,)
+        table = exact_collection.read().table.drop(["member_id", "resource_id"])
+        assert table.equals(result.table, check_metadata=False)
     pinned = JRC(product=JRC.Product.EFAS, release=release).select(area=AREA)
     assert pinned.read(runtime=Runtime(cache=Cache.offline(cache))).table.equals(
         result.table, check_metadata=False
+    )
+    assert (
+        pinned.select(series=reference)
+        .read(runtime=Runtime(cache=Cache.offline(cache)))
+        .table.equals(result.table, check_metadata=False)
     )
     with rasterio.open(root / "rp100.tif", "r+") as file:
         file.write(np.full((2, 2), 11.0), 1)
     with pytest.raises(OSError, match="release changed"):
         pinned.read(limit=1)
+    stale = collection.select(series=exact, area=AREA)
+    with stale.batches() as batches, pytest.raises(OSError, match="release changed"):
+        next(iter(batches))
     assert pinned.inspect().releases == inventory.releases
     monkeypatch.setattr(
         "crc_sdk._source_io._download", lambda *a: pytest.fail("offline acquisition")
@@ -901,6 +951,19 @@ def test_jrc_preserves_published_quantile_knots_and_native_pixel_support(
     assert curve is not None
     assert curve.quantile([0.9, 0.99]) == pytest.approx([1, 10])
     assert result.table["support_id"].to_pylist()[0].endswith(":1:0")
+
+
+def test_jrc_empty_selection_avoids_acquisition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "crc_sdk._source_io._download",
+        lambda *a: pytest.fail("empty selection acquired"),
+    )
+    selected = JRC().select(series=[])
+    inspection = selected.inspect()
+    assert not (inspection.series or inspection.releases or inspection.requirements)
+    assert selected.read().table.num_rows == 0
 
 
 def test_edo_reuses_inventory_period_and_streams_before_next_file(
@@ -1015,6 +1078,28 @@ def test_idf_central_quantiles_and_published_confidence_intervals(
     assert result.metadata.source is not None
     assert inventory.series[0].release == result.metadata.source.release
     assert inventory.series[0].release is not None
+    offline = Runtime(cache=Cache.offline(cache))
+    declaration = ECCCIDF(duration=cf.Duration(1, unit=cf.TimeUnit.HOUR)).inspect(
+        runtime=offline
+    )
+    assert not declaration.series
+    assert [r.parameter for r in declaration.requirements] == ["province"]
+    assert [v.id for v in declaration.indicators] == [inventory.series[0].variable.id]
+    province = ECCCIDF(province=ECCCIDF.Province.ONTARIO)
+    assert len(province.inspect(runtime=offline).series) == 9
+    selected = province.select(series=inventory.series[0])
+    assert selected.inspect(runtime=offline).series == inventory.series
+    assert selected.read(runtime=offline).table.equals(
+        result.table, check_metadata=False
+    )
+    unknown = province.select(variables="unknown")
+    with pytest.raises(ValueError, match="unknown requested identity"):
+        unknown.inspect(runtime=offline)
+    with pytest.raises(ValueError, match="unknown requested identity"):
+        unknown.read(runtime=offline)
+    outside = selected.select(area=AREA)
+    assert not outside.inspect(runtime=offline).series
+    assert outside.read(runtime=offline).table.num_rows == 0
     assert (
         recipe.select(series=inventory.series[0])
         .read(runtime=Runtime(cache=Cache.offline(cache)))

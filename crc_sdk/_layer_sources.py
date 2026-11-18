@@ -60,6 +60,8 @@ from ._source_io import (
     check_release,
     fetch,
     fetch_json,
+    inventory_payload_pin,
+    inventory_release,
     native_data,
     payload_selection,
     release_snapshot,
@@ -154,15 +156,6 @@ def _empty(state: SelectionState) -> bool:
             state.stations,
             state.scenarios,
         )
-    )
-
-
-def _unbound_selection(state: SelectionState) -> SelectionState:
-    return replace(
-        state,
-        series=None
-        if state.series is None
-        else tuple(replace(reference, release=None) for reference in state.series),
     )
 
 
@@ -264,6 +257,9 @@ class _CHIRPSNode(SourceNode[EvidenceMetadata]):
     def selected(self, state: SelectionState) -> _CHIRPSNode:
         return _CHIRPSNode(self.release, state)
 
+    def _variable_ids(self) -> frozenset[str]:
+        return frozenset(v.id for v in _variables("chirps"))
+
     def requirements(self) -> tuple[Requirement, ...]:
         if _empty(self.state):
             return ()
@@ -305,6 +301,8 @@ class _CHIRPSNode(SourceNode[EvidenceMetadata]):
                 calendar=Calendar.GREGORIAN,
             )
 
+        if not _empty(state) and period is not None and cast(int, period.start) < 1981:
+            raise ValueError("CHIRPS v3 observations begin in 1981")
         if period is not None:
             period = gregorian(period)
         state = replace(
@@ -318,7 +316,7 @@ class _CHIRPSNode(SourceNode[EvidenceMetadata]):
         )
         metadata = _metadata("chirps", state, () if period is None else (period,), None)
         selection = state.resolve(metadata.spec)
-        return selected_metadata(metadata, selection), selection, release
+        return selected_metadata(metadata, selection), selection, release.exact_only()
 
     def inspection(self, scope: ExecutionScope) -> Inspection:
         metadata, _, _ = self._science()
@@ -345,8 +343,6 @@ class _CHIRPSNode(SourceNode[EvidenceMetadata]):
         assert (
             window is not None and window.start is not None and window.end is not None
         )
-        if window.start < 1981:
-            raise ValueError("CHIRPS v3 observations begin in 1981")
         area = self.state.area
         assert area is not None
         if resolved.empty or area.north < -60 or area.south > 60:
@@ -491,6 +487,9 @@ class _FieldsNode(SourceNode[EvidenceMetadata]):
     def selected(self, state: SelectionState) -> _FieldsNode:
         return _FieldsNode(self.release, state)
 
+    def _variable_ids(self) -> frozenset[str]:
+        return frozenset(v.id for v in _variables("ftw"))
+
     def requirements(self) -> tuple[Requirement, ...]:
         if self.state.area is not None or _empty(self.state):
             return ()
@@ -533,43 +532,36 @@ class _FieldsNode(SourceNode[EvidenceMetadata]):
 
     def _prepare(
         self, scope: ExecutionScope, *, inventory: bool = False, acquire: bool = True
-    ) -> tuple[EvidenceMetadata, tuple[_FieldPart, ...]]:
+    ) -> tuple[EvidenceMetadata, ResolvedSelection, tuple[_FieldPart, ...]]:
         if _empty(self.state):
             metadata = _metadata("ftw", self.state, (), None)
-            return selected_metadata(metadata, self.state.resolve(metadata.spec)), ()
+            resolved = SelectionState().resolve(metadata.spec)
+            return selected_metadata(metadata, resolved), resolved, ()
         catalog, resources = self._catalogue(scope)
-        available = tuple(Period.window(y, y) for y in sorted(catalog))
-        metadata = _metadata("ftw", self.state, available, None)
-        resolved = _unbound_selection(self.state).resolve(metadata.spec)
+        published = inventory_release(resources, id="ftw:selected-source-snapshot")
+        state, requested = payload_selection(self.state, self.release)
+        pin = inventory_payload_pin(published, requested)
+        periods = tuple(Period.window(y, y) for y in sorted(catalog))
+        if not inventory and state.periods is None and state.series is None:
+            periods = periods[-1:]
+        metadata = _metadata("ftw", state, periods, None)
+        resolved = state.resolve(metadata.spec)
+        metadata = selected_metadata(metadata, resolved)
         selected = {
             cast(int, s.period.start)
             for s in resolved.spec.series
             if s.period is not None
         }
         if inventory:
-            return replace(
-                metadata,
-                source=SourceIdentity(
-                    provider="ftw",
-                    product="published_layer_inventory",
-                    resources=tuple(resources),
-                ),
-            ), ()
-        if self.state.periods is None and self.state.series is None:
-            latest = max(catalog)
-            metadata = replace(
-                metadata,
-                spec=DataSpec(
-                    metadata.spec.variables,
-                    series=[
-                        s
-                        for s in metadata.spec.series
-                        if s.period is not None and s.period.start == latest
-                    ],
-                ),
+            source = SourceIdentity(
+                provider="ftw",
+                product="global_fields_second_edition",
+                release=published,
+                resources=tuple(resources),
             )
-            selected = {latest}
-        if self.state.area is None:
+            report = replace(metadata.report, source_identities=(source,))
+            return replace(metadata, source=source, report=report), resolved, ()
+        if resolved.area is None:
             raise CapabilityError(
                 "Select an area before reading predicted field boundaries"
             )
@@ -596,7 +588,7 @@ class _FieldsNode(SourceNode[EvidenceMetadata]):
                     item = obj(item_payload, "FTW item")
                     if item.get("collection") != collection_id:
                         raise ValueError("FTW item collection differs from its parent")
-                    if not _overlaps(self.state.area, _bounds(item.get("bbox"))):
+                    if not _overlaps(resolved.area, _bounds(item.get("bbox"))):
                         continue
                     properties = obj(item.get("properties"), "FTW item properties")
                     if properties.get("proj:code") != "EPSG:4326":
@@ -637,11 +629,17 @@ class _FieldsNode(SourceNode[EvidenceMetadata]):
                             collection_id,
                         )
                     )
-            source = _source("ftw", resources, self.release)
-            return replace(metadata, source=source), tuple(parts)
+            snapshot = _source("ftw", resources, pin)
+            assert snapshot is not None
+            report = replace(metadata.report, source_identities=(snapshot,))
+            return (
+                replace(metadata, source=snapshot, report=report),
+                resolved,
+                tuple(parts),
+            )
 
     def inspection(self, scope: ExecutionScope) -> Inspection:
-        metadata, _ = self._prepare(
+        metadata, _, _ = self._prepare(
             scope, inventory=self.state.area is None, acquire=False
         )
         requirements = (
@@ -658,9 +656,7 @@ class _FieldsNode(SourceNode[EvidenceMetadata]):
         return _inspection(metadata, requirements)
 
     def open(self, scope: ExecutionScope) -> NodeStream[EvidenceMetadata]:
-        metadata, parts = self._prepare(scope)
-        resolved = self.state.resolve(metadata.spec, source=metadata.source)
-        metadata = selected_metadata(metadata, resolved)
+        metadata, resolved, parts = self._prepare(scope)
         selected_variables = {s.variable.id for s in resolved.spec.series}
         count = 0
 

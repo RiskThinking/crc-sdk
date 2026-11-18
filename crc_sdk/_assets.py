@@ -31,6 +31,8 @@ from ._runtime import CacheMode, LocalPath, _local_path, _memory_bytes
 from ._schema.dataset import _cell
 from ._table_input import TableInput, snapshot_table
 
+_SQL_SNAPSHOT_BATCH_ROWS = 65_536
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class PointColumns:
@@ -463,7 +465,7 @@ class Assets:
             ):
                 raise ValueError("Assets.sql accepts one SELECT query")
             try:
-                with connection.sql(self._query).to_arrow_reader(
+                with connection.sql(self._query).arrow(
                     batch_size=scope.runtime.batch_rows
                 ) as reader:
                     keep = self._input_columns(reader.schema, required)
@@ -477,7 +479,10 @@ class Assets:
                 ) from error
             sink = pa.BufferOutputStream()
             with pa.ipc.new_stream(sink, table.schema) as writer:
-                writer.write_table(table)
+                # Use fixed batches so execution batch size cannot change the checksum.
+                for offset in range(0, table.num_rows, _SQL_SNAPSHOT_BATCH_ROWS):
+                    chunk = table.slice(offset, _SQL_SNAPSHOT_BATCH_ROWS)
+                    writer.write_table(chunk.combine_chunks())
             snapshot = sink.getvalue()
             table = pa.ipc.open_stream(snapshot).read_all()
             query_digest = hashlib.sha256(self._query.encode()).hexdigest()
@@ -524,7 +529,7 @@ class Assets:
                     raise ValueError(
                         "asset locations require finite WGS84 longitude/latitude"
                     )
-                geometry.append(bytes(to_wkb(Point(longitude, latitude))))
+                geometry.append(bytes(to_wkb(Point(float(longitude), float(latitude)))))
         elif isinstance(location, CellColumn):
             for value in table[location.name].to_pylist():
                 cell = _cell(value)
