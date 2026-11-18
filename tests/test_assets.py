@@ -17,8 +17,9 @@ from shapely import from_wkb  # type: ignore[import-untyped]
 from shapely.geometry import Point  # type: ignore[import-untyped]
 
 from crc_sdk._assets import Assets, GeometryColumn, PointColumns
+from crc_sdk._errors import CapabilityError
 from crc_sdk._graph import ExecutionScope
-from crc_sdk._runtime import Runtime
+from crc_sdk._runtime import Cache, Runtime
 
 
 def _points() -> dict[str, object]:
@@ -203,6 +204,9 @@ def test_sql_is_explicit_bounded_and_keeps_external_connection_settings() -> Non
             data = source._materialize(scope)
         assert data.table.num_rows == 100
         assert data.table.column_names == ["asset_id"]
+        assert data.source is not None
+        assert data.source.resources[0].uri.startswith("duckdb:query:")
+        assert data.source.resources[0].sha256.startswith("sha256:")
         assert (
             connection.execute("SELECT current_setting('threads')").fetchone() == before
         )
@@ -241,6 +245,42 @@ def test_empty_sql_has_owned_stable_columns_after_scope_closes() -> None:
     assert data.table.num_rows == 0
     assert data.table.column_names == ["asset_id", "longitude", "latitude"]
     assert data.geometries == ()
+
+
+def test_offline_sql_cannot_open_an_external_reader(tmp_path: Path) -> None:
+    assets = Assets.sql(
+        "SELECT * FROM read_csv_auto('http://127.0.0.1:1/assets.csv')",
+        location=PointColumns(),
+    )
+    with (
+        ExecutionScope(Runtime(cache=Cache.offline(tmp_path))) as scope,
+        pytest.raises(CapabilityError, match="cannot access external resources"),
+    ):
+        assets._materialize(scope)
+
+
+def test_offline_sql_uses_an_owned_connection_without_reconfiguring_borrowed_sql(
+    tmp_path: Path,
+) -> None:
+    assets = Assets.sql(
+        "SELECT 'A' AS asset_id, 0.0 AS longitude, 0.0 AS latitude",
+        location=PointColumns(),
+    )
+    cache = Cache.offline(tmp_path)
+    with ExecutionScope(Runtime(cache=cache)) as scope:
+        data = assets._materialize(scope)
+        assert data.table["asset_id"].to_pylist() == ["A"]
+        assert data.source is not None
+    with duckdb.connect() as database:
+        runtime = Runtime(cache=cache, connection=database)
+        with (
+            ExecutionScope(runtime) as scope,
+            pytest.raises(CapabilityError, match="SDK-owned DuckDB"),
+        ):
+            assets._materialize(scope)
+        assert database.execute(
+            "SELECT current_setting('enable_external_access')"
+        ).fetchone() == (True,)
 
 
 def test_duplicate_arrow_column_names_are_rejected() -> None:

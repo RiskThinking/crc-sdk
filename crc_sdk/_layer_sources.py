@@ -167,12 +167,18 @@ def _unbound_selection(state: SelectionState) -> SelectionState:
 
 
 def _source(
-    provider: str, resources: list[ResourceIdentity], requested: ReleaseReference | None
+    provider: str,
+    resources: list[ResourceIdentity],
+    requested: ReleaseReference | None,
+    *,
+    complete: bool = True,
 ) -> SourceIdentity | None:
     if not resources:
         return None
-    release = release_snapshot(resources, id=f"{provider}:selected-source-snapshot")
-    check_release(release, requested)
+    release = None
+    if complete:
+        release = release_snapshot(resources, id=f"{provider}:selected-source-snapshot")
+        check_release(release, requested)
     return SourceIdentity(
         provider=provider,
         product="monthly_final_precipitation"
@@ -240,13 +246,6 @@ def _inspection(
         requirements=requirements,
         source=metadata.source,
     )
-
-
-@dataclass(frozen=True, slots=True)
-class _RasterPart:
-    path: Path
-    year: int
-    month: int
 
 
 class _CHIRPSNode(SourceNode[EvidenceMetadata]):
@@ -321,48 +320,6 @@ class _CHIRPSNode(SourceNode[EvidenceMetadata]):
         selection = state.resolve(metadata.spec)
         return selected_metadata(metadata, selection), selection, release
 
-    def _prepare(
-        self, scope: ExecutionScope
-    ) -> tuple[EvidenceMetadata, ResolvedSelection, tuple[_RasterPart, ...]]:
-        metadata, resolved, release = self._science()
-        if _empty(self.state):
-            return metadata, resolved, ()
-        if self.requirements():
-            raise CapabilityError(" ".join(v.message for v in self.requirements()))
-        period = resolved.time
-        assert (
-            period is not None and period.start is not None and period.end is not None
-        )
-        if period.start < 1981:
-            raise ValueError("CHIRPS v3 observations begin in 1981")
-        assert self.state.area is not None
-        if self.state.area.north < -60 or self.state.area.south > 60:
-            return metadata, resolved, ()
-        parts: list[_RasterPart] = []
-        resources: list[ResourceIdentity] = []
-        license, attribution = _terms("chirps")
-        with native_data(scope=scope, source="chirps"):
-            for year in range(period.start, period.end + 1):
-                for month in range(1, 13):
-                    uri = _CHIRPS + f"chirps-v3.0.{year:04d}.{month:02d}.cog"
-                    bundle, resource = raster_window_snapshot(
-                        scope,
-                        uri,
-                        area=self.state.area,
-                        license=license,
-                        attribution=attribution,
-                    )
-                    resources.append(resource)
-                    parts.extend(
-                        _RasterPart(path, year, month)
-                        for path in raster_views(scope, bundle)
-                    )
-            return (
-                replace(metadata, source=_source("chirps", resources, release)),
-                resolved,
-                tuple(parts),
-            )
-
     def inspection(self, scope: ExecutionScope) -> Inspection:
         metadata, _, _ = self._science()
         requirements = self.requirements()
@@ -379,50 +336,87 @@ class _CHIRPSNode(SourceNode[EvidenceMetadata]):
         return _inspection(metadata, requirements)
 
     def open(self, scope: ExecutionScope) -> NodeStream[EvidenceMetadata]:
-        metadata, resolved, parts = self._prepare(scope)
+        metadata, resolved, release = self._science()
+        if _empty(self.state):
+            return NodeStream(evidence_arrow_schema(metadata), metadata, iter(()))
+        if requirements := self.requirements():
+            raise CapabilityError(" ".join(v.message for v in requirements))
+        window = resolved.time
+        assert (
+            window is not None and window.start is not None and window.end is not None
+        )
+        if window.start < 1981:
+            raise ValueError("CHIRPS v3 observations begin in 1981")
+        area = self.state.area
+        assert area is not None
+        if resolved.empty or area.north < -60 or area.south > 60:
+            return NodeStream(evidence_arrow_schema(metadata), metadata, iter(()))
+        period = metadata.spec.series[0].period
+        assert period is not None
+        years = range(window.start, window.end + 1)
+        variable = metadata.spec.series[0].variable.id
+        license, attribution = _terms("chirps")
+        resources: list[ResourceIdentity] = []
+        actual: SourceIdentity | None = None
         count = missing = 0
 
         def batches() -> Iterator[pa.RecordBatch]:
-            nonlocal count, missing
-            pending = []
-            if not resolved.keys:
-                return
-            period = metadata.spec.series[0].period
-            assert period is not None
-            assert self.state.area is not None
-            for part in parts:
-                for row in raster_records(
-                    part.path,
-                    provider="chirps:v3:monthly",
-                    variable_id=_variables("chirps")[0].id,
-                    period_id=period.id,
-                    area=self.state.area,
-                    time=f"{part.year:04d}-{part.month:02d}-01",
-                    block_pixels=scope.runtime.batch_rows,
-                ):
-                    if not resolved.matches_record(row):
-                        continue
-                    count += 1
-                    missing += int(row["value"] is None)
-                    pending.append(row)
-                    if len(pending) >= scope.runtime.batch_rows:
+            nonlocal count, missing, actual
+            for year in years:
+                for month in range(1, 13):
+                    uri = _CHIRPS + f"chirps-v3.0.{year:04d}.{month:02d}.cog"
+                    bundle, resource = raster_window_snapshot(
+                        scope, uri, area=area, license=license, attribution=attribution
+                    )
+                    resources.append(resource)
+                    pending = []
+                    for path in raster_views(scope, bundle):
+                        for row in raster_records(
+                            path,
+                            provider="chirps:v3:monthly",
+                            variable_id=variable,
+                            period_id=period.id,
+                            area=area,
+                            time=f"{year:04d}-{month:02d}-01",
+                            block_pixels=scope.runtime.batch_rows,
+                        ):
+                            if not resolved.matches_record(row):
+                                continue
+                            count += 1
+                            missing += int(row["value"] is None)
+                            pending.append(row)
+                            if len(pending) >= scope.runtime.batch_rows:
+                                yield from evidence_table(
+                                    pending, metadata
+                                ).to_batches()
+                                pending.clear()
+                    if pending:
                         yield from evidence_table(pending, metadata).to_batches()
-                        pending = []
-            if pending:
-                yield from evidence_table(pending, metadata).to_batches()
+            actual = _source("chirps", resources, release)
 
         def report() -> ExecutionReport:
+            source = actual or _source("chirps", resources, None, complete=False)
             return ExecutionReport(
                 False,
                 None,
                 counts=ExecutionCounts(
                     requested=count, produced=count, no_data=missing
                 ),
-                source_identities=() if metadata.source is None else (metadata.source,),
+                source_identities=() if source is None else (source,),
             )
 
+        def final_metadata() -> EvidenceMetadata:
+            outcome = report()
+            source = outcome.source_identities[0] if outcome.source_identities else None
+            return replace(metadata, source=source, report=outcome)
+
         return NodeStream(
-            evidence_arrow_schema(metadata), metadata, batches(), report=report
+            evidence_arrow_schema(metadata),
+            metadata,
+            batches(),
+            report=report,
+            final_metadata=final_metadata,
+            verify_before_yield=release is not None,
         )
 
 

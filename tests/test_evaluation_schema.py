@@ -52,13 +52,11 @@ def _fixtures() -> dict[str, Any]:
 
 
 def _rows(values: list[dict[str, Any]]) -> list[EvaluationRow]:
-    rows = []
-    for raw in values:
+    def outcome(raw: dict[str, Any]) -> tuple[float | None, EvaluationFailure | None]:
         value, failure = raw["value"], raw["failure"]
-        row = {
-            **raw,
-            "value": float(value) if isinstance(value, str) else value,
-            "failure": None
+        return (
+            float(value) if isinstance(value, str) else value,
+            None
             if failure is None
             else EvaluationFailure(
                 failure["code"],
@@ -67,6 +65,16 @@ def _rows(values: list[dict[str, Any]]) -> list[EvaluationRow]:
                 if "record" not in failure
                 else cf.FitRecord.from_json(_dump(failure["record"])),
             ),
+        )
+
+    rows = []
+    for raw in values:
+        value, failure = outcome(raw)
+        row = {
+            **raw,
+            "value": value,
+            "failure": failure,
+            "exposure": outcome(raw["exposure"]) if "exposure" in raw else None,
         }
         rows.append(EvaluationRow(**row))
     return rows
@@ -143,7 +151,14 @@ def test_actual_context_resolutions_are_bound_and_checkable_across_batches() -> 
         ),
         report=ExecutionReport(False, None),
     )
-    original_rows = _rows(original_case["rows"][-2:])
+    original_rows = [
+        replace(row, exposure=(exposure.value, exposure.failure))
+        for row, exposure in zip(
+            _rows(original_case["rows"][-2:]),
+            _rows(original_case["rows"][:2]),
+            strict=True,
+        )
+    ]
     validator = EvaluationValidator(planned)
     try:
         validator.register_resolution(actual.resolutions[0])

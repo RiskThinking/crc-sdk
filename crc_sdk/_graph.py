@@ -346,10 +346,18 @@ class ExecutionScope:
                 "threads": self.runtime.workers,
                 "temp_directory": str(self.directory / "duckdb"),
             }
+            offline = self.runtime.cache.mode is CacheMode.OFFLINE
+            if offline:
+                config.update(
+                    autoinstall_known_extensions=False,
+                    autoload_known_extensions=False,
+                )
             memory = _memory_bytes(self.runtime.memory_limit)
             if memory is not None:
                 config["memory_limit"] = f"{memory}B"
             self._connection = duckdb.connect(config=config)
+            if offline:
+                self._connection.execute("SET enable_external_access = false")
         return self._connection
 
     def emit(self, stage: Stage, completed: int, total: int | None = None) -> None:

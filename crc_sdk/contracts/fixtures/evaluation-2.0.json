@@ -816,6 +816,292 @@
           }
         ]
       }
+    },
+    {
+      "name": "named-only-with-exposure-proof",
+      "document": {
+        "metadata": {
+          "asset_fields": "/////3gAAAAQAAAAAAAKAAwABgAFAAgACgAAAAABBAAMAAAACAAIAAAABAAIAAAABAAAAAEAAAAUAAAAEAAUAAgAAAAHAAwAAAAQABAAAAAAAAAFEAAAACAAAAAEAAAAAAAAAAgAAABhc3NldF9pZAAAAAAEAAQABAAAAAAAAAA=",
+          "asset_ids": [
+            "a"
+          ],
+          "include_exposure": false,
+          "inputs": [
+            {
+              "member_id": null,
+              "metadata": {
+                "provenance": [],
+                "report": {
+                  "complete": true,
+                  "counts": {
+                    "incomplete_years": 0,
+                    "matched_assets": 0,
+                    "no_data": 0,
+                    "produced": 1,
+                    "requested": 1,
+                    "skipped": 0,
+                    "unmatched_assets": 0,
+                    "usable_years": 0
+                  },
+                  "diagnostics": [],
+                  "source_identities": [],
+                  "valid": true
+                },
+                "schema_version": "2.0",
+                "spatial": {
+                  "index_resolution": 9,
+                  "supports": [
+                    "point"
+                  ]
+                },
+                "spec": {
+                  "periods": [],
+                  "scenarios": [],
+                  "series": [
+                    {
+                      "period_id": null,
+                      "probability": {
+                        "kind": "annual",
+                        "tail": "upper"
+                      },
+                      "scenario_id": null,
+                      "variable_id": "project:depth"
+                    }
+                  ],
+                  "variables": [
+                    {
+                      "id": "project:depth",
+                      "measurement": {
+                        "kind": "depth_above_ground",
+                        "unit": "m"
+                      }
+                    }
+                  ]
+                }
+              },
+              "resource_id": null
+            }
+          ],
+          "query": {
+            "kind": "return_period",
+            "values": [
+              100.0,
+              10.0
+            ]
+          },
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 1,
+              "no_data": 0,
+              "produced": 4,
+              "requested": 4,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [],
+            "source_identities": [],
+            "valid": true
+          },
+          "resolutions": [
+            {
+              "asset_ids": [
+                "a"
+              ],
+              "id": "sha256:0755d6b285037b00c9eadcaeaef8534e39ca7aa7e8491af8af45d7baa3cb9437",
+              "impact": {
+                "input": {
+                  "kind": "depth_above_ground",
+                  "unit": "m"
+                },
+                "model": {
+                  "interpolation": "linear",
+                  "kind": "tabulated",
+                  "outside_domain": "clamp",
+                  "points": [
+                    {
+                      "x": 0,
+                      "y": 0
+                    },
+                    {
+                      "x": 0.5,
+                      "y": 0.25
+                    },
+                    {
+                      "x": 1,
+                      "y": 0.4000000059604645
+                    },
+                    {
+                      "x": 1.5,
+                      "y": 0.5
+                    },
+                    {
+                      "x": 2,
+                      "y": 0.6000000238418579
+                    },
+                    {
+                      "x": 3,
+                      "y": 0.75
+                    },
+                    {
+                      "x": 4,
+                      "y": 0.8500000238418579
+                    },
+                    {
+                      "x": 5,
+                      "y": 0.949999988079071
+                    },
+                    {
+                      "x": 6,
+                      "y": 1
+                    }
+                  ]
+                },
+                "output": {
+                  "kind": "ratio",
+                  "unit": "1"
+                },
+                "provenance": {
+                  "context": {
+                    "asset_type": "residential",
+                    "kind": "inundation_context",
+                    "region": "europe"
+                  },
+                  "model": {
+                    "id": "crc:inundation",
+                    "manifest_sha256": "sha256:aee900a83e9316e98922996abfae5b9b2752d763c9161c59edfadf1a9cfbbcc6",
+                    "schema_version": "2.0",
+                    "version": "2026.10.1"
+                  }
+                },
+                "schema_version": "2.0"
+              },
+              "response_id": "damage"
+            }
+          ],
+          "responses": [
+            {
+              "model": {
+                "input": {
+                  "kind": "depth_above_ground",
+                  "unit": "m"
+                },
+                "model": {
+                  "intercept": 0,
+                  "kind": "linear",
+                  "slope": 2
+                },
+                "output": {
+                  "kind": "time_duration",
+                  "unit": "d"
+                },
+                "schema_version": "2.0"
+              },
+              "name": "downtime",
+              "variable_id": "project:depth"
+            },
+            {
+              "context": {
+                "asset_type": "residential",
+                "kind": "inundation_context",
+                "region": "europe"
+              },
+              "model": {
+                "id": "crc:inundation",
+                "manifest_sha256": "sha256:aee900a83e9316e98922996abfae5b9b2752d763c9161c59edfadf1a9cfbbcc6",
+                "schema_version": "2.0",
+                "version": "2026.10.1"
+              },
+              "name": "damage",
+              "variable_id": "project:depth"
+            }
+          ],
+          "schema_version": "2.0",
+          "spatial": {
+            "kind": "covering"
+          }
+        },
+        "rows": [
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": "downtime",
+            "resolution_id": null,
+            "query_value": 100.0,
+            "value": 3.2,
+            "failure": null,
+            "exposure": {
+              "value": 1.6,
+              "failure": null
+            }
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": "downtime",
+            "resolution_id": null,
+            "query_value": 10.0,
+            "value": 1.6,
+            "failure": null,
+            "exposure": {
+              "value": 0.8,
+              "failure": null
+            }
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": "damage",
+            "resolution_id": "sha256:0755d6b285037b00c9eadcaeaef8534e39ca7aa7e8491af8af45d7baa3cb9437",
+            "query_value": 100.0,
+            "value": 0.5200000047683716,
+            "failure": null,
+            "exposure": {
+              "value": 1.6,
+              "failure": null
+            }
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": "damage",
+            "resolution_id": "sha256:0755d6b285037b00c9eadcaeaef8534e39ca7aa7e8491af8af45d7baa3cb9437",
+            "query_value": 10.0,
+            "value": 0.3400000035762787,
+            "failure": null,
+            "exposure": {
+              "value": 0.8,
+              "failure": null
+            }
+          }
+        ]
+      }
     }
   ],
   "rejected": [
@@ -1453,6 +1739,863 @@
             "query_value": 100.0,
             "value": 1.6,
             "failure": null
+          }
+        ]
+      },
+      "structural": false
+    },
+    {
+      "name": "named-only-contradicts-model",
+      "document": {
+        "metadata": {
+          "asset_fields": "/////3gAAAAQAAAAAAAKAAwABgAFAAgACgAAAAABBAAMAAAACAAIAAAABAAIAAAABAAAAAEAAAAUAAAAEAAUAAgAAAAHAAwAAAAQABAAAAAAAAAFEAAAACAAAAAEAAAAAAAAAAgAAABhc3NldF9pZAAAAAAEAAQABAAAAAAAAAA=",
+          "asset_ids": [
+            "a"
+          ],
+          "include_exposure": false,
+          "inputs": [
+            {
+              "member_id": null,
+              "metadata": {
+                "provenance": [],
+                "report": {
+                  "complete": true,
+                  "counts": {
+                    "incomplete_years": 0,
+                    "matched_assets": 0,
+                    "no_data": 0,
+                    "produced": 1,
+                    "requested": 1,
+                    "skipped": 0,
+                    "unmatched_assets": 0,
+                    "usable_years": 0
+                  },
+                  "diagnostics": [],
+                  "source_identities": [],
+                  "valid": true
+                },
+                "schema_version": "2.0",
+                "spatial": {
+                  "index_resolution": 9,
+                  "supports": [
+                    "point"
+                  ]
+                },
+                "spec": {
+                  "periods": [],
+                  "scenarios": [],
+                  "series": [
+                    {
+                      "period_id": null,
+                      "probability": {
+                        "kind": "annual",
+                        "tail": "upper"
+                      },
+                      "scenario_id": null,
+                      "variable_id": "project:depth"
+                    }
+                  ],
+                  "variables": [
+                    {
+                      "id": "project:depth",
+                      "measurement": {
+                        "kind": "depth_above_ground",
+                        "unit": "m"
+                      }
+                    }
+                  ]
+                }
+              },
+              "resource_id": null
+            }
+          ],
+          "query": {
+            "kind": "return_period",
+            "values": [
+              100.0,
+              10.0
+            ]
+          },
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 1,
+              "no_data": 0,
+              "produced": 4,
+              "requested": 4,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [],
+            "source_identities": [],
+            "valid": true
+          },
+          "resolutions": [
+            {
+              "asset_ids": [
+                "a"
+              ],
+              "id": "sha256:0755d6b285037b00c9eadcaeaef8534e39ca7aa7e8491af8af45d7baa3cb9437",
+              "impact": {
+                "input": {
+                  "kind": "depth_above_ground",
+                  "unit": "m"
+                },
+                "model": {
+                  "interpolation": "linear",
+                  "kind": "tabulated",
+                  "outside_domain": "clamp",
+                  "points": [
+                    {
+                      "x": 0,
+                      "y": 0
+                    },
+                    {
+                      "x": 0.5,
+                      "y": 0.25
+                    },
+                    {
+                      "x": 1,
+                      "y": 0.4000000059604645
+                    },
+                    {
+                      "x": 1.5,
+                      "y": 0.5
+                    },
+                    {
+                      "x": 2,
+                      "y": 0.6000000238418579
+                    },
+                    {
+                      "x": 3,
+                      "y": 0.75
+                    },
+                    {
+                      "x": 4,
+                      "y": 0.8500000238418579
+                    },
+                    {
+                      "x": 5,
+                      "y": 0.949999988079071
+                    },
+                    {
+                      "x": 6,
+                      "y": 1
+                    }
+                  ]
+                },
+                "output": {
+                  "kind": "ratio",
+                  "unit": "1"
+                },
+                "provenance": {
+                  "context": {
+                    "asset_type": "residential",
+                    "kind": "inundation_context",
+                    "region": "europe"
+                  },
+                  "model": {
+                    "id": "crc:inundation",
+                    "manifest_sha256": "sha256:aee900a83e9316e98922996abfae5b9b2752d763c9161c59edfadf1a9cfbbcc6",
+                    "schema_version": "2.0",
+                    "version": "2026.10.1"
+                  }
+                },
+                "schema_version": "2.0"
+              },
+              "response_id": "damage"
+            }
+          ],
+          "responses": [
+            {
+              "model": {
+                "input": {
+                  "kind": "depth_above_ground",
+                  "unit": "m"
+                },
+                "model": {
+                  "intercept": 0,
+                  "kind": "linear",
+                  "slope": 2
+                },
+                "output": {
+                  "kind": "time_duration",
+                  "unit": "d"
+                },
+                "schema_version": "2.0"
+              },
+              "name": "downtime",
+              "variable_id": "project:depth"
+            },
+            {
+              "context": {
+                "asset_type": "residential",
+                "kind": "inundation_context",
+                "region": "europe"
+              },
+              "model": {
+                "id": "crc:inundation",
+                "manifest_sha256": "sha256:aee900a83e9316e98922996abfae5b9b2752d763c9161c59edfadf1a9cfbbcc6",
+                "schema_version": "2.0",
+                "version": "2026.10.1"
+              },
+              "name": "damage",
+              "variable_id": "project:depth"
+            }
+          ],
+          "schema_version": "2.0",
+          "spatial": {
+            "kind": "covering"
+          }
+        },
+        "rows": [
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": "downtime",
+            "resolution_id": null,
+            "query_value": 100.0,
+            "value": 99.0,
+            "failure": null,
+            "exposure": {
+              "value": 1.6,
+              "failure": null
+            }
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": "downtime",
+            "resolution_id": null,
+            "query_value": 10.0,
+            "value": 1.6,
+            "failure": null,
+            "exposure": {
+              "value": 0.8,
+              "failure": null
+            }
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": "damage",
+            "resolution_id": "sha256:0755d6b285037b00c9eadcaeaef8534e39ca7aa7e8491af8af45d7baa3cb9437",
+            "query_value": 100.0,
+            "value": 0.5200000047683716,
+            "failure": null,
+            "exposure": {
+              "value": 1.6,
+              "failure": null
+            }
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": "damage",
+            "resolution_id": "sha256:0755d6b285037b00c9eadcaeaef8534e39ca7aa7e8491af8af45d7baa3cb9437",
+            "query_value": 10.0,
+            "value": 0.3400000035762787,
+            "failure": null,
+            "exposure": {
+              "value": 0.8,
+              "failure": null
+            }
+          }
+        ]
+      },
+      "structural": false
+    },
+    {
+      "name": "named-only-missing-exposure-proof",
+      "document": {
+        "metadata": {
+          "asset_fields": "/////3gAAAAQAAAAAAAKAAwABgAFAAgACgAAAAABBAAMAAAACAAIAAAABAAIAAAABAAAAAEAAAAUAAAAEAAUAAgAAAAHAAwAAAAQABAAAAAAAAAFEAAAACAAAAAEAAAAAAAAAAgAAABhc3NldF9pZAAAAAAEAAQABAAAAAAAAAA=",
+          "asset_ids": [
+            "a"
+          ],
+          "include_exposure": false,
+          "inputs": [
+            {
+              "member_id": null,
+              "metadata": {
+                "provenance": [],
+                "report": {
+                  "complete": true,
+                  "counts": {
+                    "incomplete_years": 0,
+                    "matched_assets": 0,
+                    "no_data": 0,
+                    "produced": 1,
+                    "requested": 1,
+                    "skipped": 0,
+                    "unmatched_assets": 0,
+                    "usable_years": 0
+                  },
+                  "diagnostics": [],
+                  "source_identities": [],
+                  "valid": true
+                },
+                "schema_version": "2.0",
+                "spatial": {
+                  "index_resolution": 9,
+                  "supports": [
+                    "point"
+                  ]
+                },
+                "spec": {
+                  "periods": [],
+                  "scenarios": [],
+                  "series": [
+                    {
+                      "period_id": null,
+                      "probability": {
+                        "kind": "annual",
+                        "tail": "upper"
+                      },
+                      "scenario_id": null,
+                      "variable_id": "project:depth"
+                    }
+                  ],
+                  "variables": [
+                    {
+                      "id": "project:depth",
+                      "measurement": {
+                        "kind": "depth_above_ground",
+                        "unit": "m"
+                      }
+                    }
+                  ]
+                }
+              },
+              "resource_id": null
+            }
+          ],
+          "query": {
+            "kind": "return_period",
+            "values": [
+              100.0,
+              10.0
+            ]
+          },
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 1,
+              "no_data": 0,
+              "produced": 4,
+              "requested": 4,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [],
+            "source_identities": [],
+            "valid": true
+          },
+          "resolutions": [
+            {
+              "asset_ids": [
+                "a"
+              ],
+              "id": "sha256:0755d6b285037b00c9eadcaeaef8534e39ca7aa7e8491af8af45d7baa3cb9437",
+              "impact": {
+                "input": {
+                  "kind": "depth_above_ground",
+                  "unit": "m"
+                },
+                "model": {
+                  "interpolation": "linear",
+                  "kind": "tabulated",
+                  "outside_domain": "clamp",
+                  "points": [
+                    {
+                      "x": 0,
+                      "y": 0
+                    },
+                    {
+                      "x": 0.5,
+                      "y": 0.25
+                    },
+                    {
+                      "x": 1,
+                      "y": 0.4000000059604645
+                    },
+                    {
+                      "x": 1.5,
+                      "y": 0.5
+                    },
+                    {
+                      "x": 2,
+                      "y": 0.6000000238418579
+                    },
+                    {
+                      "x": 3,
+                      "y": 0.75
+                    },
+                    {
+                      "x": 4,
+                      "y": 0.8500000238418579
+                    },
+                    {
+                      "x": 5,
+                      "y": 0.949999988079071
+                    },
+                    {
+                      "x": 6,
+                      "y": 1
+                    }
+                  ]
+                },
+                "output": {
+                  "kind": "ratio",
+                  "unit": "1"
+                },
+                "provenance": {
+                  "context": {
+                    "asset_type": "residential",
+                    "kind": "inundation_context",
+                    "region": "europe"
+                  },
+                  "model": {
+                    "id": "crc:inundation",
+                    "manifest_sha256": "sha256:aee900a83e9316e98922996abfae5b9b2752d763c9161c59edfadf1a9cfbbcc6",
+                    "schema_version": "2.0",
+                    "version": "2026.10.1"
+                  }
+                },
+                "schema_version": "2.0"
+              },
+              "response_id": "damage"
+            }
+          ],
+          "responses": [
+            {
+              "model": {
+                "input": {
+                  "kind": "depth_above_ground",
+                  "unit": "m"
+                },
+                "model": {
+                  "intercept": 0,
+                  "kind": "linear",
+                  "slope": 2
+                },
+                "output": {
+                  "kind": "time_duration",
+                  "unit": "d"
+                },
+                "schema_version": "2.0"
+              },
+              "name": "downtime",
+              "variable_id": "project:depth"
+            },
+            {
+              "context": {
+                "asset_type": "residential",
+                "kind": "inundation_context",
+                "region": "europe"
+              },
+              "model": {
+                "id": "crc:inundation",
+                "manifest_sha256": "sha256:aee900a83e9316e98922996abfae5b9b2752d763c9161c59edfadf1a9cfbbcc6",
+                "schema_version": "2.0",
+                "version": "2026.10.1"
+              },
+              "name": "damage",
+              "variable_id": "project:depth"
+            }
+          ],
+          "schema_version": "2.0",
+          "spatial": {
+            "kind": "covering"
+          }
+        },
+        "rows": [
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": "downtime",
+            "resolution_id": null,
+            "query_value": 100.0,
+            "value": 3.2,
+            "failure": null
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": "downtime",
+            "resolution_id": null,
+            "query_value": 10.0,
+            "value": 1.6,
+            "failure": null,
+            "exposure": {
+              "value": 0.8,
+              "failure": null
+            }
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": "damage",
+            "resolution_id": "sha256:0755d6b285037b00c9eadcaeaef8534e39ca7aa7e8491af8af45d7baa3cb9437",
+            "query_value": 100.0,
+            "value": 0.5200000047683716,
+            "failure": null,
+            "exposure": {
+              "value": 1.6,
+              "failure": null
+            }
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": "damage",
+            "resolution_id": "sha256:0755d6b285037b00c9eadcaeaef8534e39ca7aa7e8491af8af45d7baa3cb9437",
+            "query_value": 10.0,
+            "value": 0.3400000035762787,
+            "failure": null,
+            "exposure": {
+              "value": 0.8,
+              "failure": null
+            }
+          }
+        ]
+      },
+      "structural": true
+    },
+    {
+      "name": "contradictory-exposure-proofs",
+      "document": {
+        "metadata": {
+          "asset_fields": "/////3gAAAAQAAAAAAAKAAwABgAFAAgACgAAAAABBAAMAAAACAAIAAAABAAIAAAABAAAAAEAAAAUAAAAEAAUAAgAAAAHAAwAAAAQABAAAAAAAAAFEAAAACAAAAAEAAAAAAAAAAgAAABhc3NldF9pZAAAAAAEAAQABAAAAAAAAAA=",
+          "asset_ids": [
+            "a"
+          ],
+          "include_exposure": false,
+          "inputs": [
+            {
+              "member_id": null,
+              "metadata": {
+                "provenance": [],
+                "report": {
+                  "complete": true,
+                  "counts": {
+                    "incomplete_years": 0,
+                    "matched_assets": 0,
+                    "no_data": 0,
+                    "produced": 1,
+                    "requested": 1,
+                    "skipped": 0,
+                    "unmatched_assets": 0,
+                    "usable_years": 0
+                  },
+                  "diagnostics": [],
+                  "source_identities": [],
+                  "valid": true
+                },
+                "schema_version": "2.0",
+                "spatial": {
+                  "index_resolution": 9,
+                  "supports": [
+                    "point"
+                  ]
+                },
+                "spec": {
+                  "periods": [],
+                  "scenarios": [],
+                  "series": [
+                    {
+                      "period_id": null,
+                      "probability": {
+                        "kind": "annual",
+                        "tail": "upper"
+                      },
+                      "scenario_id": null,
+                      "variable_id": "project:depth"
+                    }
+                  ],
+                  "variables": [
+                    {
+                      "id": "project:depth",
+                      "measurement": {
+                        "kind": "depth_above_ground",
+                        "unit": "m"
+                      }
+                    }
+                  ]
+                }
+              },
+              "resource_id": null
+            }
+          ],
+          "query": {
+            "kind": "return_period",
+            "values": [
+              100.0,
+              10.0
+            ]
+          },
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 1,
+              "no_data": 0,
+              "produced": 4,
+              "requested": 4,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [],
+            "source_identities": [],
+            "valid": true
+          },
+          "resolutions": [
+            {
+              "asset_ids": [
+                "a"
+              ],
+              "id": "sha256:0755d6b285037b00c9eadcaeaef8534e39ca7aa7e8491af8af45d7baa3cb9437",
+              "impact": {
+                "input": {
+                  "kind": "depth_above_ground",
+                  "unit": "m"
+                },
+                "model": {
+                  "interpolation": "linear",
+                  "kind": "tabulated",
+                  "outside_domain": "clamp",
+                  "points": [
+                    {
+                      "x": 0,
+                      "y": 0
+                    },
+                    {
+                      "x": 0.5,
+                      "y": 0.25
+                    },
+                    {
+                      "x": 1,
+                      "y": 0.4000000059604645
+                    },
+                    {
+                      "x": 1.5,
+                      "y": 0.5
+                    },
+                    {
+                      "x": 2,
+                      "y": 0.6000000238418579
+                    },
+                    {
+                      "x": 3,
+                      "y": 0.75
+                    },
+                    {
+                      "x": 4,
+                      "y": 0.8500000238418579
+                    },
+                    {
+                      "x": 5,
+                      "y": 0.949999988079071
+                    },
+                    {
+                      "x": 6,
+                      "y": 1
+                    }
+                  ]
+                },
+                "output": {
+                  "kind": "ratio",
+                  "unit": "1"
+                },
+                "provenance": {
+                  "context": {
+                    "asset_type": "residential",
+                    "kind": "inundation_context",
+                    "region": "europe"
+                  },
+                  "model": {
+                    "id": "crc:inundation",
+                    "manifest_sha256": "sha256:aee900a83e9316e98922996abfae5b9b2752d763c9161c59edfadf1a9cfbbcc6",
+                    "schema_version": "2.0",
+                    "version": "2026.10.1"
+                  }
+                },
+                "schema_version": "2.0"
+              },
+              "response_id": "damage"
+            }
+          ],
+          "responses": [
+            {
+              "model": {
+                "input": {
+                  "kind": "depth_above_ground",
+                  "unit": "m"
+                },
+                "model": {
+                  "intercept": 0,
+                  "kind": "linear",
+                  "slope": 2
+                },
+                "output": {
+                  "kind": "time_duration",
+                  "unit": "d"
+                },
+                "schema_version": "2.0"
+              },
+              "name": "downtime",
+              "variable_id": "project:depth"
+            },
+            {
+              "context": {
+                "asset_type": "residential",
+                "kind": "inundation_context",
+                "region": "europe"
+              },
+              "model": {
+                "id": "crc:inundation",
+                "manifest_sha256": "sha256:aee900a83e9316e98922996abfae5b9b2752d763c9161c59edfadf1a9cfbbcc6",
+                "schema_version": "2.0",
+                "version": "2026.10.1"
+              },
+              "name": "damage",
+              "variable_id": "project:depth"
+            }
+          ],
+          "schema_version": "2.0",
+          "spatial": {
+            "kind": "covering"
+          }
+        },
+        "rows": [
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": "downtime",
+            "resolution_id": null,
+            "query_value": 100.0,
+            "value": 6.0,
+            "failure": null,
+            "exposure": {
+              "value": 3.0,
+              "failure": null
+            }
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": "downtime",
+            "resolution_id": null,
+            "query_value": 10.0,
+            "value": 1.6,
+            "failure": null,
+            "exposure": {
+              "value": 0.8,
+              "failure": null
+            }
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": "damage",
+            "resolution_id": "sha256:0755d6b285037b00c9eadcaeaef8534e39ca7aa7e8491af8af45d7baa3cb9437",
+            "query_value": 100.0,
+            "value": 0.5200000047683716,
+            "failure": null,
+            "exposure": {
+              "value": 1.6,
+              "failure": null
+            }
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": "damage",
+            "resolution_id": "sha256:0755d6b285037b00c9eadcaeaef8534e39ca7aa7e8491af8af45d7baa3cb9437",
+            "query_value": 10.0,
+            "value": 0.3400000035762787,
+            "failure": null,
+            "exposure": {
+              "value": 0.8,
+              "failure": null
+            }
           }
         ]
       },

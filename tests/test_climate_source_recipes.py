@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,8 @@ from crc_sdk import (
     Bounds,
     Cache,
     Calendar,
+    DatasetCollection,
+    FitFailure,
     Period,
     ReleaseReference,
     Runtime,
@@ -33,6 +36,45 @@ from crc_sdk._errors import CapabilityError
 from crc_sdk._evidence import EvidenceKind
 from crc_sdk._evidence_recipes import Observations
 from crc_sdk._inspection import Capability
+
+
+@pytest.mark.parametrize(
+    ("pages", "problem"),
+    [
+        (("<IsTruncated>true</IsTruncated>",), "has no continuation token"),
+        (
+            (
+                "<IsTruncated>true</IsTruncated>"
+                "<NextContinuationToken>again</NextContinuationToken>",
+            )
+            * 2,
+            "repeats a continuation token",
+        ),
+        (
+            (
+                "<IsTruncated>false</IsTruncated>"
+                "<NextContinuationToken>unexpected</NextContinuationToken>",
+            ),
+            "Complete NEX inventory page has a continuation token",
+        ),
+    ],
+)
+def test_nex_rejects_invalid_listing_pagination(
+    monkeypatch: pytest.MonkeyPatch, pages: tuple[str, ...], problem: str
+) -> None:
+    from crc_sdk import _source_io
+
+    remaining = iter(pages)
+
+    def download(uri: str, path: Path) -> int:
+        page = next(remaining, None)
+        assert page is not None, f"unexpected catalogue request: {uri}"
+        path.write_text(f"<ListBucketResult>{page}</ListBucketResult>")
+        return 200
+
+    monkeypatch.setattr(_source_io, "_download", download)
+    with pytest.raises(ValidationError, match=problem):
+        NEX().inspect()
 
 
 def _array(
@@ -143,6 +185,61 @@ def test_era5_hourly_complete_days_and_owned_offline_replay(
     monkeypatch.setattr("crc_sdk._source_io._download", forbidden)
     replay = recipe.read(runtime=Runtime(cache=Cache.offline(cache)))
     assert replay.table.equals(result.table, check_metadata=False)
+
+
+def test_collection_replays_its_inspected_publication_after_fitting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from crc_sdk import _climate_sampling as module
+
+    path = tmp_path / "era5.zarr"
+    _grid(path, variable="2m_temperature", hourly=True)
+    monkeypatch.setattr(
+        module, "ERA5_STORE", replace(module.ERA5_STORE, url=path.as_uri())
+    )
+    fitted = (
+        ERA5(indicator=ERA5.Indicator.ANNUAL_MAXIMUM_DAILY_MAXIMUM_TEMPERATURE)
+        .select(area=AREA, time=Period.window(2001, 2001))
+        .fit(
+            cf.SampleFit(family=cf.DistributionFamily.GUMBEL_RIGHT),
+            on_failure=FitFailure.KEEP_NO_DATA,
+        )
+    )
+    collection = DatasetCollection({"observed": fitted})
+    (reference,) = collection.inspect().series
+    assert reference.release is not None and reference.release.id.startswith(
+        "inventory:"
+    )
+    selected = collection.select(series=reference)
+    assert selected.inspect().series == (reference,)
+    assert selected.validate().valid is True
+    result = selected.read()
+    source = result.metadata.resources[0].metadata.source
+    assert source is not None and source.release is not None
+    assert source.release.id == reference.release.id.removeprefix("inventory:")
+    assert reference.release in {
+        item.release for item in result.report.source_identities
+    }
+
+    destination = tmp_path / "collection"
+    selected.write(destination)
+    reopened = DatasetCollection.open(destination)
+    assert reopened.validate().valid is True
+    assert reopened.read().table.equals(result.table, check_metadata=False)
+    assert (
+        reopened.select(series=reference)
+        .read()
+        .table.equals(result.table, check_metadata=False)
+    )
+
+    manifest = destination / "manifest.json"
+    document = json.loads(manifest.read_text())
+    document["selection"]["series"][0]["release"]["sha256"] = "sha256:" + "0" * 64
+    manifest.write_text(json.dumps(document))
+    invalid = DatasetCollection.open(destination)
+    assert invalid.validate().valid is False
+    with pytest.raises(ValidationError, match="saved series selection"):
+        invalid.read()
 
 
 def test_era5_annual_results_retain_requested_years_outside_source_coverage(
@@ -517,7 +614,8 @@ def test_nex_real_native_netcdf_view_and_pinned_replay(
             '<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
             + contents
             + next_page
-            + "<IsTruncated>false</IsTruncated></ListBucketResult>"
+            + f"<IsTruncated>{'true' if next_page else 'false'}</IsTruncated>"
+            "</ListBucketResult>"
         )
         return 200
 
@@ -1172,7 +1270,10 @@ def test_native_era5_precipitation_retains_interval_end_and_composes_reductions(
     assert result.metadata.source is not None and result.metadata.source.release
     assert annual.metadata.source is not None
     assert annual.metadata.source.release == result.metadata.source.release
-    assert annual.report.source_identities == (annual.metadata.source,)
+    assert [item.release for item in annual.report.source_identities] == [
+        item.release for item in result.report.source_identities
+    ]
+    assert annual.report.source_identities[-1] == annual.metadata.source
     late = (
         ERA5(indicator=ERA5.Indicator.ANNUAL_MAXIMUM_DAILY_PRECIPITATION)
         .observations()

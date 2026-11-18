@@ -299,7 +299,7 @@ class _Checked:
                 validate_evidence(table, planned, check_counts=False)
                 for record in table.to_pylist():
                     identity = json.dumps(
-                        evidence_row_key(record, planned.kind), ensure_ascii=False
+                        evidence_row_key(record, planned), ensure_ascii=False
                     )
                     retained += int(record.get("failure") is not None)
                     self._remember(
@@ -1477,11 +1477,14 @@ class _RecipeBase(Generic[MetadataT, CanonicalT]):
         if self._metadata is not None or self._path is None:
             return self._metadata
         with ExecutionScope() as scope:
-            metadata = scope.metadata(self._base)
-            if isinstance(self._base, _ParquetNode):
-                reader = cast(_ParquetNode[MetadataT], self._base)
-                return reader.metadata_value or scope.computation_metadata(reader)
-            return metadata
+            try:
+                metadata = scope.metadata(self._base)
+                if isinstance(self._base, _ParquetNode):
+                    reader = cast(_ParquetNode[MetadataT], self._base)
+                    return reader.metadata_value or scope.computation_metadata(reader)
+                return metadata
+            except DataValidationError as error:
+                raise ValidationError(report=scope.report(self._base)) from error
 
     @property
     def report(self) -> ExecutionReport | None:

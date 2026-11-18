@@ -27,7 +27,10 @@ from ._aggregation import (
     ReductionKind,
     Sampling,
     TemporalReduction,
+    TimestampPosition,
     _annual_sampling,
+    _date,
+    _position,
     _sampling_slots,
     _year_slots,
     sampling_from_document,
@@ -492,11 +495,24 @@ def evidence_table(
     return table
 
 
+def _observation_year(time: str, sampling: Sampling | None) -> int:
+    if sampling is not None and sampling.timestamp is TimestampPosition.END:
+        ordinal, _ = _position(time, sampling)
+        return _date(ordinal, sampling.calendar)[0]
+    return int(time[:4])
+
+
 def evidence_row_key(
-    record: Mapping[str, object], kind: EvidenceKind
+    record: Mapping[str, object], metadata: EvidenceMetadata
 ) -> tuple[object, ...]:
+    kind = metadata.kind
     common = tuple(record[name] for name in _IDENTITY)
     if kind in (EvidenceKind.SAMPLES, EvidenceKind.OBSERVATIONS):
+        if _annual_sampling(metadata.sampling):
+            return (
+                *common,
+                _observation_year(cast(str, record["time"]), metadata.sampling),
+            )
         return (*common, record["time"])
     if kind is EvidenceKind.PROJECTIONS:
         coordinate = cast(Mapping[str, object], record["coordinate"])
@@ -578,6 +594,17 @@ def validate_evidence(
         if metadata.kind in (EvidenceKind.SAMPLES, EvidenceKind.OBSERVATIONS):
             if _sample_time(record["time"], calendar) != record["time"]:
                 raise ValueError("evidence time must use canonical uppercase T and Z")
+            if (
+                declared_period is not None
+                and declared_period.start is not None
+                and declared_period.end is not None
+            ):
+                year = _observation_year(record["time"], metadata.sampling)
+                if not declared_period.start <= year <= declared_period.end:
+                    raise ValueError(
+                        f"observation year {year} lies outside its declared period "
+                        f"[{declared_period.start}, {declared_period.end}]"
+                    )
         elif metadata.kind is EvidenceKind.PROJECTIONS:
             coordinate = record["coordinate"]
             if coordinate is None or coordinate["kind"] not in (
@@ -636,7 +663,7 @@ def validate_evidence(
                 raise ValueError(
                     "one support_id cannot identify different source supports"
                 )
-        key = evidence_row_key(record, metadata.kind)
+        key = evidence_row_key(record, metadata)
         if key in keys:
             raise ValueError(f"duplicate evidence record: {key!r}")
         keys.add(key)

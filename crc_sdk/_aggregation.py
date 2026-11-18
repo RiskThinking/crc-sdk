@@ -483,10 +483,9 @@ def _sampling_slots(sampling: Sampling, *, daily: bool) -> int:
 
 
 def _annual_sampling(sampling: Sampling | None) -> bool:
-    return (
-        sampling is not None
-        and sampling.step.unit is cf.TimeUnit.YEAR
-        and sampling.step.value == 1
+    return sampling is not None and (sampling.step.unit, sampling.step.value) in (
+        (cf.TimeUnit.YEAR, 1),
+        (cf.TimeUnit.MONTH, 12),
     )
 
 
@@ -748,8 +747,18 @@ def aggregate_table(
                     ),
                     geometry=support.geometry,
                 )
+    periods = {period.id: period for period in metadata.spec.periods}
     for identity, buckets in groups.items():
         first, last = requested_bounds or (min(buckets), max(buckets))
+        period_id = identity[2]
+        period = periods.get(period_id) if isinstance(period_id, str) else None
+        if (
+            requested_bounds is not None
+            and period is not None
+            and period.start is not None
+            and period.end is not None
+        ):
+            first, last = max(first, period.start), min(last, period.end)
         for bucket in range(first, last + 1):
             observations = list(buckets.get(bucket, {}).values())
             expected = slots if daily else _year_slots(sampling, slots, bucket)

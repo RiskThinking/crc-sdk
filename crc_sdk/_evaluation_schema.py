@@ -331,15 +331,22 @@ class EvaluationRow:
     resolution_id: str | None = None
     value: float | None = None
     failure: EvaluationFailure | None = None
+    exposure: tuple[float | None, EvaluationFailure | None] | None = None
     asset: Mapping[str, object] | None = None
 
     def _arrow(self, *, asset_names: tuple[str, ...]) -> dict[str, object]:
         result = {
             name: getattr(self, name)
             for name in self.__dataclass_fields__
-            if name not in {"asset", "failure"}
+            if name not in {"asset", "exposure", "failure"}
         }
         result["failure"] = None if self.failure is None else self.failure._arrow()
+        if self.exposure is not None:
+            value, failure = self.exposure
+            result["exposure"] = {
+                "value": value,
+                "failure": None if failure is None else failure._arrow(),
+            }
         if asset_names:
             if self.asset is None or set(self.asset) != set(asset_names):
                 raise ValueError(
@@ -809,6 +816,13 @@ def evaluation_arrow_schema(
     metadata: EvaluationMetadata, *, include_metadata: bool = True
 ) -> pa.Schema:
     query_unit = "year" if metadata.query.kind is QueryKind.RETURN_PERIOD else "1"
+    failure_type = pa.struct(
+        [
+            pa.field("code", pa.string(), nullable=False),
+            pa.field("message", pa.string(), nullable=False),
+            pa.field("record", pa.string()),
+        ]
+    )
     fields = [
         pa.field(
             "asset_id",
@@ -844,17 +858,18 @@ def evaluation_arrow_schema(
                 )
             },
         ),
-        pa.field(
-            "failure",
-            pa.struct(
-                [
-                    pa.field("code", pa.string(), nullable=False),
-                    pa.field("message", pa.string(), nullable=False),
-                    pa.field("record", pa.string()),
-                ]
-            ),
-        ),
+        pa.field("failure", failure_type),
     ]
+    if metadata.responses and not metadata.include_exposure:
+        fields.append(
+            pa.field(
+                "exposure",
+                pa.struct(
+                    [pa.field("value", pa.float64()), pa.field("failure", failure_type)]
+                ),
+                nullable=False,
+            )
+        )
     if metadata.asset_fields is not None and len(metadata.asset_fields) > 1:
         fields.append(
             pa.field(
@@ -1036,10 +1051,10 @@ class EvaluationValidator:
         self._assets = frozenset(metadata.asset_ids or ())
         self._contexts = dict(metadata._resolved_contexts)
         # Live rows already execute the response kernel. Verify it on replay
-        # when the artifact carries both the exposures and the named outcomes.
+        # against either visible exposure rows or a retained exposure outcome.
         self._response_variables = (
             frozenset(response.variable_id for response in metadata.responses)
-            if metadata.include_exposure and metadata.report.complete
+            if metadata.report.complete
             else frozenset()
         )
         self._produced = 0
@@ -1225,6 +1240,22 @@ class EvaluationValidator:
             and not math.isfinite(value)
         ):
             raise ValueError("a successful named response requires a finite value")
+        exposure_value = None
+        exposure_failure = None
+        if not metadata.include_exposure:
+            exposure = _object(row["exposure"], {"value", "failure"})
+            exposure_value = exposure["value"]
+            exposure_failure = _read_failure(exposure["failure"])
+            if (
+                exposure_failure is None
+                and (
+                    not isinstance(exposure_value, float) or math.isnan(exposure_value)
+                )
+                or exposure_failure is not None
+                and exposure_value is not None
+            ):
+                raise ValueError("a retained exposure requires one value or failure")
+            _validate_match(row, metadata, member, series, exposure_failure)
         match_key = _dump((asset_id, member, *series))
         match_record = _dump(match)
         self._db.execute(
@@ -1276,10 +1307,31 @@ class EvaluationValidator:
                     "one asset response cannot resolve multiple actual contexts"
                 )
         if variable in self._response_variables:
+            event = _dump((asset_id, member, *series, query_position))
+            if not metadata.include_exposure:
+                proof = (
+                    exposure_value,
+                    None
+                    if exposure_failure is None
+                    else _dump(exposure_failure._arrow()),
+                )
+                self._db.execute(
+                    "INSERT OR IGNORE INTO outcomes VALUES (?, '', NULL, ?, ?)",
+                    (event, *proof),
+                )
+                saved = self._db.execute(
+                    "SELECT value, failure FROM outcomes "
+                    "WHERE event = ? AND response = ''",
+                    (event,),
+                ).fetchone()
+                if saved != proof:
+                    raise ValueError(
+                        f"retained exposures disagree across responses for {event}"
+                    )
             self._db.execute(
                 "INSERT INTO outcomes VALUES (?, ?, ?, ?, ?)",
                 (
-                    _dump((asset_id, member, *series, query_position)),
+                    event,
                     response or "",
                     resolution,
                     value,
@@ -1403,8 +1455,7 @@ class EvaluationValidator:
                 raise ValueError(
                     f"evaluation report omits diagnostics for {sorted(missing)!r}"
                 )
-            if len(self._assets):
-                current._check_source_versions()
+            current._check_source_versions()
 
 
 def validate_evaluation(

@@ -230,7 +230,19 @@ def evaluation_json_schema() -> dict[str, object]:
         "failure": {"anyOf": [null, {"$ref": "#/$defs/failure"}]},
     }
     row = _record(
-        {**row_properties, "asset": {"type": "object"}},
+        {
+            **row_properties,
+            "asset": {"type": "object"},
+            "exposure": {
+                **_record(
+                    {name: row_properties[name] for name in ("value", "failure")},
+                    ["value", "failure"],
+                ),
+                "if": {"properties": {"failure": null}},
+                "then": {"properties": {"value": {"not": null}}},
+                "else": {"properties": {"value": null}},
+            },
+        },
         list(row_properties),
     )
     row["allOf"] = [
@@ -268,5 +280,14 @@ def evaluation_json_schema() -> dict[str, object]:
             },
             ["metadata", "rows"],
         ),
+        "if": {
+            "properties": {
+                "metadata": {"properties": {"include_exposure": {"const": True}}}
+            }
+        },
+        "then": {
+            "properties": {"rows": {"items": {"not": {"required": ["exposure"]}}}}
+        },
+        "else": {"properties": {"rows": {"items": {"required": ["exposure"]}}}},
         "$defs": definitions,
     }

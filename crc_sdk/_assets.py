@@ -9,6 +9,7 @@ import os
 import struct
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import TypeAlias, cast
@@ -22,10 +23,11 @@ from shapely import from_wkb, get_coordinates, to_wkb  # type: ignore[import-unt
 from shapely.errors import GEOSException  # type: ignore[import-untyped]
 from shapely.geometry import Point  # type: ignore[import-untyped]
 
-from ._dataset_schema import SourceIdentity, _identifier
+from ._dataset_schema import ResourceIdentity, SourceIdentity, _identifier
+from ._errors import CapabilityError
 from ._geometry import cell_polygon
 from ._graph import ExecutionScope
-from ._runtime import LocalPath, _local_path, _memory_bytes
+from ._runtime import CacheMode, LocalPath, _local_path, _memory_bytes
 from ._schema.dataset import _cell
 from ._table_input import TableInput, snapshot_table
 
@@ -446,20 +448,50 @@ class Assets:
             else:
                 raise ValueError("asset paths must name CSV or Parquet files")
         else:
-            connection = scope.connection
             assert self._query is not None
+            offline = scope.runtime.cache.mode is CacheMode.OFFLINE
+            if offline and scope.runtime._connection is not None:
+                raise CapabilityError(
+                    "Offline SQL assets require an SDK-owned DuckDB connection. "
+                    "Pass a table or local file from your borrowed connection instead."
+                )
+            connection = scope.connection
             statements = connection.extract_statements(self._query)
             if (
                 len(statements) != 1
                 or statements[0].type != duckdb.StatementType.SELECT
             ):
                 raise ValueError("Assets.sql accepts one SELECT query")
-            with connection.sql(self._query).to_arrow_reader(
-                batch_size=scope.runtime.batch_rows
-            ) as reader:
-                keep = self._input_columns(reader.schema, required)
-                table = self._collect(reader, reader.schema, keep, budget)
-            table = snapshot_table(table)
+            try:
+                with connection.sql(self._query).to_arrow_reader(
+                    batch_size=scope.runtime.batch_rows
+                ) as reader:
+                    keep = self._input_columns(reader.schema, required)
+                    table = self._collect(reader, reader.schema, keep, budget)
+            except duckdb.PermissionException as error:
+                if not offline:
+                    raise
+                raise CapabilityError(
+                    "Offline SQL assets cannot access external resources. "
+                    "Supply an owned asset table or a local asset file."
+                ) from error
+            sink = pa.BufferOutputStream()
+            with pa.ipc.new_stream(sink, table.schema) as writer:
+                writer.write_table(table)
+            snapshot = sink.getvalue()
+            table = pa.ipc.open_stream(snapshot).read_all()
+            query_digest = hashlib.sha256(self._query.encode()).hexdigest()
+            source = SourceIdentity(
+                provider="user",
+                product="sql_assets",
+                resources=(
+                    ResourceIdentity(
+                        f"duckdb:query:{query_digest}",
+                        "sha256:" + hashlib.sha256(snapshot).hexdigest(),
+                        retrieved_at=datetime.now(UTC),
+                    ),
+                ),
+            )
         if len(set(table.column_names)) != len(table.column_names):
             raise ValueError("asset column names must be unique")
         if self._id_column not in table.column_names:

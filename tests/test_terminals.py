@@ -20,7 +20,17 @@ from crc_framework import (
     QuantileFit,
 )
 
-from crc_sdk import Assets, Dataset, Evaluation, ReadResult, SpatialMatch
+from crc_sdk import (
+    Assets,
+    Dataset,
+    Evaluation,
+    Layer,
+    Observations,
+    Projections,
+    ReadResult,
+    Samples,
+    SpatialMatch,
+)
 from crc_sdk._dataset_schema import (
     DatasetMetadata,
     ExecutionDiagnostic,
@@ -204,6 +214,24 @@ def test_metadata_validation_failures_use_one_public_report(
         assert execution.report == expected
     assert events == ["open", "resource-close"]
     assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize(
+    "artifact_type", (Dataset, Samples, Observations, Projections, Layer)
+)
+@pytest.mark.parametrize("property_name", ("metadata", "report"))
+def test_malformed_parquet_properties_raise_public_validation_error(
+    artifact_type: type[Dataset | Samples | Observations | Projections | Layer],
+    property_name: str,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "malformed.parquet"
+    pq.write_table(pa.table({"value": [1.0]}), path)
+    artifact = artifact_type.open(path)
+    with pytest.raises(ValidationError) as caught:
+        getattr(artifact, property_name)
+    assert caught.value.report == artifact.validate()
+    assert caught.value.report.valid is False
 
 
 def test_iteration_failure_report_survives_batch_stream_exit() -> None:
