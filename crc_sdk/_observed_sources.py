@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import csv
-import hashlib
 from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from enum import Enum
@@ -84,6 +83,7 @@ from ._recipes import Dataset, Samples, _key
 from ._schema.dataset import DatasetRow, rows_to_table
 from ._selection import SelectionState, rename_metadata, selected_metadata
 from ._source_io import (
+    ReleasePins,
     SourceNode,
     check_release,
     fetch,
@@ -111,6 +111,7 @@ _USGS_STATIONS = (
 )
 _GEOMET = "https://api.weather.gc.ca/collections/"
 _IBTRACS = "https://www.ncei.noaa.gov/data/international-best-track-archive-for-climate-stewardship-ibtracs/v04r01/access/csv/ibtracs.ALL.list.v04r01.csv"
+_IBTRACS_ATTRIBUTION = "NOAA NCEI IBTrACS v04r01, doi:10.25921/82ty-9e16"
 _TEMPERATURE = "noaa:hourly_air_temperature"
 _ANNUAL_MAXIMUM = "annual_maximum_daily_maximum_temperature"
 _ANNUAL_MINIMUM = "annual_minimum_daily_minimum_temperature"
@@ -197,7 +198,6 @@ def _variables(
     *,
     indicator: str | None = None,
     agency: str | None = None,
-    levels: bool = False,
 ) -> tuple[Variable, ...]:
     if provider in ("ghcnh", "isd"):
         if indicator is not None:
@@ -274,18 +274,12 @@ def _variables(
     if provider == "noaa_water":
         return (
             Variable(
-                "noaa:annual_high_water"
-                if levels
-                else "noaa:detrended_annual_high_water",
+                "noaa:detrended_annual_high_water",
                 measurement=cf.Measurement(
-                    quantity="water_surface_elevation"
-                    if levels
-                    else "water_level_deviation_from_trend",
+                    quantity="water_level_deviation_from_trend",
                     unit="m",
                 ),
-                label="Published annual high-water exceedance levels"
-                if levels
-                else "Detrended annual high-water observations",
+                label="Detrended annual high-water observations",
             ),
         )
     if provider == "noaa_slr":
@@ -664,14 +658,13 @@ def _station_publication(
     state: SelectionState,
     *,
     release_id: str,
-    requested: ReleaseReference | None,
+    requested: ReleasePins,
 ) -> tuple[tuple[StationReference, ...], tuple[ResourceIdentity, ...]]:
     # OGC discovery can start with the whole station catalogue. Retain that
     # verified inventory when a later series selection adds a station or area.
     may_use_full = (
         _scoped_api_catalogue(provider, state)
-        and requested is not None
-        and requested.id in (f"inventory:{release_id}", release_id)
+        and requested.publication_id == release_id
     )
     try:
         stations, resources = _catalogue(scope, provider, state)
@@ -681,12 +674,9 @@ def _station_publication(
     else:
         if (
             not may_use_full
-            or requested is not None
-            and (
-                requested.id == release_id
-                or inventory_release(resources, id=release_id).sha256
-                == requested.sha256
-            )
+            or requested.inventory is None
+            or inventory_release(resources, id=release_id).sha256
+            == requested.inventory.sha256
         ):
             return stations, resources
     stations, resources = _catalogue(scope, provider, SelectionState())
@@ -736,14 +726,13 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
                     for ref in state.series
                 ),
             )
-        if (
-            provider in ("ghcnh", "isd")
-            and not raw
-            and indicator is None
-            and state.series is not None
-            and len(state.series) == 1
-        ):
-            requested = state.series[0].variable.id
+        if provider in ("ghcnh", "isd") and not raw and indicator is None:
+            requested = None
+            if state.series is not None and len(state.series) == 1:
+                requested = state.series[0].variable.id
+            elif state.variables is not None and len(state.variables) == 1:
+                variable = state.variables[0]
+                requested = variable if isinstance(variable, str) else variable.id
             indicator = next(
                 (
                     candidate.id
@@ -828,26 +817,14 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
             )
         return () if empty else tuple(required)
 
-    def _selection(self) -> tuple[SelectionState, ReleaseReference | None]:
+    def _selection(self) -> tuple[SelectionState, ReleasePins]:
         state, pin = payload_selection(self.state, self.release)
         if self.state.time is not None and self.state.time.calendar not in (
             None,
             Calendar.GREGORIAN,
         ):
             raise ValueError("Native observation times use the Gregorian calendar")
-        known_variables = _variables(
-            self.provider, indicator=self.indicator, agency=self.agency
-        )
-        if (
-            self.provider in ("ghcnh", "isd")
-            and not self.raw
-            and self.indicator is None
-        ):
-            known_variables = tuple(
-                v
-                for indicator in _temperature_indicators()
-                for v in _variables(self.provider, indicator=indicator.id)
-            )
+        known_variables = self._declared_variables()
         known = DataSpec(
             known_variables, series=[SeriesSpec(v) for v in known_variables]
         )
@@ -855,37 +832,43 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
             SelectionState(variables=self.state.variables).resolve(known)
         return state, pin
 
+    def _declared_variables(self) -> tuple[Variable, ...]:
+        if (
+            self.provider in ("ghcnh", "isd")
+            and not self.raw
+            and self.indicator is None
+        ):
+            return tuple(
+                v
+                for indicator in _temperature_indicators()
+                for v in _variables(self.provider, indicator=indicator.id)
+            )
+        return _variables(self.provider, indicator=self.indicator, agency=self.agency)
+
+    def _variable_ids(self) -> frozenset[str]:
+        return frozenset(v.id for v in self._declared_variables())
+
     @property
     def _release_id(self) -> str:
         return f"{self.provider}:selected-source-snapshot"
 
     def _discover(
-        self, scope: ExecutionScope, requested: ReleaseReference | None
+        self, scope: ExecutionScope, requested: ReleasePins
     ) -> tuple[_Prepared, ReleaseReference | None]:
         if _empty_state(self.state):
             return _Prepared((), None, ()), None
-        resources: tuple[ResourceIdentity, ...]
         if self.provider == "ibtracs":
-            # The documented archive endpoint identifies the publication.
-            # Archive revisions are fingerprinted separately from this locator.
-            locator = _IBTRACS + "#publication"
-            stations: tuple[StationReference, ...] = ()
-            resources = (
-                ResourceIdentity(
-                    locator,
-                    "sha256:" + hashlib.sha256(_IBTRACS.encode()).hexdigest(),
-                    license=_NOAA_TERMS,
-                    attribution="NOAA NCEI IBTrACS v04r01, doi:10.25921/82ty-9e16",
-                ),
+            source = SourceIdentity(
+                "ibtracs", "ibtracs_v04r01_tracks", member=self.agency
             )
-        else:
-            stations, resources = _station_publication(
-                scope,
-                self.provider,
-                self.state,
-                release_id=self._release_id,
-                requested=requested,
-            )
+            return _Prepared((), source, ()), requested.exact_only()
+        stations, resources = _station_publication(
+            scope,
+            self.provider,
+            self.state,
+            release_id=self._release_id,
+            requested=requested,
+        )
         release = inventory_release(resources, id=self._release_id)
         pin = inventory_payload_pin(release, requested)
         source = SourceIdentity(
@@ -898,7 +881,6 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
                 "eccc": "climate_daily",
                 "noaa_slr": "sea_level_scenario_projections_2022",
                 "noaa_water": "detrended_annual_high_water",
-                "ibtracs": "ibtracs_v04r01_tracks",
             }[self.provider],
             release=release,
             resources=resources,
@@ -939,7 +921,7 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
                 scope,
                 _IBTRACS,
                 license=_NOAA_TERMS,
-                attribution="NOAA NCEI IBTrACS v04r01, doi:10.25921/82ty-9e16",
+                attribution=_IBTRACS_ATTRIBUTION,
             )
             parts.append(_Part(path, _IBTRACS))
             resources.append(identity)
@@ -1079,7 +1061,12 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
                         publication, source = candidate, full_source
         assert source.release is not None
         check_release(source.release, pin)
-        return _Prepared(tuple(parts), source, stations, publication)
+        return _Prepared(
+            tuple(parts),
+            source,
+            stations,
+            publication if publication.resources else None,
+        )
 
     def _verified_source(
         self,
@@ -1145,19 +1132,7 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
     def _metadata(
         self, prepared: _Prepared, *, kind: EvidenceKind | None = None
     ) -> EvidenceMetadata:
-        variables = _variables(
-            self.provider, indicator=self.indicator, agency=self.agency
-        )
-        if (
-            self.provider in ("ghcnh", "isd")
-            and not self.raw
-            and self.indicator is None
-        ):
-            variables = tuple(
-                v
-                for item in _temperature_indicators()
-                for v in _variables(self.provider, indicator=item.id)
-            )
+        variables = self._declared_variables()
         probability = (
             Probability.annual(
                 tail=cf.Tail.UPPER
@@ -1331,7 +1306,7 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
         metadata = self._metadata(prepared)
         resolved = state.resolve(metadata.spec, source=metadata.source)
         actual = selected_metadata(metadata, resolved)
-        publication = prepared.publication or discovery.source
+        publication = discovery.source if weather else prepared.publication
         resources = [] if publication is None else list(publication.resources)
         absent: list[_Part] = []
 
@@ -1603,6 +1578,17 @@ class _WaterLevelNode(SourceNode[DatasetMetadata | EvidenceMetadata]):
     def selected(self, state: SelectionState) -> _WaterLevelNode:
         return _WaterLevelNode(self.release, state, confidence=self.confidence)
 
+    @staticmethod
+    def _level_variable_id(station: str) -> str:
+        return f"noaa:{station}:annual_high_water"
+
+    def _variable_ids(self) -> frozenset[str] | None:
+        if self.state.stations is None:
+            return None
+        return frozenset(
+            self._level_variable_id(station) for station in self.state.stations
+        )
+
     def requirements(self) -> tuple[Requirement, ...]:
         if _empty_state(self.state):
             return ()
@@ -1716,7 +1702,7 @@ class _WaterLevelNode(SourceNode[DatasetMetadata | EvidenceMetadata]):
                         station_rows[station.id].get("epoch"), "NOAA tidal datum epoch"
                     )
                     variable = Variable(
-                        f"noaa:{station.id}:annual_high_water",
+                        self._level_variable_id(station.id),
                         measurement=cf.WaterSurfaceElevation(
                             unit=cf.LengthUnit.METRE,
                             datum=f"noaa:{station.id}:{datum}:{epoch}",

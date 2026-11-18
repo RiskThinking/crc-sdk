@@ -30,6 +30,7 @@ from ._dataset_schema import (
     ExecutionReport,
     FittingDiagnostic,
     ObservationTimeSelection,
+    ReleaseReference,
     SourceIdentity,
     Stage,
     UnavailableStationYear,
@@ -1331,7 +1332,9 @@ class _TransformNode(_ScientificNode[MetadataT]):
         return stream
 
 
-def _bounded_node(parent: Node[MetadataT], state: SelectionState) -> Node[MetadataT]:
+def _bounded_node(
+    parent: Node[MetadataT], state: SelectionState, *, discover: bool = False
+) -> Node[MetadataT]:
     """Supply source requirements without replacing earlier scientific selections."""
     from ._evidence_recipes import _AggregationNode
 
@@ -1344,18 +1347,46 @@ def _bounded_node(parent: Node[MetadataT], state: SelectionState) -> Node[Metada
             if parent.state.stations is not None
             else state.stations,
         )
-        return parent.selected(selected)
+        bounded = parent.selected(selected)
+        if discover and (state.series or bounded.requirements()):
+            available = bounded._variable_ids()
+            if available is not None:
+                required = set(bounded.requirements())
+                references = tuple(
+                    ref for ref in state.series or () if ref.variable.id in available
+                )
+                variables = tuple(
+                    var
+                    for var in state.variables or ()
+                    if (var if isinstance(var, str) else var.id) in available
+                )
+                if len(references) == 1 and selected.series is None:
+                    candidate = bounded.selected(replace(selected, series=references))
+                    if (
+                        candidate._pending_payload_release() is not None
+                        or set(candidate.requirements()) < required
+                    ):
+                        return candidate
+                if len(variables) == 1 and selected.variables is None:
+                    candidate = bounded.selected(replace(selected, variables=variables))
+                    if set(candidate.requirements()) < required:
+                        return candidate
+        return bounded
     if isinstance(parent, _TransformNode):
         return _TransformNode(
-            _bounded_node(parent.parent, state), parent.operation, parent.arguments
+            _bounded_node(parent.parent, state, discover=discover),
+            parent.operation,
+            parent.arguments,
         )
     if isinstance(parent, _SelectionNode):
-        return _SelectionNode(_bounded_node(parent.parent, state), parent.state)
+        return _SelectionNode(
+            _bounded_node(parent.parent, state, discover=discover), parent.state
+        )
     if isinstance(parent, _AggregationNode):
         return cast(
             Node[MetadataT],
             _AggregationNode(
-                _bounded_node(parent.parent, state),
+                _bounded_node(parent.parent, state, discover=discover),
                 parent.specification,
                 parent.selection,
             ),
@@ -1364,12 +1395,21 @@ def _bounded_node(parent: Node[MetadataT], state: SelectionState) -> Node[Metada
         return cast(
             Node[MetadataT],
             _FitNode(
-                _bounded_node(parent.parent, state),
+                _bounded_node(parent.parent, state, discover=discover),
                 parent.specification,
                 parent.failure,
             ),
         )
     return parent
+
+
+def _pending_payload_release(node: Node[object]) -> ReleaseReference | None:
+    while not isinstance(node, SourceNode):
+        parent = getattr(node, "parent", None)
+        if not isinstance(parent, Node):
+            return None
+        node = parent
+    return node._pending_payload_release()
 
 
 def _select_node(parent: Node[MetadataT], state: SelectionState) -> Node[MetadataT]:
@@ -1424,6 +1464,45 @@ def _inspection_view(
             reduced, node.selection.resolve(reduced.spec, source=reduced.source)
         )
     return None
+
+
+def _declared_variable_ids(node: Node[object]) -> frozenset[str] | None:
+    """Find a safe upper bound without acquiring resources or running a model."""
+    from ._evidence_recipes import _AggregationNode
+
+    if isinstance(node, SourceNode):
+        return node._variable_ids()
+    if isinstance(node, (_TableNode, _ParquetNode)):
+        metadata = node.metadata_value
+        if metadata is not None:
+            return frozenset(variable.id for variable in metadata.spec.variables)
+        return None
+    if not isinstance(
+        node, (_AggregationNode, _FitNode, _SelectionNode, _TransformNode)
+    ):
+        return None
+    ids = _declared_variable_ids(cast(Node[object], node.parent))
+    if isinstance(node, _TransformNode) and node.operation == "rename":
+        mapping = cast(Mapping[str, str] | None, node.arguments["variables"])
+        if ids is not None and mapping is not None:
+            return frozenset(mapping.get(name, name) for name in ids)
+    state = (
+        node.state
+        if isinstance(node, _SelectionNode)
+        else node.selection
+        if isinstance(node, _AggregationNode)
+        else None
+    )
+    if state is not None:
+        if state.variables is not None:
+            selected = frozenset(
+                item if isinstance(item, str) else item.id for item in state.variables
+            )
+            ids = selected if ids is None else ids & selected
+        if state.series is not None:
+            selected = frozenset(item.variable.id for item in state.series)
+            ids = selected if ids is None else ids & selected
+    return ids
 
 
 class _RecipeBase(Generic[MetadataT, CanonicalT]):

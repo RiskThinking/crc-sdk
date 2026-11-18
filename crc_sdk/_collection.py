@@ -10,7 +10,7 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
-from typing import Self
+from typing import Self, cast
 
 import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.compute as pc  # type: ignore[import-untyped]
@@ -40,12 +40,13 @@ from ._collection_schema import (
 from ._dataset_schema import (
     DatasetMetadata,
     ExecutionReport,
+    ReleaseReference,
     SourceIdentity,
     Stage,
     _dump,
     _identifier,
 )
-from ._declarations import Scenario, Variable
+from ._declarations import Period, Scenario, SeriesSpec, Variable, scientific_identity
 from ._errors import ValidationError
 from ._graph import DataValidationError, ExecutionScope, Node, NodeStream
 from ._inspection import (
@@ -63,8 +64,10 @@ from ._recipes import (
     _bounded_node,
     _Checked,
     _checked_stream,
+    _declared_variable_ids,
     _invalid,
     _key,
+    _pending_payload_release,
     _report_view,
     _select_node,
     _sources,
@@ -87,7 +90,7 @@ from ._selection import (
     rename_metadata,
     selected_metadata,
 )
-from ._source_io import native_data
+from ._source_io import check_release, native_data
 from ._terminals import BatchStream, Execution, ReadResult
 
 
@@ -95,6 +98,31 @@ from ._terminals import BatchStream, Execution, ReadResult
 class _Entry:
     resource: CollectionResource
     node: Node[DatasetMetadata]
+    payload_pin: ReleaseReference | None = None
+
+    def matches(
+        self, item: SeriesSpec, reference: SeriesReference, *, check_science: bool
+    ) -> bool:
+        source = self.resource.metadata.source
+        if (
+            reference.release is not None
+            and _release_key(reference.release) == _release_key(self.payload_pin)
+            and source is not None
+            and source.release is not None
+            and source.release.id == f"inventory:{reference.release.id}"
+        ):
+            reference = replace(reference, release=None)
+        return _reference_matches(
+            item, reference, self.resource.metadata, check_science=check_science
+        )
+
+    def verify_payload(self, scope: ExecutionScope) -> None:
+        if self.payload_pin is None:
+            return
+        source = scope.metadata(self.node).source
+        if source is None or source.release is None:
+            raise OSError("source did not report its required exact payload release")
+        check_release(source.release, self.payload_pin)
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +147,80 @@ class _Plan:
             raise _invalid(error, stage=Stage.SELECTION) from error
 
 
+@dataclass(frozen=True, slots=True)
+class _PlanningScope:
+    selections: tuple[CollectionSelection, ...] = ()
+    variables: frozenset[str] | None = None
+    rename_variables: frozenset[str] = frozenset()
+    rename_scenarios: frozenset[str] = frozenset()
+
+    @property
+    def members(self) -> frozenset[str] | None:
+        names = None
+        for selection in self.selections:
+            if selection.members is not None:
+                selected = frozenset(selection.members)
+                names = selected if names is None else names & selected
+        return names
+
+    @property
+    def active_variables(self) -> frozenset[str] | None:
+        active = self.variables
+        for selection in self.selections:
+            if selection._empty():
+                return frozenset()
+            for ids in (
+                _requested_ids(selection.variables),
+                None
+                if selection.series is None
+                else {ref.variable.id for ref in selection.series},
+            ):
+                if ids is not None:
+                    active = frozenset(ids) if active is None else active & ids
+        return active
+
+    @property
+    def source_state(self) -> SelectionState:
+        active = self.active_variables
+        references: list[SeriesReference] = []
+        for selection in self.selections:
+            for reference in selection.series or ():
+                if (
+                    active is None or reference.variable.id in active
+                ) and reference not in references:
+                    references.append(reference)
+        return SelectionState(
+            area=next((s.area for s in self.selections if s.area is not None), None),
+            variables=None if active is None else tuple(sorted(active)),
+            series=tuple(references) or None,
+        )
+
+    def before_rename(
+        self, variables: Mapping[str, str], scenarios: Mapping[str, str]
+    ) -> _PlanningScope:
+        old_variables = {new: old for old, new in variables.items()}
+        old_scenarios = {new: old for old, new in scenarios.items()}
+        return _PlanningScope(
+            selections=tuple(
+                _renamed_selection(s, old_variables, old_scenarios)
+                for s in self.selections
+            ),
+            variables=None
+            if self.variables is None
+            else frozenset(old_variables.get(x, x) for x in self.variables),
+            rename_variables=(
+                frozenset(old_variables.get(x, x) for x in self.rename_variables)
+                | frozenset(variables)
+                | frozenset(old_variables)
+            ),
+            rename_scenarios=(
+                frozenset(old_scenarios.get(x, x) for x in self.rename_scenarios)
+                | frozenset(scenarios)
+                | frozenset(old_scenarios)
+            ),
+        )
+
+
 def _known_ids(
     requested: set[str] | None,
     available: set[str],
@@ -127,6 +229,65 @@ def _known_ids(
 ) -> None:
     if requested is not None and (missing := requested - available):
         raise ValueError(f"unknown requested {dimension} {sorted(missing)[0]!r}")
+
+
+def _matches_descriptor(
+    requested: str | Variable | Scenario | Period,
+    actual: Variable | Scenario | Period,
+) -> bool:
+    if isinstance(requested, str):
+        return requested == actual.id
+    return requested.id == actual.id and scientific_identity(
+        requested
+    ) == scientific_identity(actual)
+
+
+def _typed_choices(
+    requested: tuple[str | Variable | Scenario | Period, ...] | None,
+    available: list[Variable | Scenario | Period],
+) -> None:
+    for value in requested or ():
+        if isinstance(value, str):
+            continue
+        candidates = [item for item in available if item.id == value.id]
+        if candidates and not any(_matches_descriptor(value, v) for v in candidates):
+            _typed_match((value,), candidates[0])
+
+
+def _needed_inventory(
+    planning: _PlanningScope, known: Mapping[str, _Entry]
+) -> tuple[set[str], bool]:
+    """Find selectors still waiting for a declaring member."""
+    variables: set[str] = set()
+    any_variable = False
+    for selection in planning.selections:
+        if not selection._has_scientific_filters():
+            continue
+        entries = [
+            entry
+            for name, entry in known.items()
+            if not selection.members or name in selection.members
+        ]
+        for key in ("variables", "scenarios", "periods"):
+            available = [
+                descriptor
+                for entry in entries
+                for descriptor in getattr(entry.resource.metadata.spec, key)
+            ]
+            for value in getattr(selection, key) or ():
+                if not any(_matches_descriptor(value, actual) for actual in available):
+                    if key == "variables":
+                        variables.add(value if isinstance(value, str) else value.id)
+                    else:
+                        any_variable = True
+        for ref in selection.series or ():
+            if not any(
+                entry.matches(item, ref, check_science=False)
+                for entry in entries
+                for item in entry.resource.metadata.spec.series
+            ):
+                variables.add(ref.variable.id)
+    return variables, any_variable
 
 
 def _project_entries(
@@ -140,6 +301,9 @@ def _project_entries(
     scenarios = _requested_ids(selection.scenarios)
     periods = _requested_ids(selection.periods)
     specs = [entry.resource.metadata.spec for entry in entries.values()]
+    _typed_choices(selection.variables, [v for spec in specs for v in spec.variables])
+    _typed_choices(selection.scenarios, [s for spec in specs for s in spec.scenarios])
+    _typed_choices(selection.periods, [p for spec in specs for p in spec.periods])
     if not discovery_incomplete:
         _known_ids(
             variables,
@@ -158,6 +322,7 @@ def _project_entries(
         )
     references = selection.series
     matching_references: set[int] = set()
+    conflicting_references: dict[int, ValueError] = {}
     series_keys = {_series_key(item) for spec in specs for item in spec.series}
     projected = {}
     for resource_id, entry in entries.items():
@@ -169,11 +334,15 @@ def _project_entries(
                 matches = {
                     index
                     for index, reference in enumerate(references)
-                    if _reference_matches(
-                        item, reference, original, check_science=False
-                    )
+                    if entry.matches(item, reference, check_science=False)
                 }
-                matching_references.update(matches)
+                for index in matches:
+                    try:
+                        entry.matches(item, references[index], check_science=True)
+                    except ValueError as error:
+                        conflicting_references[index] = error
+                    else:
+                        matching_references.add(index)
                 if not matches:
                     continue
             if variables is not None and item.variable.id not in variables:
@@ -193,7 +362,7 @@ def _project_entries(
                 continue
             if references is not None:
                 for index in matches:
-                    _reference_matches(item, references[index], original)
+                    entry.matches(item, references[index], check_science=True)
             _typed_match(selection.variables, item.variable)
             _typed_match(selection.scenarios, item.scenario)
             _typed_match(selection.periods, item.period)
@@ -230,12 +399,18 @@ def _project_entries(
         metadata = selected_metadata(original, resolved)
         # Selecting over a bounded source must preserve its upstream extent.
         node = _select_node(entry.node, state)
-        projected[resource_id] = _Entry(
-            replace(entry.resource, metadata=metadata, path=None, sha256=None), node
+        projected[resource_id] = replace(
+            entry,
+            resource=replace(entry.resource, metadata=metadata, path=None, sha256=None),
+            node=node,
         )
-    if references is not None and not discovery_incomplete:
+    if references is not None:
         for index, reference in enumerate(references):
             if index in matching_references:
+                continue
+            if index in conflicting_references:
+                raise conflicting_references[index]
+            if discovery_incomplete:
                 continue
             if _series_key(reference) not in series_keys:
                 raise ValueError(f"unknown series identity {_series_key(reference)!r}")
@@ -435,7 +610,11 @@ class _CollectionNode(Node[CollectionMetadata]):
                 for resource_id in member.resource_ids:
                     entry = plan.entries[resource_id]
                     started.append(entry)
+                    verified = entry.payload_pin is None
                     for batch in scope.iter_batches(entry.node):
+                        if not verified:
+                            entry.verify_payload(scope)
+                            verified = True
                         if member_check is not None:
                             # The resource streams already validate their own models.
                             try:
@@ -461,6 +640,8 @@ class _CollectionNode(Node[CollectionMetadata]):
                         produced += batch.num_rows
                         no_data += batch.num_rows - batch.column("failure").null_count
                         yield result
+                    if not verified:
+                        entry.verify_payload(scope)
                     child = scope.report(entry.node)
                     if child.valid is False:
                         if child.diagnostics:
@@ -787,6 +968,7 @@ class DatasetCollection:
         scope: ExecutionScope,
         inspect: bool,
         projected_variables: frozenset[str] | None,
+        planning: _PlanningScope,
     ) -> _Plan:
         ids = tuple(name for name, _ in self._inputs)
         requested_members = _requested_ids(self._selection.members)
@@ -798,34 +980,29 @@ class DatasetCollection:
             or (not requested_members and scientific_filters)
             else requested_members
         )
-        members = []
-        entries = {}
+        known: dict[str, _Entry] = {}
         requirements: list[Requirement] = []
-        discovered: dict[int, Inspection] = {}
-        empty = self._selection._empty()
-        for name, dataset in self._inputs:
-            if name not in names:
-                continue
-            if empty and not scientific_filters:
-                members.append(CollectionMember(id=name, resource_ids=()))
-                continue
+        discovered: dict[tuple[int, str], Inspection] = {}
+        active_members = planning.members
+        active_variables = planning.active_variables
+        source_state = planning.source_state
+
+        def plan_member(
+            name: str, dataset: Dataset | CanonicalReader, *, metadata_only: bool
+        ) -> None:
             if isinstance(dataset, Dataset):
-                node = dataset._node
-                if self._selection.area is not None:
-                    node = _bounded_node(
-                        node, SelectionState(area=self._selection.area)
-                    )
-                if inspect or empty:
-                    identity = id(dataset)
+                node = _bounded_node(dataset._node, source_state, discover=True)
+                if inspect or metadata_only:
+                    identity = (id(dataset), node.key)
                     if identity not in discovered:
                         temporary = Dataset._create(node, operations=())
                         discovered[identity] = temporary._inspect(scope)
                     details = discovered[identity]
-                    requirements.extend(details.requirements)
+                    if not metadata_only:
+                        requirements.extend(details.requirements)
                     metadata = details.metadata
                     if not isinstance(metadata, DatasetMetadata):
-                        members.append(CollectionMember(id=name, resource_ids=()))
-                        continue
+                        return
                 else:
                     metadata = scope.metadata(node)
             else:
@@ -847,14 +1024,60 @@ class DatasetCollection:
                 ),
                 [p._document() for p in metadata.provenance],
             )
-            members.append(CollectionMember(id=name, resource_ids=(resource_id,)))
-            entries[resource_id] = _Entry(
-                CollectionResource(id=resource_id, metadata=metadata), node
+            known[name] = _Entry(
+                CollectionResource(id=resource_id, metadata=metadata),
+                node,
+                _pending_payload_release(cast(Node[object], node)),
             )
-        # The current selection may remove conflicting definitions from the
-        # input inventory, so it is applied before reconciled metadata exists.
+
+        deferred = []
+        for name, dataset in self._inputs:
+            if name not in names:
+                continue
+            declared = (
+                _declared_variable_ids(cast(Node[object], dataset._node))
+                if isinstance(dataset, Dataset)
+                else None
+            )
+            if (
+                active_members is not None
+                and name not in active_members
+                or active_variables is not None
+                and (
+                    not active_variables
+                    or declared is not None
+                    and declared.isdisjoint(active_variables)
+                )
+            ):
+                deferred.append((name, dataset, declared))
+            else:
+                plan_member(name, dataset, metadata_only=False)
+        # An excluded member may declare a selector used independently of the
+        # active series. Discover it only if the active metadata cannot do so.
+        for name, dataset, declared in deferred:
+            missing, any_variable = _needed_inventory(planning, known)
+            needed = missing | planning.rename_variables
+            if (
+                any_variable
+                or planning.rename_scenarios
+                or needed
+                and (declared is None or not declared.isdisjoint(needed))
+            ):
+                plan_member(name, dataset, metadata_only=True)
+
+        members = tuple(
+            CollectionMember(
+                id=name,
+                resource_ids=() if name not in known else (known[name].resource.id,),
+            )
+            for name in ids
+            if name in names
+        )
+        entries = {
+            known[name].resource.id: known[name] for name in ids if name in known
+        }
         return self._participating(
-            tuple(members),
+            members,
             entries,
             CollectionSelection(),
             tuple(requirements),
@@ -918,11 +1141,23 @@ class DatasetCollection:
         *,
         inspect: bool = False,
         projected_variables: frozenset[str] | None = None,
+        downstream: _PlanningScope = _PlanningScope(),
     ) -> _Plan:
+        planning = replace(
+            downstream,
+            selections=(self._selection, *downstream.selections),
+            variables=downstream.variables
+            if projected_variables is None
+            else projected_variables,
+        )
         if self._path is not None or self._collected_entries is not None:
             base = self._manifest_inputs()
         elif self._parent is not None:
-            base = self._parent._plan(scope, inspect=inspect)
+            base = self._parent._plan(
+                scope,
+                inspect=inspect,
+                downstream=planning.before_rename(self._variables, self._scenarios),
+            )
             # Validate injectivity over all participating identities. Unused scientific
             # descriptors need not reconcile until after downstream selection.
             specs = tuple(
@@ -959,9 +1194,12 @@ class DatasetCollection:
                     "rename",
                     {"variables": variables, "scenarios": scenarios},
                 )
-                entries[resource_id] = _Entry(
-                    replace(entry.resource, metadata=metadata, path=None, sha256=None),
-                    node,
+                entries[resource_id] = replace(
+                    entry,
+                    resource=replace(
+                        entry.resource, metadata=metadata, path=None, sha256=None
+                    ),
+                    node=node,
                 )
             return self._participating(
                 base.members,
@@ -973,7 +1211,7 @@ class DatasetCollection:
                 projected_variables,
             )
         else:
-            return self._memory_inputs(scope, inspect, projected_variables)
+            return self._memory_inputs(scope, inspect, projected_variables, planning)
         return self._participating(
             base.members,
             base.entries,
@@ -1043,27 +1281,40 @@ class DatasetCollection:
         config = Runtime() if runtime is None else runtime
         if not isinstance(config, Runtime):
             raise TypeError("runtime must be Runtime")
+        return self._explain(config, _PlanningScope())
+
+    def _explain(self, config: Runtime, downstream: _PlanningScope) -> Explanation:
         operations: list[Operation] = []
         requirements: list[Requirement] = []
-        names = self._selection.members
-        children: list[Dataset | DatasetCollection] = []
+        planning = replace(
+            downstream, selections=(self._selection, *downstream.selections)
+        )
+        names = planning.members
+        active_variables = planning.active_variables
+        source_state = planning.source_state
+        children: list[Explanation] = []
         for name, dataset in self._inputs:
             if isinstance(dataset, Dataset) and (names is None or name in names):
-                if self._selection.area is not None:
-                    dataset = Dataset._create(
-                        _bounded_node(
-                            dataset._node, SelectionState(area=self._selection.area)
-                        ),
-                        operations=dataset.explain(runtime=config).operations,
-                    )
-                children.append(dataset)
+                if active_variables is not None:
+                    if not active_variables:
+                        continue
+                    declared = _declared_variable_ids(cast(Node[object], dataset._node))
+                    if declared is not None and declared.isdisjoint(active_variables):
+                        continue
+                candidate = Dataset._create(
+                    _bounded_node(dataset._node, source_state, discover=True),
+                    operations=dataset._operations,
+                )
+                children.append(candidate.explain(runtime=config))
         if self._parent is not None:
-            children.append(self._parent)
-        if not self._selection._empty():
-            for child in children:
-                details = child.explain(runtime=config)
-                operations.extend(details.operations)
-                requirements.extend(details.requirements)
+            children.append(
+                self._parent._explain(
+                    config, planning.before_rename(self._variables, self._scenarios)
+                )
+            )
+        for details in children:
+            operations.extend(details.operations)
+            requirements.extend(details.requirements)
         operations.append(
             Operation(Stage.SELECTION, "Select independent collection members")
         )

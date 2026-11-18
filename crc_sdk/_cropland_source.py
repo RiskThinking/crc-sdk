@@ -125,6 +125,9 @@ class _CroplandNode(SourceNode[_LayerMetadata]):
     def selected(self, state: SelectionState) -> _CroplandNode:
         return _CroplandNode(self.release, state)
 
+    def _variable_ids(self) -> frozenset[str]:
+        return frozenset((_VARIABLE.id,))
+
     def requirements(self) -> tuple[Requirement, ...]:
         if self.state.area is not None or _empty(self.state):
             return ()

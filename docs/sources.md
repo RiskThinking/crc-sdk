@@ -133,7 +133,9 @@ references for the published inventory. Pass an inspected reference directly to
 `select(series=...)` to check that inventory while choosing an area or observation
 window. The completed read records a separate release reference for the exact
 payload acquired. Reuse the same area and time bounds when replaying that
-reference. This example continues the ERA5 workflow above.
+reference. An exact payload pin and a series reference from inspection can be
+used together. The SDK verifies both constraints. This example continues the
+ERA5 workflow above.
 
 <!-- live-example -->
 ```python
@@ -148,6 +150,14 @@ assert replayed.table.equals(annual_observations.table, check_metadata=False)
 Pinned reads check the selected source bytes before returning even a preview
 or the first batch. If a native object or cached view has changed, the read
 raises a release mismatch.
+
+Fields of the World inspection without an area lists the publication years and
+their catalogue release. Inspection with an area uses the same selectors and
+latest-year default as a read. Published STAC checksums identify the selected
+snapshot before downloading its Parquet files.
+
+IBTrACS inspection lists the chosen agency's series. Its release reference and
+archive checksum come from the bytes acquired during a read.
 
 Access the underlying observations through the same configured provider. This
 example continues the live workflow above.
@@ -272,6 +282,10 @@ idf = ECCCIDF(
 central_estimates = idf
 confidence_intervals = idf.confidence_intervals()
 ```
+
+Without a province, `ECCCIDF().inspect().indicators` lists the available durations.
+With a province, inspection lists exact series and station periods from its
+archive. Use those series references directly in `select(series=...)`.
 
 ## Discover a CRC Open release
 

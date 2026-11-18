@@ -14,7 +14,7 @@ import urllib.request
 from abc import abstractmethod
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from email.message import Message
 from pathlib import Path
@@ -56,6 +56,14 @@ class SourceNode(Node[MetadataT]):
 
     def requirements(self) -> tuple[Requirement, ...]:
         return ()
+
+    def _variable_ids(self) -> frozenset[str] | None:
+        """Return a local bound on emitted variable IDs, if one is known."""
+        return None
+
+    def _pending_payload_release(self) -> ReleaseReference | None:
+        """Return an exact pin verified by this source before it yields rows."""
+        return None
 
     def checked(
         self, scope: ExecutionScope, stream: NodeStream[MetadataT]
@@ -533,34 +541,68 @@ def inventory_release(
     return release_snapshot(resources, id=f"inventory:{id}")
 
 
+@dataclass(frozen=True, slots=True)
+class ReleasePins:
+    """Independent constraints on publication metadata and selected data."""
+
+    inventory: ReleaseReference | None
+    payload: ReleaseReference | None
+
+    @property
+    def publication_id(self) -> str | None:
+        if self.inventory is not None:
+            return self.inventory.id.removeprefix("inventory:")
+        return None if self.payload is None else self.payload.id
+
+    def exact_only(self) -> ReleaseReference | None:
+        if self.inventory is not None:
+            raise OSError(
+                f"source release changed: {self.inventory.id} cannot be verified "
+                "because this source has no publication inventory"
+            )
+        return self.payload
+
+
 def inventory_payload_pin(
-    inventory: ReleaseReference, requested: ReleaseReference | None
+    inventory: ReleaseReference, requested: ReleasePins
 ) -> ReleaseReference | None:
-    """Verify an inventory pin now and defer exact selected-byte pins to execution."""
-    if requested is None:
-        return None
-    if requested.id == inventory.id.removeprefix("inventory:"):
-        return requested
-    check_release(inventory, requested)
-    return None
+    """Verify the published inventory and return the independent payload pin."""
+    check_release(inventory, requested.inventory)
+    if (
+        requested.payload is not None
+        and requested.payload.id != inventory.id.removeprefix("inventory:")
+    ):
+        check_release(inventory, requested.payload)
+    return requested.payload
 
 
 def payload_selection(
     state: SelectionState, release: ReleaseReference | None
-) -> tuple[SelectionState, ReleaseReference | None]:
-    """Resolve science selectors independently of the pending payload check."""
+) -> tuple[SelectionState, ReleasePins]:
+    """Collect and check same-kind release constraints before resolving science."""
     references = state.series
-    if references is None:
-        return state, release
-    for reference in references:
-        pin = reference.release
-        if pin is not None:
-            check_release(pin, release)
-            release = pin
-    return replace(
-        state,
-        series=tuple(replace(reference, release=None) for reference in references),
-    ), release
+    inventory = payload = None
+    for pin in (release, *(reference.release for reference in references or ())):
+        if pin is None:
+            continue
+        if pin.id.startswith("inventory:"):
+            check_release(pin, inventory)
+            inventory = pin
+        else:
+            check_release(pin, payload)
+            payload = pin
+    if (
+        inventory is not None
+        and payload is not None
+        and (inventory.id.removeprefix("inventory:") != payload.id)
+    ):
+        check_release(inventory, payload)
+    if references is not None:
+        state = replace(
+            state,
+            series=tuple(replace(reference, release=None) for reference in references),
+        )
+    return state, ReleasePins(inventory, payload)
 
 
 def selected_series_period(state: SelectionState) -> Period | None:

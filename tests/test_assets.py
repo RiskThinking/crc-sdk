@@ -247,6 +247,23 @@ def test_empty_sql_has_owned_stable_columns_after_scope_closes() -> None:
     assert data.geometries == ()
 
 
+def test_sql_snapshot_checksum_is_independent_of_execution_batch_size() -> None:
+    assets = Assets.sql(
+        "SELECT i AS asset_id, 0.0 AS longitude, 0.0 AS latitude, "
+        "repeat('x', i::INTEGER) AS label FROM range(5) r(i) ORDER BY i",
+        location=PointColumns(),
+    )
+    checksums = set()
+    for batch_rows in (1, 2, 10):
+        with ExecutionScope(Runtime(batch_rows=batch_rows)) as scope:
+            data = assets._materialize(scope)
+        assert data.table["asset_id"].to_pylist() == list(range(5))
+        assert data.table["label"].to_pylist() == ["", "x", "xx", "xxx", "xxxx"]
+        assert data.source is not None
+        checksums.add(data.source.resources[0].sha256)
+    assert len(checksums) == 1
+
+
 def test_offline_sql_cannot_open_an_external_reader(tmp_path: Path) -> None:
     assets = Assets.sql(
         "SELECT * FROM read_csv_auto('http://127.0.0.1:1/assets.csv')",
