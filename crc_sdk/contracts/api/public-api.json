@@ -1965,6 +1965,11 @@
             "name": "impact",
             "kind": "positional_or_keyword",
             "annotation": "crc_framework.Impact"
+          },
+          {
+            "name": "asset_ids",
+            "kind": "keyword_only",
+            "annotation": "tuple[str | int, ...]"
           }
         ],
         "returns": "Self"
@@ -1972,6 +1977,7 @@
       "properties": {
         "response_id": "str",
         "impact": "crc_framework.Impact",
+        "asset_ids": "tuple[str | int, ...]",
         "id": "str"
       }
     },
@@ -4713,6 +4719,17 @@
       "inherits": [
         "Observations"
       ]
+    },
+    "UnavailableStationYear": {
+      "kind": "class",
+      "inherits": [
+        "ExecutionDiagnostic"
+      ],
+      "properties": {
+        "station_id": "str",
+        "year": "int",
+        "minimum_fraction": "float"
+      }
     },
     "UnitConversion": {
       "kind": "class",

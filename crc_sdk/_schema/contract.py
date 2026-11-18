@@ -227,7 +227,31 @@ def dataset_json_schema() -> dict[str, object]:
         },
         ["code", "severity", "stage", "message", "record"],
     )
-    definitions["diagnostic"] = {"oneOf": [diagnostic, fitting_diagnostic]}
+    station_year_properties = dict(diagnostic_properties)
+    del station_year_properties["support_id"]
+    unavailable_station_year = _record(
+        {
+            **station_year_properties,
+            "code": {"const": "station_year_unavailable"},
+            "severity": {"const": "warning"},
+            "stage": {"enum": ["acquisition", "decoding"]},
+            "station_id": identifier,
+            "year": {"type": "integer", "minimum": 1, "maximum": 9999},
+            "minimum_fraction": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+        },
+        [
+            "code",
+            "severity",
+            "stage",
+            "message",
+            "station_id",
+            "year",
+            "minimum_fraction",
+        ],
+    )
+    definitions["diagnostic"] = {
+        "oneOf": [diagnostic, fitting_diagnostic, unavailable_station_year]
+    }
     transformation = definitions["transformation"]
     assert isinstance(transformation, dict)
     variants = transformation["oneOf"]

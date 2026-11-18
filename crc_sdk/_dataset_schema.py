@@ -322,6 +322,41 @@ class FittingDiagnostic(ExecutionDiagnostic):
 
 
 @dataclass(frozen=True, slots=True)
+class UnavailableStationYear(ExecutionDiagnostic):
+    """An annual observation whose historical spatial support is unknown."""
+
+    code: str = field(default="station_year_unavailable", init=False)
+    severity: crc_framework.DiagnosticSeverity = field(
+        default=crc_framework.DiagnosticSeverity.WARNING, init=False
+    )
+    support_id: str | None = field(default=None, init=False)
+    station_id: str = field(kw_only=True)
+    year: int = field(kw_only=True)
+    minimum_fraction: float = field(kw_only=True)
+
+    def __post_init__(self) -> None:
+        ExecutionDiagnostic.__post_init__(self)
+        _identifier(self.station_id, "station_id")
+        if _integer(self.year, "year", 1) > 9999:
+            raise ValueError("year must be between 1 and 9999")
+        if not 0 < _number(self.minimum_fraction, "minimum_fraction") <= 1:
+            raise ValueError("minimum_fraction must lie in (0, 1]")
+        if self.stage not in (Stage.ACQUISITION, Stage.DECODING):
+            raise ValueError(
+                "an unavailable station-year requires acquisition or decoding"
+            )
+
+    def _document(self) -> dict[str, object]:
+        value = ExecutionDiagnostic._document(self)
+        value.update(
+            station_id=self.station_id,
+            year=self.year,
+            minimum_fraction=self.minimum_fraction,
+        )
+        return value
+
+
+@dataclass(frozen=True, slots=True)
 class ExecutionCounts:
     requested: int = 0
     produced: int = 0
@@ -382,10 +417,11 @@ class ExecutionReport:
 
 
 def _diagnostic(value: object) -> ExecutionDiagnostic:
+    station_fields = {"station_id", "year", "minimum_fraction"}
     v = _object(
         value,
         {"code", "severity", "stage", "message"},
-        {"source", "support_id", "query_value", "remedy", "record"},
+        {"source", "support_id", "query_value", "remedy", "record", *station_fields},
     )
     arguments = (
         _identifier(v["code"], "code"),
@@ -397,6 +433,26 @@ def _diagnostic(value: object) -> ExecutionDiagnostic:
         None if "query_value" not in v else _number(v["query_value"], "query_value"),
         _text(v["remedy"], "remedy") if "remedy" in v else None,
     )
+    if station_fields & v.keys():
+        code, severity, stage, message, source, support, query, remedy = arguments
+        if (
+            not station_fields <= v.keys()
+            or "record" in v
+            or code != "station_year_unavailable"
+            or severity is not crc_framework.DiagnosticSeverity.WARNING
+            or support is not None
+        ):
+            raise ValueError("invalid unavailable station-year diagnostic")
+        return UnavailableStationYear(
+            stage,
+            message,
+            source,
+            query,
+            remedy,
+            station_id=_identifier(v["station_id"], "station_id"),
+            year=_wire_integer(v["year"], "year", 1),
+            minimum_fraction=_number(v["minimum_fraction"], "minimum_fraction"),
+        )
     if "record" in v:
         return FittingDiagnostic(
             *arguments, record=FitRecord.from_json(_dump(v["record"]))

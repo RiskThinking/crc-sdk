@@ -690,6 +690,64 @@
       }
     },
     {
+      "name": "unavailable-station-year",
+      "document": {
+        "metadata": {
+          "provenance": [],
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 1,
+              "matched_assets": 0,
+              "no_data": 0,
+              "produced": 0,
+              "requested": 1,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [
+              {
+                "code": "station_year_unavailable",
+                "message": "No station-year object exists. Historical support is unknown.",
+                "minimum_fraction": 1.0,
+                "severity": "warning",
+                "stage": "acquisition",
+                "station_id": "test:station",
+                "year": 2020
+              }
+            ],
+            "source_identities": [],
+            "valid": true
+          },
+          "schema_version": "2.0",
+          "spatial": {
+            "index_resolution": 4,
+            "supports": [
+              "cell"
+            ]
+          },
+          "spec": {
+            "periods": [],
+            "scenarios": [],
+            "series": [
+              {
+                "period_id": null,
+                "scenario_id": null,
+                "variable_id": "user:depth"
+              }
+            ],
+            "variables": [
+              {
+                "id": "user:depth"
+              }
+            ]
+          }
+        },
+        "rows": []
+      }
+    },
+    {
       "name": "typed-source-resource",
       "document": {
         "metadata": {
@@ -4286,6 +4344,66 @@
             "variable_id": "user:depth"
           }
         ]
+      }
+    },
+    {
+      "name": "unavailable-station-year-with-support",
+      "structural": true,
+      "document": {
+        "metadata": {
+          "provenance": [],
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 1,
+              "matched_assets": 0,
+              "no_data": 0,
+              "produced": 0,
+              "requested": 1,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [
+              {
+                "code": "station_year_unavailable",
+                "message": "No station-year object exists. Historical support is unknown.",
+                "minimum_fraction": 1.0,
+                "severity": "warning",
+                "stage": "acquisition",
+                "station_id": "test:station",
+                "year": 2020,
+                "support_id": "inferred-point"
+              }
+            ],
+            "source_identities": [],
+            "valid": true
+          },
+          "schema_version": "2.0",
+          "spatial": {
+            "index_resolution": 4,
+            "supports": [
+              "cell"
+            ]
+          },
+          "spec": {
+            "periods": [],
+            "scenarios": [],
+            "series": [
+              {
+                "period_id": null,
+                "scenario_id": null,
+                "variable_id": "user:depth"
+              }
+            ],
+            "variables": [
+              {
+                "id": "user:depth"
+              }
+            ]
+          }
+        },
+        "rows": []
       }
     },
     {

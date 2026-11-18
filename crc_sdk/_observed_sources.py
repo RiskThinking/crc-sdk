@@ -31,6 +31,7 @@ from ._dataset_schema import (
     SpatialContract,
     Stage,
     SupportKind,
+    UnavailableStationYear,
 )
 from ._declarations import (
     Calendar,
@@ -1189,18 +1190,34 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
                 usable = incomplete = unavailable = 0
                 # A station-year is an explicit blocking reduction, not a global
                 # materialization of every requested station and year.
+                decode = ghcnh_rows if self.provider == "ghcnh" else isd_rows
                 for part in prepared.parts:
-                    if part.path is None:
+                    station, year = part.station, part.year
+                    assert station is not None and year is not None
+                    raw = (
+                        []
+                        if part.path is None
+                        else list(decode(part.path, station, year))
+                    )
+                    if not raw:
                         incomplete += 1
                         unavailable += 1
+                        reason = (
+                            "No observation file exists"
+                            if part.path is None
+                            else "The file contains no observations with source support"
+                        )
                         diagnostic_records.append(
-                            ExecutionDiagnostic(
-                                "station_year_unavailable",
-                                cf.DiagnosticSeverity.WARNING,
-                                Stage.ACQUISITION,
-                                f"No station-year object exists for {part.station} "
-                                f"in {part.year}; historical point support is unknown.",
+                            UnavailableStationYear(
+                                Stage.ACQUISITION
+                                if part.path is None
+                                else Stage.DECODING,
+                                f"{reason} for station {station!r} in {year}. "
+                                "Historical point support is unknown.",
                                 source=self.provider,
+                                station_id=station,
+                                year=year,
+                                minimum_fraction=self.coverage.fraction,
                             )
                         )
                         final = replace(
@@ -1218,16 +1235,6 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
                             ),
                         )
                         continue
-                    raw = list(
-                        ghcnh_rows(
-                            part.path, cast(str, part.station), cast(int, part.year)
-                        )
-                        if self.provider == "ghcnh"
-                        else isd_rows(
-                            part.path, cast(str, part.station), cast(int, part.year)
-                        )
-                    )
-                    year = cast(int, part.year)
                     raw_period = Period.window(year, year, calendar=Calendar.GREGORIAN)
                     for row in raw:
                         row["period_id"] = raw_period.id
@@ -1282,10 +1289,11 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
                         )
                     records = [row for row in records if resolved.matches_record(row)]
                     diagnostic_records.extend(changed.report.diagnostics)
-                    usable += changed.report.counts.usable_years
-                    incomplete += changed.report.counts.incomplete_years
+                    missing_rows = sum(row["value"] is None for row in records)
+                    usable += len(records) - missing_rows
+                    incomplete += missing_rows
                     count += len(records)
-                    missing += sum(row["value"] is None for row in records)
+                    missing += missing_rows
                     final = replace(
                         changed,
                         spec=actual.spec,

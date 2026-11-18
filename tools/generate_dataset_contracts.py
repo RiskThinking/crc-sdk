@@ -47,6 +47,7 @@ from crc_sdk._dataset_schema import (
     SpatialContract,
     Stage,
     SupportKind,
+    UnavailableStationYear,
     UnitConversion,
 )
 from crc_sdk._declarations import (
@@ -175,6 +176,24 @@ def fixture_cases() -> dict[str, object]:
     accepted.append(
         {"name": "fitting-failure-diagnostic", "document": fitting_diagnostic}
     )
+    station_year_report = ExecutionReport(
+        True,
+        True,
+        diagnostics=(
+            UnavailableStationYear(
+                Stage.ACQUISITION,
+                "No station-year object exists. Historical support is unknown.",
+                station_id="test:station",
+                year=2020,
+                minimum_fraction=1.0,
+            ),
+        ),
+        counts=ExecutionCounts(requested=1, incomplete_years=1),
+    )
+    station_year = json.loads(
+        dataset_to_json([], replace(metadata, report=station_year_report))
+    )
+    accepted.append({"name": "unavailable-station-year", "document": station_year})
     source_info = replace(
         metadata,
         source=SourceIdentity(
@@ -351,6 +370,9 @@ def fixture_cases() -> dict[str, object]:
     value = deepcopy(fitting_diagnostic)
     value["metadata"]["report"]["diagnostics"][0]["record"]["evidence_count"] += 1
     reject("fitting-diagnostic-invalid-trace", value, False)
+    value = deepcopy(station_year)
+    value["metadata"]["report"]["diagnostics"][0]["support_id"] = "inferred-point"
+    reject("unavailable-station-year-with-support", value, True)
     value = json.loads(dataset_to_json([row], source_info))
     value["metadata"]["source"]["resources"][0]["sha256"] = "not-a-hash"
     reject("invalid-resource-digest", value, True)

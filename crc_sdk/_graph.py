@@ -66,6 +66,7 @@ class NodeStream(Generic[MetadataT]):
     final_metadata: Callable[[], MetadataT] | None = None
     close: Callable[[], None] | None = None
     checked: bool = False
+    verify_before_yield: bool = False
 
 
 class Node(ABC, Generic[MetadataT]):
@@ -205,6 +206,11 @@ class _Replay(Generic[MetadataT]):
             self.pulling = False
 
     def batches(self, batch_rows: int) -> Iterator[pa.RecordBatch]:
+        if self.stream.verify_before_yield:
+            # A content pin can cover more source objects than the first batch.
+            # The producer checks its digest before this replay can be read.
+            while self._pull():
+                pass
         index = 0
         while True:
             if self.closed:

@@ -50,7 +50,13 @@ from ._providers import jrc as flood
 from ._recipes import Dataset, _checked_stream, _key
 from ._schema import DatasetRow, dataset_arrow_schema, rows_to_table
 from ._selection import SelectionState, selected_metadata, support_intersects
-from ._source_io import SourceNode, check_release, fetch, release_snapshot
+from ._source_io import (
+    SourceNode,
+    fetch,
+    payload_selection,
+    selected_source_time,
+    verify_payload,
+)
 
 if TYPE_CHECKING:
     from ._evidence_recipes import Projections
@@ -60,6 +66,7 @@ MetadataT = TypeVar("MetadataT")
 _IDFMetadata: TypeAlias = (
     DatasetMetadata | EvidenceMetadata[Literal[EvidenceKind.PROJECTIONS]]
 )
+_IDF_VERSION = "3.40"
 
 
 def _initialize(recipe: object, node: SourceNode[MetadataT], description: str) -> None:
@@ -249,11 +256,7 @@ class _FloodNode(SourceNode[DatasetMetadata]):
                 f"The JRC {product.value} publication does not match "
                 f"the supported source layout {dataset.version}."
             )
-        release = release_snapshot((resource,), id=dataset.version)
-        check_release(release, self.release)
-        return dataset, SourceIdentity(
-            "jrc", product.value, release=release, resources=(resource,)
-        )
+        return dataset, SourceIdentity("jrc", product.value, resources=(resource,))
 
     def inspection(self, scope: ExecutionScope) -> Inspection:
         products = (
@@ -297,10 +300,9 @@ class _FloodNode(SourceNode[DatasetMetadata]):
             series=tuple(
                 SeriesReference(
                     _flood_variable(p),
-                    release=s.release,
                     probability=Probability.annual(tail=cf.Tail.UPPER),
                 )
-                for p, s in zip(products, sources, strict=True)
+                for p in products
             ),
             indicators=tuple(
                 IndicatorReference(
@@ -311,7 +313,6 @@ class _FloodNode(SourceNode[DatasetMetadata]):
                 )
                 for p in products
             ),
-            releases=tuple(s.release for s in sources if s.release is not None),
             capabilities=(
                 Capability.INSPECT,
                 Capability.READ,
@@ -356,7 +357,8 @@ class _FloodNode(SourceNode[DatasetMetadata]):
             report=_report(0, source),
             source=source,
         )
-        selection = self.state.resolve(metadata.spec, source=source)
+        state, release = payload_selection(self.state, self.release)
+        selection = state.resolve(metadata.spec, source=source)
         metadata = selected_metadata(metadata, selection)
         if selection.empty:
             return _checked_stream(scope, metadata, iter(()))
@@ -413,7 +415,12 @@ class _FloodNode(SourceNode[DatasetMetadata]):
                 decoded = tuple(decoded_rows)
                 rows.extend(decoded)
                 skipped += missing
-            return tuple(rows), replace(source, resources=tuple(resources)), skipped
+            actual = verify_payload(
+                replace(source, resources=tuple(resources)),
+                id=dataset.version,
+                expected=release,
+            )
+            return tuple(rows), actual, skipped
 
         return _stream_rows(scope, metadata, produce)
 
@@ -546,16 +553,12 @@ class _IDFNode(SourceNode[_IDFMetadata]):
             )
         name, major, minor = max(versions, key=lambda v: (int(v[1]), int(v[2])))
         current = f"{major}.{minor}"
-        if current != "3.40":
+        if current != _IDF_VERSION:
             raise CapabilityError(
                 f"ECCC IDF release {current} has not established "
                 "the supported archive layout."
             )
-        release = release_snapshot((resource,), id=current)
-        check_release(release, self.release)
-        return SourceIdentity(
-            "eccc", "idf", release=release, resources=(resource,), member=name
-        )
+        return SourceIdentity("eccc", "idf", resources=(resource,), member=name)
 
     def _variables(self) -> tuple[Variable, ...]:
         durations = (
@@ -566,7 +569,11 @@ class _IDFNode(SourceNode[_IDFMetadata]):
         return tuple(_idf_variable(value) for value in durations)
 
     def _station_records(
-        self, scope: ExecutionScope, source: SourceIdentity
+        self,
+        scope: ExecutionScope,
+        source: SourceIdentity,
+        *,
+        release: ReleaseReference | None,
     ) -> tuple[SourceIdentity, list[tuple[str, bytes, dict[str, Any]]]]:
         assert self.province is not None and source.member is not None
         path, resource = _idf_province_snapshot(
@@ -575,6 +582,11 @@ class _IDFNode(SourceNode[_IDFMetadata]):
             self.province,
             license=idf.LICENCE,
             attribution=idf.ATTRIBUTION,
+        )
+        source = verify_payload(
+            replace(source, resources=(*source.resources, resource)),
+            id=_IDF_VERSION,
+            expected=release,
         )
         records = []
         requested = (
@@ -605,7 +617,7 @@ class _IDFNode(SourceNode[_IDFMetadata]):
             raise ValueError(
                 f"ECCC {self.province} has no requested stations {sorted(missing)}"
             )
-        return replace(source, resources=(*source.resources, resource)), records
+        return source, records
 
     def inspection(self, scope: ExecutionScope) -> Inspection:
         source = self._discovery(scope)
@@ -613,7 +625,8 @@ class _IDFNode(SourceNode[_IDFMetadata]):
         stations: tuple[StationReference, ...] = ()
         periods: tuple[Period | None, ...] = (None,)
         if self.province is not None:
-            source, records = self._station_records(scope, source)
+            _, release = payload_selection(self.state, self.release)
+            source, records = self._station_records(scope, source, release=release)
             stations = tuple(
                 StationReference(
                     d["station"],
@@ -716,7 +729,10 @@ class _IDFNode(SourceNode[_IDFMetadata]):
             return _checked_stream(scope, empty, iter(()))
         if self.province is None:
             raise CapabilityError("Reading ECCC IDF requires ECCCIDF(province=...).")
-        source, station_records = self._station_records(scope, self._discovery(scope))
+        _, release = payload_selection(self.state, self.release)
+        source, station_records = self._station_records(
+            scope, self._discovery(scope), release=release
+        )
         variables = self._variables()
         periods = tuple(dict.fromkeys(_idf_period(d) for _, _, d in station_records))
         spec = DataSpec(
@@ -991,10 +1007,8 @@ class _EDONode(SourceNode[EvidenceMetadata]):
             raise CapabilityError(
                 "EDO directory contains no supported native soil moisture resources"
             )
-        release = release_snapshot((resource,), id=SMI.version)
-        check_release(release, self.release)
         return SourceIdentity(
-            "edo", "soil_moisture_index", release=release, resources=(resource,)
+            "edo", "soil_moisture_index", resources=(resource,)
         ), years
 
     def _metadata(
@@ -1005,7 +1019,10 @@ class _EDONode(SourceNode[EvidenceMetadata]):
         from ._evidence import EvidenceKind
 
         period = _period(
-            self.state.time, min(years), max(years), Calendar.PROLEPTIC_GREGORIAN
+            selected_source_time(self.state),
+            min(years),
+            max(years),
+            Calendar.PROLEPTIC_GREGORIAN,
         )
         variable = _edo_variable()
         return EvidenceMetadata(
@@ -1033,7 +1050,7 @@ class _EDONode(SourceNode[EvidenceMetadata]):
         return Inspection(
             schema=evidence_arrow_schema(metadata),
             series=tuple(
-                SeriesReference(s.variable, period=s.period, release=source.release)
+                SeriesReference(s.variable, period=s.period)
                 for s in metadata.spec.series
             ),
             indicators=(
@@ -1043,7 +1060,6 @@ class _EDONode(SourceNode[EvidenceMetadata]):
                     _edo_variable().measurement,
                 ),
             ),
-            releases=(cast(ReleaseReference, source.release),),
             requirements=requirements,
             capabilities=(
                 Capability.INSPECT,
@@ -1078,7 +1094,10 @@ class _EDONode(SourceNode[EvidenceMetadata]):
             raise CapabilityError("EDO acquisition requires .select(area=Bounds(...)).")
         source, years = self._discovery(scope)
         metadata = self._metadata(source, years)
-        selection = self.state.resolve(metadata.spec, source=source)
+        state, release = payload_selection(self.state, self.release)
+        selection = replace(state, time=selected_source_time(state)).resolve(
+            metadata.spec, source=source
+        )
         metadata = selected_metadata(metadata, selection)
         current = metadata
         period = metadata.spec.series[0].period if metadata.spec.series else None
@@ -1165,7 +1184,11 @@ class _EDONode(SourceNode[EvidenceMetadata]):
                                     "group_id": None,
                                 }
                             )
-            actual = replace(source, resources=tuple(resources))
+            actual = verify_payload(
+                replace(source, resources=tuple(resources)),
+                id=SMI.version,
+                expected=release,
+            )
             current = replace(
                 metadata,
                 source=actual,

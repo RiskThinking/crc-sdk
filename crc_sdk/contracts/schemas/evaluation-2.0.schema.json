@@ -150,12 +150,31 @@
         },
         "impact": {
           "$ref": "https://climateriskcommons.org/schemas/impact-2.0.schema.json"
+        },
+        "asset_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+              },
+              {
+                "type": "integer",
+                "minimum": -9223372036854775808,
+                "maximum": 18446744073709551615
+              }
+            ]
+          }
         }
       },
       "required": [
         "id",
         "response_id",
-        "impact"
+        "impact",
+        "asset_ids"
       ],
       "additionalProperties": false
     },

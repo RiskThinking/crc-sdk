@@ -154,8 +154,10 @@ chooses the attributes carried into the nested `asset` field. Here the
 
 Exposure rows are included by default and have a null `response_id`. Named
 response rows identify their definition in `response_id`. A referenced
-model's concrete numerical model and context are stored in metadata and
-linked through `resolution_id`. Use `select(responses=...)` to choose
+model's concrete numerical model, context, and asset assignments are stored
+in metadata and linked through `resolution_id`. Reopening checks those
+assignments even when the bound columns are omitted from the output.
+Use `select(responses=...)` to choose
 named rows explicitly. The returned table has one row per asset, participating
 series, requested coordinate, and exposure or named response.
 

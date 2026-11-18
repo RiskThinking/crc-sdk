@@ -5,8 +5,9 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+from dataclasses import replace
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 from urllib.parse import parse_qs, urlsplit
 
 import crc_framework as cf
@@ -17,7 +18,17 @@ import pytest
 from shapely import from_wkb  # type: ignore[import-untyped]
 from shapely.geometry import box  # type: ignore[import-untyped]
 
-from crc_sdk import _layer_sources, _source_io
+from crc_sdk import (
+    EvidenceMetadata,
+    FitFailure,
+    FittingDiagnostic,
+    ReadResult,
+    Samples,
+    UnavailableStationYear,
+    ValidationError,
+    _layer_sources,
+    _source_io,
+)
 from crc_sdk._climate_io import raster_window_snapshot as acquire_raster_window
 from crc_sdk._dataset_schema import ResourceIdentity
 from crc_sdk._declarations import Calendar, Period
@@ -544,10 +555,88 @@ def test_native_404_is_cached_absence_with_station_year_diagnostic(
     second = recipe.read(runtime=Runtime(cache=Cache.offline(tmp_path)))
     assert len(transport.calls) == calls
     assert first.table.num_rows == second.table.num_rows == 0
-    assert first.report.counts.incomplete_years == 1
-    assert first.report.diagnostics[0].code == "station_year_unavailable"
+    assert first.report.counts.requested == first.report.counts.incomplete_years == 1
+    missing = first.report.diagnostics[0]
+    assert isinstance(missing, UnavailableStationYear)
+    assert missing.station_id == "12345678901" and missing.year == 2020
+    assert missing.minimum_fraction == 1 and missing.support_id is None
+    assert first.report.diagnostics == second.report.diagnostics
     assert first.metadata.source is not None and second.metadata.source is not None
     assert first.metadata.source.release == second.metadata.source.release
+
+
+@pytest.mark.parametrize("input_kind", ["recipe", "collected", "reopened"])
+def test_unlocated_station_year_follows_each_fit_policy(
+    input_kind: str, transport: NativeTransport, tmp_path: Path
+) -> None:
+    transport.absent_year = 2020
+    recipe = ISD(
+        indicator=ISD.Indicator.ANNUAL_MAXIMUM_DAILY_MAXIMUM_TEMPERATURE
+    ).select(stations="12345678901", time=_year())
+    evidence: Samples | ReadResult[EvidenceMetadata[Literal[EvidenceKind.SAMPLES]]]
+    if input_kind == "collected":
+        evidence = recipe.read()
+    elif input_kind == "reopened":
+        saved = recipe.write(tmp_path / "annual.parquet")
+        assert saved.path is not None
+        evidence = Samples.open(saved.path)
+    else:
+        evidence = recipe
+    spec = cf.SampleFit(family=cf.DistributionFamily.GUMBEL_RIGHT)
+    calls_before_fitting = len(transport.calls)
+    with evidence.fit(spec).execute() as execution:
+        with pytest.raises(
+            ValidationError, match="no usable annual evidence"
+        ) as failure:
+            execution.read()
+        failed_report = failure.value.report
+        assert not failed_report.valid
+        assert execution.validate() == failed_report
+    for policy in (FitFailure.KEEP_NO_DATA, FitFailure.SKIP):
+        fitted = evidence.fit(spec, on_failure=policy).read()
+        assert fitted.report.valid and fitted.report.complete
+        assert fitted.table.num_rows == fitted.report.counts.no_data == 0
+        assert fitted.report.counts.skipped == int(policy is FitFailure.SKIP)
+        assert fitted.report.counts.incomplete_years == 1
+        assert fitted.report.counts.requested == 1
+        assert fitted.report.counts.usable_years == 0
+        assert failed_report.counts == replace(fitted.report.counts, skipped=0)
+        for report in (failed_report, fitted.report):
+            missing, diagnostic = report.diagnostics
+            assert isinstance(missing, UnavailableStationYear)
+            assert isinstance(diagnostic, FittingDiagnostic)
+            assert diagnostic.support_id is None
+            assert (
+                diagnostic.record.evidence_count
+                == diagnostic.record.excluded_count
+                == 1
+            )
+            assert diagnostic.record.used_count == 0 and not diagnostic.record.converged
+    if input_kind != "recipe":
+        assert len(transport.calls) == calls_before_fitting
+
+
+def test_collected_station_year_remains_selectable_before_fitting(
+    transport: NativeTransport, tmp_path: Path
+) -> None:
+    transport.absent_year = 2020
+    annual = ISD(
+        indicator=ISD.Indicator.ANNUAL_MAXIMUM_DAILY_MAXIMUM_TEMPERATURE
+    ).select(stations="12345678901", time=_year())
+    path = annual.write(tmp_path / "annual.parquet").path
+    assert path is not None
+    samples = Samples.open(path)
+    spec = cf.SampleFit(family=cf.DistributionFamily.GUMBEL_RIGHT)
+    result = (
+        samples.select(stations="12345678901")
+        .fit(spec, on_failure=FitFailure.SKIP)
+        .read()
+    )
+    assert result.report.counts.requested == result.report.counts.skipped == 1
+    empty = samples.select(stations=[]).fit(spec).read()
+    assert empty.report.complete and empty.report.valid
+    assert empty.report.counts.requested == empty.report.counts.incomplete_years == 0
+    assert not empty.report.diagnostics
 
 
 def test_noaa_projection_bounds_are_separate_variables_without_invented_quantiles(

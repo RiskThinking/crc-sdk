@@ -72,8 +72,14 @@ def evaluation_json_schema() -> dict[str, object]:
                 "id": digest,
                 "response_id": identifier,
                 "impact": science_ref("impact-2.0"),
+                "asset_ids": {
+                    "type": "array",
+                    "minItems": 1,
+                    "uniqueItems": True,
+                    "items": asset_id,
+                },
             },
-            ["id", "response_id", "impact"],
+            ["id", "response_id", "impact", "asset_ids"],
         ),
         "spatial": {
             "oneOf": [

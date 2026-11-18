@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 
 import crc_framework as cf
+import pyarrow as pa  # type: ignore[import-untyped]
+import pyarrow.parquet as pq  # type: ignore[import-untyped]
 import pytest
 
 from crc_sdk import (
@@ -110,11 +112,60 @@ def test_bound_column_resolves_once_and_artifact_keeps_model_proof(
     assert json.loads(response.context.to_json())["region"] == {"column": "region"}
     (resolution,) = result.metadata.resolutions
     assert resolution.impact.to_json() == resolved.to_json()
+    assert resolution.asset_ids == ("A01", "A02")
 
     reopened = EvaluationArtifact.open(path).read()
     assert reopened.table.equals(result.table, check_metadata=True)
     assert reopened.metadata.resolutions[0].impact.sha256 == resolved.sha256
     assert reopened.metadata.responses[0].output == resolved.output
+
+
+def test_reopening_rejects_swapped_resolutions_for_hidden_context_columns(
+    tmp_path: Path,
+) -> None:
+    reference = cf.Impact.builtin(cf.BuiltinImpact.INUNDATION)
+    assets = Assets(
+        {
+            "asset_id": ["A01", "A02"],
+            "longitude": [24.0, 24.0],
+            "latitude": [60.0, 60.0],
+            "region": [cf.FloodRegion.EUROPE.value, cf.FloodRegion.NORTH_AMERICA.value],
+        },
+        columns=[],
+    )
+    path = tmp_path / "responses.parquet"
+    (
+        _depth(reference.requirements.input)
+        .evaluate(assets)
+        .probabilities([0.5])
+        .impact(
+            "damage",
+            reference,
+            variable=_DEPTH,
+            context=cf.InundationContext(
+                region=assets.column("region"), asset_type=cf.AssetType.RESIDENTIAL
+            ),
+        )
+        .select(responses="damage")
+        .write(path)
+    )
+    original = EvaluationArtifact.open(path).read()
+    assert "asset" not in original.table.column_names
+    assert [r.asset_ids for r in original.metadata.resolutions] == [("A01",), ("A02",)]
+    left, right = original.table.to_pylist()
+    assert left["resolution_id"] != right["resolution_id"]
+    for column in ("resolution_id", "value"):
+        left[column], right[column] = right[column], left[column]
+    invalid = tmp_path / "swapped.parquet"
+    pq.write_table(
+        pa.Table.from_pylist([left, right], schema=original.table.schema), invalid
+    )
+
+    with pytest.raises(
+        ValidationError, match="did not use the recorded response resolution"
+    ):
+        EvaluationArtifact.open(invalid).read()
+    assert EvaluationArtifact.open(invalid).validate().valid is False
 
 
 def test_resolved_responses_require_only_their_existing_calibration() -> None:
