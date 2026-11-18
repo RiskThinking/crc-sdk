@@ -17,7 +17,9 @@ from typing import (
     Literal,
     Protocol,
     Self,
+    TypeAlias,
     TypeVar,
+    cast,
     overload,
 )
 
@@ -41,6 +43,13 @@ if TYPE_CHECKING:
 
 MetadataT = TypeVar("MetadataT", bound=ArtifactMetadata)
 ArtifactT = TypeVar("ArtifactT", covariant=True)
+SampleFitSpec: TypeAlias = crc_framework.SampleFit | crc_framework.ModelSelection
+QuantileFitSpec: TypeAlias = (
+    crc_framework.QuantileFit
+    | crc_framework.CensoredQuantileFit
+    | crc_framework.HurdleQuantileFit
+    | crc_framework.ModelSelection
+)
 
 
 def _with_report(metadata: MetadataT, report: ExecutionReport) -> MetadataT:
@@ -87,10 +96,26 @@ class ReadResult(Generic[MetadataT]):
     metadata: MetadataT
     report: ExecutionReport
 
+    @overload
+    def fit(
+        self: ReadResult[DatasetMetadata],
+        spec: QuantileFitSpec,
+        *,
+        on_failure: FitFailure = FitFailure.RAISE,
+    ) -> crc_sdk.Dataset: ...
+
+    @overload
+    def fit(
+        self: ReadResult[EvidenceMetadata[Literal[EvidenceKind.SAMPLES]]],
+        spec: SampleFitSpec,
+        *,
+        on_failure: FitFailure = FitFailure.RAISE,
+    ) -> crc_sdk.Dataset: ...
+
     def fit(
         self: ReadResult[DatasetMetadata]
         | ReadResult[EvidenceMetadata[Literal[EvidenceKind.SAMPLES]]],
-        spec: crc_framework.FitSpec,
+        spec: QuantileFitSpec | SampleFitSpec,
         *,
         on_failure: FitFailure = FitFailure.RAISE,
     ) -> crc_sdk.Dataset:
@@ -108,11 +133,11 @@ class ReadResult(Generic[MetadataT]):
                     "aggregate raw observations first"
                 )
             return Samples._collected(self.table, self.metadata).fit(
-                spec, on_failure=on_failure
+                cast(SampleFitSpec, spec), on_failure=on_failure
             )
         if isinstance(self.metadata, DatasetMetadata):
             return Dataset._collected(self.table, self.metadata).fit(
-                spec, on_failure=on_failure
+                cast(QuantileFitSpec, spec), on_failure=on_failure
             )
         raise CapabilityError("Fitting requires sample or quantile evidence")
 

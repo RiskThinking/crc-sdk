@@ -14,7 +14,9 @@ from crc_framework import (
     Distribution,
     DistributionFamily,
     Duration,
+    FitConstraints,
     FitError,
+    HurdleQuantileFit,
     LengthUnit,
     PrecipitationAmount,
     PrecipitationRate,
@@ -25,6 +27,7 @@ from crc_framework import (
     Tail,
     TailCompletion,
     TimeUnit,
+    fit_quantiles,
     fit_samples,
 )
 
@@ -138,6 +141,23 @@ def fixture_cases() -> dict[str, object]:
         )
     )
     accepted.append({"name": "authoritative-fit-record", "document": fitted})
+    hurdle = Distribution.hurdle(law, atom_probability=0.25)
+    probabilities = [0.1, 0.2, 0.25, 0.4, 0.6, 0.8, 0.9, 0.99]
+    hurdle_fit = fit_quantiles(
+        QuantileCurve(probabilities, hurdle.quantile(probabilities)),
+        HurdleQuantileFit(
+            family=DistributionFamily.GUMBEL_RIGHT,
+            atom_probability=0.25,
+            constraints=FitConstraints(probability=0.9, maximum_value=10),
+        ),
+    )
+    fitted_hurdle = json.loads(
+        dataset_to_json(
+            [replace(row, curve=hurdle_fit.distribution, fit=hurdle_fit.record)],
+            metadata,
+        )
+    )
+    accepted.append({"name": "fitted-hurdle", "document": fitted_hurdle})
     try:
         fit_samples([1] * 8, SampleFit(family=DistributionFamily.GUMBEL_RIGHT))
     except FitError as error:
@@ -365,6 +385,21 @@ def fixture_cases() -> dict[str, object]:
     value = deepcopy(fitted)
     value["rows"][0]["curve"]["family"] = "gumbel_l"
     reject("fit-family-mismatch", value, False)
+    value = deepcopy(fitted_hurdle)
+    base = value["rows"][0]["curve"]["base"]
+    value["rows"][0]["curve"] = dict(base, schema_version="1.0", object="distribution")
+    reject("fit-hurdle-removed", value, False)
+    value = deepcopy(fitted_hurdle)
+    value["rows"][0]["curve"]["atom_probability"] = 0.9
+    reject("fit-hurdle-atom-changed", value, False)
+    value = deepcopy(fitted_hurdle)
+    record = value["rows"][0]["fit"]
+    for specification in (
+        record["specification"],
+        record["attempts"][0]["specification"],
+    ):
+        specification["constraints"]["maximum_value"] = 0.1
+    reject("fit-constraint-violated", value, False)
     value = deepcopy(fitting_diagnostic)
     value["metadata"]["report"]["diagnostics"][0]["stage"] = "decoding"
     reject("fitting-diagnostic-wrong-stage", value, True)

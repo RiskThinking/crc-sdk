@@ -213,6 +213,30 @@ class _Plan:
         )
         return participating or None
 
+    def _participating_responses(
+        self,
+        source: Dataset | DatasetCollection,
+        series: dict[_EvaluationKey, SeriesSpec],
+        responses: tuple[Response, ...],
+    ) -> tuple[Response, ...]:
+        if self.selection.responses is not None:
+            return responses
+        state = source._selection
+        filters: tuple[Sequence[object] | None, ...] = (
+            state.variables,
+            state.scenarios,
+            state.periods,
+            state.series,
+        )
+        if isinstance(source, DatasetCollection):
+            filters = (*filters, source._selection.members)
+        if all(value is None for value in filters):
+            return responses
+        variables = {item.variable.id for item in series.values()}
+        return tuple(
+            response for response in responses if response.variable_id in variables
+        )
+
     def _require_query(self) -> EvaluationQuery:
         if self.query is None:
             raise CapabilityError(_QUERY_REQUIRED.message)
@@ -465,9 +489,10 @@ class _EvaluationNode(Node[EvaluationMetadata]):
             return self._empty(query)
         inputs = _inputs(declaration)
         series = _series(inputs)
+        responses = plan._participating_responses(self.source, series, self.responses)
         exposure = plan.selection.responses is None
-        groups = _response_series(series, self.responses, exposure=exposure)
-        definitions = _definitions(tuple(groups.values()), self.responses, query)
+        groups = _response_series(series, responses, exposure=exposure)
+        definitions = _definitions(tuple(groups.values()), responses, query)
         if len(groups) < len(series):
             targets = tuple(dict.fromkeys(item.variable.id for item in groups.values()))
             projected = _restrict_variables(self.source, targets)
@@ -475,13 +500,13 @@ class _EvaluationNode(Node[EvaluationMetadata]):
             declaration = scope.metadata(parent)
             inputs = _inputs(declaration)
         responders = {
-            variable: tuple(r for r in self.responses if r.variable_id == variable)
+            variable: tuple(r for r in responses if r.variable_id == variable)
             for variable in {s.variable.id for s in groups.values()}
         }
         if not groups:
             return self._empty(query)
         required_columns = tuple(
-            dict.fromkeys(col for r in self.responses for col in r.columns)
+            dict.fromkeys(col for r in responses for col in r.columns)
         )
         with native_data(scope=scope, source="assets"):
             assets = plan.assets._materialize(scope, required_columns=required_columns)
@@ -1037,11 +1062,13 @@ class Evaluation(_Results):
                 return _replace(source, schema=None, capabilities=(Capability.INSPECT,))
             inputs = _inputs(declaration)
             try:
+                available = _series(inputs) if plan.selection.responses != () else {}
+                responses = plan._participating_responses(recipe, available, responses)
                 groups = (
                     {}
                     if plan.selection.responses == ()
                     else _response_series(
-                        _series(inputs),
+                        available,
                         responses,
                         exposure=plan.selection.responses is None,
                     )
@@ -1053,6 +1080,18 @@ class Evaluation(_Results):
                 raise ValidationError(
                     report=ExecutionReport(False, False, error.diagnostics)
                 ) from error
+            keys = {_series_key(series) for series in groups.values()}
+            references = tuple(ref for ref in source.series if _series_key(ref) in keys)
+            source = _replace(
+                source,
+                series=references,
+                releases=tuple(
+                    dict.fromkeys(
+                        ref.release for ref in references if ref.release is not None
+                    )
+                ),
+            )
+            requirements = source.requirements
             if not groups:
                 metadata = _empty_metadata(plan.query, plan)
             else:
@@ -1073,10 +1112,25 @@ class Evaluation(_Results):
                     include_exposure=plan.selection.responses is None,
                     asset_fields=asset_fields,
                 )
+                missing = plan.assets._missing_bound_columns(
+                    tuple(col for response in responses for col in response.columns)
+                )
+                if missing:
+                    requirements = (
+                        *requirements,
+                        Requirement(
+                            "asset_context_columns_required",
+                            f"Missing bound asset columns: {list(missing)!r}. "
+                            "Include them in the asset input or supply typed "
+                            "context constants.",
+                            "context",
+                        ),
+                    )
             return _replace(
                 source,
                 schema=evaluation_arrow_schema(metadata),
                 capabilities=(*_CAPABILITIES, Capability.WRITE),
+                requirements=requirements,
             )
 
     def execute(
@@ -1223,8 +1277,17 @@ class EvaluationArtifact(_Results):
 
         with ExecutionScope(runtime) as scope:
             metadata = self._metadata(scope)
+            releases = tuple(
+                dict.fromkeys(
+                    item.metadata.source.release
+                    for item in metadata.inputs
+                    if item.metadata.source is not None
+                    and item.metadata.source.release is not None
+                )
+            )
             return Inspection(
                 schema=evaluation_arrow_schema(metadata),
+                releases=releases,
                 series=tuple(
                     SeriesReference(
                         s.variable,
@@ -1234,6 +1297,12 @@ class EvaluationArtifact(_Results):
                         release=None
                         if item.metadata.source is None
                         else item.metadata.source.release,
+                        model=None
+                        if item.metadata.source is None
+                        else item.metadata.source.model,
+                        member=None
+                        if item.metadata.source is None
+                        else item.metadata.source.member,
                     )
                     for item in metadata.inputs
                     for s in item.metadata.spec.series

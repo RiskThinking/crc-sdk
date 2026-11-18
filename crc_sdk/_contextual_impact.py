@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, fields, is_dataclass, make_dataclass
 from enum import Enum
 from keyword import iskeyword
+from threading import RLock
 from types import MappingProxyType
 from typing import TypeAlias, cast
+from weakref import WeakValueDictionary
 
 import crc_framework as cf
 
@@ -18,13 +20,14 @@ from ._declarations import ScientificValue
 
 _Value: TypeAlias = str | ColumnBinding
 _Key: TypeAlias = tuple[tuple[str, str], ...]
+_EXACT_NAME = r"^\S(?:[\s\S]*\S)?$"
 
 
 def _column_schema() -> dict[str, ScientificValue]:
     return {
         "type": "object",
-        "properties": {"column": {"type": "string", "minLength": 1}},
-        "required": ("column",),
+        "properties": {"column": {"type": "string", "pattern": _EXACT_NAME}},
+        "required": ["column"],
         "additionalProperties": False,
     }
 
@@ -50,8 +53,6 @@ def _value(value: object, name: str) -> _Value:
 
 
 def _context_values(context: ResponseContext) -> dict[str, _Value]:
-    if isinstance(context, _RecordedContext):
-        return dict(context.values)
     if (
         not is_dataclass(context)
         or isinstance(context, type)
@@ -81,22 +82,15 @@ def _recorded_context(document: object) -> ResponseContext:
     values = _load(_dump(record["values"]))
     if not values:
         raise ValueError("ResponseContext requires at least one field")
-    return _RecordedContext(
-        tuple(
-            sorted(
-                (
-                    _name(name),
-                    ColumnBinding(
-                        _identifier(
-                            _object(value, {"column"})["column"], "asset column"
-                        )
-                    )
-                    if isinstance(value, dict)
-                    else _value(value, name),
-                )
-                for name, value in values.items()
+    return _own_context(
+        {
+            _name(name): ColumnBinding(
+                _identifier(_object(value, {"column"})["column"], "asset column")
             )
-        )
+            if isinstance(value, dict)
+            else _value(value, name)
+            for name, value in values.items()
+        }
     )
 
 
@@ -105,7 +99,7 @@ class ResponseContext(cf.ImpactContext):
 
     @property
     def schema(self) -> Mapping[str, ScientificValue]:
-        names = tuple(_context_values(self))
+        names = list(_context_values(self))
         return {
             "type": "object",
             "properties": {
@@ -113,14 +107,19 @@ class ResponseContext(cf.ImpactContext):
                 "values": {
                     "type": "object",
                     "properties": {
-                        name: {"anyOf": ({"type": "string"}, _column_schema())}
+                        name: {
+                            "anyOf": [
+                                {"type": "string", "pattern": _EXACT_NAME},
+                                _column_schema(),
+                            ]
+                        }
                         for name in names
                     },
                     "required": names,
                     "additionalProperties": False,
                 },
             },
-            "required": ("kind", "values"),
+            "required": ["kind", "values"],
             "additionalProperties": False,
         }
 
@@ -133,9 +132,36 @@ class ResponseContext(cf.ImpactContext):
         return _recorded_context(_load(text))
 
 
-@dataclass(frozen=True, slots=True)
-class _RecordedContext(ResponseContext):
-    values: tuple[tuple[str, _Value], ...]
+_declared_types: WeakValueDictionary[tuple[str, ...], type[ResponseContext]] = (
+    WeakValueDictionary()
+)
+_declared_types_lock = RLock()
+
+
+def _declared_context(names: tuple[str, ...]) -> type[ResponseContext]:
+    with _declared_types_lock:
+        context = _declared_types.get(names)
+        if context is None:
+            context = cast(
+                type[ResponseContext],
+                make_dataclass(
+                    "DeclaredResponseContext",
+                    [(name, str | ColumnBinding) for name in names],
+                    bases=(ResponseContext,),
+                    frozen=True,
+                    slots=True,
+                    kw_only=True,
+                ),
+            )
+            _declared_types[names] = context
+        return context
+
+
+def _own_context(values: Mapping[str, _Value]) -> ResponseContext:
+    constructor = cast(
+        Callable[..., ResponseContext], _declared_context(tuple(sorted(values)))
+    )
+    return constructor(**values)
 
 
 def _case_key(values: Mapping[str, _Value]) -> _Key:
@@ -166,17 +192,6 @@ class ContextualImpact:
         if not names:
             raise ValueError("ResponseContext requires at least one field")
         context_type = type(context)
-        if context_type is _RecordedContext:
-            context_type = cast(
-                type[ResponseContext],
-                make_dataclass(
-                    "DeclaredResponseContext",
-                    [(name, str | ColumnBinding) for name in sorted(names)],
-                    bases=(ResponseContext,),
-                    frozen=True,
-                    kw_only=True,
-                ),
-            )
         models: dict[_Key, cf.Impact] = {}
         choices: dict[str, set[str]] = {name: set() for name in sorted(names)}
         input, output = first.input, first.output
@@ -248,7 +263,7 @@ class ContextualImpact:
     def _context(self, context: cf.ImpactContext | None) -> ResponseContext:
         if not isinstance(context, ResponseContext) or type(context) not in (
             self.requirements.context_type,
-            _RecordedContext,
+            _declared_context(tuple(self._choices)),
         ):
             raise cf.ImpactError(
                 "missing_context" if context is None else "invalid_context",
@@ -280,7 +295,7 @@ class ContextualImpact:
                 "/context",
                 f"No calibrated case matches {values!r}.",
             )
-        return _RecordedContext(tuple(sorted(values.items())))
+        return _own_context(values)
 
     def resolve(self, context: ResponseContext) -> cf.Impact:
         """Resolve a concrete context after its asset bindings have been supplied."""

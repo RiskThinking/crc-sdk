@@ -38,9 +38,11 @@ from crc_sdk import (
     Period,
     Probability,
     QuantileColumns,
+    ReleaseReference,
     Runtime,
     Samples,
     SeriesSpec,
+    SourceIdentity,
     SpatialContract,
     Stage,
     SupportKind,
@@ -96,8 +98,11 @@ def _dataset(
 
 
 class _Reader(CanonicalReader):
-    def __init__(self, dataset: Dataset) -> None:
+    def __init__(
+        self, dataset: Dataset, *, source: SourceIdentity | None = None
+    ) -> None:
         self.result = dataset.read()
+        self.source = source
         self.inspections = 0
         self.streams = 0
         self.delivered = 0
@@ -105,7 +110,11 @@ class _Reader(CanonicalReader):
 
     def inspect(self) -> DatasetMetadata:
         self.inspections += 1
-        return self.result.metadata
+        return (
+            replace(self.result.metadata, source=self.source)
+            if self.source is not None
+            else self.result.metadata
+        )
 
     @contextmanager
     def batches(self, *, batch_rows: int = 65536) -> Iterator[Iterator[pa.RecordBatch]]:
@@ -322,6 +331,49 @@ def test_rename_rejects_global_collision_with_an_unchanged_member() -> None:
     assert renamed.table["variable_id"].to_pylist() == ["b"]
 
 
+def test_qualified_series_match_source_not_collection_member_and_round_trip(
+    tmp_path: Path,
+) -> None:
+    release = ReleaseReference("release-one", "sha256:" + "a" * 64)
+
+    def reader(model: str, member: str) -> CanonicalReader:
+        return _Reader(
+            _dataset(),
+            source=SourceIdentity(
+                provider="project",
+                product="depth",
+                model=model,
+                member=member,
+                release=release,
+            ),
+        )
+
+    collection = DatasetCollection(
+        {
+            "baseline": reader("model-a", "r1"),
+            "other-model": reader("model-b", "r1"),
+            "other-member": reader("model-a", "r2"),
+        }
+    )
+    references = collection.inspect().series
+    assert [(item.model, item.member) for item in references] == [
+        ("model-a", "r1"),
+        ("model-b", "r1"),
+        ("model-a", "r2"),
+    ]
+    reference = references[0]
+    recipe = collection.select(series=reference)
+    assert recipe.read().table["member_id"].to_pylist() == ["baseline"]
+    written = recipe.write(tmp_path / "qualified")
+    assert written.path is not None
+    saved = DatasetCollection.open(written.path)
+    assert saved.metadata is not None
+    assert saved.metadata.selection.series == (reference,)
+    assert saved.read().table["member_id"].to_pylist() == ["baseline"]
+    with pytest.raises(ValueError, match="model or member differs"):
+        collection.select(series=replace(reference, member="missing")).read()
+
+
 def _install_shards(
     directory: Path,
     datasets: tuple[Dataset, ...],
@@ -383,6 +435,32 @@ def test_disjoint_shards_are_not_pooled_into_an_artificial_resource(
     assert result.table["member_id"].to_pylist() == ["member", "member"]
     assert len(set(result.table["resource_id"].to_pylist())) == 2
     assert recipe.write(tmp_path / "copy").read().table.equals(result.table)
+
+
+def test_disjoint_fitted_shards_retain_their_own_unit_conversion(
+    tmp_path: Path,
+) -> None:
+    variable = _variable()
+
+    def fitted(support: str) -> Dataset:
+        return (
+            Samples.from_table(
+                {
+                    "support_id": [support] * 5,
+                    "longitude": [1.0] * 5,
+                    "latitude": [2.0] * 5,
+                    "time": [2000, 2001, 2002, 2003, 2004],
+                    "value": [1.0, 2.0, 4.0, 5.0, 8.0],
+                },
+                variable=variable,
+            )
+            .fit(cf.SampleFit(family=cf.DistributionFamily.GUMBEL_RIGHT))
+            .convert_units(variable=variable, unit=cf.LengthUnit.CENTIMETRE)
+        )
+
+    recipe = _install_shards(tmp_path / "converted", (fitted("one"), fitted("two")))
+    assert recipe.validate().valid is True
+    assert recipe.read().table["support_id"].to_pylist() == ["one", "two"]
 
 
 def test_disjoint_shards_support_distinct_spatial_contracts(tmp_path: Path) -> None:

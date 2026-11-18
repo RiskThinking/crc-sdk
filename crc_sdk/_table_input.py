@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import struct
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from typing import Literal, Protocol, TypeAlias, cast, runtime_checkable
 
@@ -15,7 +15,7 @@ from h3.api import basic_int as h3  # type: ignore[import-untyped]
 from numpy.typing import NDArray
 from shapely import from_wkb  # type: ignore[import-untyped]
 
-from ._aggregation import Sampling
+from ._aggregation import Sampling, _annual_sampling
 from ._dataset_schema import (
     DatasetMetadata,
     ExecutionCounts,
@@ -347,6 +347,8 @@ def normalize_samples(
                 else record[columns.group_id],
             }
         )
+    missing = sum(r["failure"] is not None for r in records)
+    annual = _annual_sampling(sampling)
     metadata: EvidenceMetadata[Literal[EvidenceKind.SAMPLES]] = EvidenceMetadata(
         kind=EvidenceKind.SAMPLES,
         sampling=sampling,
@@ -358,7 +360,9 @@ def normalize_samples(
             counts=ExecutionCounts(
                 requested=len(records),
                 produced=len(records),
-                no_data=sum(r["failure"] is not None for r in records),
+                no_data=missing,
+                usable_years=len(records) - missing if annual else 0,
+                incomplete_years=missing if annual else 0,
             ),
         ),
     )
@@ -390,7 +394,10 @@ def normalize_observations(
         kind=EvidenceKind.OBSERVATIONS,
         spec=samples.spec,
         spatial=samples.spatial,
-        report=samples.report,
+        report=replace(
+            samples.report,
+            counts=replace(samples.report.counts, usable_years=0, incomplete_years=0),
+        ),
         source=samples.source,
         provenance=samples.provenance,
         sampling=samples.sampling,

@@ -23,7 +23,16 @@ from referencing.jsonschema import DRAFT202012
 from shapely import from_wkb  # type: ignore[import-untyped]
 from typing_extensions import TypeVar
 
-from ._aggregation import Sampling, sampling_from_document, sampling_schema
+from ._aggregation import (
+    ReductionKind,
+    Sampling,
+    TemporalReduction,
+    _annual_sampling,
+    _sampling_slots,
+    _year_slots,
+    sampling_from_document,
+    sampling_schema,
+)
 from ._dataset_schema import (
     DatasetMetadata,
     ExecutionCounts,
@@ -230,6 +239,23 @@ class EvidenceMetadata(Generic[KindT]):
             raise ValueError(
                 "projection evidence cannot claim annual exceedance probability"
             )
+        if (
+            self.report.complete
+            and self.kind is EvidenceKind.SAMPLES
+            and _annual_sampling(self.sampling)
+        ):
+            counts = self.report.counts
+            unavailable = sum(
+                isinstance(d, UnavailableStationYear) for d in self.report.diagnostics
+            )
+            if (
+                counts.requested != counts.produced + unavailable
+                or counts.usable_years != counts.produced - counts.no_data
+                or counts.incomplete_years != counts.no_data + unavailable
+            ):
+                raise ValueError(
+                    "complete annual evidence counts disagree with its report"
+                )
         # Scientific declarations and transformation history have one validator.
         DatasetMetadata(
             spec=self.spec,
@@ -419,6 +445,20 @@ def validate_evidence(
     keys: set[tuple[object, ...]] = set()
     supports: dict[str, tuple[bytes | None, int | None]] = {}
     missing = 0
+    reduction = next(
+        (p for p in reversed(metadata.provenance) if isinstance(p, TemporalReduction)),
+        None,
+    )
+    annual = reduction is not None and _annual_sampling(reduction.output_sampling)
+    slots = None
+    if reduction is not None:
+        if metadata.sampling != reduction.output_sampling:
+            raise ValueError("sampling contradicts the last temporal reduction")
+        if reduction.operation is ReductionKind.ROLLING_TOTAL:
+            assert reduction.window is not None
+            slots = int(reduction.window.value)
+        else:
+            slots = _sampling_slots(reduction.input_sampling, daily=not annual)
     for record in table.to_pylist():
         for name in ("variable_id", "support_id"):
             _identifier(record[name], name)
@@ -525,6 +565,8 @@ def validate_evidence(
                 "projection requires a value, interval, or retained failure"
             )
         quality = record.get("coverage")
+        if reduction is not None and quality is None:
+            raise ValueError("reduced temporal evidence requires row coverage")
         if quality is not None:
             if (
                 type(quality["valid"]) is not int
@@ -539,6 +581,26 @@ def validate_evidence(
             fraction = _number(quality["minimum_fraction"], "minimum_fraction")
             if not 0 < fraction <= 1:
                 raise ValueError("minimum coverage fraction must lie in (0, 1]")
+            if reduction is not None:
+                assert slots is not None
+                stamp = record["time"]
+                if len(stamp) != (4 if annual else 10):
+                    raise ValueError(
+                        "reduced evidence must label its calendar year or day"
+                    )
+                year = int(stamp[:4])
+                expected = (
+                    _year_slots(reduction.input_sampling, slots, year)
+                    if annual
+                    else slots
+                )
+                if (
+                    fraction != reduction.coverage.fraction
+                    or quality["expected"] != expected
+                ):
+                    raise ValueError(
+                        "row coverage contradicts the declared temporal reduction"
+                    )
             if value is not None and (
                 quality["valid"] != quality["expected"]
                 if fraction == 1.0

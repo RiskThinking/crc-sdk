@@ -11,6 +11,7 @@ import crc_framework as cf
 import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
 import pytest
+from jsonschema import Draft202012Validator
 
 from crc_sdk import (
     Assets,
@@ -110,9 +111,68 @@ def test_contextual_impact_persists_verified_user_cases(tmp_path: Path) -> None:
     assert (
         first.context is not None and first.context.to_json() == cases[0][0].to_json()
     )
+    reopened_model = result.metadata.responses[0].model
+    assert isinstance(reopened_model, ContextualImpact)
+    assert isinstance(first.context, reopened_model.requirements.context_type)
+    assert getattr(first.context, "use") == Use.DEPOT.value
+    Draft202012Validator.check_schema(first.context.schema)
     forged = replace(first, impact=office)
     with pytest.raises(ValueError, match="contradicts the calibrated case"):
         replace(result.metadata, resolutions=(forged, second))
+    missing = recipe.impact(
+        "closure",
+        model,
+        variable=_DEPTH,
+        context=Facility(assets.column("unknown")),
+        replace=True,
+    )
+    assert [r.code for r in missing.inspect().requirements] == [
+        "asset_context_columns_required"
+    ]
+
+
+def test_reopened_artifact_rejects_inconsistent_retained_attributes(
+    tmp_path: Path,
+) -> None:
+    @dataclass(frozen=True)
+    class Facility(ResponseContext):
+        use: str | ColumnBinding
+
+    measurement = cf.DepthAboveGround(unit=cf.LengthUnit.METRE)
+    office = cf.Impact.linear(slope=2, input=measurement, output=cf.Ratio())
+    model = ContextualImpact([(Facility("office"), office)])
+    assets = Assets(
+        {
+            "asset_id": ["x"],
+            "longitude": [24.0],
+            "latitude": [60.0],
+            "use": ["office"],
+        },
+        columns=["use"],
+    )
+    saved = (
+        _depth(measurement)
+        .evaluate(assets)
+        .probabilities([0.5])
+        .impact(
+            "closure",
+            model,
+            variable=_DEPTH,
+            context=Facility(assets.column("use")),
+        )
+        .write(tmp_path / "original.parquet")
+    )
+    table = pq.read_table(saved.path)
+    rows = table.to_pylist()
+    rows[0]["asset"]["use"] = "depot"
+    altered = tmp_path / "altered.parquet"
+    pq.write_table(pa.Table.from_pylist(rows, schema=table.schema), altered)
+    artifact = EvaluationArtifact.open(altered)
+    assert artifact.validate(runtime=Runtime(batch_rows=1)).valid is False
+    with pytest.raises(
+        ValidationError, match="retained attributes disagree across rows"
+    ):
+        artifact.read()
 
 
 def test_contextual_impact_checks_measurements_and_unknown_cases() -> None:

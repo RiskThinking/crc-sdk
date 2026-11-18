@@ -18,6 +18,8 @@ from crc_sdk._dataset_schema import (
     DatasetMetadata,
     ExecutionCounts,
     ExecutionReport,
+    ReleaseReference,
+    SourceIdentity,
     SpatialContract,
     SupportKind,
 )
@@ -30,13 +32,24 @@ ROOT = Path(__file__).resolve().parents[1] / "crc_sdk" / "contracts"
 def collection_fixtures() -> dict[str, object]:
     period = Period.window(1991, 2020)
     variable = Variable("company:depth")
+    source = SourceIdentity(
+        provider="project",
+        product="depth",
+        model="model-a",
+        member="r1",
+        release=ReleaseReference("first", "sha256:" + "c" * 64),
+    )
     report = ExecutionReport(
-        True, True, counts=ExecutionCounts(requested=1, produced=1)
+        True,
+        True,
+        counts=ExecutionCounts(requested=1, produced=1),
+        source_identities=(source,),
     )
     dataset = DatasetMetadata(
         spec=DataSpec([variable], series=[SeriesSpec(variable, period=period)]),
         spatial=SpatialContract(supports=(SupportKind.POINT,)),
         report=report,
+        source=source,
     )
     selected = CollectionMetadata(
         members=(CollectionMember(id="company baseline", resource_ids=("r1",)),),
@@ -52,7 +65,15 @@ def collection_fixtures() -> dict[str, object]:
             members=("company baseline",),
             variables=(variable,),
             periods=(period,),
-            series=(SeriesReference(variable, period=period),),
+            series=(
+                SeriesReference(
+                    variable,
+                    period=period,
+                    release=source.release,
+                    model=source.model,
+                    member=source.member,
+                ),
+            ),
         ),
         report=report,
     )
@@ -75,6 +96,8 @@ def collection_fixtures() -> dict[str, object]:
     unknown_record["workflow"] = "removed"
     wrong_period = deepcopy(document)
     wrong_period["selection"]["periods"][0]["id"] = "period:" + "0" * 64
+    wrong_model = deepcopy(document)
+    wrong_model["selection"]["series"][0]["model"] = "model-b"
     return {
         "accepted": [
             {"name": "typed-selection", "document": document},
@@ -89,6 +112,7 @@ def collection_fixtures() -> dict[str, object]:
                 ("external-resource", True, external_path),
                 ("unknown-record", True, unknown_record),
                 ("wrong-period-id", False, wrong_period),
+                ("wrong-source-model", False, wrong_model),
             )
         ],
     }

@@ -23,6 +23,7 @@ from ._declarations import (
 
 if TYPE_CHECKING:
     from ._evidence import EvidenceMetadata
+    from ._graph import ObservationSupport
 
 
 class TimestampPosition(Enum):
@@ -482,6 +483,21 @@ def _sampling_slots(sampling: Sampling, *, daily: bool) -> int:
     return round(per_day)
 
 
+def _annual_sampling(sampling: Sampling | None) -> bool:
+    return (
+        sampling is not None
+        and sampling.step.unit is cf.TimeUnit.YEAR
+        and sampling.step.value == 1
+    )
+
+
+def _year_slots(sampling: Sampling, slots: int, year: int) -> int:
+    if sampling.step.unit in (cf.TimeUnit.MONTH, cf.TimeUnit.YEAR):
+        return slots
+    days = sum(days_in_month(year, month, sampling.calendar) for month in range(1, 13))
+    return days * slots
+
+
 def _measurement_daily(
     variable: Variable, sampling: Sampling
 ) -> tuple[Variable, float]:
@@ -613,7 +629,11 @@ def aggregation_metadata(
 
 
 def aggregate_table(
-    table: pa.Table, metadata: EvidenceMetadata, specification: Aggregation
+    table: pa.Table,
+    metadata: EvidenceMetadata,
+    specification: Aggregation,
+    *,
+    empty_supports: tuple[ObservationSupport, ...] = (),
 ) -> tuple[pa.Table, EvidenceMetadata]:
     from ._dataset_schema import (
         ExecutionCounts,
@@ -705,18 +725,36 @@ def aggregate_table(
                 f"must lie in [{earliest}, 9999]"
             )
         requested_bounds = first, last
+    if not groups and requested_bounds is not None:
+        for series in metadata.spec.series:
+            for support in empty_supports:
+                identity = (
+                    series.variable.id,
+                    None if series.scenario is None else series.scenario.id,
+                    None if series.period is None else series.period.id,
+                    support.id,
+                    support.cell_id,
+                )
+                groups[identity] = {}
+                templates[identity] = dict(
+                    zip(
+                        (
+                            "variable_id",
+                            "scenario_id",
+                            "period_id",
+                            "support_id",
+                            "cell_id",
+                        ),
+                        identity,
+                        strict=True,
+                    ),
+                    geometry=support.geometry,
+                )
     for identity, buckets in groups.items():
         first, last = requested_bounds or (min(buckets), max(buckets))
         for bucket in range(first, last + 1):
             observations = list(buckets.get(bucket, {}).values())
-            expected = (
-                slots
-                if daily or calendar_step
-                else sum(
-                    days_in_month(bucket, m, sampling.calendar) for m in range(1, 13)
-                )
-                * slots
-            )
+            expected = slots if daily else _year_slots(sampling, slots, bucket)
             values = [
                 float(cast(float, r["value"])) * scales[cast(str, identity[0])]
                 for r in observations

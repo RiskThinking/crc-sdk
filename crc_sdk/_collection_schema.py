@@ -126,14 +126,25 @@ def _typed_match(
 def _reference_matches(
     item: SeriesSpec,
     reference: SeriesReference,
-    release: ReleaseReference | None,
+    source: SourceIdentity | None,
+    *,
+    check_science: bool = True,
 ) -> bool:
     if _series_key(item) != _series_key(reference):
         return False
+    release = None if source is None else source.release
     if reference.release is not None and _release_key(
         reference.release
     ) != _release_key(release):
         return False
+    if any(
+        getattr(reference, name) is not None
+        and (source is None or getattr(reference, name) != getattr(source, name))
+        for name in ("model", "member")
+    ):
+        return False
+    if not check_science:
+        return True
     for actual, requested in (
         (item.variable, reference.variable),
         (item.scenario, reference.scenario),
@@ -163,12 +174,18 @@ def _series_document(reference: SeriesReference) -> dict[str, object]:
         result["release"] = reference.release._document()
     if reference.probability is not None:
         result["probability"] = reference.probability._document()
+    if reference.model is not None:
+        result["model"] = reference.model
+    if reference.member is not None:
+        result["member"] = reference.member
     return result
 
 
 def _series_reference(value: object) -> SeriesReference:
     record = _object(
-        value, {"variable", "scenario", "period"}, {"release", "probability"}
+        value,
+        {"variable", "scenario", "period"},
+        {"release", "probability", "model", "member"},
     )
     return SeriesReference(
         variable=_variable(record["variable"]),
@@ -178,6 +195,12 @@ def _series_reference(value: object) -> SeriesReference:
         if "probability" not in record
         else _probability(record["probability"]),
         release=None if "release" not in record else _release(record["release"]),
+        model=None
+        if "model" not in record
+        else _identifier(record["model"], "series model"),
+        member=None
+        if "member" not in record
+        else _identifier(record["member"], "series member"),
     )
 
 
@@ -445,7 +468,6 @@ class CollectionMetadata:
         requested = tuple(map(_requested_ids, filters))
         for resource in self.resources:
             metadata = resource.metadata
-            release = None if metadata.source is None else metadata.source.release
             for item in metadata.spec.series:
                 for actual, allowed, descriptors in zip(
                     (item.variable, item.scenario, item.period),
@@ -461,7 +483,7 @@ class CollectionMetadata:
                         )
                     _typed_match(descriptors, actual)
                 if selection.series is not None and not any(
-                    _reference_matches(item, reference, release)
+                    _reference_matches(item, reference, metadata.source)
                     for reference in selection.series
                 ):
                     raise ValueError(
@@ -584,6 +606,8 @@ def collection_metadata_schema() -> dict[str, object]:
                         "period": {"anyOf": [reference("period"), {"type": "null"}]},
                         "release": reference("release"),
                         "probability": reference("probability"),
+                        "model": identifier,
+                        "member": identifier,
                     },
                     ["variable", "scenario", "period"],
                 ),

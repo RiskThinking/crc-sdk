@@ -91,6 +91,7 @@ from ._source_io import (
     native_data,
     payload_selection,
     release_snapshot,
+    selected_series_period,
     selected_source_time,
 )
 from ._source_io import (
@@ -681,8 +682,10 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
         state: SelectionState = SelectionState(),
         raw: bool = False,
     ) -> None:
+        period = state.time
         if provider in ("ghcnh", "isd", "usgs", "hydat", "eccc"):
             time = _station_period(selected_source_time(state))
+            period = _station_period(selected_series_period(state)) or time
             state = replace(
                 state,
                 time=time,
@@ -715,6 +718,7 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
             raise TypeError("coverage must be Coverage or None")
         self.coverage = Coverage.complete() if coverage is None else coverage
         self.agency, self.state = agency, state
+        self.period = period
         self.key = _key(
             "native_source",
             provider,
@@ -1084,7 +1088,7 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
             series = [
                 SeriesSpec(
                     variable,
-                    period=self.state.time,
+                    period=self.period,
                     probability=(
                         Probability.annual(
                             tail=cf.Tail.UPPER
@@ -1331,7 +1335,7 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
                     for row in records:
                         row["variable_id"] = output_variable.id
                         row["period_id"] = (
-                            None if self.state.time is None else self.state.time.id
+                            None if self.period is None else self.period.id
                         )
                     records = [row for row in records if resolved.matches_record(row)]
                     diagnostic_records.extend(changed.report.diagnostics)
@@ -1374,9 +1378,7 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
                     row["coordinate"] = {"kind": "time", "time": str(year)}
                     row["interval"] = None
                 else:
-                    row["period_id"] = (
-                        None if self.state.time is None else self.state.time.id
-                    )
+                    row["period_id"] = None if self.period is None else self.period.id
                 if not resolved.matches_record(row):
                     continue
                 if metadata.kind is EvidenceKind.PROJECTIONS:

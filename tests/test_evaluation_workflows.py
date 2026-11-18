@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from dataclasses import replace
 from pathlib import Path
 
 import crc_framework as cf
@@ -14,14 +16,19 @@ from crc_sdk import (
     Bounds,
     Dataset,
     DatasetCollection,
+    DataSpec,
     Distance,
     EvaluationArtifact,
     EvaluationMetadata,
     Period,
     Probability,
+    QuantileColumns,
     QueryKind,
+    ReleaseReference,
     Runtime,
     Samples,
+    SeriesSpec,
+    SourceIdentity,
     SpatialMatch,
     Stage,
     ValidationError,
@@ -29,6 +36,7 @@ from crc_sdk import (
 )
 from crc_sdk._dataset_schema import DatasetMetadata
 from crc_sdk._graph import ExecutionScope, Node, NodeStream
+from crc_sdk._schema import dataset_arrow_schema
 
 DEPTH = cf.DepthAboveGround(unit=cf.LengthUnit.METRE)
 VARIABLE = Variable("company:water-depth", measurement=DEPTH)
@@ -238,6 +246,59 @@ def test_response_projection_avoids_conflicts_in_explicit_unrelated_variables() 
     with pytest.raises(ValueError, match="unknown requested identity 'typo'"):
         recipe.select(variables=[VARIABLE, "typo"]).read()
 
+    selected = collection.select(
+        series=[annual().inspect().series[0], member(unrelated).inspect().series[0]]
+    )
+    response_only = (
+        selected.evaluate(sites(0))
+        .probabilities([0.9])
+        .impact("ratio", model, variable=VARIABLE)
+        .select(responses="ratio")
+    )
+    assert response_only.read().table["value"].to_pylist() == [2.0]
+    renamed = collection.rename(variables={VARIABLE.id: "renamed"})
+    response_only = (
+        renamed.evaluate(sites(0))
+        .probabilities([0.9])
+        .impact("ratio", model, variable="renamed")
+        .select(responses="ratio")
+    )
+    assert response_only.read().table["value"].to_pylist() == [2.0]
+
+
+def test_direct_response_and_variable_selection_scope_inspection_and_results() -> None:
+    other = Variable("other", measurement=DEPTH)
+    source = Dataset.from_quantiles(
+        {
+            "support_id": ["site"] * 4,
+            "longitude": [0.0] * 4,
+            "latitude": [0.0] * 4,
+            "probability": [0.5, 0.9] * 2,
+            "value": [1.0, 2.0, 3.0, 4.0],
+            "variable": [VARIABLE.id, VARIABLE.id, other.id, other.id],
+        },
+        spec=DataSpec(
+            [VARIABLE, other], series=[SeriesSpec(VARIABLE), SeriesSpec(other)]
+        ),
+        columns=QuantileColumns(variable_id="variable"),
+    )
+    model = cf.Impact.linear(slope=2, input=DEPTH, output=cf.Ratio())
+    recipe = (
+        source.evaluate(sites(0))
+        .probabilities([0.5])
+        .impact("primary", model, variable=VARIABLE)
+        .impact("secondary", model, variable=other)
+    )
+
+    selected = recipe.select(variables=[VARIABLE, other], responses="primary")
+    assert [reference.variable.id for reference in selected.inspect().series] == [
+        VARIABLE.id
+    ]
+    assert selected.read().table["variable_id"].to_pylist() == [VARIABLE.id]
+    assert recipe.select(variables=VARIABLE).read().table[
+        "response_id"
+    ].to_pylist() == [None, "primary"]
+
 
 def test_named_responses_share_the_input_event_and_survive_reopening(
     tmp_path: Path,
@@ -339,6 +400,51 @@ def test_reopened_artifact_preserves_overflow_as_response_failure(
     assert result.table["value"].to_pylist() == [1.0, 2.0, 1e308, None]
     assert result.table["failure"][-1].as_py()["code"] == "non_finite_result"
     assert result.report.valid is True
+
+
+@pytest.mark.parametrize(
+    ("change", "diagnostic"),
+    [
+        ("release", "source version disagrees"),
+        ("diagnostics", "report omits diagnostics"),
+    ],
+)
+def test_reopened_evaluation_checks_source_versions_and_diagnostics(
+    tmp_path: Path, change: str, diagnostic: str
+) -> None:
+    source = SourceIdentity(
+        provider="project",
+        product="depth",
+        release=ReleaseReference("first", "sha256:" + "a" * 64),
+    )
+    result = annual().read()
+    base = tmp_path / "base.parquet"
+    metadata = replace(result.metadata, source=source)
+    pq.write_table(
+        result.table.replace_schema_metadata(dataset_arrow_schema(metadata).metadata),
+        base,
+    )
+    saved = (
+        Dataset.open(base)
+        .evaluate(sites(0))
+        .probabilities([0.5, 0.9])
+        .write(tmp_path / "events.parquet")
+    )
+    assert EvaluationArtifact.open(saved.path).validate().valid is True
+    evaluation = pq.read_table(saved.path)
+    headers = dict(evaluation.schema.metadata)
+    document = json.loads(headers[b"crc.evaluation"])
+    if change == "release":
+        document["inputs"][0]["metadata"]["source"]["release"]["id"] = "second"
+    else:
+        document["report"]["diagnostics"] = []
+    headers[b"crc.evaluation"] = json.dumps(document).encode()
+    altered = tmp_path / "altered.parquet"
+    pq.write_table(evaluation.replace_schema_metadata(headers), altered)
+    artifact = EvaluationArtifact.open(altered)
+    assert artifact.validate().valid is False
+    with pytest.raises(ValidationError, match=diagnostic):
+        artifact.read()
 
 
 def test_bounded_nearest_and_lower_tail_queries() -> None:

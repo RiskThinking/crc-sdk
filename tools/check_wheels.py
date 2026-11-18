@@ -11,6 +11,7 @@ from pathlib import Path
 
 import crc_framework
 from crc_framework import _core
+from crc_framework._version import python_version
 
 import crc_sdk
 
@@ -39,10 +40,11 @@ def main() -> None:
     versions = ledgers[0]["packages"]
     for distribution, key in (("crc-framework", "framework"), ("crc-sdk", "sdk")):
         actual = importlib.metadata.version(distribution)
-        if actual != versions[key]:
-            raise SystemExit(
-                f"{distribution}: expected {versions[key]}, found {actual}"
-            )
+        expected = (
+            python_version(versions[key]) if key == "framework" else versions[key]
+        )
+        if actual != expected:
+            raise SystemExit(f"{distribution}: expected {expected}, found {actual}")
     if _core.__version__ != versions["framework"]:
         raise SystemExit("native framework version differs from its distribution")
 

@@ -119,6 +119,9 @@ print(recipe.inspect(runtime=runtime).series[0].period)
 Use the same workflow with `NEX`. Filtering inspection by an indicator or model
 can shorten the list. Inspect saved samples for a reference that includes the
 verified payload release as well as the model, scenario, member, and period.
+An unpinned, dated series can be read over a smaller observation window with
+`select(series=reference, time=...)`. The series retains its declared period
+and the metadata records the narrower observation window.
 
 ERA5, CMIP6, NEX, JRC, and EDO discovery provides the available science and
 coverage. Their catalogues lack content checksums for every native object, so
@@ -205,6 +208,9 @@ Annual reductions retain missing years in an explicit time selection for each
 identified support. Saved metadata retains the calendar, sampling, completeness,
 measurement changes, and reductions. An irregular series can be read without
 `Sampling`. Aggregation requires a known cadence.
+When an ERA5 selection has no hourly records, annual reduction in the same
+recipe can still report missing years for the known grid cells. The raw view has
+no source observations for those years.
 
 ## Discover stations and keep source identities
 
@@ -229,6 +235,8 @@ Unavailable station-years appear as `UnavailableStationYear` diagnostics with
 the station ID, year, and required coverage fraction. The report counts them as
 requested and incomplete years. Source rows with known support carry their
 actual coverage and any failure directly.
+Snapshot checks use the absence status of a missing station resource. A new
+HTTP request identifier leaves a missing year pinned to the same absence.
 Raw GHCNh/ISD reports remain irregular. Their named annual recipes require all
 24 distinct hours for a complete day and then apply the declared annual rule.
 

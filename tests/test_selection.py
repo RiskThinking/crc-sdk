@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 
 import crc_framework as cf
 import pytest
@@ -370,7 +370,10 @@ def test_converted_fitted_law_retains_original_fit_and_parametric_source() -> No
     spec = DataSpec([original], series=[SeriesSpec(original)])
     fitted = cf.fit_samples(
         [100, 110, 120, 140, 180, 210],
-        cf.SampleFit(family=cf.DistributionFamily.GUMBEL_RIGHT),
+        cf.SampleFit(
+            family=cf.DistributionFamily.GUMBEL_RIGHT,
+            constraints=cf.FitConstraints(probability=0.5, minimum_value=80),
+        ),
     )
     item = DatasetRow(
         variable_id="x",
@@ -396,6 +399,8 @@ def test_converted_fitted_law_retains_original_fit_and_parametric_source() -> No
     assert result.curve is not None and item.curve is not None
     assert result.curve.quantile(0.9) == pytest.approx(item.curve.quantile(0.9) / 100)
     validate_rows([result], changed)
+    with pytest.raises(ValueError, match="representation contradicts"):
+        validate_rows([result], replace(changed, provenance=()))
 
 
 @pytest.mark.parametrize(

@@ -727,8 +727,10 @@ def check_runtime(
         errors.append("crc_sdk: import did not come from --package-root")
     if importlib.metadata.version("crc-sdk") != release["packages"]["sdk"]:
         errors.append("crc-sdk: installed package version differs")
+    from crc_framework._version import python_version
+
     framework_version = importlib.metadata.version("crc-framework")
-    if framework_version != release["packages"]["framework"]:
+    if framework_version != python_version(release["packages"]["framework"]):
         errors.append(
             "crc-framework: installed package version differs from paired release"
         )

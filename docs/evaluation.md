@@ -69,6 +69,8 @@ the supplied quantile interval retains a row with a null value and the
 The default matches the actual support. A point covers its own location.
 A polygon covers the asset geometry within its declared footprint, including
 its boundary. H3 cells provide coverage when the series declares cell support.
+Equivalent delivery copies of the same original support are matched once.
+Conflicting geometry or models for one support raise a validation error.
 Unmatched assets retain rows with a null `support_id` and a failure reason.
 Overlapping covering supports raise a validation error by default. If you know
 which source supports should take priority, use
@@ -167,10 +169,12 @@ in metadata and linked through `resolution_id`. Reopening checks those
 assignments even when the bound columns are omitted from the output. Successful
 named responses have finite values. When saved exposure rows are available,
 full validation recomputes each named response and compares its value within a
-relative tolerance of `1e-12`.
-Use `select(responses=...)` to choose
-named rows explicitly. The returned table has one row per asset, participating
-series, requested coordinate, and exposure or named response.
+relative tolerance of `1e-12`. Validation also checks retained asset attributes,
+recorded source releases, and diagnostics for missing results.
+Use `select(responses=...)` to choose named rows explicitly. Source filters also
+limit the responses in the default selection. The returned table has one row
+per asset, participating series, requested coordinate, and exposure or named
+response.
 
 ### Calibrate your own cases
 

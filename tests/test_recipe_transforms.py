@@ -205,9 +205,9 @@ def test_fit_kind_validation_is_pure_even_for_empty_selection() -> None:
     sample = samples().select(variables=[])
     dataset = quantiles().select(variables=[])
     with pytest.raises(TypeError, match="sample"):
-        sample.fit(cf.QuantileFit(family=cf.DistributionFamily.GUMBEL_RIGHT))
+        sample.fit(cf.QuantileFit(family=cf.DistributionFamily.GUMBEL_RIGHT))  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="quantile"):
-        dataset.fit(cf.SampleFit(family=cf.DistributionFamily.GUMBEL_RIGHT))
+        dataset.fit(cf.SampleFit(family=cf.DistributionFamily.GUMBEL_RIGHT))  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="sample"):
         sample.fit(
             cf.ModelSelection(

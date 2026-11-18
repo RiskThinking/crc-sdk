@@ -42,7 +42,6 @@ from ._dataset_schema import (
     ExecutionDiagnostic,
     ExecutionReport,
     SourceIdentity,
-    SpatialContract,
     Stage,
     _dump,
     _identifier,
@@ -74,6 +73,7 @@ from ._recipes import (
 )
 from ._runtime import LocalPath, Runtime, _local_path
 from ._schema import dataset_arrow_schema
+from ._schema.dataset import _ROW_KEY
 from ._selection import (
     IdentifierSelector,
     PeriodSelector,
@@ -82,10 +82,10 @@ from ._selection import (
     SelectionState,
     SeriesSelector,
     VariableSelector,
+    _rename_mapping,
     _series_key,
     participating_spec,
     rename_metadata,
-    rename_spec,
     selected_metadata,
 )
 from ._source_io import native_data
@@ -100,10 +100,24 @@ class _Entry:
 
 @dataclass(frozen=True, slots=True)
 class _Plan:
-    metadata: CollectionMetadata
+    members: tuple[CollectionMember, ...]
     entries: Mapping[str, _Entry]
+    selection: CollectionSelection
     requirements: tuple[Requirement, ...] = ()
+    source: SourceIdentity | None = None
     bundle_resources: tuple[_BundleResourceNode, ...] = ()
+
+    def metadata(self) -> CollectionMetadata:
+        try:
+            return CollectionMetadata(
+                members=self.members,
+                resources=tuple(entry.resource for entry in self.entries.values()),
+                selection=self.selection,
+                report=ExecutionReport(False, None),
+                source=self.source,
+            )
+        except (ValueError, TypeError) as error:
+            raise _invalid(error, stage=Stage.SELECTION) from error
 
 
 def _known_ids(
@@ -149,14 +163,16 @@ def _project_entries(
     projected = {}
     for resource_id, entry in entries.items():
         original = entry.resource.metadata
-        release = None if original.source is None else original.source.release
         selected = []
         for item in original.spec.series:
+            matches: set[int] = set()
             if references is not None:
                 matches = {
                     index
                     for index, reference in enumerate(references)
-                    if _reference_matches(item, reference, release)
+                    if _reference_matches(
+                        item, reference, original.source, check_science=False
+                    )
                 }
                 matching_references.update(matches)
                 if not matches:
@@ -176,6 +192,9 @@ def _project_entries(
                 and item.variable.id not in projected_variables
             ):
                 continue
+            if references is not None:
+                for index in matches:
+                    _reference_matches(item, references[index], original.source)
             _typed_match(selection.variables, item.variable)
             _typed_match(selection.scenarios, item.scenario)
             _typed_match(selection.periods, item.period)
@@ -221,6 +240,11 @@ def _project_entries(
                 continue
             if _series_key(reference) not in series_keys:
                 raise ValueError(f"unknown series identity {_series_key(reference)!r}")
+            if reference.model is not None or reference.member is not None:
+                raise ValueError(
+                    "selected series release, model or member differs "
+                    "from the source snapshot"
+                )
             raise ValueError("selected series release differs from the source snapshot")
     return projected
 
@@ -393,7 +417,7 @@ class _CollectionNode(Node[CollectionMetadata]):
 
     def open(self, scope: ExecutionScope) -> NodeStream[CollectionMetadata]:
         plan = self.recipe._plan(scope, projected_variables=self.projected_variables)
-        metadata = plan.metadata
+        metadata = plan.metadata()
         started: list[_Entry] = []
         produced = 0
         no_data = 0
@@ -401,43 +425,31 @@ class _CollectionNode(Node[CollectionMetadata]):
         def batches() -> Iterator[pa.RecordBatch]:
             nonlocal produced, no_data
             for member in metadata.members:
-                member_check = None
+                member_check = (
+                    _Checked(
+                        scope, plan.entries[member.resource_ids[0]].resource.metadata
+                    )
+                    if len(member.resource_ids) > 1
+                    else None
+                )
                 for resource_id in member.resource_ids:
                     entry = plan.entries[resource_id]
                     started.append(entry)
-                    if member_check is None and len(member.resource_ids) > 1:
-                        contracts = tuple(
-                            plan.entries[key].resource.metadata.spatial
-                            for key in member.resource_ids
-                        )
-                        supports = tuple(
-                            dict.fromkeys(
-                                support
-                                for contract in contracts
-                                for support in contract.supports
-                            )
-                        )
-                        resolutions = {
-                            contract.index_resolution for contract in contracts
-                        }
-                        spatial = SpatialContract(
-                            supports=supports,
-                            index_resolution=(
-                                next(iter(resolutions))
-                                if len(resolutions) == 1
-                                else None
-                            ),
-                        )
-                        combined = replace(
-                            entry.resource.metadata,
-                            spec=metadata.spec,
-                            spatial=spatial,
-                            provenance=(),
-                        )
-                        member_check = _Checked(scope, combined)
                     for batch in scope.iter_batches(entry.node):
                         if member_check is not None:
-                            member_check.check(batch)
+                            # The resource streams already validate their own models.
+                            try:
+                                for row in batch.select(
+                                    (*_ROW_KEY, "geometry")
+                                ).to_pylist():
+                                    member_check._remember(
+                                        _dump(tuple(row[key] for key in _ROW_KEY)),
+                                        row["support_id"],
+                                        row["geometry"],
+                                        row["cell_id"],
+                                    )
+                            except (ValueError, TypeError) as error:
+                                raise _invalid(error) from error
                         result = pa.RecordBatch.from_arrays(
                             [
                                 pa.repeat(member.id, batch.num_rows),
@@ -758,14 +770,25 @@ class DatasetCollection:
         except (ValueError, TypeError) as error:
             raise _invalid(error) from error
         if self._collected_entries is not None:
-            return _Plan(manifest, self._collected_entries)
+            return _Plan(
+                manifest.members,
+                self._collected_entries,
+                manifest.selection,
+                source=manifest.source,
+            )
         assert self._path is not None
         resources = tuple(
             _BundleResourceNode(self._path, resource, manifest.selection.area)
             for resource in manifest.resources
         )
         entries = {node.resource.id: _Entry(node.resource, node) for node in resources}
-        return _Plan(manifest, entries, bundle_resources=resources)
+        return _Plan(
+            manifest.members,
+            entries,
+            manifest.selection,
+            source=manifest.source,
+            bundle_resources=resources,
+        )
 
     def _memory_inputs(
         self,
@@ -826,6 +849,7 @@ class DatasetCollection:
                     metadata.source.provider,
                     metadata.source.product,
                     metadata.source.member,
+                    metadata.source.model,
                     _release_key(metadata.source.release),
                     [resource.sha256 for resource in metadata.source.resources],
                 ),
@@ -887,18 +911,13 @@ class DatasetCollection:
             previous,
             **{name: getattr(self._selection, name) for name in self._overrides},
         )
-        try:
-            metadata = CollectionMetadata(
-                members=members,
-                resources=tuple(entry.resource for entry in selected.values()),
-                selection=state,
-                report=ExecutionReport(False, None),
-                source=source,
-            )
-        except (ValueError, TypeError) as error:
-            raise _invalid(error, stage=Stage.SELECTION) from error
         return _Plan(
-            metadata, selected, tuple(dict.fromkeys(requirements)), bundle_resources
+            members,
+            selected,
+            state,
+            tuple(dict.fromkeys(requirements)),
+            source,
+            bundle_resources,
         )
 
     def _plan(
@@ -912,10 +931,20 @@ class DatasetCollection:
             base = self._manifest_inputs()
         elif self._parent is not None:
             base = self._parent._plan(scope, inspect=inspect)
-            # Reconcile the effective mapping once across participating members,
-            # including unchanged identities in different physical resources.
-            rename_spec(
-                base.metadata.spec, variables=self._variables, scenarios=self._scenarios
+            # Validate injectivity over all participating identities. Unused scientific
+            # descriptors need not reconcile until after downstream selection.
+            specs = tuple(
+                entry.resource.metadata.spec for entry in base.entries.values()
+            )
+            _rename_mapping(
+                self._variables,
+                sorted({v.id for spec in specs for v in spec.variables}),
+                "variable",
+            )
+            _rename_mapping(
+                self._scenarios,
+                sorted({s.id for spec in specs for s in spec.scenarios}),
+                "scenario",
             )
             entries = {}
             for resource_id, entry in base.entries.items():
@@ -943,24 +972,22 @@ class DatasetCollection:
                     node,
                 )
             return self._participating(
-                base.metadata.members,
+                base.members,
                 entries,
-                _renamed_selection(
-                    base.metadata.selection, self._variables, self._scenarios
-                ),
+                _renamed_selection(base.selection, self._variables, self._scenarios),
                 base.requirements,
-                base.metadata.source,
+                base.source,
                 base.bundle_resources,
                 projected_variables,
             )
         else:
             return self._memory_inputs(scope, inspect, projected_variables)
         return self._participating(
-            base.metadata.members,
+            base.members,
             base.entries,
-            base.metadata.selection,
+            base.selection,
             base.requirements,
-            base.metadata.source,
+            base.source,
             base.bundle_resources,
             projected_variables,
         )
@@ -972,7 +999,7 @@ class DatasetCollection:
         projected_variables: frozenset[str] | None = None,
     ) -> Inspection:
         plan = self._plan(scope, inspect=True, projected_variables=projected_variables)
-        metadata = plan.metadata
+        metadata = plan.metadata()
         references = tuple(
             SeriesReference(
                 series.variable,
@@ -982,6 +1009,12 @@ class DatasetCollection:
                 if resource.metadata.source is None
                 else resource.metadata.source.release,
                 probability=series.probability,
+                model=None
+                if resource.metadata.source is None
+                else resource.metadata.source.model,
+                member=None
+                if resource.metadata.source is None
+                else resource.metadata.source.member,
             )
             for resource in metadata.resources
             for series in resource.metadata.spec.series

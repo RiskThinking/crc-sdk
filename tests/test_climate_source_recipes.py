@@ -13,13 +13,14 @@ import zarr
 from crc_sdk import Bounds, Cache, Calendar, Period, Runtime, ValidationError
 from crc_sdk._aggregation import (
     AnnualMaximum,
+    Coverage,
     DailyTotal,
     TemporalReduction,
     TimestampPosition,
 )
 from crc_sdk._climate_sampling import CMIP6, ERA5, NEX
 from crc_sdk._climate_sources import ECCCIDF, EDO, JRC
-from crc_sdk._dataset_schema import UnitConversion
+from crc_sdk._dataset_schema import ObservationTimeSelection, UnitConversion
 from crc_sdk._errors import CapabilityError
 from crc_sdk._evidence import EvidenceKind
 from crc_sdk._evidence_recipes import Observations
@@ -160,6 +161,102 @@ def test_era5_annual_results_retain_requested_years_outside_source_coverage(
     assert counts.requested == counts.produced == 4
     assert counts.usable_years == 1
     assert counts.incomplete_years == counts.no_data == 3
+
+
+def test_era5_raw_reductions_retain_empty_and_gapped_requested_years(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from crc_sdk import _climate_sampling as module
+
+    path = tmp_path / "rain.zarr"
+    group = _grid(path, variable="total_precipitation", hourly=True, days=2)
+    group["total_precipitation"][:] = 0.001
+    group["total_precipitation"].attrs["units"] = "m"
+    zarr.consolidate_metadata(str(path))
+    monkeypatch.setattr(
+        module, "ERA5_STORE", replace(module.ERA5_STORE, url=path.as_uri())
+    )
+    coverage = Coverage.minimum_fraction(0.001)
+    source = ERA5(
+        indicator=ERA5.Indicator.ANNUAL_MAXIMUM_DAILY_PRECIPITATION, coverage=coverage
+    )
+    for years, expected, observations in (
+        (Period.window(1999, 2000), [None, None], 0),
+        (Period.window(2000, 2002), [None, 24.0, None], 48),
+        (Period.window(2002, 2002), [None], 0),
+    ):
+        predefined = source.select(area=AREA, time=years).read()
+        raw = source.select(area=AREA, time=years).observations()
+        assert raw.read().table.num_rows == observations
+        early = raw.aggregate(DailyTotal()).aggregate(AnnualMaximum(coverage=coverage))
+        late = (
+            source.observations()
+            .aggregate(DailyTotal())
+            .aggregate(AnnualMaximum(coverage=coverage))
+            .select(area=AREA, time=years)
+        )
+        for explicit in (early, late):
+            result = explicit.read()
+            assert result.table["support_id"].equals(predefined.table["support_id"])
+            assert result.table["time"].equals(predefined.table["time"])
+            assert result.table["value"].to_pylist() == expected
+            assert result.report.counts == predefined.report.counts
+            assert result.metadata.source is not None
+            assert result.report.source_identities == (result.metadata.source,)
+
+
+@pytest.mark.parametrize(
+    ("time_start", "rain", "error"),
+    [
+        ("00:00:00", -0.001, "nonnegative source intervals"),
+        ("00:30:00", 0.001, "timestamps must identify hourly intervals"),
+    ],
+)
+def test_era5_predefined_reduction_checks_native_precipitation_inputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    time_start: str,
+    rain: float,
+    error: str,
+) -> None:
+    from crc_sdk import _climate_sampling as module
+
+    path = tmp_path / "rain.zarr"
+    group = _grid(path, variable="total_precipitation", hourly=True)
+    group["time"].attrs["units"] = f"hours since 2001-01-01 {time_start}"
+    group["total_precipitation"][:] = rain
+    group["total_precipitation"].attrs["units"] = "m"
+    zarr.consolidate_metadata(str(path))
+    monkeypatch.setattr(
+        module, "ERA5_STORE", replace(module.ERA5_STORE, url=path.as_uri())
+    )
+    source = ERA5(
+        indicator=ERA5.Indicator.ANNUAL_MAXIMUM_DAILY_PRECIPITATION,
+        coverage=Coverage.minimum_fraction(0.99),
+    ).select(area=AREA, time=Period.window(2001, 2001))
+    with pytest.raises(ValidationError, match=error):
+        source.read()
+
+
+def test_era5_inspected_period_survives_narrower_observation_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from crc_sdk import _climate_sampling as module
+
+    path = tmp_path / "era5.zarr"
+    _grid(path, variable="2m_temperature", hourly=True)
+    monkeypatch.setattr(
+        module, "ERA5_STORE", replace(module.ERA5_STORE, url=path.as_uri())
+    )
+    source = ERA5(indicator=ERA5.Indicator.ANNUAL_MAXIMUM_DAILY_MAXIMUM_TEMPERATURE)
+    dated = source.select(area=AREA, time=Period.window(2000, 2002)).inspect().series[0]
+    window = Period.window(2001, 2001, calendar=Calendar.GREGORIAN)
+    narrowed = ERA5().select(series=dated, area=AREA, time=window)
+    assert narrowed.inspect().series[0].period == dated.period
+    result = narrowed.read()
+    assert result.table["time"].to_pylist() == ["2001"]
+    assert result.metadata.spec.series[0].period == dated.period
+    assert result.metadata.provenance[-1] == ObservationTimeSelection(time=window)
 
 
 def test_cmip6_360_day_actual_calendar_and_reference_selection(
