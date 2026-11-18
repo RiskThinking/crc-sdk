@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import crc_framework as cf
+import pyarrow as pa  # type: ignore[import-untyped]
+import pyarrow.parquet as pq  # type: ignore[import-untyped]
 import pytest
 
 from crc_sdk import (
@@ -126,6 +128,117 @@ def test_selection_moved_across_evaluate_preserves_rows_and_errors() -> None:
     assert cleared.table["value"].to_pylist() == [1, 1]
 
 
+@pytest.mark.parametrize("use_collection", [False, True])
+def test_empty_period_selection_cannot_hide_unknown_variables(
+    use_collection: bool,
+) -> None:
+    dataset = data()
+    source = DatasetCollection({"baseline": dataset}) if use_collection else dataset
+    assets = sites(0)
+    for recipe in (
+        source.select(variables="unknown", periods=[]).evaluate(assets),
+        source.evaluate(assets).select(variables="unknown", periods=[]),
+    ):
+        evaluation = recipe.probabilities([0.9])
+        with pytest.raises(ValueError, match="unknown requested identity"):
+            evaluation.inspect()
+        with pytest.raises(ValueError, match="unknown requested identity"):
+            evaluation.read()
+
+    before = source.select(variables=VARIABLE, periods=[]).evaluate(assets)
+    after = source.evaluate(assets).select(variables=VARIABLE, periods=[])
+    first = before.probabilities([0.9]).read().table
+    second = after.probabilities([0.9]).read().table
+    assert first.num_rows == 0
+    assert first.equals(second, check_metadata=True)
+    assert first.schema.field("asset_id").type == pa.int64()
+
+
+def test_empty_member_selection_still_checks_explicit_variable_ids() -> None:
+    source = DatasetCollection({"baseline": data()})
+    for filtered in (
+        source.select(members=[], variables=VARIABLE),
+        source.evaluate(sites(0))
+        .select(members=[], variables=VARIABLE)
+        .probabilities([0.9]),
+    ):
+        assert filtered.read().table.num_rows == 0
+    with pytest.raises(ValueError, match="unknown requested identity"):
+        source.select(members=[], variables="unknown").read()
+
+
+def test_inspection_describes_retained_asset_fields_without_acquiring_assets(
+    tmp_path: Path,
+) -> None:
+    assets = Assets(
+        pa.table(
+            {
+                "asset_id": pa.array([2**64 - 1], type=pa.uint64()),
+                "longitude": [0.0],
+                "latitude": [0.0],
+                "portfolio": ["A"],
+            }
+        ),
+        columns=["portfolio"],
+    )
+    evaluation = data().evaluate(assets).probabilities([0.9])
+    declared = evaluation.inspect().schema
+    actual = evaluation.read().table.schema
+    assert declared is not None and declared.equals(actual)
+    assert declared.field("asset_id").type == pa.uint64()
+    assert declared.field("asset").type == pa.struct(
+        [pa.field("portfolio", pa.string())]
+    )
+
+    deferred = (
+        data()
+        .evaluate(Assets(tmp_path / "deferred.csv"))
+        .probabilities([0.9])
+        .inspect()
+    )
+    assert deferred.schema is None
+    assert [requirement.code for requirement in deferred.requirements] == [
+        "asset_schema_unresolved"
+    ]
+
+
+def test_response_projection_avoids_conflicts_in_explicit_unrelated_variables() -> None:
+    unrelated = Variable("unrelated", measurement=DEPTH)
+    conflicting = Variable(
+        unrelated.id, measurement=cf.DepthAboveGround(unit=cf.LengthUnit.CENTIMETRE)
+    )
+
+    def member(variable: Variable) -> Dataset:
+        return Dataset.from_quantiles(
+            {
+                "support_id": ["site", "site"],
+                "longitude": [0.0, 0.0],
+                "latitude": [0.0, 0.0],
+                "probability": [0.9, 0.99],
+                "value": [1.0, 2.0],
+            },
+            variable=variable,
+        )
+
+    collection = DatasetCollection(
+        {"depth": annual(), "left": member(unrelated), "right": member(conflicting)}
+    )
+    model = cf.Impact.linear(slope=2, input=DEPTH, output=cf.Ratio())
+    recipe = (
+        collection.select(variables=[VARIABLE, unrelated])
+        .evaluate(sites(0))
+        .probabilities([0.9])
+        .impact("ratio", model, variable=VARIABLE)
+        .select(responses="ratio")
+    )
+    result = recipe.read()
+    assert result.table["value"].to_pylist() == [2.0]
+    assert result.table["member_id"].to_pylist() == ["depth"]
+    assert [ref.variable.id for ref in recipe.inspect().series] == [VARIABLE.id]
+    with pytest.raises(ValueError, match="unknown requested identity 'typo'"):
+        recipe.select(variables=[VARIABLE, "typo"]).read()
+
+
 def test_named_responses_share_the_input_event_and_survive_reopening(
     tmp_path: Path,
 ) -> None:
@@ -172,6 +285,60 @@ def test_named_responses_share_the_input_event_and_survive_reopening(
     read = EvaluationArtifact.open(stored.path).read()
     assert read.table.equals(result.table, check_metadata=True)
     assert read.metadata == stored.metadata
+
+
+@pytest.mark.parametrize(
+    ("include_exposure", "value", "diagnostic"),
+    [
+        (True, 9999.0, "contradicts its model and exposure"),
+        (False, float("inf"), "requires a finite value"),
+    ],
+)
+def test_reopened_artifact_checks_named_response_values(
+    tmp_path: Path, include_exposure: bool, value: float, diagnostic: str
+) -> None:
+    model = cf.Impact.linear(slope=2, input=DEPTH, output=cf.Ratio())
+    evaluation = (
+        annual()
+        .evaluate(sites(0))
+        .return_periods([10, 100])
+        .impact("closure", model, variable=VARIABLE)
+    )
+    if not include_exposure:
+        evaluation = evaluation.select(responses="closure")
+    saved = evaluation.write(tmp_path / "events.parquet")
+    runtime = Runtime(batch_rows=1)
+    assert EvaluationArtifact.open(saved.path).validate(runtime=runtime).valid is True
+    table = pq.read_table(saved.path)
+    rows = table.to_pylist()
+    assert rows[-1]["value"] == 4.0
+    rows[-1]["value"] = value
+    changed = tmp_path / "changed.parquet"
+    pq.write_table(pa.Table.from_pylist(rows, schema=table.schema), changed)
+
+    invalid = EvaluationArtifact.open(changed)
+    report = invalid.validate(runtime=runtime)
+    assert report.valid is False
+    assert any(diagnostic in issue.message for issue in report.diagnostics)
+    with pytest.raises(ValidationError, match=diagnostic):
+        invalid.read(runtime=runtime)
+
+
+def test_reopened_artifact_preserves_overflow_as_response_failure(
+    tmp_path: Path,
+) -> None:
+    limit = cf.Impact.linear(slope=1e308, input=DEPTH, output=cf.Ratio())
+    evaluation = (
+        annual()
+        .evaluate(sites(0))
+        .return_periods([10, 100])
+        .impact("closure", limit, variable=VARIABLE)
+    )
+    saved = evaluation.write(tmp_path / "events.parquet")
+    result = EvaluationArtifact.open(saved.path).read()
+    assert result.table["value"].to_pylist() == [1.0, 2.0, 1e308, None]
+    assert result.table["failure"][-1].as_py()["code"] == "non_finite_result"
+    assert result.report.valid is True
 
 
 def test_bounded_nearest_and_lower_tail_queries() -> None:

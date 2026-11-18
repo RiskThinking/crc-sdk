@@ -3585,6 +3585,306 @@
       "structural": false
     },
     {
+      "name": "infinite-named-response",
+      "document": {
+        "metadata": {
+          "asset_fields": "/////3gAAAAQAAAAAAAKAAwABgAFAAgACgAAAAABBAAMAAAACAAIAAAABAAIAAAABAAAAAEAAAAUAAAAEAAUAAgAAAAHAAwAAAAQABAAAAAAAAAFEAAAACAAAAAEAAAAAAAAAAgAAABhc3NldF9pZAAAAAAEAAQABAAAAAAAAAA=",
+          "asset_ids": [
+            "a"
+          ],
+          "include_exposure": true,
+          "inputs": [
+            {
+              "member_id": null,
+              "metadata": {
+                "provenance": [],
+                "report": {
+                  "complete": true,
+                  "counts": {
+                    "incomplete_years": 0,
+                    "matched_assets": 0,
+                    "no_data": 0,
+                    "produced": 1,
+                    "requested": 1,
+                    "skipped": 0,
+                    "unmatched_assets": 0,
+                    "usable_years": 0
+                  },
+                  "diagnostics": [],
+                  "source_identities": [],
+                  "valid": true
+                },
+                "schema_version": "2.0",
+                "spatial": {
+                  "index_resolution": 9,
+                  "supports": [
+                    "point"
+                  ]
+                },
+                "spec": {
+                  "periods": [],
+                  "scenarios": [],
+                  "series": [
+                    {
+                      "period_id": null,
+                      "probability": {
+                        "kind": "annual",
+                        "tail": "upper"
+                      },
+                      "scenario_id": null,
+                      "variable_id": "project:depth"
+                    }
+                  ],
+                  "variables": [
+                    {
+                      "id": "project:depth",
+                      "measurement": {
+                        "kind": "depth_above_ground",
+                        "unit": "m"
+                      }
+                    }
+                  ]
+                }
+              },
+              "resource_id": null
+            }
+          ],
+          "query": {
+            "kind": "return_period",
+            "values": [
+              100.0
+            ]
+          },
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 1,
+              "no_data": 0,
+              "produced": 2,
+              "requested": 2,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [],
+            "source_identities": [],
+            "valid": true
+          },
+          "resolutions": [],
+          "responses": [
+            {
+              "model": {
+                "input": {
+                  "kind": "depth_above_ground",
+                  "unit": "m"
+                },
+                "model": {
+                  "intercept": 0,
+                  "kind": "linear",
+                  "slope": 2
+                },
+                "output": {
+                  "kind": "time_duration",
+                  "unit": "d"
+                },
+                "schema_version": "2.0"
+              },
+              "name": "downtime",
+              "variable_id": "project:depth"
+            }
+          ],
+          "schema_version": "2.0",
+          "spatial": {
+            "kind": "covering"
+          }
+        },
+        "rows": [
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": null,
+            "resolution_id": null,
+            "query_value": 100.0,
+            "value": 1.6,
+            "failure": null
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": "downtime",
+            "resolution_id": null,
+            "query_value": 100.0,
+            "value": "Infinity",
+            "failure": null
+          }
+        ]
+      },
+      "structural": true
+    },
+    {
+      "name": "response-value-mismatch",
+      "document": {
+        "metadata": {
+          "asset_fields": "/////3gAAAAQAAAAAAAKAAwABgAFAAgACgAAAAABBAAMAAAACAAIAAAABAAIAAAABAAAAAEAAAAUAAAAEAAUAAgAAAAHAAwAAAAQABAAAAAAAAAFEAAAACAAAAAEAAAAAAAAAAgAAABhc3NldF9pZAAAAAAEAAQABAAAAAAAAAA=",
+          "asset_ids": [
+            "a"
+          ],
+          "include_exposure": true,
+          "inputs": [
+            {
+              "member_id": null,
+              "metadata": {
+                "provenance": [],
+                "report": {
+                  "complete": true,
+                  "counts": {
+                    "incomplete_years": 0,
+                    "matched_assets": 0,
+                    "no_data": 0,
+                    "produced": 1,
+                    "requested": 1,
+                    "skipped": 0,
+                    "unmatched_assets": 0,
+                    "usable_years": 0
+                  },
+                  "diagnostics": [],
+                  "source_identities": [],
+                  "valid": true
+                },
+                "schema_version": "2.0",
+                "spatial": {
+                  "index_resolution": 9,
+                  "supports": [
+                    "point"
+                  ]
+                },
+                "spec": {
+                  "periods": [],
+                  "scenarios": [],
+                  "series": [
+                    {
+                      "period_id": null,
+                      "probability": {
+                        "kind": "annual",
+                        "tail": "upper"
+                      },
+                      "scenario_id": null,
+                      "variable_id": "project:depth"
+                    }
+                  ],
+                  "variables": [
+                    {
+                      "id": "project:depth",
+                      "measurement": {
+                        "kind": "depth_above_ground",
+                        "unit": "m"
+                      }
+                    }
+                  ]
+                }
+              },
+              "resource_id": null
+            }
+          ],
+          "query": {
+            "kind": "return_period",
+            "values": [
+              100.0
+            ]
+          },
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 1,
+              "no_data": 0,
+              "produced": 2,
+              "requested": 2,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [],
+            "source_identities": [],
+            "valid": true
+          },
+          "resolutions": [],
+          "responses": [
+            {
+              "model": {
+                "input": {
+                  "kind": "depth_above_ground",
+                  "unit": "m"
+                },
+                "model": {
+                  "intercept": 0,
+                  "kind": "linear",
+                  "slope": 2
+                },
+                "output": {
+                  "kind": "time_duration",
+                  "unit": "d"
+                },
+                "schema_version": "2.0"
+              },
+              "name": "downtime",
+              "variable_id": "project:depth"
+            }
+          ],
+          "schema_version": "2.0",
+          "spatial": {
+            "kind": "covering"
+          }
+        },
+        "rows": [
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": null,
+            "resolution_id": null,
+            "query_value": 100.0,
+            "value": 1.6,
+            "failure": null
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": "downtime",
+            "resolution_id": null,
+            "query_value": 100.0,
+            "value": 12.0,
+            "failure": null
+          }
+        ]
+      },
+      "structural": false
+    },
+    {
       "name": "unmatched-count-mismatch",
       "document": {
         "metadata": {

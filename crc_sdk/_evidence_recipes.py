@@ -35,6 +35,7 @@ from ._recipes import (
     _ScientificNode,
     _select_node,
     _SelectionNode,
+    _static_source,
     _TableNode,
 )
 from ._runtime import LocalPath, Runtime, _local_path, _memory_bytes
@@ -127,7 +128,6 @@ class _AggregationNode(_ScientificNode[EvidenceMetadata]):
                 scenario=s.scenario,
                 period=s.period,
                 probability=s.probability,
-                release=None if original.source is None else original.source.release,
             )
             for s in original.spec.series
             if (
@@ -147,17 +147,23 @@ class _AggregationNode(_ScientificNode[EvidenceMetadata]):
     def _view_metadata(
         self, scope: ExecutionScope, metadata: EvidenceMetadata
     ) -> EvidenceMetadata:
-        return replace(self._planned(scope), report=scope.report(self))
+        known, source = _static_source(scope, self._source())
+        return replace(
+            self._planned(scope),
+            source=source if known else metadata.source,
+            report=scope.report(self),
+        )
 
     def _view_report(
         self, scope: ExecutionScope, report: ExecutionReport
     ) -> ExecutionReport:
+        known, source = _static_source(scope, self._source())
         parent = scope.report(self._input(scope))
         return _report_view(
             report,
             parent=parent,
             source_known=True,
-            source=scope.metadata(self._source()).source,
+            source=source if known else scope.computation_metadata(self).source,
         )
 
     def open(self, scope: ExecutionScope) -> NodeStream[EvidenceMetadata]:
@@ -178,10 +184,7 @@ class _AggregationNode(_ScientificNode[EvidenceMetadata]):
                         "Narrow select() or increase the limit."
                     )
                 parts.append(batch)
-            metadata = replace(
-                scope.computation_metadata(parent),
-                report=scope.computation_report(parent),
-            )
+            metadata = replace(scope.metadata(parent), report=scope.report(parent))
             table = pa.Table.from_batches(
                 parts, schema=evidence_arrow_schema(metadata)
             ).replace_schema_metadata(evidence_arrow_schema(metadata).metadata)

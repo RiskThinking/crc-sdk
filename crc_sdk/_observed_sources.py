@@ -37,6 +37,7 @@ from ._declarations import (
     Calendar,
     DataSpec,
     Period,
+    PeriodKind,
     Probability,
     Scenario,
     SeriesSpec,
@@ -80,7 +81,7 @@ from ._observed_decoders import (
 )
 from ._recipes import Dataset, Samples, _key
 from ._schema.dataset import DatasetRow, rows_to_table
-from ._selection import SelectionState, rename_metadata
+from ._selection import SelectionState, rename_metadata, selected_metadata
 from ._source_io import (
     SourceNode,
     check_release,
@@ -88,7 +89,9 @@ from ._source_io import (
     fetch_json,
     fetch_optional,
     native_data,
+    payload_selection,
     release_snapshot,
+    selected_source_time,
 )
 from ._source_io import (
     _json as decode_json,
@@ -655,6 +658,17 @@ def _catalogue(
     return selected, resources
 
 
+def _station_period(period: Period | None) -> Period | None:
+    if (
+        period is not None
+        and period.kind is PeriodKind.WINDOW
+        and period.calendar is None
+    ):
+        assert period.start is not None and period.end is not None
+        return Period.window(period.start, period.end, calendar=Calendar.GREGORIAN)
+    return period
+
+
 class _ObservedNode(SourceNode[EvidenceMetadata]):
     def __init__(
         self,
@@ -667,6 +681,34 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
         state: SelectionState = SelectionState(),
         raw: bool = False,
     ) -> None:
+        if provider in ("ghcnh", "isd", "usgs", "hydat", "eccc"):
+            time = _station_period(selected_source_time(state))
+            state = replace(
+                state,
+                time=time,
+                series=None
+                if state.series is None
+                else tuple(
+                    replace(ref, period=_station_period(ref.period) or time)
+                    for ref in state.series
+                ),
+            )
+        if (
+            provider in ("ghcnh", "isd")
+            and not raw
+            and indicator is None
+            and state.series is not None
+            and len(state.series) == 1
+        ):
+            requested = state.series[0].variable.id
+            indicator = next(
+                (
+                    candidate.id
+                    for candidate in _temperature_indicators()
+                    if requested == f"noaa:{provider}:{candidate.id}"
+                ),
+                None,
+            )
         self.raw = raw
         self.provider, self.release, self.indicator = provider, release, indicator
         if coverage is not None and not isinstance(coverage, Coverage):
@@ -708,8 +750,8 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
                 Requirement(
                     "indicator_required",
                     (
-                        "Choose an inspected IndicatorReference or the provider's "
-                        "Indicator enum."
+                        "Select an inspected series or choose an inspected "
+                        "IndicatorReference or the provider's Indicator enum."
                     ),
                     "indicator",
                 )
@@ -745,6 +787,9 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
     def _prepare(
         self, scope: ExecutionScope, *, verify_release: bool = True
     ) -> _Prepared:
+        expected = self.release
+        if verify_release:
+            _, expected = payload_selection(self.state, expected)
         if self.state.time is not None and self.state.time.calendar not in (
             None,
             Calendar.GREGORIAN,
@@ -911,7 +956,7 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
             else None
         )
         if release is not None and verify_release:
-            check_release(release, self.release)
+            check_release(release, expected)
         source = SourceIdentity(
             provider=self.provider,
             product={
@@ -1175,7 +1220,7 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
         prepared = self._prepare(scope)
         metadata = self._metadata(prepared)
         resolved = self.state.resolve(metadata.spec, source=metadata.source)
-        actual = replace(metadata, spec=resolved.spec)
+        actual = selected_metadata(metadata, resolved)
         final = actual
         count = missing = 0
 
@@ -1246,6 +1291,7 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
                         actual,
                         kind=EvidenceKind.OBSERVATIONS,
                         spec=raw_spec,
+                        provenance=(),
                         sampling=Sampling(
                             calendar=Calendar.GREGORIAN,
                             step=cf.Duration(1, unit=cf.TimeUnit.HOUR),
@@ -1297,6 +1343,7 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
                     final = replace(
                         changed,
                         spec=actual.spec,
+                        provenance=(*actual.provenance, *changed.provenance),
                         report=ExecutionReport(
                             False,
                             None,

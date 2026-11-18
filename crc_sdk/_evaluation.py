@@ -8,13 +8,14 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from dataclasses import replace as _replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Self, cast
+from typing import Self, cast
 
 import crc_framework as cf
 import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
 
 from ._assets import Assets
+from ._collection import DatasetCollection, _CollectionNode
 from ._collection_schema import CollectionMetadata
 from ._dataset_schema import (
     DatasetMetadata,
@@ -37,6 +38,7 @@ from ._evaluation_schema import (
     EvaluationRow,
     EvaluationValidator,
     QueryKind,
+    _apply_response,
     evaluation_arrow_schema,
     evaluation_metadata_from_schema,
     evaluation_table,
@@ -69,14 +71,14 @@ from ._selection import (
 from ._source_io import native_data
 from ._terminals import BatchStream, Execution, ReadResult
 
-if TYPE_CHECKING:
-    from ._collection import DatasetCollection
-
-
 _CAPABILITIES = (Capability.INSPECT, Capability.READ, Capability.BATCHES)
 _QUERY_REQUIRED = Requirement(
     "evaluation_query_required",
     "Choose probabilities(...) or return_periods(...) before evaluation.",
+)
+_ASSET_SCHEMA_UNRESOLVED = Requirement(
+    "asset_schema_unresolved",
+    "File and SQL asset schemas become available when the evaluation runs.",
 )
 
 
@@ -107,25 +109,27 @@ class _Plan:
     responses: tuple[Response, ...] = ()
     selection: _Selectors = _Selectors()
 
-    def _empty(self) -> bool:
-        state = self.selection
-        return any(
-            value == ()
-            for value in (
-                state.members,
-                state.variables,
-                state.scenarios,
-                state.periods,
-                state.series,
-                state.responses,
-            )
+    def _empty(self, source: Dataset | DatasetCollection) -> bool:
+        state = source._selection
+        selectors = (
+            state.variables,
+            state.scenarios,
+            state.periods,
+            state.series,
+            source._selection.members
+            if isinstance(source, DatasetCollection)
+            else None,
+        )
+        # Other explicit IDs still need validation before an empty result.
+        return (self.selection.responses == () or () in selectors) and not any(
+            selectors
         )
 
     def _selected_source(self) -> Dataset | DatasetCollection:
         state = self.selection
         source = self.source
         if isinstance(source, Dataset):
-            if state.members is not ... and state.members not in (None, ()):
+            if state.members is not ... and state.members is not None:
                 raise ValueError("Member IDs select a DatasetCollection")
             if state.members is ... and all(
                 value is ...
@@ -139,7 +143,7 @@ class _Plan:
             ):
                 return source
             return source.select(
-                variables=() if state.members == () else state.variables,
+                variables=state.variables,
                 scenarios=state.scenarios,
                 periods=state.periods,
                 series=state.series,
@@ -178,12 +182,34 @@ class _Plan:
 
     def _response_source(self) -> Dataset | DatasetCollection:
         source = self._selected_source()
-        if self.selection.responses and source._selection.variables is None:
+        if (
+            self.selection.responses
+            and source._selection.variables is None
+            and not self._empty(source)
+        ):
             targets = tuple(
                 dict.fromkeys(r.variable_id for r in self._selected_responses())
             )
             return source.select(variables=targets)
         return source
+
+    def _collection_projection(
+        self, source: DatasetCollection
+    ) -> frozenset[str] | None:
+        if self.selection.responses == ():
+            return frozenset()
+        if not self.selection.responses or source._selection.variables is None:
+            return None
+        selected = {
+            item if isinstance(item, str) else item.id
+            for item in source._selection.variables
+        }
+        participating = frozenset(
+            item.variable_id
+            for item in self._selected_responses()
+            if item.variable_id in selected
+        )
+        return participating or None
 
     def _require_query(self) -> EvaluationQuery:
         if self.query is None:
@@ -354,15 +380,41 @@ def _restrict_variables(
     )
 
 
-def _empty_metadata(
-    query: EvaluationQuery, spatial: SpatialMatch
-) -> EvaluationMetadata:
+def _asset_fields(assets: Assets, schema: pa.Schema | None = None) -> pa.Schema | None:
+    if schema is None:
+        schema = assets._retained_schema()
+    if schema is None:
+        return None
+    if assets.id_column not in schema.names:
+        raise ValueError(f"missing asset id column {assets.id_column!r}")
+    attributes = tuple(field for field in schema if field.name != assets.id_column)
+    if any(field.name == "asset_id" for field in attributes):
+        raise ValueError(
+            "Retained column 'asset_id' conflicts with the evaluation identifier. "
+            "Choose it as id_column or omit it from columns."
+        )
+    id_type = schema.field(assets.id_column).type
+    if pa.types.is_dictionary(id_type):
+        id_type = id_type.value_type
+    if pa.types.is_integer(id_type):
+        id_type = pa.uint64() if pa.types.is_unsigned_integer(id_type) else pa.int64()
+    else:
+        id_type = pa.string()
+    return pa.schema([pa.field("asset_id", id_type, nullable=False), *attributes])
+
+
+def _empty_metadata(query: EvaluationQuery, plan: _Plan) -> EvaluationMetadata:
+    fields = _asset_fields(plan.assets)
     return EvaluationMetadata(
         query=query,
-        spatial=spatial,
+        spatial=plan.spatial,
         asset_ids=(),
         include_exposure=False,
-        asset_fields=pa.schema([pa.field("asset_id", pa.string(), nullable=False)]),
+        asset_fields=(
+            pa.schema([pa.field("asset_id", pa.string(), nullable=False)])
+            if fields is None
+            else fields
+        ),
     )
 
 
@@ -370,9 +422,15 @@ class _EvaluationNode(Node[EvaluationMetadata]):
     def __init__(self, plan: _Plan) -> None:
         self.plan = plan
         self.source = plan._response_source()
-        self.parent = cast(
-            Node[DatasetMetadata | CollectionMetadata], self.source._node
+        source_node = (
+            _CollectionNode(
+                self.source,
+                projected_variables=plan._collection_projection(self.source),
+            )
+            if isinstance(self.source, DatasetCollection)
+            else self.source._node
         )
+        self.parent = cast(Node[DatasetMetadata | CollectionMetadata], source_node)
         self.responses = plan._selected_responses()
         self.key = _key(
             "evaluation",
@@ -400,10 +458,12 @@ class _EvaluationNode(Node[EvaluationMetadata]):
     def open(self, scope: ExecutionScope) -> NodeStream[EvaluationMetadata]:
         plan = self.plan
         query = plan._require_query()
-        if plan._empty():
+        if plan._empty(self.source):
             return self._empty(query)
         parent = self.parent
         declaration = scope.metadata(parent)
+        if plan.selection.responses == ():
+            return self._empty(query)
         inputs = _inputs(declaration)
         series = _series(inputs)
         exposure = plan.selection.responses is None
@@ -426,36 +486,10 @@ class _EvaluationNode(Node[EvaluationMetadata]):
         )
         with native_data(scope=scope, source="assets"):
             assets = plan.assets._materialize(scope, required_columns=required_columns)
-        asset_columns = tuple(
-            n for n in assets.table.column_names if n != assets.id_column
-        )
         ids = tuple(assets.table[assets.id_column].to_pylist())
-        if "asset_id" in asset_columns:
-            raise ValueError(
-                "Retained column 'asset_id' conflicts with the evaluation identifier. "
-                "Choose it as id_column or omit it from columns."
-            )
-        id_type = assets.table.schema.field(assets.id_column).type
-        if ids and isinstance(ids[0], int):
-            id_type = (
-                pa.uint64() if pa.types.is_unsigned_integer(id_type) else pa.int64()
-            )
-        elif not ids and pa.types.is_integer(id_type):
-            id_type = (
-                pa.uint64() if pa.types.is_unsigned_integer(id_type) else pa.int64()
-            )
-        else:
-            id_type = pa.string()
-        asset_schema = pa.schema(
-            [
-                pa.field(
-                    "asset_id",
-                    id_type,
-                    nullable=False,
-                ),
-                *(assets.table.schema.field(name) for name in asset_columns),
-            ]
-        )
+        asset_schema = _asset_fields(plan.assets, assets.table.schema)
+        assert asset_schema is not None
+        asset_columns = tuple(asset_schema.names[1:])
         planned = EvaluationMetadata(
             query=query,
             inputs=_response_inputs(inputs, groups),
@@ -686,7 +720,7 @@ class _EvaluationNode(Node[EvaluationMetadata]):
         )
 
     def _empty(self, query: EvaluationQuery) -> NodeStream[EvaluationMetadata]:
-        metadata = _empty_metadata(query, self.plan.spatial)
+        metadata = _empty_metadata(query, self.plan)
         return NodeStream(evaluation_arrow_schema(metadata), metadata, iter(()))
 
 
@@ -770,22 +804,6 @@ def _value(
                 f"Probability {q:g} lies outside supplied interval [{lo:g}, {hi:g}].",
             )
     return cast(float, row.curve.quantile(q)), None
-
-
-def _apply_response(
-    exposure: float,
-    impact: cf.Impact | None,
-) -> tuple[float | None, EvaluationFailure | None]:
-    if not math.isfinite(exposure):
-        return None, EvaluationFailure(
-            "nonfinite_exposure",
-            "The impact requires a finite exposure value.",
-        )
-    assert impact is not None
-    try:
-        return cast(float, impact.evaluate(exposure)), None
-    except cf.ImpactError as error:
-        return None, EvaluationFailure(error.code, error.message)
 
 
 def _evaluation_batches(
@@ -967,15 +985,26 @@ class Evaluation(_Results):
 
     def inspect(self, *, runtime: Runtime | None = None) -> Inspection:
         plan = self._plan
+        recipe = plan._response_source()
+        responses = plan._selected_responses()
         with ExecutionScope(runtime) as scope:
-            if plan._empty() and plan.query is not None:
+            if plan._empty(recipe) and plan.query is not None:
                 return Inspection(
-                    schema=evaluation_arrow_schema(
-                        _empty_metadata(plan.query, plan.spatial)
-                    ),
+                    schema=evaluation_arrow_schema(_empty_metadata(plan.query, plan)),
                     capabilities=(*_CAPABILITIES, Capability.WRITE),
                 )
-            source = plan._response_source()._inspect(scope)
+            try:
+                source = (
+                    recipe._inspect(
+                        scope, projected_variables=plan._collection_projection(recipe)
+                    )
+                    if isinstance(recipe, DatasetCollection)
+                    else recipe._inspect(scope)
+                )
+            except DataValidationError as error:
+                raise ValidationError(
+                    report=ExecutionReport(False, False, error.diagnostics)
+                ) from error
             if plan.query is None:
                 return _replace(
                     source,
@@ -991,11 +1020,14 @@ class Evaluation(_Results):
                 return _replace(source, schema=None, capabilities=(Capability.INSPECT,))
             inputs = _inputs(declaration)
             try:
-                responses = plan._selected_responses()
-                groups = _response_series(
-                    _series(inputs),
-                    responses,
-                    exposure=plan.selection.responses is None,
+                groups = (
+                    {}
+                    if plan.selection.responses == ()
+                    else _response_series(
+                        _series(inputs),
+                        responses,
+                        exposure=plan.selection.responses is None,
+                    )
                 )
                 definitions = _definitions(
                     tuple(groups.values()), responses, plan.query
@@ -1004,14 +1036,26 @@ class Evaluation(_Results):
                 raise ValidationError(
                     report=ExecutionReport(False, False, error.diagnostics)
                 ) from error
-            metadata = EvaluationMetadata(
-                query=plan.query,
-                inputs=_response_inputs(inputs, groups),
-                responses=definitions,
-                spatial=plan.spatial,
-                source=declaration.source,
-                include_exposure=plan.selection.responses is None,
-            )
+            if not groups:
+                metadata = _empty_metadata(plan.query, plan)
+            else:
+                asset_fields = _asset_fields(plan.assets)
+                if asset_fields is None:
+                    return _replace(
+                        source,
+                        schema=None,
+                        capabilities=(*_CAPABILITIES, Capability.WRITE),
+                        requirements=(*source.requirements, _ASSET_SCHEMA_UNRESOLVED),
+                    )
+                metadata = EvaluationMetadata(
+                    query=plan.query,
+                    inputs=_response_inputs(inputs, groups),
+                    responses=definitions,
+                    spatial=plan.spatial,
+                    source=declaration.source,
+                    include_exposure=plan.selection.responses is None,
+                    asset_fields=asset_fields,
+                )
             return _replace(
                 source,
                 schema=evaluation_arrow_schema(metadata),

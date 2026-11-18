@@ -21,8 +21,8 @@ from crc_sdk._aggregation import (
     days_in_month,
 )
 from crc_sdk._dataset_schema import FittingDiagnostic
-from crc_sdk._declarations import Calendar, Probability, SeriesSpec, Variable
-from crc_sdk._errors import CapabilityError
+from crc_sdk._declarations import Calendar, Period, Probability, SeriesSpec, Variable
+from crc_sdk._errors import CapabilityError, ValidationError
 from crc_sdk._evidence import (
     EvidenceKind,
     EvidenceMetadata,
@@ -98,6 +98,29 @@ def test_interval_end_accumulation_belongs_to_the_day_it_observed() -> None:
     assert result.metadata.provenance[-1].measurements[0].input == amount()
 
 
+def test_daily_total_rejects_intervals_crossing_midnight() -> None:
+    times = [f"2000-01-01T{hour:02d}:30:00Z" for hour in range(24)]
+    source = observations(
+        times,
+        [0.0] * 23 + [20.0],
+        step=cf.Duration(1, unit=cf.TimeUnit.HOUR),
+        measurement=amount(),
+    )
+    with pytest.raises(ValidationError, match="crossing midnight"):
+        source.aggregate(DailyTotal()).read()
+
+
+def test_annual_reduction_rejects_an_interval_crossing_year_end() -> None:
+    source = observations(
+        ["2000-12-31T23:30:00Z"],
+        [20.0],
+        step=cf.Duration(1, unit=cf.TimeUnit.HOUR),
+        measurement=amount(),
+    )
+    with pytest.raises(ValidationError, match="crossing the native year boundary"):
+        source.aggregate(AnnualMaximum()).read()
+
+
 def test_annual_maximum_hourly_amount_is_not_the_wettest_day() -> None:
     times = [
         f"2000-01-{day:02d}T{hour:02d}:00:00Z" for day in (1, 2) for hour in range(24)
@@ -166,9 +189,50 @@ def test_missing_year_between_observed_years_remains_visible() -> None:
     assert result.report.counts.incomplete_years == 1
 
 
+def test_requested_years_outside_observed_coverage_remain_visible() -> None:
+    source = observations(["2001"], [5.0], step=cf.Duration(1, unit=cf.TimeUnit.YEAR))
+    requested = Period.window(2000, 2002)
+    selected = source.select(time=requested)
+    for annual in (
+        selected.aggregate(AnnualMaximum()),
+        selected.read().aggregate(AnnualMaximum()),
+        source.aggregate(AnnualMaximum()).select(time=requested),
+    ):
+        result = annual.read()
+        assert result.table["time"].to_pylist() == ["2000", "2001", "2002"]
+        assert result.table["value"].to_pylist() == [None, 5.0, None]
+        assert result.report.counts.requested == 3
+        assert result.report.counts.usable_years == 1
+        assert result.report.counts.incomplete_years == 2
+        assert result.table["coverage"].to_pylist()[0] == {
+            "valid": 0,
+            "expected": 1,
+            "minimum_fraction": 1.0,
+        }
+
+
+def test_reopened_annual_samples_recount_selected_years(tmp_path: Path) -> None:
+    annual = observations(
+        ["2001", "2002", "2003"],
+        [5.0, 6.0, None],
+        step=cf.Duration(1, unit=cf.TimeUnit.YEAR),
+    ).aggregate(AnnualMaximum())
+    path = tmp_path / "annual.parquet"
+    annual.write(path)
+    for year, usable in ((2001, 1), (2003, 0)):
+        requested = Period.window(year, year)
+        live = annual.select(time=requested).read()
+        reopened = Samples.open(path).select(time=requested).read()
+        assert reopened.table["time"].to_pylist() == [str(year)]
+        assert reopened.report.counts == live.report.counts
+        assert reopened.report.counts.usable_years == usable
+        assert reopened.report.counts.incomplete_years == 1 - usable
+        assert bool(reopened.report.diagnostics) == (usable == 0)
+
+
 def test_monthly_native_observations_use_twelve_months_not_invented_days() -> None:
     source = observations(
-        [f"2000-{month:02d}-15" for month in range(1, 13)],
+        [f"2000-{month:02d}-01" for month in range(1, 13)],
         [float(month) for month in range(1, 13)],
         calendar=Calendar.DAYS_360,
         step=cf.Duration(1, unit=cf.TimeUnit.MONTH),
@@ -181,6 +245,17 @@ def test_monthly_native_observations_use_twelve_months_not_invented_days() -> No
     )
     with pytest.raises(CapabilityError):
         source.aggregate(DailyTotal()).read()
+
+
+def test_calendar_sampling_rejects_a_midmonth_interval_start() -> None:
+    source = observations(
+        ["2000-12-15"],
+        [5.0],
+        calendar=Calendar.DAYS_360,
+        step=cf.Duration(1, unit=cf.TimeUnit.MONTH),
+    )
+    with pytest.raises(ValidationError, match="month or year boundary"):
+        source.aggregate(AnnualMaximum()).read()
 
 
 def test_pre_transition_gregorian_reduction_is_rejected_instead_of_relabelled() -> None:

@@ -350,6 +350,23 @@ class Assets:
             raise ValueError(f"unknown requested asset columns: {sorted(missing)}")
         return keep
 
+    def _retained_columns(self, schema: pa.Schema) -> tuple[str, ...]:
+        if self._columns is None:
+            return tuple(schema.names)
+        keep = tuple(dict.fromkeys((self._id_column, *self._columns)))
+        missing = set(keep) - set(schema.names)
+        if missing:
+            raise ValueError(f"unknown retained asset columns: {sorted(missing)}")
+        return keep
+
+    def _retained_schema(self) -> pa.Schema | None:
+        if self._table is None:
+            return None
+        schema = self._table.schema
+        return pa.schema(
+            [schema.field(name) for name in self._retained_columns(schema)]
+        )
+
     def _collect(
         self,
         batches: Iterable[pa.RecordBatch],
@@ -501,11 +518,7 @@ class Assets:
                 geometry.append(value)
         context = table.select(required)
         if self._columns is not None:
-            keep = tuple(dict.fromkeys((self._id_column, *self._columns)))
-            missing = set(keep) - set(table.column_names)
-            if missing:
-                raise ValueError(f"unknown retained asset columns: {sorted(missing)}")
-            table = table.select(keep)
+            table = table.select(self._retained_columns(table.schema))
         context_only = context.select(
             [name for name in required if name not in table.column_names]
         )
