@@ -30,7 +30,7 @@ from ._dataset_schema import (
     Stage,
     _resource,
 )
-from ._declarations import Period, PeriodKind, ScientificValue
+from ._declarations import Period, PeriodKind, ScientificValue, Variable
 from ._graph import ExecutionScope, Node, NodeStream
 from ._inspection import Inspection, Requirement
 from ._runtime import CacheMode
@@ -64,6 +64,13 @@ class SourceNode(Node[MetadataT]):
 
     def _scenario_ids(self) -> frozenset[str] | None:
         """Return a local bound on emitted scenario IDs, if one is known."""
+        return None
+
+    def _configured_payload_pin(self) -> ReleaseReference | None:
+        return None
+
+    def _variable_declarations(self) -> tuple[Variable, ...] | None:
+        """Return variable definitions that can be verified without acquisition."""
         return None
 
     def checked(

@@ -34,6 +34,105 @@ from ._table_input import TableInput, snapshot_table
 _SQL_SNAPSHOT_BATCH_ROWS = 65_536
 
 
+def _sql_materialized_type(kind: pa.DataType) -> pa.DataType:
+    """Use physical types with independent buffers and portable serialization."""
+
+    def field_type(field: pa.Field) -> pa.Field:
+        return field.with_type(_sql_materialized_type(field.type))
+
+    if pa.types.is_string_view(kind):
+        return pa.string()
+    if pa.types.is_binary_view(kind):
+        return pa.binary()
+    if pa.types.is_list_view(kind) or pa.types.is_list(kind):
+        return pa.list_(field_type(kind.value_field))
+    if pa.types.is_large_list_view(kind) or pa.types.is_large_list(kind):
+        return pa.large_list(field_type(kind.value_field))
+    if pa.types.is_fixed_size_list(kind):
+        return pa.list_(field_type(kind.value_field), kind.list_size)
+    if pa.types.is_map(kind):
+        return pa.map_(
+            field_type(kind.key_field),
+            field_type(kind.item_field),
+            keys_sorted=kind.keys_sorted,
+        )
+    if pa.types.is_struct(kind):
+        return pa.struct([field_type(field) for field in kind])
+    if pa.types.is_union(kind):
+        return pa.union(
+            [field_type(field) for field in kind],
+            mode=kind.mode,
+            type_codes=kind.type_codes,
+        )
+    if pa.types.is_dictionary(kind):
+        return pa.dictionary(
+            kind.index_type,
+            _sql_materialized_type(kind.value_type),
+            ordered=kind.ordered,
+        )
+    return kind
+
+
+def _sql_materialized_array(array: pa.Array, target: pa.DataType) -> pa.Array:
+    kind = array.type
+    if kind == target:
+        return array
+    if pa.types.is_list_view(kind) or pa.types.is_large_list_view(kind):
+        values = _sql_materialized_array(array.flatten(), target.value_type)
+        large = pa.types.is_large_list_view(kind)
+        offsets = np.empty(len(array) + 1, dtype=np.int64 if large else np.int32)
+        if not large and len(values) > np.iinfo(np.int32).max:
+            raise ValueError("SQL list values exceed Arrow's 32-bit list capacity")
+        offsets[0] = 0
+        sizes = np.where(
+            array.is_valid().to_numpy(zero_copy_only=False),
+            array.sizes.to_numpy(zero_copy_only=False),
+            0,
+        )
+        np.cumsum(sizes, out=offsets[1:])
+        list_type = pa.LargeListArray if large else pa.ListArray
+        return list_type.from_arrays(offsets, values, type=target, mask=array.is_null())
+    if pa.types.is_struct(kind) or pa.types.is_union(kind):
+        fields = list(target)
+        children = [
+            _sql_materialized_array(array.field(i), field.type)
+            for i, field in enumerate(fields)
+        ]
+        if pa.types.is_struct(kind):
+            return pa.StructArray.from_arrays(
+                children, fields=fields, mask=array.is_null()
+            )
+        codes = pa.Array.from_buffers(
+            pa.int8(), len(array), [None, array.buffers()[1]], offset=array.offset
+        )
+        names = [field.name for field in fields]
+        if kind.mode == "sparse":
+            return pa.UnionArray.from_sparse(codes, children, names, kind.type_codes)
+        positions = pa.Array.from_buffers(
+            pa.int32(), len(array), [None, array.buffers()[2]], offset=array.offset
+        )
+        return pa.UnionArray.from_dense(
+            codes, positions, children, names, kind.type_codes
+        )
+    if isinstance(
+        array, (pa.ListArray, pa.LargeListArray, pa.FixedSizeListArray, pa.MapArray)
+    ):
+        values = _sql_materialized_array(array.values, target.field(0).type)
+        return pa.Array.from_buffers(
+            target,
+            len(array),
+            array.buffers()[: kind.num_buffers],
+            offset=array.offset,
+            children=[values],
+        )
+    if pa.types.is_dictionary(kind):
+        dictionary = _sql_materialized_array(array.dictionary, target.value_type)
+        return pa.DictionaryArray.from_arrays(
+            array.indices, dictionary, ordered=target.ordered
+        )
+    return array.cast(target)
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class PointColumns:
     longitude: str = "longitude"
@@ -382,14 +481,27 @@ class Assets:
         schema: pa.Schema,
         keep: tuple[str, ...],
         budget: int | None,
+        *,
+        materialize_views: bool = False,
     ) -> pa.Table:
-        selected_schema = pa.schema(
-            [schema.field(name) for name in keep], metadata=schema.metadata
-        )
+        fields = [schema.field(name) for name in keep]
+        if materialize_views:
+            fields = [
+                field.with_type(_sql_materialized_type(field.type)) for field in fields
+            ]
+        selected_schema = pa.schema(fields, metadata=schema.metadata)
         owned = []
         size = 0
         for batch in batches:
             batch = batch.select(keep)
+            if materialize_views and batch.schema != selected_schema:
+                batch = pa.RecordBatch.from_arrays(
+                    [
+                        _sql_materialized_array(column, field.type)
+                        for field, column in zip(selected_schema, batch.columns)
+                    ],
+                    schema=selected_schema,
+                )
             size += batch.nbytes
             if budget is not None and size > budget:
                 raise MemoryError(
@@ -469,7 +581,9 @@ class Assets:
                     batch_size=scope.runtime.batch_rows
                 ) as reader:
                     keep = self._input_columns(reader.schema, required)
-                    table = self._collect(reader, reader.schema, keep, budget)
+                    table = self._collect(
+                        reader, reader.schema, keep, budget, materialize_views=True
+                    )
             except duckdb.PermissionException as error:
                 if not offline:
                     raise

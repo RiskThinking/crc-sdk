@@ -1909,6 +1909,7 @@ class _WaterLevelNode(SourceNode[DatasetMetadata | EvidenceMetadata]):
                     release=None
                     if metadata.source is None
                     else metadata.source.release,
+                    probability=item.probability,
                 )
                 for item in metadata.spec.series
             ),

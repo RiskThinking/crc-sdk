@@ -30,6 +30,7 @@ from ._dataset_schema import (
     ExecutionReport,
     FittingDiagnostic,
     ObservationTimeSelection,
+    ReleaseReference,
     SourceIdentity,
     Stage,
     UnavailableStationYear,
@@ -1408,6 +1409,19 @@ def _payload_source(node: Node[object]) -> SourceNode[object] | None:
             return None
         node = parent
     return node if node._publishes_payload_release else None
+
+
+def _configured_payload_pin(node: Node[object]) -> ReleaseReference | None:
+    source = _payload_source(node)
+    return None if source is None else source._configured_payload_pin()
+
+
+def _local_variable_declarations(node: Node[object]) -> tuple[Variable, ...] | None:
+    if isinstance(node, SourceNode):
+        return node._variable_declarations()
+    if isinstance(node, _FitNode):
+        return _local_variable_declarations(cast(Node[object], node.parent))
+    return None
 
 
 def _select_node(parent: Node[MetadataT], state: SelectionState) -> Node[MetadataT]:

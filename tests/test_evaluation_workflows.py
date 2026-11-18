@@ -447,7 +447,25 @@ def test_collection_projection_does_not_discover_unrelated_source(
             responses="ratio",
         )
     )
-    assert response_projection.explain().requirements == ()
+    assert (
+        response_projection.explain().requirements
+        == response_projection.inspect().requirements
+        == ()
+    )
+    assert response_projection.read().table["value"].to_pylist() == [2.0]
+    empty_projection = response_projection.select(responses=[])
+    assert (
+        empty_projection.explain().requirements
+        == empty_projection.inspect().requirements
+        == ()
+    )
+    assert empty_projection.read().table.num_rows == 0
+    wrong_unit = Variable(
+        "era5:annual_maximum_daily_maximum_temperature",
+        measurement=DEPTH,
+    )
+    with pytest.raises(ValueError, match="conflicting scientific definition"):
+        response_projection.select(variables=[VARIABLE, wrong_unit]).read()
     empty = collection.evaluate(sites(0)).probabilities([0.9]).select(responses=[])
     assert empty.explain().requirements == empty.inspect().requirements == ()
     assert not any(op.stage is Stage.JOINING for op in empty.explain().operations)
@@ -789,6 +807,33 @@ def test_saved_exposures_have_ordered_quantiles_and_continuous_support(
         assert artifact.validate().valid is False
         with pytest.raises(ValidationError, match=expected):
             artifact.read()
+
+
+@pytest.mark.parametrize("claimed_rows", [0, 1])
+def test_saved_matched_supports_are_bounded_by_the_input_row_count(
+    tmp_path: Path, claimed_rows: int
+) -> None:
+    artifact = (
+        data(longitudes=(0, 1))
+        .evaluate(sites(0, 1))
+        .probabilities([0.9])
+        .write(tmp_path / "events.parquet")
+    )
+    assert artifact.validate().valid is True
+    table = pq.read_table(artifact.path)
+    assert len(set(table["support_id"].to_pylist())) == 2
+    headers = dict(table.schema.metadata)
+    document = json.loads(headers[b"crc.evaluation"])
+    counts = document["inputs"][0]["metadata"]["report"]["counts"]
+    assert counts["produced"] == 2
+    counts.update(requested=claimed_rows, produced=claimed_rows)
+    headers[b"crc.evaluation"] = json.dumps(document).encode()
+    inconsistent = tmp_path / "inconsistent-input.parquet"
+    pq.write_table(table.replace_schema_metadata(headers), inconsistent)
+    reopened = EvaluationArtifact.open(inconsistent)
+    assert reopened.validate().valid is False
+    with pytest.raises(ValidationError, match="matched supports exceed the input"):
+        reopened.read()
 
 
 @pytest.mark.parametrize(

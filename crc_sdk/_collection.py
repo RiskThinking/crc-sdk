@@ -7,7 +7,7 @@ import hashlib
 import os
 import types
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import Self, cast
@@ -64,9 +64,11 @@ from ._recipes import (
     _bounded_node,
     _Checked,
     _checked_stream,
+    _configured_payload_pin,
     _declared_ids,
     _invalid,
     _key,
+    _local_variable_declarations,
     _payload_source,
     _report_view,
     _select_node,
@@ -138,12 +140,18 @@ class _Entry:
 
     def could_match_payload(self, reference: SeriesReference) -> bool:
         source = self.resource.metadata.source
+        node = _payload_source(cast(Node[object], self.node))
+        configured = None if node is None else node._configured_payload_pin()
         return (
             reference.release is not None
             and source is not None
             and source.release is not None
             and source.release.id == f"inventory:{reference.release.id}"
-            and _payload_source(cast(Node[object], self.node)) is not None
+            and node is not None
+            and (
+                configured is None
+                or _release_key(configured) == _release_key(reference.release)
+            )
             and any(
                 _reference_matches(
                     item,
@@ -170,55 +178,50 @@ def _plan_release_selection(
     scope: ExecutionScope,
     entries: dict[str, _Entry],
     references: tuple[SeriesReference, ...],
-    *,
-    inspect: bool,
 ) -> None:
     """Prefer exact metadata, resolving live candidates only when necessary."""
-    unresolved = [
-        (
-            ref,
-            tuple(
-                name
-                for name, entry in entries.items()
-                if entry.could_match_payload(ref)
-            ),
+    configured = {
+        name: _release_key(_configured_payload_pin(cast(Node[object], entry.node)))
+        for name, entry in entries.items()
+    }
+    unresolved: list[tuple[SeriesReference, tuple[str, ...]]] = []
+    checks: dict[str, dict[tuple[str, str], ReleaseReference]] = {}
+    for ref in references:
+        release = ref.release
+        if release is None or release.id.startswith("inventory:"):
+            continue
+        key = (release.id, release.sha256)
+        verified = any(_has_reference(entry, ref) for entry in entries.values())
+        names = tuple(
+            name
+            for name, entry in entries.items()
+            if (not verified or configured[name] == key)
+            and entry.could_match_payload(ref)
         )
-        for ref in references
-        if ref.release is not None
-        and not ref.release.id.startswith("inventory:")
-        and not any(_has_reference(entry, ref) for entry in entries.values())
-    ]
-    checks: dict[str, set[ReleaseReference]] = {}
-    for ref, names in unresolved:
-        assert ref.release is not None
+        unresolved.append((ref, names))
         for name in names:
-            checks.setdefault(name, set()).add(ref.release)
-    # A single candidate can verify its exact checksum immediately before
-    # yielding rows. Competing payloads must be resolved before planning the
-    # member and resource table so a mismatch can be treated as a filter.
-    if not inspect:
-        competing = {
-            name for _, names in unresolved if len(names) > 1 for name in names
-        }
-        competing.update(name for name, pins in checks.items() if len(pins) > 1)
-        for name in checks:
-            if name in competing:
-                entries[name] = entries[name].actual_payload(scope)
-        for ref, names in unresolved:
-            if (
-                names
-                and all(name in competing for name in names)
-                and not any(_has_reference(entries[name], ref) for name in names)
-            ):
-                source = entries[names[0]].resource.metadata.source
-                if source is not None and source.release is not None:
-                    check_release(source.release, ref.release)
-    for name, pins in checks.items():
-        if any(
-            ref.release in pins and entries[name].could_match_payload(ref)
-            for ref in references
+            checks.setdefault(name, {})[key] = release
+    # Single candidates can verify before they yield. Ambiguous candidates
+    # need their native snapshot resolved even during inspection.
+    competing = {name for _, names in unresolved if len(names) > 1 for name in names}
+    competing.update(name for name, pins in checks.items() if len(pins) > 1)
+    for name in checks:
+        if name in competing:
+            entries[name] = entries[name].actual_payload(scope)
+    for ref, names in unresolved:
+        if (
+            names
+            and all(name in competing for name in names)
+            and not any(_has_reference(entry, ref) for entry in entries.values())
         ):
-            entries[name] = replace(entries[name], payload_pin=next(iter(pins)))
+            source = entries[names[0]].resource.metadata.source
+            if source is not None and source.release is not None:
+                check_release(source.release, ref.release)
+    for name, pins in checks.items():
+        if name not in competing:
+            entries[name] = replace(
+                entries[name], payload_pin=next(iter(pins.values()))
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -229,6 +232,9 @@ class _Plan:
     requirements: tuple[Requirement, ...] = ()
     source: SourceIdentity | None = None
     bundle_resources: tuple[_BundleResourceNode, ...] = ()
+    variable_declarations: Mapping[str, tuple[Variable, ...]] = field(
+        default_factory=dict
+    )
 
     def metadata(self) -> CollectionMetadata:
         try:
@@ -351,10 +357,13 @@ def _typed_choices(
 
 
 def _needed_inventory(
-    planning: _PlanningScope, known: Mapping[str, _Entry]
-) -> tuple[set[str], bool]:
+    planning: _PlanningScope,
+    known: Mapping[str, _Entry],
+    variable_declarations: Mapping[str, tuple[Variable, ...]],
+) -> tuple[set[str], set[str], bool]:
     """Find selectors still waiting for a declaring member."""
     variables: set[str] = set()
+    referenced_variables: set[str] = set()
     any_variable = False
     for selection in planning.selections:
         if not selection._has_scientific_filters():
@@ -370,6 +379,13 @@ def _needed_inventory(
                 for entry in entries
                 for descriptor in getattr(entry.resource.metadata.spec, key)
             ]
+            if key == "variables":
+                available.extend(
+                    definition
+                    for name, declarations in variable_declarations.items()
+                    if not selection.members or name in selection.members
+                    for definition in declarations
+                )
             for value in getattr(selection, key) or ():
                 if not any(_matches_descriptor(value, actual) for actual in available):
                     if key == "variables":
@@ -385,8 +401,8 @@ def _needed_inventory(
                 )
                 for entry in entries
             ):
-                variables.add(ref.variable.id)
-    return variables, any_variable
+                referenced_variables.add(ref.variable.id)
+    return variables, referenced_variables, any_variable
 
 
 def _project_entries(
@@ -395,18 +411,23 @@ def _project_entries(
     *,
     discovery_incomplete: bool,
     projected_variables: frozenset[str] | None,
+    variable_declarations: tuple[Variable, ...],
 ) -> dict[str, _Entry]:
     variables = _requested_ids(selection.variables)
     scenarios = _requested_ids(selection.scenarios)
     periods = _requested_ids(selection.periods)
     specs = [entry.resource.metadata.spec for entry in entries.values()]
-    _typed_choices(selection.variables, [v for spec in specs for v in spec.variables])
+    available_variables = (
+        *variable_declarations,
+        *(v for spec in specs for v in spec.variables),
+    )
+    _typed_choices(selection.variables, list(available_variables))
     _typed_choices(selection.scenarios, [s for spec in specs for s in spec.scenarios])
     _typed_choices(selection.periods, [p for spec in specs for p in spec.periods])
     if not discovery_incomplete:
         _known_ids(
             variables,
-            {v.id for spec in specs for v in spec.variables},
+            {v.id for v in available_variables},
             dimension="identity",
         )
         _known_ids(
@@ -1081,6 +1102,7 @@ class DatasetCollection:
         active_variables = planning.active_variables
         source_state = planning.source_state
         references = source_state.series or ()
+        release_keys = {_release_key(ref.release) for ref in references}
         exact_only = (
             bool(references)
             and all(
@@ -1134,6 +1156,7 @@ class DatasetCollection:
 
         deferred = []
         live_candidates = []
+        variable_declarations: dict[str, tuple[Variable, ...]] = {}
         for name, dataset in self._inputs:
             if name not in names:
                 continue
@@ -1153,10 +1176,20 @@ class DatasetCollection:
                 )
             ):
                 deferred.append((name, dataset, declared))
+                if planning.variables is not None and isinstance(dataset, Dataset):
+                    local = _local_variable_declarations(
+                        cast(Node[object], dataset._node)
+                    )
+                    if local is not None:
+                        variable_declarations[name] = local
             elif (
                 exact_only
                 and isinstance(dataset, Dataset)
                 and _payload_source(cast(Node[object], dataset._node)) is not None
+                and _release_key(
+                    _configured_payload_pin(cast(Node[object], dataset._node))
+                )
+                not in release_keys
             ):
                 live_candidates.append((name, dataset))
             else:
@@ -1172,8 +1205,13 @@ class DatasetCollection:
         # An excluded member may declare a selector used independently of the
         # active series. Discover it only if the active metadata cannot do so.
         for name, dataset, declared in deferred:
-            missing, any_variable = _needed_inventory(planning, known)
-            needed = missing | planning.rename_variables
+            missing, referenced, any_variable = _needed_inventory(
+                planning, known, variable_declarations
+            )
+            local_ids = {
+                definition.id for definition in variable_declarations.get(name, ())
+            }
+            needed = ((missing | planning.rename_variables) - local_ids) | referenced
             scenarios = (
                 _declared_ids(cast(Node[object], dataset._node), "scenarios")
                 if planning.rename_scenarios and isinstance(dataset, Dataset)
@@ -1197,7 +1235,7 @@ class DatasetCollection:
                 for name, entry in known.items()
                 if active_members is None or name in active_members
             }
-            _plan_release_selection(scope, active_entries, references, inspect=inspect)
+            _plan_release_selection(scope, active_entries, references)
             known.update(active_entries)
 
         members = tuple(
@@ -1217,6 +1255,7 @@ class DatasetCollection:
             CollectionSelection(),
             tuple(requirements),
             projected_variables=projected_variables,
+            variable_declarations=variable_declarations,
         )
 
     def _participating(
@@ -1228,6 +1267,7 @@ class DatasetCollection:
         source: SourceIdentity | None = None,
         bundle_resources: tuple[_BundleResourceNode, ...] = (),
         projected_variables: frozenset[str] | None = None,
+        variable_declarations: Mapping[str, tuple[Variable, ...]] | None = None,
     ) -> _Plan:
         allowed = _requested_ids(self._selection.members)
         _known_ids(allowed, {member.id for member in members}, dimension="member")
@@ -1237,6 +1277,7 @@ class DatasetCollection:
         )
         if self._selection.members != ():
             inventory = members
+        local = {} if variable_declarations is None else variable_declarations
         used = {key for member in inventory for key in member.resource_ids}
         empty = self._selection._empty()
         selected = (
@@ -1247,6 +1288,11 @@ class DatasetCollection:
                 self._selection,
                 discovery_incomplete=bool(requirements),
                 projected_variables=frozenset() if empty else projected_variables,
+                variable_declarations=tuple(
+                    definition
+                    for member in inventory
+                    for definition in local.get(member.id, ())
+                ),
             )
         )
         names = set(selected)
@@ -1268,6 +1314,7 @@ class DatasetCollection:
             tuple(dict.fromkeys(requirements)),
             source,
             bundle_resources,
+            {member.id: local[member.id] for member in members if member.id in local},
         )
 
     def _plan(
@@ -1300,7 +1347,14 @@ class DatasetCollection:
             )
             _rename_mapping(
                 self._variables,
-                sorted({v.id for spec in specs for v in spec.variables}),
+                sorted(
+                    {v.id for spec in specs for v in spec.variables}
+                    | {
+                        v.id
+                        for declarations in base.variable_declarations.values()
+                        for v in declarations
+                    }
+                ),
                 "variable",
             )
             _rename_mapping(
@@ -1344,6 +1398,13 @@ class DatasetCollection:
                 base.source,
                 base.bundle_resources,
                 projected_variables,
+                {
+                    name: tuple(
+                        replace(v, id=self._variables.get(v.id, v.id))
+                        for v in declarations
+                    )
+                    for name, declarations in base.variable_declarations.items()
+                },
             )
         else:
             return self._memory_inputs(scope, inspect, projected_variables, planning)
@@ -1355,6 +1416,7 @@ class DatasetCollection:
             base.source,
             base.bundle_resources,
             projected_variables,
+            base.variable_declarations,
         )
 
     def _inspect(
