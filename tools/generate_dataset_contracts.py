@@ -10,6 +10,7 @@ from pathlib import Path
 
 from crc_framework import (
     Aggregation,
+    DepthAboveGround,
     DiagnosticSeverity,
     Distribution,
     DistributionFamily,
@@ -327,6 +328,25 @@ def fixture_cases() -> dict[str, object]:
     accepted.append(
         {"name": "temporal-precipitation-measurement-lineage", "document": reduced}
     )
+    depth = Variable(variable.id, measurement=DepthAboveGround(unit=LengthUnit.METRE))
+    converted_depth = json.loads(
+        dataset_to_json(
+            [row],
+            replace(
+                metadata,
+                spec=DataSpec([depth], series=[SeriesSpec(depth)]),
+                provenance=(
+                    UnitConversion(
+                        variable_id=depth.id,
+                        source_unit="cm",
+                        target_unit="m",
+                        scale=0.01,
+                    ),
+                ),
+            ),
+        )
+    )
+    accepted.append({"name": "depth-unit-lineage", "document": converted_depth})
     rejected = []
 
     def reject(name, document, structural):
@@ -405,6 +425,14 @@ def fixture_cases() -> dict[str, object]:
     value = json.loads(dataset_to_json([row], time_info))
     value["metadata"]["provenance"][0]["time"]["start"] = 1981
     reject("time-selection-content-identity-mismatch", value, False)
+    for name, changes in (
+        ("unit-conversion-source-measurement-mismatch", {"source_unit": "kg"}),
+        ("unit-conversion-wrong-scale", {"scale": 100}),
+        ("unit-conversion-wrong-offset", {"offset": 1}),
+    ):
+        value = deepcopy(converted_depth)
+        value["metadata"]["provenance"][0].update(changes)
+        reject(name, value, False)
     value = deepcopy(fitted)
     value["rows"][0]["curve"]["family"] = "gumbel_l"
     reject("fit-family-mismatch", value, False)

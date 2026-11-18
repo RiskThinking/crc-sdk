@@ -375,6 +375,10 @@ def _response_inputs(
 ) -> tuple[EvaluationInput, ...]:
     result = []
     for item in inputs:
+        if not item.metadata.spec.series:
+            # An empty resource can still have provenance and execution facts.
+            result.append(item)
+            continue
         matching = tuple(
             s.variable.id
             for s in item.metadata.spec.series

@@ -493,7 +493,7 @@ class EvaluationMetadata:
         """The participating series and their scientific meaning."""
         return self._spec
 
-    def _check_source_versions(self) -> None:
+    def _check_upstream_report(self) -> None:
         def revision(source: SourceIdentity) -> tuple[object, ...]:
             release = source.release
             return (
@@ -522,18 +522,30 @@ class EvaluationMetadata:
             raise ValueError(
                 "evaluation source version disagrees with recorded provenance"
             )
+        diagnostics = {_dump(item._document()) for item in self.report.diagnostics}
+        count_fields = ("skipped", "usable_years", "incomplete_years")
+        inherited_counts = dict.fromkeys(count_fields, 0)
         for item in self.inputs:
-            if (
-                not item.metadata.report.complete
-                or item.metadata.report.valid is not True
-            ):
+            upstream = item.metadata.report
+            if not upstream.complete or upstream.valid is not True:
                 raise ValueError(
                     "complete evaluation requires complete validated input provenance"
                 )
+            if any(
+                not contains(identity, self.report.source_identities)
+                for identity in upstream.source_identities
+            ):
+                raise ValueError("evaluation report omits upstream source provenance")
+            if any(
+                _dump(d._document()) not in diagnostics for d in upstream.diagnostics
+            ):
+                raise ValueError("evaluation report omits upstream diagnostics")
+            for name in count_fields:
+                inherited_counts[name] += getattr(upstream.counts, name)
             source = item.metadata.source
             if source is None:
                 continue
-            local = item.metadata.report.source_identities
+            local = upstream.source_identities
             if not contains(source, self.report.source_identities) or (
                 local and not contains(source, local)
             ):
@@ -541,6 +553,11 @@ class EvaluationMetadata:
                     "evaluation input source version disagrees with recorded "
                     f"provenance for {source.product!r}"
                 )
+        if any(
+            getattr(self.report.counts, field) != count
+            for field, count in inherited_counts.items()
+        ):
+            raise ValueError("evaluation report counts contradict its upstream reports")
 
     def __post_init__(self) -> None:
         if not isinstance(self.query, EvaluationQuery):
@@ -1455,7 +1472,7 @@ class EvaluationValidator:
                 raise ValueError(
                     f"evaluation report omits diagnostics for {sorted(missing)!r}"
                 )
-            current._check_source_versions()
+            current._check_upstream_report()
 
 
 def validate_evaluation(

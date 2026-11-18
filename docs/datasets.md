@@ -82,7 +82,10 @@ or observed.
 Resource hashes use `sha256:` followed by 64 lowercase hexadecimal digits.
 Source license, attribution, and timezone-aware retrieval time are recorded when
 known. Unit conversions record their actual scale and offset; renaming records
-identity changes independently of numerical values.
+identity changes independently of numerical values. Standard conversions are
+checked against the recorded input measurement and the unit coefficients.
+Provider precipitation mass flux uses water-equivalent depth, where one
+kilogram per square metre corresponds to one millimetre of water.
 
 A complete artifact's produced count equals its row count, and its no-data count
 matches retained failures. Failed records identify actual attempts and their

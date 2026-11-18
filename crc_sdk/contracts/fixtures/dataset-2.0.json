@@ -1349,6 +1349,81 @@
       }
     },
     {
+      "name": "depth-unit-lineage",
+      "document": {
+        "metadata": {
+          "provenance": [
+            {
+              "kind": "unit_conversion",
+              "offset": 0.0,
+              "scale": 0.01,
+              "source_unit": "cm",
+              "target_unit": "m",
+              "variable_id": "user:depth"
+            }
+          ],
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 0,
+              "no_data": 0,
+              "produced": 1,
+              "requested": 1,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [],
+            "source_identities": [],
+            "valid": true
+          },
+          "schema_version": "2.0",
+          "spatial": {
+            "index_resolution": 4,
+            "supports": [
+              "cell"
+            ]
+          },
+          "spec": {
+            "periods": [],
+            "scenarios": [],
+            "series": [
+              {
+                "period_id": null,
+                "scenario_id": null,
+                "variable_id": "user:depth"
+              }
+            ],
+            "variables": [
+              {
+                "id": "user:depth",
+                "measurement": {
+                  "kind": "depth_above_ground",
+                  "unit": "m"
+                }
+              }
+            ]
+          }
+        },
+        "rows": [
+          {
+            "cell_id": 594475228122316799,
+            "curve": {
+              "kind": "point_mass",
+              "object": "distribution",
+              "schema_version": "1.0",
+              "value": 1.0
+            },
+            "period_id": null,
+            "scenario_id": null,
+            "support_id": "user:support",
+            "variable_id": "user:depth"
+          }
+        ]
+      }
+    },
+    {
       "name": "point-support",
       "document": {
         "metadata": {
@@ -4126,6 +4201,234 @@
             "variables": [
               {
                 "id": "user:depth"
+              }
+            ]
+          }
+        },
+        "rows": [
+          {
+            "cell_id": 594475228122316799,
+            "curve": {
+              "kind": "point_mass",
+              "object": "distribution",
+              "schema_version": "1.0",
+              "value": 1.0
+            },
+            "period_id": null,
+            "scenario_id": null,
+            "support_id": "user:support",
+            "variable_id": "user:depth"
+          }
+        ]
+      }
+    },
+    {
+      "name": "unit-conversion-source-measurement-mismatch",
+      "structural": false,
+      "document": {
+        "metadata": {
+          "provenance": [
+            {
+              "kind": "unit_conversion",
+              "offset": 0.0,
+              "scale": 0.01,
+              "source_unit": "kg",
+              "target_unit": "m",
+              "variable_id": "user:depth"
+            }
+          ],
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 0,
+              "no_data": 0,
+              "produced": 1,
+              "requested": 1,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [],
+            "source_identities": [],
+            "valid": true
+          },
+          "schema_version": "2.0",
+          "spatial": {
+            "index_resolution": 4,
+            "supports": [
+              "cell"
+            ]
+          },
+          "spec": {
+            "periods": [],
+            "scenarios": [],
+            "series": [
+              {
+                "period_id": null,
+                "scenario_id": null,
+                "variable_id": "user:depth"
+              }
+            ],
+            "variables": [
+              {
+                "id": "user:depth",
+                "measurement": {
+                  "kind": "depth_above_ground",
+                  "unit": "m"
+                }
+              }
+            ]
+          }
+        },
+        "rows": [
+          {
+            "cell_id": 594475228122316799,
+            "curve": {
+              "kind": "point_mass",
+              "object": "distribution",
+              "schema_version": "1.0",
+              "value": 1.0
+            },
+            "period_id": null,
+            "scenario_id": null,
+            "support_id": "user:support",
+            "variable_id": "user:depth"
+          }
+        ]
+      }
+    },
+    {
+      "name": "unit-conversion-wrong-scale",
+      "structural": false,
+      "document": {
+        "metadata": {
+          "provenance": [
+            {
+              "kind": "unit_conversion",
+              "offset": 0.0,
+              "scale": 100,
+              "source_unit": "cm",
+              "target_unit": "m",
+              "variable_id": "user:depth"
+            }
+          ],
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 0,
+              "no_data": 0,
+              "produced": 1,
+              "requested": 1,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [],
+            "source_identities": [],
+            "valid": true
+          },
+          "schema_version": "2.0",
+          "spatial": {
+            "index_resolution": 4,
+            "supports": [
+              "cell"
+            ]
+          },
+          "spec": {
+            "periods": [],
+            "scenarios": [],
+            "series": [
+              {
+                "period_id": null,
+                "scenario_id": null,
+                "variable_id": "user:depth"
+              }
+            ],
+            "variables": [
+              {
+                "id": "user:depth",
+                "measurement": {
+                  "kind": "depth_above_ground",
+                  "unit": "m"
+                }
+              }
+            ]
+          }
+        },
+        "rows": [
+          {
+            "cell_id": 594475228122316799,
+            "curve": {
+              "kind": "point_mass",
+              "object": "distribution",
+              "schema_version": "1.0",
+              "value": 1.0
+            },
+            "period_id": null,
+            "scenario_id": null,
+            "support_id": "user:support",
+            "variable_id": "user:depth"
+          }
+        ]
+      }
+    },
+    {
+      "name": "unit-conversion-wrong-offset",
+      "structural": false,
+      "document": {
+        "metadata": {
+          "provenance": [
+            {
+              "kind": "unit_conversion",
+              "offset": 1,
+              "scale": 0.01,
+              "source_unit": "cm",
+              "target_unit": "m",
+              "variable_id": "user:depth"
+            }
+          ],
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 0,
+              "no_data": 0,
+              "produced": 1,
+              "requested": 1,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [],
+            "source_identities": [],
+            "valid": true
+          },
+          "schema_version": "2.0",
+          "spatial": {
+            "index_resolution": 4,
+            "supports": [
+              "cell"
+            ]
+          },
+          "spec": {
+            "periods": [],
+            "scenarios": [],
+            "series": [
+              {
+                "period_id": null,
+                "scenario_id": null,
+                "variable_id": "user:depth"
+              }
+            ],
+            "variables": [
+              {
+                "id": "user:depth",
+                "measurement": {
+                  "kind": "depth_above_ground",
+                  "unit": "m"
+                }
               }
             ]
           }

@@ -46,13 +46,16 @@ its scientific output.
 
 Confidence intervals describe uncertainty about estimates. Their endpoints and
 annual exceedance quantiles have distinct meanings. Storm tracks describe storm
-positions. Categorical layers have no fitting method.
+positions. Projection times must fall within the series' declared period and
+follow its calendar when specified. Categorical layers have no fitting method.
 
 ## Read an annual indicator before fitting
 
 Inspect a provider to see its typed indicators, required selections, and
-source details. ERA5 inspection and data access require network access and
-the `zarr` extra. The following example reads ERA5's remote store.
+source details. ERA5 inspection applies the same series filters as reading.
+An explicit empty selection returns an empty inventory and typed schema without
+acquiring source data. Ordinary ERA5 discovery and reads use the `zarr` extra.
+The following example reads ERA5's remote store.
 
 <!-- live-example -->
 ```python
@@ -226,13 +229,12 @@ and pass its returned reference to `select`.
 
 <!-- live-example -->
 ```python
-from crc_sdk import GHCNh
+from crc_sdk import ISD
 
-inventory = GHCNh().inspect()
+inventory = ISD().inspect()
 station = next(station for station in inventory.stations if station.period is not None)
-station_data = GHCNh(
-    indicator=GHCNh.Indicator.ANNUAL_MAXIMUM_DAILY_MAXIMUM_TEMPERATURE,
-).select(stations=station, time=station.period)
+annual_maximum = inventory.series[0]
+station_data = ISD().select(series=annual_maximum, stations=station, time=station.period)
 ```
 
 Station references carry the source ID, label, and known location/record window.
@@ -247,13 +249,15 @@ HTTP request identifier leaves a missing year pinned to the same absence.
 Raw GHCNh/ISD reports remain irregular. Their named annual recipes require all
 24 distinct hours for a complete day and then apply the declared annual rule.
 
-GHCNh and ISD also accept an inspected `SeriesReference` in `select(series=...)`.
-The reference selects the indicator and supplies the observation years when it
-contains a dated window. Inspecting saved samples also exposes the verified
-release, so that reference can replay the same source selection. Mutable API
-discovery can leave the release unresolved until execution pins the consumed
-bytes. Reports retain actual resources, SHA-256 hashes, licences, attribution,
-and retrieval times. `Cache.offline(...)` replays verified cached bytes.
+An inspected `SeriesReference` selects the indicator and supplies the
+observation years when it contains a dated window. Its inventory release
+identifies the discovered publication. A complete read records a separate
+release for the exact selection, including its station catalogue and payload
+files. Inspecting saved samples exposes that exact release for replay with the
+same selection. Unpinned GHCNh and ISD previews acquire station-years as they
+are needed. An exact release pin verifies every selected station-year before
+returning any rows. Reports retain SHA-256 hashes, licences, attribution, and
+retrieval times. `Cache.offline(...)` replays verified cached bytes.
 
 Published IDF durations and provinces are typed too:
 

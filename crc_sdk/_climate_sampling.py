@@ -87,7 +87,7 @@ from ._providers import cmip6 as cmip
 from ._providers import era5 as era
 from ._recipes import Samples, _key
 from ._runtime import _memory_bytes
-from ._selection import SelectionState, selected_metadata
+from ._selection import ResolvedSelection, SelectionState, selected_metadata
 from ._source_io import (
     SourceNode,
     fetch,
@@ -115,6 +115,7 @@ _NATIVE_VARIABLES = {
     for operation, native in _OPERATIONS.items()
 }
 _NEX_YEAR = re.compile(r"_(\d{4})(?:_v(\d+(?:\.\d+)*))?\.nc$")
+_PRECIPITATION_FLUX = cf.PrecipitationRateUnit.KILOGRAMS_PER_SQUARE_METRE_PER_SECOND
 
 
 def _initialize(value: object, node: _ClimateNode) -> None:
@@ -516,7 +517,33 @@ class _ClimateNode(SourceNode[EvidenceMetadata]):
         )
 
     def requirements(self) -> tuple[Requirement, ...]:
-        return self._missing()
+        return () if self._explicitly_empty() else self._missing()
+
+    def _explicitly_empty(self) -> bool:
+        state = self.state
+        return any(
+            value == ()
+            for value in (
+                state.variables,
+                state.scenarios,
+                state.periods,
+                state.series,
+                state.stations,
+            )
+        )
+
+    def _check_era5_identities(self) -> None:
+        if self.provider != "era5":
+            return
+        operation = self._operation()
+        operations = _OPERATIONS if operation is None else (operation,)
+        variable = _native_variable if self.raw else _variable
+        available = DataSpec(
+            [variable(self.provider, item) for item in operations], series=[]
+        )
+        SelectionState(
+            variables=self.state.variables, scenarios=self.state.scenarios
+        ).resolve(available)
 
     def _missing(self) -> tuple[Requirement, ...]:
         result = []
@@ -568,6 +595,18 @@ class _ClimateNode(SourceNode[EvidenceMetadata]):
             return _nex_source(scope, self, operation)
 
     def inspection(self, scope: ExecutionScope) -> Inspection:
+        capabilities = (
+            Capability.INSPECT,
+            Capability.READ,
+            Capability.BATCHES,
+            Capability.WRITE,
+            Capability.AGGREGATE if self.raw else Capability.FIT,
+        )
+        if self._explicitly_empty():
+            return Inspection(
+                schema=_empty_stream(self).schema, capabilities=capabilities
+            )
+        self._check_era5_identities()
         if self.provider != "era5" and (
             self._operation() is None
             or self.model is None
@@ -578,7 +617,7 @@ class _ClimateNode(SourceNode[EvidenceMetadata]):
                 return _discover_climate(scope, self)
         source = self._source(scope)
         assert source.identity.release is not None
-        _, release = payload_selection(self.state, self.release)
+        state, release = payload_selection(self.state, self.release)
         inventory_payload_pin(source.identity.release, release)
         operations = (
             tuple(_OPERATIONS)
@@ -607,53 +646,66 @@ class _ClimateNode(SourceNode[EvidenceMetadata]):
                 source=source.identity,
                 capabilities=(Capability.INSPECT,),
             )
+        time = selected_source_time(self.state)
         period = _period(
-            selected_series_period(self.state) or selected_source_time(self.state),
+            selected_series_period(self.state) or time,
             source.first_year,
             source.last_year,
             source.calendar,
         )
+        metadata = _metadata(self, source, operations, period)
+        if self.provider == "era5":
+            metadata = selected_metadata(
+                metadata, self._resolve_selection(state, metadata, period, time)
+            )
         references = tuple(
             SeriesReference(
-                _native_variable(self.provider, operation)
-                if self.raw
-                else _variable(self.provider, operation),
-                scenario=source.scenario,
-                period=period,
+                series.variable,
+                scenario=series.scenario,
+                period=series.period,
                 release=source.identity.release,
-                probability=None
-                if self.raw
-                else _reference(self.provider, operation).probability,
+                probability=series.probability,
                 model=source.identity.model,
                 member=source.identity.member,
             )
-            for operation in operations
+            for series in metadata.spec.series
         )
         return Inspection(
-            schema=evidence_arrow_schema(_metadata(self, source, operations, period)),
+            schema=evidence_arrow_schema(metadata),
             series=references,
             releases=(source.identity.release,),
             indicators=tuple(
                 _reference(self.provider, operation) for operation in _OPERATIONS
             ),
-            capabilities=(
-                Capability.INSPECT,
-                Capability.READ,
-                Capability.BATCHES,
-                Capability.WRITE,
-                Capability.AGGREGATE if self.raw else Capability.FIT,
-            ),
+            capabilities=capabilities,
             requirements=source.requirements + self._missing() + source.notes,
             source=source.identity,
         )
 
+    @staticmethod
+    def _resolve_selection(
+        state: SelectionState,
+        metadata: EvidenceMetadata,
+        period: Period,
+        time: Period | None,
+    ) -> ResolvedSelection:
+        return replace(
+            state,
+            time=time,
+            series=None
+            if state.series is None
+            else tuple(
+                replace(ref, period=period)
+                if ref.period is None or ref.period.calendar is None
+                else ref
+                for ref in state.series
+            ),
+        ).resolve(metadata.spec, source=metadata.source)
+
     def open(self, scope: ExecutionScope) -> NodeStream[EvidenceMetadata]:
-        if any(
-            value == []
-            for key, value in self.state.document().items()
-            if key in {"variables", "scenarios", "periods", "series", "stations"}
-        ):
-            return _empty_stream(self, scope)
+        if self._explicitly_empty():
+            return _empty_stream(self)
+        self._check_era5_identities()
         operation = self._operation()
         if operation is None:
             raise CapabilityError(
@@ -693,18 +745,7 @@ class _ClimateNode(SourceNode[EvidenceMetadata]):
         state, release = payload_selection(self.state, self.release)
         assert source.identity.release is not None
         pin = inventory_payload_pin(source.identity.release, release)
-        resolved = replace(
-            state,
-            time=time,
-            series=None
-            if state.series is None
-            else tuple(
-                replace(ref, period=period)
-                if ref.period is None or ref.period.calendar is None
-                else ref
-                for ref in state.series
-            ),
-        ).resolve(metadata.spec, source=source.identity)
+        resolved = self._resolve_selection(state, metadata, period, time)
         metadata = selected_metadata(metadata, resolved)
         current = metadata
         observation_supports: tuple[ObservationSupport, ...] = ()
@@ -879,7 +920,7 @@ def _metadata(
         provenance.append(
             UnitConversion(
                 variable_id=variables[0].id,
-                source_unit="kg m-2 s-1",
+                source_unit=_PRECIPITATION_FLUX.value,
                 target_unit="mm/day",
                 scale=86400.0,
             )
@@ -963,7 +1004,7 @@ def _provenance(
             records.append(
                 UnitConversion(
                     variable_id=variable.id,
-                    source_unit="kg m-2 s-1",
+                    source_unit=_PRECIPITATION_FLUX.value,
                     target_unit="mm/day",
                     scale=86400.0,
                 )
@@ -1036,9 +1077,7 @@ def _provenance(
     return tuple(records)
 
 
-def _empty_stream(
-    node: _ClimateNode, scope: ExecutionScope
-) -> NodeStream[EvidenceMetadata]:
+def _empty_stream(node: _ClimateNode) -> NodeStream[EvidenceMetadata]:
     metadata = EvidenceMetadata(
         kind=EvidenceKind.OBSERVATIONS if node.raw else EvidenceKind.SAMPLES,
         spec=DataSpec([], series=[]),

@@ -187,6 +187,60 @@ def test_era5_hourly_complete_days_and_owned_offline_replay(
     assert replay.table.equals(result.table, check_metadata=False)
 
 
+def test_era5_inspection_short_circuits_empty_and_unknown_selectors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def forbidden(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("selector validation acquired source bytes")
+
+    monkeypatch.setattr("crc_sdk._climate_sampling._era5_source", forbidden)
+    runtime = Runtime(cache=Cache.offline(tmp_path))
+    recipe = ERA5(
+        indicator=ERA5.Indicator.ANNUAL_MAXIMUM_DAILY_MAXIMUM_TEMPERATURE
+    ).select(area=AREA, time=Period.window(2001, 2001))
+    for empty in (recipe.select(variables=[]), recipe.select(series=[])):
+        inspection = empty.inspect(runtime=runtime)
+        assert not inspection.series
+        assert not inspection.requirements
+        assert not inspection.releases
+        read = empty.read(runtime=runtime)
+        assert inspection.schema is not None
+        assert inspection.schema.equals(read.table.schema, check_metadata=False)
+        assert read.table.num_rows == 0
+    invalid = recipe.select(variables="typo")
+    with pytest.raises(ValueError, match="unknown requested identity 'typo'"):
+        invalid.inspect(runtime=runtime)
+    with pytest.raises(ValueError, match="unknown requested identity 'typo'"):
+        invalid.read(runtime=runtime)
+
+
+def test_era5_inspection_filters_the_discovered_series_and_schema(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from crc_sdk import _climate_sampling as module
+
+    path = tmp_path / "era5.zarr"
+    _grid(path, variable="2m_temperature", hourly=True)
+    monkeypatch.setattr(
+        module, "ERA5_STORE", replace(module.ERA5_STORE, url=path.as_uri())
+    )
+    source = ERA5().select(area=AREA, time=Period.window(2001, 2001))
+    before = source.inspect()
+    assert len(before.series) == 4
+    filtered = source.select(
+        variables=[s.variable for s in before.series[:2]]
+    ).inspect()
+    assert filtered.series == before.series[:2]
+    assert filtered.metadata is not None
+    assert filtered.metadata.spec.variables == tuple(
+        series.variable for series in before.series[:2]
+    )
+    assert any(
+        requirement.code == "indicator_required"
+        for requirement in filtered.requirements
+    )
+
+
 def test_collection_replays_its_inspected_publication_after_fitting(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
