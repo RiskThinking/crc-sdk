@@ -69,11 +69,12 @@ from ._errors import CapabilityError
 from ._evidence import (
     EvidenceKind,
     EvidenceMetadata,
+    ObservationSupport,
     evidence_arrow_schema,
     evidence_table,
 )
 from ._evidence_recipes import Observations
-from ._graph import ExecutionScope, Node, NodeStream, ObservationSupport
+from ._graph import ExecutionScope, Node, NodeStream
 from ._inspection import (
     Capability,
     IndicatorReference,
@@ -90,6 +91,8 @@ from ._selection import SelectionState, selected_metadata
 from ._source_io import (
     SourceNode,
     fetch,
+    inventory_payload_pin,
+    inventory_release,
     native_data,
     payload_selection,
     selected_series_period,
@@ -574,6 +577,9 @@ class _ClimateNode(SourceNode[EvidenceMetadata]):
             with native_data(source=self.provider, scope=scope):
                 return _discover_climate(scope, self)
         source = self._source(scope)
+        assert source.identity.release is not None
+        _, release = payload_selection(self.state, self.release)
+        inventory_payload_pin(source.identity.release, release)
         operations = (
             tuple(_OPERATIONS)
             if self._operation() is None
@@ -596,6 +602,7 @@ class _ClimateNode(SourceNode[EvidenceMetadata]):
                 indicators=tuple(
                     _reference(self.provider, operation) for operation in _OPERATIONS
                 ),
+                releases=(source.identity.release,),
                 requirements=source.requirements + self._missing() + source.notes,
                 source=source.identity,
                 capabilities=(Capability.INSPECT,),
@@ -613,6 +620,7 @@ class _ClimateNode(SourceNode[EvidenceMetadata]):
                 else _variable(self.provider, operation),
                 scenario=source.scenario,
                 period=period,
+                release=source.identity.release,
                 probability=None
                 if self.raw
                 else _reference(self.provider, operation).probability,
@@ -624,6 +632,7 @@ class _ClimateNode(SourceNode[EvidenceMetadata]):
         return Inspection(
             schema=evidence_arrow_schema(_metadata(self, source, operations, period)),
             series=references,
+            releases=(source.identity.release,),
             indicators=tuple(
                 _reference(self.provider, operation) for operation in _OPERATIONS
             ),
@@ -682,6 +691,8 @@ class _ClimateNode(SourceNode[EvidenceMetadata]):
         )
         metadata = _metadata(self, source, (operation,), period)
         state, release = payload_selection(self.state, self.release)
+        assert source.identity.release is not None
+        pin = inventory_payload_pin(source.identity.release, release)
         resolved = replace(
             state,
             time=time,
@@ -705,7 +716,7 @@ class _ClimateNode(SourceNode[EvidenceMetadata]):
             if consumed:
                 assert source.release_id is not None
                 actual_source = verify_payload(
-                    actual_source, id=source.release_id, expected=release
+                    actual_source, id=source.release_id, expected=pin
                 )
             diagnostics = (
                 ()
@@ -726,6 +737,7 @@ class _ClimateNode(SourceNode[EvidenceMetadata]):
             return replace(
                 metadata,
                 source=actual_source,
+                _empty_supports=observation_supports,
                 report=ExecutionReport(
                     False,
                     None,
@@ -812,8 +824,7 @@ class _ClimateNode(SourceNode[EvidenceMetadata]):
             batches(),
             report=lambda: current.report,
             final_metadata=lambda: current,
-            verify_before_yield=release is not None,
-            observation_supports=lambda: observation_supports,
+            verify_before_yield=pin is not None,
         )
 
 
@@ -1154,8 +1165,13 @@ def _era5_source(
     first_date = str(attrs.get("valid_time_start", str(time[0])))[:10]
     last_date = str(attrs.get("valid_time_stop", str(time[-1])))[:10]
     first, last = int(first_date[:4]), int(last_date[:4])
+    release_id = "final-through-" + last_date
+    resources = zarr_resources(snapshot)
     identity = SourceIdentity(
-        "era5", ERA5_STORE.name, resources=zarr_resources(snapshot)
+        "era5",
+        ERA5_STORE.name,
+        release=inventory_release(resources, id=release_id),
+        resources=resources,
     )
 
     def final_identity() -> SourceIdentity:
@@ -1303,7 +1319,7 @@ def _era5_source(
         rewritten,
         final_identity,
         notes,
-        release_id="final-through-" + last_date,
+        release_id=release_id,
         supports=supports,
     )
 
@@ -1344,7 +1360,11 @@ def _cmip_source(
         raise LookupError(
             "No published CMIP6 dataset matches the exact source selection"
         )
-    matches = [d for d in datasets if release is None or d.dataset_id == release.id]
+    matches = [
+        d
+        for d in datasets
+        if release is None or d.dataset_id == release.id.removeprefix("inventory:")
+    ]
     if not matches:
         raise LookupError("The pinned CMIP6 release is not in the supported catalogue")
     dataset = _preferred_cmip_dataset(matches)
@@ -1352,6 +1372,9 @@ def _cmip_source(
         raise ValueError(
             "CMIP6 selection has no unique publication on a supported grid"
         )
+    record = _cmip_record(dataset, catalogue)
+    publication = inventory_release((record,), id=dataset.dataset_id)
+    inventory_payload_pin(publication, release)
     snapshot = open_zarr_snapshot(scope, dataset.zstore)
     group = snapshot.group
     calendar = calendar_name(group["time"].attrs.get("calendar"))
@@ -1362,16 +1385,6 @@ def _cmip_source(
     if ordinals.size == 0 or np.any(np.diff(ordinals) <= 0):
         raise ValueError("CMIP6 source days must be nonempty, unique, and increasing")
     years, _, _ = cal.from_ordinal(ordinals[[0, -1]])
-    payload = json.dumps(
-        {name: getattr(dataset, name) for name in dataset.__dataclass_fields__},
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode()
-    record = ResourceIdentity(
-        catalogue.uri + "#" + dataset.dataset_id,
-        "sha256:" + hashlib.sha256(payload).hexdigest(),
-        retrieved_at=catalogue.retrieved_at,
-    )
     licence = group.attrs.get("license") or group.attrs.get("licence")
     attribution = (
         str(group.attrs.get("institution", dataset.institution_id))
@@ -1395,6 +1408,7 @@ def _cmip_source(
     identity = SourceIdentity(
         "cmip6",
         dataset.dataset_id,
+        release=publication,
         resources=actual_resources(),
         member=dataset.member_id,
         model=dataset.source_id,
@@ -1479,10 +1493,25 @@ def _cmip_source(
     )
 
 
+def _cmip_record(
+    dataset: cmip.CMIP6Dataset, catalogue: ResourceIdentity
+) -> ResourceIdentity:
+    payload = json.dumps(
+        {name: getattr(dataset, name) for name in dataset.__dataclass_fields__},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    return ResourceIdentity(
+        catalogue.uri + "#" + dataset.dataset_id,
+        "sha256:" + hashlib.sha256(payload).hexdigest(),
+        retrieved_at=catalogue.retrieved_at,
+    )
+
+
 def _nex_listing(
     scope: ExecutionScope, prefix: str, *, recursive: bool = False
-) -> tuple[tuple[str, ...], tuple[ResourceIdentity, ...]]:
-    keys: list[str] = []
+) -> tuple[dict[str, str | None], tuple[ResourceIdentity, ...]]:
+    objects: dict[str, str | None] = {}
     resources = []
     token: str | None = None
     while True:
@@ -1494,10 +1523,45 @@ def _nex_listing(
         path, resource = fetch(scope, uri)
         resources.append(resource)
         tree = ET.fromstring(path.read_bytes())
-        keys.extend(e.text or "" for e in tree.findall(".//{*}Contents/{*}Key"))
+        for content in tree.findall(".//{*}Contents"):
+            key = content.findtext("{*}Key")
+            if key is not None:
+                etag = content.findtext("{*}ETag")
+                if objects.setdefault(key, etag) != etag:
+                    raise ValueError(
+                        "NEX inventory describes conflicting object revisions"
+                    )
         token = tree.findtext("{*}NextContinuationToken")
         if token is None:
-            return tuple(keys), tuple(resources)
+            return objects, tuple(resources)
+
+
+def _nex_files(objects: dict[str, str | None]) -> dict[int, tuple[str, str | None]]:
+    versions: dict[int, tuple[int, ...]] = {}
+    files: dict[int, tuple[str, str | None]] = {}
+    for key, etag in objects.items():
+        match = _NEX_YEAR.search(key)
+        if match is None:
+            continue
+        year = int(match[1])
+        version = tuple(map(int, (match[2] or "1.0").split(".")))
+        if year not in versions or version > versions[year]:
+            versions[year] = version
+            files[year] = (key, etag)
+        elif version == versions[year] and files[year][0] != key:
+            raise ValueError("NEX inventory describes ambiguous annual publications")
+    return files
+
+
+def _nex_release(files: dict[int, tuple[str, str | None]], id: str) -> ReleaseReference:
+    identity = ResourceIdentity(
+        NEX_BUCKET + "/" + NEX_PREFIX + id + "/",
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(sorted(files.items()), separators=(",", ":")).encode()
+        ).hexdigest(),
+    )
+    return inventory_release((identity,), id=id)
 
 
 def _discovery_variables(node: _ClimateNode) -> dict[str, list[str]]:
@@ -1523,19 +1587,42 @@ def _preferred_cmip_dataset(
 
 def _discover_climate(scope: ExecutionScope, node: _ClimateNode) -> Inspection:
     supported = _discovery_variables(node)
+    _, requested = payload_selection(node.state, node.release)
+    requested_id = (
+        None if requested is None else requested.id.removeprefix("inventory:")
+    )
     if node.provider == "cmip6":
         datasets, catalogue = _cmip_datasets(scope, node)
         by_series: dict[tuple[str, str, str, str], list[cmip.CMIP6Dataset]] = {}
         for d in datasets:
+            if requested_id is not None and d.dataset_id != requested_id:
+                continue
             key = (d.source_id, d.experiment_id, d.member_id, d.variable_id)
             by_series.setdefault(key, []).append(d)
-        entries = {
-            key for key, group in by_series.items() if _preferred_cmip_dataset(group)
+        releases = {
+            key: inventory_release(
+                (_cmip_record(dataset, catalogue),), id=dataset.dataset_id
+            )
+            for key, group in by_series.items()
+            if (dataset := _preferred_cmip_dataset(group)) is not None
         }
         source = SourceIdentity("cmip6", "catalogue", resources=(catalogue,))
     else:
-        entries, resources = _nex_catalogue(scope, node, supported)
+        available, resources = _nex_catalogue(scope, node, supported)
+        releases = {
+            key: release
+            for key, release in available.items()
+            if requested_id is None or "/".join(key) == requested_id
+        }
         source = SourceIdentity("nex", "NEX-GDDP-CMIP6", resources=resources)
+    if requested is not None:
+        if not releases:
+            raise OSError(
+                f"source release changed: {requested.id} "
+                "is not in the published inventory"
+            )
+        for release in releases.values():
+            inventory_payload_pin(release, requested)
     references = tuple(
         SeriesReference(
             _native_variable(node.provider, operation)
@@ -1549,15 +1636,17 @@ def _discover_climate(scope: ExecutionScope, node: _ClimateNode) -> Inspection:
             else _reference(node.provider, operation).probability,
             model=model,
             member=member,
+            release=release,
         )
-        for model, scenario, member, variable in sorted(entries)
+        for (model, scenario, member, variable), release in sorted(releases.items())
         for operation in supported[variable]
     )
     available_operations = {
-        operation for *_, variable in entries for operation in supported[variable]
+        operation for *_, variable in releases for operation in supported[variable]
     }
     return Inspection(
         series=references,
+        releases=tuple(dict.fromkeys(r for _, r in sorted(releases.items()))),
         indicators=tuple(
             _reference(node.provider, operation)
             for operation in _OPERATIONS
@@ -1571,7 +1660,9 @@ def _discover_climate(scope: ExecutionScope, node: _ClimateNode) -> Inspection:
 
 def _nex_catalogue(
     scope: ExecutionScope, node: _ClimateNode, supported: dict[str, list[str]]
-) -> tuple[set[tuple[str, str, str, str]], tuple[ResourceIdentity, ...]]:
+) -> tuple[
+    dict[tuple[str, str, str, str], ReleaseReference], tuple[ResourceIdentity, ...]
+]:
     scenario = (
         node.scenario.id if isinstance(node.scenario, Scenario) else node.scenario
     )
@@ -1581,9 +1672,9 @@ def _nex_catalogue(
         if component is None:
             break
         prefix += component + "/"
-    keys, resources = _nex_listing(scope, prefix, recursive=True)
-    entries = set()
-    for key in keys:
+    objects, resources = _nex_listing(scope, prefix, recursive=True)
+    entries: dict[tuple[str, str, str, str], dict[str, str | None]] = {}
+    for key, etag in objects.items():
         if not key.startswith(NEX_PREFIX):
             continue
         parts = key.removeprefix(NEX_PREFIX).split("/")
@@ -1596,8 +1687,11 @@ def _nex_catalogue(
             selected is None or selected == actual
             for selected, actual in zip(selection, parts[:3], strict=True)
         ):
-            entries.add((model, experiment, member, variable))
-    return entries, resources
+            entries.setdefault((model, experiment, member, variable), {})[key] = etag
+    return {
+        key: _nex_release(_nex_files(objects), "/".join(key))
+        for key, objects in entries.items()
+    }, resources
 
 
 def _nex_source(
@@ -1608,21 +1702,24 @@ def _nex_source(
     )
     assert node.model is not None and scenario is not None and node.member is not None
     variable = _NATIVE_VARIABLES[operation]
-    prefix = f"{NEX_PREFIX}{node.model}/{scenario}/{node.member}/{variable}/"
-    keys, identities = _nex_listing(scope, prefix)
+    release_id = f"{node.model}/{scenario}/{node.member}/{variable}"
+    prefix = f"{NEX_PREFIX}{release_id}/"
+    objects, identities = _nex_listing(scope, prefix)
     resources = list(identities)
-    files: dict[int, tuple[tuple[int, ...], str]] = {}
-    for key in keys:
-        match = _NEX_YEAR.search(key)
-        if match and key.startswith(prefix) and "/" not in key.removeprefix(prefix):
-            year = int(match[1])
-            version = tuple(map(int, (match[2] or "1.0").split(".")))
-            if year not in files or version > files[year][0]:
-                files[year] = (version, key)
+    files = _nex_files(
+        {
+            key: etag
+            for key, etag in objects.items()
+            if key.startswith(prefix) and "/" not in key.removeprefix(prefix)
+        }
+    )
     if not files:
         raise LookupError("The selected NEX source contains no annual NetCDF resources")
+    publication = _nex_release(files, release_id)
+    _, requested = payload_selection(node.state, node.release)
+    inventory_payload_pin(publication, requested)
     header, header_resource = netcdf_header_snapshot(
-        scope, NEX_BUCKET + "/" + files[min(files)][1], variable
+        scope, NEX_BUCKET + "/" + files[min(files)][0], variable
     )
     resources.append(header_resource)
     calendar = calendar_name(header.get("calendar"))
@@ -1634,6 +1731,7 @@ def _nex_source(
     identity = SourceIdentity(
         "nex",
         "NEX-GDDP-CMIP6",
+        release=publication,
         resources=tuple(resources),
         member=node.member,
         model=node.model,
@@ -1648,7 +1746,7 @@ def _nex_source(
         assert node.state.area is not None
         group, resource = netcdf_window_snapshot(
             scope,
-            NEX_BUCKET + "/" + files[source_year][1],
+            NEX_BUCKET + "/" + files[source_year][0],
             area=node.state.area,
             variable=variable,
             resolution=0.25,
@@ -1750,5 +1848,5 @@ def _nex_source(
         lambda: replace(
             identity, resources=tuple({r.uri: r for r in resources}.values())
         ),
-        release_id=f"{node.model}/{scenario}/{node.member}/{variable}",
+        release_id=release_id,
     )

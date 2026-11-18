@@ -15,7 +15,7 @@ from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from ._collection_schema import CollectionMetadata
+from ._collection_schema import CollectionMetadata, _collection_report
 from ._dataset_schema import _digest
 from ._errors import CapabilityError
 from ._runtime import LocalPath, _local_path
@@ -67,16 +67,17 @@ def read_manifest(path: Path) -> CollectionMetadata:
                 "published collection resources must be complete and valid"
             )
     resources = {resource.id: resource for resource in result.resources}
-    for name in ("produced", "no_data"):
-        actual = sum(
-            getattr(resources[r].metadata.report.counts, name)
+    combined = _collection_report(
+        (
+            resources[r].metadata.report
             for member in result.members
             for r in member.resource_ids
-        )
-        if actual != getattr(result.report.counts, name):
-            raise ValueError(
-                f"collection report {name} does not match member resources"
-            )
+        ),
+        complete=True,
+    )
+    for name in ("counts", "diagnostics", "source_identities"):
+        if getattr(combined, name) != getattr(result.report, name):
+            raise ValueError(f"collection report {name} do not match member resources")
     return result
 
 

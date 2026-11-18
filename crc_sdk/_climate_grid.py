@@ -276,17 +276,15 @@ def annual_records(
             daily[day - first] = np.where(valid, reduced, np.nan)
         for column, cell in enumerate(cells):
             evidence = daily[:, column]
-            valid_count = int(np.isfinite(evidence).sum())
             candidates = evidence
             if native == "rx5day":
                 windows = np.lib.stride_tricks.sliding_window_view(evidence, 5)
                 candidates = np.where(
                     np.isfinite(windows).all(axis=1), windows.sum(axis=1), np.nan
                 )
-            usable = (
-                valid_count / count >= minimum_fraction
-                and np.isfinite(candidates).any()
-            )
+            expected = len(candidates)
+            valid_count = int(np.isfinite(candidates).sum())
+            usable = valid_count > 0 and valid_count / expected >= minimum_fraction
             value = None
             if usable:
                 value = float(
@@ -312,13 +310,14 @@ def annual_records(
                 else {
                     "code": "incomplete_year",
                     "message": (
-                        f"{valid_count} of {count} source days meet "
-                        "the required daily completeness."
+                        f"{valid_count} of {expected} expected "
+                        f"{'five-day totals' if native == 'rx5day' else 'source days'} "
+                        "were valid."
                     ),
                 },
                 "coverage": {
                     "valid": valid_count,
-                    "expected": count,
+                    "expected": expected,
                     "minimum_fraction": minimum_fraction,
                 },
             }

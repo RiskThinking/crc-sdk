@@ -43,13 +43,17 @@ from ._source_io import (
     check_release,
     fetch,
     fetch_json,
+    inventory_payload_pin,
+    inventory_release,
     native_data,
+    payload_selection,
     release_snapshot,
 )
 
 _SERVICE = "https://pdi.scinet.usda.gov/image/rest/services/CDL_WM/ImageServer"
 _LICENSE = "CC0-1.0"
 _ATTRIBUTION = "USDA National Agricultural Statistics Service; Cropland Data Layer"
+_RELEASE = "usda:croplandcros:selected-source-snapshot"
 _VARIABLE = Variable(
     "usda:cropland_class",
     measurement=cf.Measurement(quantity="cropland_class", unit="1"),
@@ -216,21 +220,24 @@ class _CroplandNode(SourceNode[_LayerMetadata]):
             Period.window(year, year) for year in sorted({item.year for item in images})
         )
         metadata = _metadata(periods)
-        resolved = self.state.resolve(metadata.spec)
+        state, requested = payload_selection(self.state, self.release)
+        publication = inventory_release(resources, id=_RELEASE)
+        payload = inventory_payload_pin(publication, requested)
+        if state.area is not None and state.periods is None and state.series is None:
+            latest = max(periods, key=lambda period: cast(int, period.start))
+            metadata = _metadata((latest,))
+        resolved = state.resolve(metadata.spec)
+        metadata = selected_metadata(metadata, resolved)
         if inventory:
             source = SourceIdentity(
                 "usda",
                 "croplandcros_published_image_inventory",
+                release=publication,
                 resources=tuple(resources),
             )
             return replace(metadata, source=source), (), {}
         if self.state.area is None:
             raise CapabilityError("Select an area before reading cropland pixels")
-        if self.state.periods is None and self.state.series is None:
-            latest = max(periods, key=lambda period: cast(int, period.start))
-            metadata = _metadata((latest,))
-            resolved = self.state.resolve(metadata.spec)
-        metadata = selected_metadata(metadata, resolved)
         selected_years = {
             cast(int, series.period.start)
             for series in resolved.spec.series
@@ -372,10 +379,8 @@ class _CroplandNode(SourceNode[_LayerMetadata]):
                         parts.append(
                             _Part(path, period, width, height, requested_bounds)
                         )
-        release = release_snapshot(
-            resources, id="usda:croplandcros:selected-source-snapshot"
-        )
-        check_release(release, self.release)
+        release = release_snapshot(resources, id=_RELEASE)
+        check_release(release, payload)
         source = SourceIdentity(
             "usda",
             "croplandcros_categorical_pixels",
@@ -385,7 +390,7 @@ class _CroplandNode(SourceNode[_LayerMetadata]):
         return replace(metadata, source=source), tuple(parts), names
 
     def inspection(self, scope: ExecutionScope) -> Inspection:
-        metadata, _, _ = self._prepare(scope, inventory=self.state.area is None)
+        metadata, _, _ = self._prepare(scope, inventory=True)
         return Inspection(
             schema=evidence_arrow_schema(metadata),
             series=tuple(
@@ -413,7 +418,8 @@ class _CroplandNode(SourceNode[_LayerMetadata]):
 
     def open(self, scope: ExecutionScope) -> NodeStream[_LayerMetadata]:
         metadata, parts, names = self._prepare(scope)
-        resolved = self.state.resolve(metadata.spec, source=metadata.source)
+        state, _ = payload_selection(self.state, self.release)
+        resolved = state.resolve(metadata.spec, source=metadata.source)
         count = missing = 0
 
         def native_batches() -> Iterator[pa.RecordBatch]:

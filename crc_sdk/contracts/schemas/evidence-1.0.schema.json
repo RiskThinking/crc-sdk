@@ -83,6 +83,37 @@
           }
         }
       }
+    },
+    "empty_supports": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "properties": {
+          "support_id": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+          },
+          "cell_id": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 18446744073709551615
+          },
+          "geometry": {
+            "type": "string",
+            "minLength": 42,
+            "pattern": "^(?:[0-9a-f]{2})+$"
+          }
+        },
+        "required": [
+          "support_id",
+          "cell_id",
+          "geometry"
+        ],
+        "additionalProperties": false
+      }
     }
   },
   "required": [
@@ -94,6 +125,26 @@
     "kind"
   ],
   "additionalProperties": false,
+  "dependentSchemas": {
+    "empty_supports": {
+      "properties": {
+        "kind": {
+          "const": "observations"
+        },
+        "report": {
+          "properties": {
+            "counts": {
+              "properties": {
+                "produced": {
+                  "const": 0
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
   "$defs": {
     "counts": {
       "type": "object",

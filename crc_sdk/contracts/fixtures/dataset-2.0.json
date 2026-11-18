@@ -4120,6 +4120,219 @@
       }
     },
     {
+      "name": "fit-sample-invented-exclusions",
+      "structural": false,
+      "document": {
+        "metadata": {
+          "provenance": [],
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 0,
+              "no_data": 0,
+              "produced": 1,
+              "requested": 1,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [],
+            "source_identities": [],
+            "valid": true
+          },
+          "schema_version": "2.0",
+          "spatial": {
+            "index_resolution": 4,
+            "supports": [
+              "cell"
+            ]
+          },
+          "spec": {
+            "periods": [],
+            "scenarios": [],
+            "series": [
+              {
+                "period_id": null,
+                "scenario_id": null,
+                "variable_id": "user:depth"
+              }
+            ],
+            "variables": [
+              {
+                "id": "user:depth"
+              }
+            ]
+          }
+        },
+        "rows": [
+          {
+            "cell_id": 594475228122316799,
+            "curve": {
+              "family": "gumbel_r",
+              "kind": "parametric",
+              "location": 3.2508807340846992,
+              "object": "distribution",
+              "scale": 2.1640425613334453,
+              "schema_version": "1.0"
+            },
+            "fit": {
+              "attempts": [
+                {
+                  "diagnostic": {
+                    "evaluations": 0,
+                    "iterations": 0,
+                    "ks_pvalue": 0.9974677102535184,
+                    "ks_statistic": 0.140420243641746,
+                    "r_squared": 0.9744486788389933,
+                    "rmse": 0.04578216698659895
+                  },
+                  "specification": {
+                    "constraints": null,
+                    "estimator": "lmoments",
+                    "fallbacks": [],
+                    "family": "gumbel_r",
+                    "kind": "samples",
+                    "minimum_samples": 3
+                  },
+                  "status": "converged"
+                }
+              ],
+              "converged": true,
+              "engine_version": "crc-framework/1.0.0",
+              "estimator": "lmoments",
+              "evidence_count": 8,
+              "evidence_support": [
+                1.0,
+                8.0
+              ],
+              "excluded_count": 5,
+              "selected_attempt": 0,
+              "specification": {
+                "constraints": null,
+                "estimator": "lmoments",
+                "fallbacks": [],
+                "family": "gumbel_r",
+                "kind": "samples",
+                "minimum_samples": 3
+              },
+              "used_count": 3,
+              "weights": null
+            },
+            "period_id": null,
+            "scenario_id": null,
+            "support_id": "user:support",
+            "variable_id": "user:depth"
+          }
+        ]
+      }
+    },
+    {
+      "name": "fit-sample-missing-observed-support",
+      "structural": false,
+      "document": {
+        "metadata": {
+          "provenance": [],
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 0,
+              "no_data": 0,
+              "produced": 1,
+              "requested": 1,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [],
+            "source_identities": [],
+            "valid": true
+          },
+          "schema_version": "2.0",
+          "spatial": {
+            "index_resolution": 4,
+            "supports": [
+              "cell"
+            ]
+          },
+          "spec": {
+            "periods": [],
+            "scenarios": [],
+            "series": [
+              {
+                "period_id": null,
+                "scenario_id": null,
+                "variable_id": "user:depth"
+              }
+            ],
+            "variables": [
+              {
+                "id": "user:depth"
+              }
+            ]
+          }
+        },
+        "rows": [
+          {
+            "cell_id": 594475228122316799,
+            "curve": {
+              "family": "gumbel_r",
+              "kind": "parametric",
+              "location": 3.2508807340846992,
+              "object": "distribution",
+              "scale": 2.1640425613334453,
+              "schema_version": "1.0"
+            },
+            "fit": {
+              "attempts": [
+                {
+                  "diagnostic": {
+                    "evaluations": 0,
+                    "iterations": 0,
+                    "ks_pvalue": 0.9974677102535184,
+                    "ks_statistic": 0.140420243641746,
+                    "r_squared": 0.9744486788389933,
+                    "rmse": 0.04578216698659895
+                  },
+                  "specification": {
+                    "constraints": null,
+                    "estimator": "lmoments",
+                    "fallbacks": [],
+                    "family": "gumbel_r",
+                    "kind": "samples",
+                    "minimum_samples": 3
+                  },
+                  "status": "converged"
+                }
+              ],
+              "converged": true,
+              "engine_version": "crc-framework/1.0.0",
+              "estimator": "lmoments",
+              "evidence_count": 8,
+              "evidence_support": null,
+              "excluded_count": 0,
+              "selected_attempt": 0,
+              "specification": {
+                "constraints": null,
+                "estimator": "lmoments",
+                "fallbacks": [],
+                "family": "gumbel_r",
+                "kind": "samples",
+                "minimum_samples": 3
+              },
+              "used_count": 8,
+              "weights": null
+            },
+            "period_id": null,
+            "scenario_id": null,
+            "support_id": "user:support",
+            "variable_id": "user:depth"
+          }
+        ]
+      }
+    },
+    {
       "name": "fit-hurdle-removed",
       "structural": false,
       "document": {
@@ -4348,6 +4561,141 @@
               "evidence_support": [
                 0.1,
                 0.99
+              ],
+              "excluded_count": 0,
+              "selected_attempt": 0,
+              "specification": {
+                "atom_location": 0,
+                "atom_probability": 0.25,
+                "constraints": {
+                  "maximum_value": 10,
+                  "minimum_value": null,
+                  "probability": 0.9,
+                  "require_sample_support": false
+                },
+                "family": "gumbel_r",
+                "kind": "hurdle_quantiles",
+                "minimum_knots": 4
+              },
+              "used_count": 8,
+              "weights": [
+                0.125,
+                0.125,
+                0.125,
+                0.125,
+                0.125,
+                0.125,
+                0.125,
+                0.125
+              ]
+            },
+            "period_id": null,
+            "scenario_id": null,
+            "support_id": "user:support",
+            "variable_id": "user:depth"
+          }
+        ]
+      }
+    },
+    {
+      "name": "fit-active-probability-endpoints",
+      "structural": false,
+      "document": {
+        "metadata": {
+          "provenance": [],
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 0,
+              "no_data": 0,
+              "produced": 1,
+              "requested": 1,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [],
+            "source_identities": [],
+            "valid": true
+          },
+          "schema_version": "2.0",
+          "spatial": {
+            "index_resolution": 4,
+            "supports": [
+              "cell"
+            ]
+          },
+          "spec": {
+            "periods": [],
+            "scenarios": [],
+            "series": [
+              {
+                "period_id": null,
+                "scenario_id": null,
+                "variable_id": "user:depth"
+              }
+            ],
+            "variables": [
+              {
+                "id": "user:depth"
+              }
+            ]
+          }
+        },
+        "rows": [
+          {
+            "cell_id": 594475228122316799,
+            "curve": {
+              "atom_location": 0.0,
+              "atom_probability": 0.25,
+              "base": {
+                "family": "gumbel_r",
+                "kind": "parametric",
+                "location": 3.2927968762676447e-09,
+                "scale": 0.9999999996760226
+              },
+              "kind": "hurdle",
+              "object": "distribution",
+              "schema_version": "1.0"
+            },
+            "fit": {
+              "attempts": [
+                {
+                  "diagnostic": {
+                    "atom_count": 3,
+                    "evaluations": 121,
+                    "iterations": 62,
+                    "normalization_scale": 4.771934247457316,
+                    "normalized_rmse": 8.299225591472044e-11,
+                    "tail_count": 5,
+                    "tail_maximum_absolute_residual": 6.408042985128759e-10,
+                    "tail_rmse": 5.009470504245263e-10,
+                    "tail_weighted_r_squared": 1.0
+                  },
+                  "specification": {
+                    "atom_location": 0,
+                    "atom_probability": 0.25,
+                    "constraints": {
+                      "maximum_value": 10,
+                      "minimum_value": null,
+                      "probability": 0.9,
+                      "require_sample_support": false
+                    },
+                    "family": "gumbel_r",
+                    "kind": "hurdle_quantiles",
+                    "minimum_knots": 4
+                  },
+                  "status": "converged"
+                }
+              ],
+              "converged": true,
+              "engine_version": "crc-framework/1.0.0",
+              "estimator": null,
+              "evidence_count": 8,
+              "evidence_support": [
+                0,
+                1
               ],
               "excluded_count": 0,
               "selected_attempt": 0,

@@ -118,21 +118,21 @@ class EvaluationQuery:
 
     def probability(self, value: float, series: SeriesSpec) -> float:
         """Derive non-exceedance probability from this query and the series."""
+        coordinate, tail = self._coordinate(value, series)
+        return 1.0 - coordinate if tail is cf.Tail.UPPER else coordinate
+
+    def _coordinate(self, value: float, series: SeriesSpec) -> tuple[float, cf.Tail]:
+        """Keep the small tail directly representable through numerical inversion."""
         coordinate = _number(value, "query value")
         self._validate_series(series)
         if self.kind is QueryKind.PROBABILITY:
             if not 0 <= coordinate <= 1:
                 raise ValueError("probabilities must be in [0, 1]")
-            return coordinate
+            return coordinate, cf.Tail.LOWER
         if coordinate < 1:
             raise ValueError("return periods must be at least one year")
-        assert series.probability is not None
-        tail_probability = 1.0 / coordinate
-        return (
-            1.0 - tail_probability
-            if series.probability.tail is cf.Tail.UPPER
-            else tail_probability
-        )
+        assert series.probability is not None and series.probability.tail is not None
+        return 1.0 / coordinate, series.probability.tail
 
     def _document(self) -> dict[str, object]:
         return {"kind": self.kind.value, "values": self.values}
@@ -900,8 +900,16 @@ def evaluation_table(
     metadata: EvaluationMetadata,
     *,
     include_metadata: bool = True,
+    retained: pa.StructArray | None = None,
 ) -> pa.Table:
     schema = evaluation_arrow_schema(metadata, include_metadata=include_metadata)
+    if retained is not None:
+        field = schema.field("asset")
+        base = pa.Table.from_pylist(
+            [row._arrow(asset_names=()) for row in rows],
+            schema=schema.remove(schema.get_field_index("asset")),
+        )
+        return base.append_column(field, retained)
     asset_names = (
         () if metadata.asset_fields is None else tuple(metadata.asset_fields.names[1:])
     )
@@ -966,6 +974,7 @@ def _validate_response(
     variable: str,
     failure: EvaluationFailure | None,
     contexts: Mapping[tuple[str, str], Mapping[str, object]],
+    asset: pa.StructScalar | None,
 ) -> tuple[str | None, str | None]:
     response_id = _optional_id(row["response_id"], "response_id")
     resolution_id = _optional_id(row["resolution_id"], "resolution_id")
@@ -996,15 +1005,14 @@ def _validate_response(
         failure is not None and failure.record is not None
     ):
         raise ValueError("a response cannot resolve without evaluated source evidence")
-    if response.context is not None and isinstance(row.get("asset"), Mapping):
-        asset = cast(Mapping[str, object], row["asset"])
+    if response.context is not None and asset is not None:
         for field, value in _wire_context_values(response.context).items():
             if not isinstance(value, dict):
                 continue
             binding = value.get("column")
             if not isinstance(binding, str) or binding not in asset:
                 continue
-            supplied = asset[binding]
+            supplied = asset[binding].as_py()
             if isinstance(supplied, Decimal):
                 supplied = float(supplied)
             if supplied != actual[field] or isinstance(supplied, bool):
@@ -1123,16 +1131,27 @@ class EvaluationValidator:
             raise ValueError(
                 "Arrow fields do not match canonical evaluation schema 2.0"
             )
-        for row in batch.to_pylist():
-            self._check_row(row, current)
+        index = batch.schema.get_field_index("asset")
+        if index == -1:
+            for row in batch.to_pylist():
+                self._check_row(row, current, None)
+        else:
+            assets = batch.column(index)
+            values = batch.select(
+                [name for name in batch.schema.names if name != "asset"]
+            )
+            for i, row in enumerate(values.to_pylist()):
+                self._check_row(row, current, assets[i])
         return batch
 
-    def _check_retained_asset(
-        self, identity: AssetId, asset: dict[str, object]
-    ) -> None:
-        # Arrow preserves the type and exact value of nested, binary and decimal fields.
-        schema = pa.schema(list(self._fields.field("asset").type))
-        row = pa.RecordBatch.from_pylist([asset], schema=schema)
+    def _check_retained_asset(self, identity: AssetId, asset: pa.StructScalar) -> None:
+        # Rebox one Arrow scalar to normalize physical encodings such as
+        # a shared dictionary while preserving exact nested and temporal values.
+        field = self._fields.field("asset")
+        schema = pa.schema([field])
+        row = pa.RecordBatch.from_arrays(
+            [pa.array([asset], type=field.type)], schema=schema
+        )
         with pa.BufferOutputStream() as sink:
             with pa.ipc.new_stream(sink, schema) as writer:
                 writer.write_batch(row)
@@ -1150,7 +1169,10 @@ class EvaluationValidator:
             )
 
     def _check_row(
-        self, row: Mapping[str, object], metadata: EvaluationMetadata
+        self,
+        row: Mapping[str, object],
+        metadata: EvaluationMetadata,
+        asset: pa.StructScalar | None,
     ) -> None:
         asset_id = _asset_id(row["asset_id"])
         if asset_id not in self._assets:
@@ -1180,10 +1202,13 @@ class EvaluationValidator:
         elif value is not None:
             raise ValueError("an evaluation failure cannot contain a numerical value")
         if metadata.asset_fields is not None and len(metadata.asset_fields) > 1:
-            asset = row.get("asset")
-            if not isinstance(asset, dict) or any(
-                not field.nullable and asset[field.name] is None
-                for field in list(metadata.asset_fields)[1:]
+            if (
+                asset is None
+                or not asset.is_valid
+                or any(
+                    not field.nullable and not asset[field.name].is_valid
+                    for field in list(metadata.asset_fields)[1:]
+                )
             ):
                 raise ValueError(
                     "evaluation row is missing declared retained asset fields"
@@ -1192,7 +1217,7 @@ class EvaluationValidator:
                 self._check_retained_asset(asset_id, asset)
         match = _validate_match(row, metadata, member, series, failure)
         response, resolution = _validate_response(
-            row, metadata, variable, failure, self._contexts
+            row, metadata, variable, failure, self._contexts, asset
         )
         if (
             response is not None

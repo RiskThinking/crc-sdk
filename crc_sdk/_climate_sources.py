@@ -50,12 +50,16 @@ from ._inspection import (
 from ._providers import eccc_idf as idf
 from ._providers import jrc as flood
 from ._recipes import Dataset, _checked_stream, _key
+from ._runtime import _memory_bytes
 from ._schema import DatasetRow, dataset_arrow_schema, rows_to_table
 from ._selection import SelectionState, selected_metadata, support_intersects
 from ._source_io import (
     SourceNode,
     fetch,
+    inventory_payload_pin,
+    inventory_release,
     payload_selection,
+    selected_series_period,
     selected_source_time,
     verify_payload,
 )
@@ -232,6 +236,13 @@ class _FloodNode(SourceNode[DatasetMetadata]):
             for product in JRC.Product:
                 if references[0].variable.id == _flood_variable(product).id:
                     return product
+        if self.release is not None:
+            version = self.release.id.removeprefix("inventory:")
+            matches = tuple(
+                p for p in JRC.Product if flood.JRC_DATASETS[p.value].version == version
+            )
+            if len(matches) == 1:
+                return matches[0]
         return None
 
     def _discovery(
@@ -254,7 +265,12 @@ class _FloodNode(SourceNode[DatasetMetadata]):
                 f"The JRC {product.value} publication does not match "
                 f"the supported source layout {dataset.version}."
             )
-        return dataset, SourceIdentity("jrc", product.value, resources=(resource,))
+        return dataset, SourceIdentity(
+            "jrc",
+            product.value,
+            release=inventory_release((resource,), id=dataset.version),
+            resources=(resource,),
+        )
 
     def inspection(self, scope: ExecutionScope) -> Inspection:
         products = (
@@ -263,6 +279,20 @@ class _FloodNode(SourceNode[DatasetMetadata]):
             else (cast(JRC.Product, self._product()),)
         )
         sources = [self._discovery(scope, p)[1] for p in products]
+        releases = tuple(
+            release for source in sources if (release := source.release) is not None
+        )
+        _state, requested = payload_selection(self.state, self.release)
+        if requested is not None:
+            inventory = next(
+                (
+                    r
+                    for r in releases
+                    if requested.id in (r.id, r.id.removeprefix("inventory:"))
+                ),
+                releases[0],
+            )
+            inventory_payload_pin(inventory, requested)
         requirements = (
             ()
             if self._product() is not None
@@ -299,9 +329,11 @@ class _FloodNode(SourceNode[DatasetMetadata]):
                 SeriesReference(
                     _flood_variable(p),
                     probability=Probability.annual(tail=cf.Tail.UPPER),
+                    release=source.release,
                 )
-                for p in products
+                for p, source in zip(products, sources, strict=True)
             ),
+            releases=releases,
             indicators=tuple(
                 IndicatorReference(
                     _flood_variable(p).id,
@@ -339,6 +371,7 @@ class _FloodNode(SourceNode[DatasetMetadata]):
                 "JRC.Product.GLOFAS before reading."
             )
         dataset, source = self._discovery(scope, product)
+        assert source.release is not None
         variable = _flood_variable(product)
         metadata = DatasetMetadata(
             spec=DataSpec(
@@ -356,6 +389,7 @@ class _FloodNode(SourceNode[DatasetMetadata]):
             source=source,
         )
         state, release = payload_selection(self.state, self.release)
+        pin = inventory_payload_pin(source.release, release)
         selection = state.resolve(metadata.spec, source=source)
         metadata = selected_metadata(metadata, selection)
         if selection.empty:
@@ -416,7 +450,7 @@ class _FloodNode(SourceNode[DatasetMetadata]):
             actual = verify_payload(
                 replace(source, resources=tuple(resources)),
                 id=dataset.version,
-                expected=release,
+                expected=pin,
             )
             return tuple(rows), actual, skipped
 
@@ -1006,7 +1040,10 @@ class _EDONode(SourceNode[EvidenceMetadata]):
                 "EDO directory contains no supported native soil moisture resources"
             )
         return SourceIdentity(
-            "edo", "soil_moisture_index", resources=(resource,)
+            "edo",
+            "soil_moisture_index",
+            release=inventory_release((resource,), id=SMI.version),
+            resources=(resource,),
         ), years
 
     def _metadata(
@@ -1017,7 +1054,7 @@ class _EDONode(SourceNode[EvidenceMetadata]):
         from ._evidence import EvidenceKind
 
         period = _period(
-            selected_source_time(self.state),
+            selected_series_period(self.state) or selected_source_time(self.state),
             min(years),
             max(years),
             Calendar.PROLEPTIC_GREGORIAN,
@@ -1037,7 +1074,14 @@ class _EDONode(SourceNode[EvidenceMetadata]):
         from ._evidence import evidence_arrow_schema
 
         source, years = self._discovery(scope)
+        assert source.release is not None
+        state, release = payload_selection(self.state, self.release)
+        inventory_payload_pin(source.release, release)
         metadata = self._metadata(source, years)
+        selection = replace(state, time=selected_source_time(state)).resolve(
+            metadata.spec, source=source
+        )
+        metadata = selected_metadata(metadata, selection)
         requirements = (
             ()
             if self.state.area is not None
@@ -1048,9 +1092,10 @@ class _EDONode(SourceNode[EvidenceMetadata]):
         return Inspection(
             schema=evidence_arrow_schema(metadata),
             series=tuple(
-                SeriesReference(s.variable, period=s.period)
+                SeriesReference(s.variable, period=s.period, release=source.release)
                 for s in metadata.spec.series
             ),
+            releases=(source.release,),
             indicators=(
                 IndicatorReference(
                     _edo_variable().id,
@@ -1091,24 +1136,45 @@ class _EDONode(SourceNode[EvidenceMetadata]):
         if self.state.area is None:
             raise CapabilityError("EDO acquisition requires .select(area=Bounds(...)).")
         source, years = self._discovery(scope)
+        assert source.release is not None
         metadata = self._metadata(source, years)
         state, release = payload_selection(self.state, self.release)
+        pin = inventory_payload_pin(source.release, release)
         selection = replace(state, time=selected_source_time(state)).resolve(
             metadata.spec, source=source
         )
         metadata = selected_metadata(metadata, selection)
         current = metadata
         period = metadata.spec.series[0].period if metadata.spec.series else None
+        variable = _edo_variable().id
+
+        def with_report(
+            actual: SourceIdentity, count: int, missing: int
+        ) -> EvidenceMetadata:
+            return replace(
+                metadata,
+                source=actual,
+                report=ExecutionReport(
+                    False,
+                    None,
+                    counts=ExecutionCounts(
+                        requested=count, produced=count, no_data=missing
+                    ),
+                    source_identities=(actual,),
+                ),
+            )
 
         def batches() -> Iterator[pa.RecordBatch]:
             nonlocal current
-            records: list[dict[str, object]] = []
             resources = list(source.resources)
+            count = missing = 0
             if not selection.empty:
                 assert selection.area is not None
                 assert period is not None
+                window = selection.time or period
+                assert window.start is not None and window.end is not None
                 for year, filename in sorted(years.items()):
-                    if not cast(int, period.start) <= year <= cast(int, period.end):
+                    if not window.start <= year <= window.end:
                         continue
                     group, resource = netcdf_window_snapshot(
                         scope,
@@ -1137,6 +1203,13 @@ class _EDONode(SourceNode[EvidenceMetadata]):
                         raise ValueError(
                             "EDO source dates must be unique and increasing"
                         )
+                    start, stop = np.searchsorted(
+                        times,
+                        [
+                            cal.to_ordinal(window.start, 1, 1),
+                            cal.to_ordinal(window.end + 1, 1, 1),
+                        ],
+                    )
                     cells = grid_cells(
                         group, lat_name="lat", lon_name="lon", area=selection.area
                     )
@@ -1145,11 +1218,14 @@ class _EDONode(SourceNode[EvidenceMetadata]):
                         time_name="time",
                         lat_name="lat",
                         lon_name="lon",
-                        start=0,
-                        stop=len(times),
+                        start=int(start),
+                        stop=int(stop),
                         cells=cells,
+                        memory_limit=_memory_bytes(scope.runtime.memory_limit),
                     )
-                    for ti, ordinal in enumerate(times):
+                    records: list[dict[str, object]] = []
+                    actual = replace(source, resources=tuple(resources))
+                    for ti, ordinal in enumerate(times[start:stop]):
                         # Native dates remain observations. No annual law, fixed
                         # ten-day interval, or probability convention is invented.
                         date = np.datetime64(int(ordinal), "D")
@@ -1162,7 +1238,7 @@ class _EDONode(SourceNode[EvidenceMetadata]):
                                 )
                             records.append(
                                 {
-                                    "variable_id": _edo_variable().id,
+                                    "variable_id": variable,
                                     "scenario_id": None,
                                     "period_id": period.id,
                                     "support_id": (
@@ -1182,28 +1258,21 @@ class _EDONode(SourceNode[EvidenceMetadata]):
                                     "group_id": None,
                                 }
                             )
+                            count += 1
+                            missing += not valid
+                            if len(records) >= scope.runtime.batch_rows:
+                                current = with_report(actual, count, missing)
+                                yield from evidence_table(records, current).to_batches()
+                                records.clear()
+                    if records:
+                        current = with_report(actual, count, missing)
+                        yield from evidence_table(records, current).to_batches()
             actual = verify_payload(
                 replace(source, resources=tuple(resources)),
                 id=SMI.version,
-                expected=release,
+                expected=pin,
             )
-            current = replace(
-                metadata,
-                source=actual,
-                report=ExecutionReport(
-                    False,
-                    None,
-                    counts=ExecutionCounts(
-                        requested=len(records),
-                        produced=len(records),
-                        no_data=sum(r["value"] is None for r in records),
-                    ),
-                    source_identities=(actual,),
-                ),
-            )
-            yield from evidence_table(records, current).to_batches(
-                max_chunksize=scope.runtime.batch_rows
-            )
+            current = with_report(actual, count, missing)
 
         return NodeStream(
             evidence_arrow_schema(metadata),
@@ -1211,6 +1280,7 @@ class _EDONode(SourceNode[EvidenceMetadata]):
             batches(),
             report=lambda: current.report,
             final_metadata=lambda: current,
+            verify_before_yield=pin is not None,
         )
 
 

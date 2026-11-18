@@ -639,9 +639,10 @@ def test_unlocated_station_year_follows_each_fit_policy(
             assert (
                 diagnostic.record.evidence_count
                 == diagnostic.record.excluded_count
-                == 1
+                == 0
             )
             assert diagnostic.record.used_count == 0 and not diagnostic.record.converged
+            assert diagnostic.record.evidence_support is None
     if input_kind != "recipe":
         assert len(transport.calls) == calls_before_fitting
 
@@ -1099,6 +1100,25 @@ def test_bulk_evidence_inspection_stays_metadata_only(
         area=Bounds(west=-79.5, south=43.5, east=-79, north=44), time=_year()
     ).inspect()
     assert len(transport.calls) == 1
+
+
+def test_chirps_reuses_inspected_gregorian_series_period(
+    transport: NativeTransport,
+) -> None:
+    from crc_sdk import Calendar
+
+    period = Period.window(2019, 2020)
+    (reference,) = CHIRPS().select(time=period).inspect().series
+    assert reference.period == Period.window(2019, 2020, calendar=Calendar.GREGORIAN)
+    assert not transport.calls
+    area = Bounds(west=-79.5, south=43.7, east=-79.3, north=43.8)
+    selected = CHIRPS().select(series=reference, area=area)
+    assert selected.inspect().series == (reference,)
+    result = selected.select(time=Period.window(2020, 2020)).read()
+    assert result.table.num_rows == 24
+    assert result.table["time"].to_pylist()[0] == "2020-01-01"
+    assert result.table["time"].to_pylist()[-1] == "2020-12-01"
+    assert result.metadata.spec.series[0].period == reference.period
 
 
 def test_field_inspection_references_pin_published_assets_without_bulk_read(

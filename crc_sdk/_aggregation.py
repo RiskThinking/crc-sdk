@@ -23,7 +23,6 @@ from ._declarations import (
 
 if TYPE_CHECKING:
     from ._evidence import EvidenceMetadata
-    from ._graph import ObservationSupport
 
 
 class TimestampPosition(Enum):
@@ -615,6 +614,7 @@ def aggregation_metadata(
         ),
         source=metadata.source,
         sampling=output_sampling,
+        _empty_supports=metadata._empty_supports if daily else (),
         provenance=(
             *metadata.provenance,
             TemporalReduction(
@@ -632,8 +632,6 @@ def aggregate_table(
     table: pa.Table,
     metadata: EvidenceMetadata,
     specification: Aggregation,
-    *,
-    empty_supports: tuple[ObservationSupport, ...] = (),
 ) -> tuple[pa.Table, EvidenceMetadata]:
     from ._dataset_schema import (
         ExecutionCounts,
@@ -727,7 +725,7 @@ def aggregate_table(
         requested_bounds = first, last
     if not groups and requested_bounds is not None:
         for series in metadata.spec.series:
-            for support in empty_supports:
+            for support in metadata._empty_supports:
                 identity = (
                     series.variable.id,
                     None if series.scenario is None else series.scenario.id,

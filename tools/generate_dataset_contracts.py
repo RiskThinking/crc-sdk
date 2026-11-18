@@ -385,6 +385,12 @@ def fixture_cases() -> dict[str, object]:
     value = deepcopy(fitted)
     value["rows"][0]["curve"]["family"] = "gumbel_l"
     reject("fit-family-mismatch", value, False)
+    value = deepcopy(fitted)
+    value["rows"][0]["fit"].update(used_count=3, excluded_count=5)
+    reject("fit-sample-invented-exclusions", value, False)
+    value = deepcopy(fitted)
+    value["rows"][0]["fit"]["evidence_support"] = None
+    reject("fit-sample-missing-observed-support", value, False)
     value = deepcopy(fitted_hurdle)
     base = value["rows"][0]["curve"]["base"]
     value["rows"][0]["curve"] = dict(base, schema_version="1.0", object="distribution")
@@ -392,6 +398,9 @@ def fixture_cases() -> dict[str, object]:
     value = deepcopy(fitted_hurdle)
     value["rows"][0]["curve"]["atom_probability"] = 0.9
     reject("fit-hurdle-atom-changed", value, False)
+    value = deepcopy(fitted_hurdle)
+    value["rows"][0]["fit"]["evidence_support"] = [0, 1]
+    reject("fit-active-probability-endpoints", value, False)
     value = deepcopy(fitted_hurdle)
     record = value["rows"][0]["fit"]
     for specification in (

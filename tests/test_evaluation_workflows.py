@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import replace
 from pathlib import Path
 
@@ -69,6 +70,57 @@ def annual() -> Dataset:
     return data(Probability.annual(tail=cf.Tail.UPPER))
 
 
+def test_large_finite_return_period_inverts_the_direct_upper_tail(
+    tmp_path: Path,
+) -> None:
+    depth = Dataset.from_quantiles(
+        {
+            "support_id": ["site"] * 4,
+            "longitude": [0.0] * 4,
+            "latitude": [0.0] * 4,
+            "probability": [0.5, 0.75, 0.9, 0.99],
+            "value": [1.0, 2.0, 3.0, 4.0],
+        },
+        variable=VARIABLE,
+        probability=Probability.annual(tail=cf.Tail.UPPER),
+    ).fit(cf.QuantileFit(family=cf.DistributionFamily.GUMBEL_RIGHT))
+    periods = [1e12, 1e16, 1e18]
+    law = cf.fit_quantiles(
+        cf.QuantileCurve([0.5, 0.75, 0.9, 0.99], [1.0, 2.0, 3.0, 4.0]),
+        cf.QuantileFit(family=cf.DistributionFamily.GUMBEL_RIGHT),
+    ).distribution
+    model = json.loads(law.to_json())
+    expected = [
+        model["location"] - model["scale"] * math.log(-math.log1p(-1 / period))
+        for period in periods
+    ]
+    evaluation = depth.evaluate(sites(0)).return_periods(periods)
+    assert evaluation.read().table["value"].to_pylist() == pytest.approx(
+        expected, rel=1e-13
+    )
+    path = tmp_path / "tail.parquet"
+    evaluation.write(path)
+    assert EvaluationArtifact.open(path).read().table[
+        "value"
+    ].to_pylist() == pytest.approx(expected, rel=1e-13)
+
+
+def test_upper_return_period_distinguishes_the_end_of_supplied_evidence() -> None:
+    last = Dataset.from_quantiles(
+        {
+            "support_id": ["site", "site"],
+            "longitude": [0.0, 0.0],
+            "latitude": [0.0, 0.0],
+            "probability": [0.5, 1.0],
+            "value": [-1e300, 0.0],
+        },
+        variable=VARIABLE,
+        probability=Probability.annual(tail=cf.Tail.UPPER),
+    )
+    result = last.evaluate(sites(0)).return_periods([1e18]).read()
+    assert result.table["value"].to_pylist() == pytest.approx([-2e282], rel=1e-13)
+
+
 def sites(*longitudes: float) -> Assets:
     return Assets(
         {
@@ -79,6 +131,66 @@ def sites(*longitudes: float) -> Assets:
         },
         columns=["portfolio"],
     )
+
+
+def test_empty_assets_execute_and_validate_the_upstream_fit() -> None:
+    samples = Samples.from_table(
+        {
+            "support_id": ["S"] * 4,
+            "longitude": [0.0] * 4,
+            "latitude": [0.0] * 4,
+            "time": [2000, 2001, 2002, 2003],
+            "value": [1.0] * 4,
+        },
+        variable=VARIABLE,
+        probability=Probability.annual(tail=cf.Tail.UPPER),
+    )
+    fit = samples.fit(cf.SampleFit(family=cf.DistributionFamily.GUMBEL_RIGHT))
+    empty_assets = Assets(
+        pa.table(
+            {
+                "asset_id": pa.array([], type=pa.string()),
+                "longitude": pa.array([], type=pa.float64()),
+                "latitude": pa.array([], type=pa.float64()),
+            }
+        )
+    )
+    failed = fit.evaluate(empty_assets).return_periods([10])
+    with pytest.raises(ValidationError, match="samples fitting failed"):
+        failed.read()
+    report = failed.validate()
+    assert report.valid is False
+    assert report.diagnostics == fit.validate().diagnostics
+    valid = annual().evaluate(empty_assets).return_periods([10]).read()
+    assert valid.report.complete and valid.report.valid
+    assert valid.table.num_rows == 0
+
+
+def test_retained_arrow_temporal_values_survive_batched_eval_and_replay(
+    tmp_path: Path,
+) -> None:
+    attributes = pa.table(
+        {
+            "asset_id": ["site"],
+            "longitude": [0.0],
+            "latitude": [0.0],
+            "opened": pa.array([123], type=pa.timestamp("ns", tz="UTC")),
+            "duration": pa.array([987], type=pa.duration("ns")),
+            "snapshots": pa.array([[456]], type=pa.list_(pa.timestamp("ns"))),
+        }
+    )
+    assets = Assets(attributes, columns=["opened", "duration", "snapshots"])
+    recipe = annual().evaluate(assets).probabilities([0.9, 0.99])
+    runtime = Runtime(batch_rows=1)
+    table = recipe.read(runtime=runtime).table
+    path = tmp_path / "nanoseconds.parquet"
+    recipe.write(path, runtime=runtime)
+    reopened = EvaluationArtifact.open(path).read(runtime=runtime).table
+    assert table.equals(reopened, check_metadata=False)
+    attrs = reopened["asset"].combine_chunks()
+    assert attrs.field("opened").cast(pa.int64()).to_pylist() == [123, 123]
+    assert attrs.field("duration").cast(pa.int64()).to_pylist() == [987, 987]
+    assert attrs.field("snapshots").values.cast(pa.int64()).to_pylist() == [456, 456]
 
 
 def test_direct_collection_and_saved_selection_agree(tmp_path: Path) -> None:

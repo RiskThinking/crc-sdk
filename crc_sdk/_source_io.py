@@ -135,7 +135,6 @@ class SourceNode(Node[MetadataT]):
             close=close,
             checked=True,
             verify_before_yield=stream.verify_before_yield,
-            observation_supports=stream.observation_supports,
         )
 
 
@@ -525,6 +524,25 @@ def check_release(actual: ReleaseReference, requested: ReleaseReference | None) 
             f"source release changed: expected {requested.id} ({requested.sha256}), "
             f"received {actual.id} ({actual.sha256})"
         )
+
+
+def inventory_release(
+    resources: Sequence[ResourceIdentity], *, id: str
+) -> ReleaseReference:
+    """Identify the publication inventory independently of selected data bytes."""
+    return release_snapshot(resources, id=f"inventory:{id}")
+
+
+def inventory_payload_pin(
+    inventory: ReleaseReference, requested: ReleaseReference | None
+) -> ReleaseReference | None:
+    """Verify an inventory pin now and defer exact selected-byte pins to execution."""
+    if requested is None:
+        return None
+    if requested.id == inventory.id.removeprefix("inventory:"):
+        return requested
+    check_release(inventory, requested)
+    return None
 
 
 def payload_selection(

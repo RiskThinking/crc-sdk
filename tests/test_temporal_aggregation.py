@@ -172,12 +172,15 @@ def test_incomplete_year_is_retained_and_not_fitted_as_a_valid_observation() -> 
     report = annual.fit(specification).validate()
     assert report.valid is False
     failure = next(d for d in report.diagnostics if isinstance(d, FittingDiagnostic))
-    assert failure.record.evidence_count == failure.record.excluded_count == 1
+    assert failure.record.evidence_count == failure.record.excluded_count == 0
     assert failure.record.used_count == 0
+    assert failure.record.evidence_support is None
+    assert report.counts.incomplete_years == 1
     kept = annual.fit(specification, on_failure=FitFailure.KEEP_NO_DATA).read()
     row = table_to_rows(kept.table)[0]
     assert row.curve is None and row.failure is not None
-    assert row.failure.record.excluded_count == 1
+    assert row.failure.record.excluded_count == 0
+    assert kept.report.counts.incomplete_years == 1
 
 
 def test_missing_year_between_observed_years_remains_visible() -> None:
@@ -412,7 +415,9 @@ def test_geometry_only_layer_keeps_its_actual_footprint(tmp_path: Path) -> None:
     assert Layer.open(saved.path).read().metadata.kind is EvidenceKind.LAYER
 
 
-def test_genuine_sample_missing_values_are_visible_and_excluded_from_the_fit() -> None:
+def test_genuine_sample_missing_values_are_visible_and_excluded_from_the_fit(
+    tmp_path: Path,
+) -> None:
     samples = Samples.from_table(
         {
             "support_id": ["a"] * 5,
@@ -424,14 +429,27 @@ def test_genuine_sample_missing_values_are_visible_and_excluded_from_the_fit() -
         variable=Variable("a"),
     )
     assert samples.read().report.counts.no_data == 1
-    result = samples.fit(cf.SampleFit(family=cf.DistributionFamily.GUMBEL_RIGHT)).read()
+    specification = cf.SampleFit(family=cf.DistributionFamily.GUMBEL_RIGHT)
+    artifact = samples.fit(specification).write(tmp_path / "fit.parquet")
+    assert artifact.path is not None
+    result = type(artifact).open(artifact.path).read()
     record = table_to_rows(result.table)[0].fit
     assert (
         record is not None
-        and record.evidence_count == 5
+        and record.evidence_count == 4
         and record.used_count == 4
-        and record.excluded_count == 1
+        and record.excluded_count == 0
     )
+    diagnostic = next(
+        d for d in result.report.diagnostics if d.code == "fit.unavailable_observations"
+    )
+    assert diagnostic.support_id == "a"
+    assert "1 of 5 observations" in diagnostic.message
+    rejected = samples.fit(replace(specification, minimum_samples=5)).validate()
+    assert rejected.valid is False and diagnostic in rejected.diagnostics
+    attempt = next(d for d in rejected.diagnostics if isinstance(d, FittingDiagnostic))
+    assert attempt.record.evidence_count == attempt.record.excluded_count == 4
+    assert attempt.record.used_count == 0
 
 
 def test_schema_kind_and_calendar_contradictions_are_rejected() -> None:

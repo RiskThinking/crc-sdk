@@ -110,6 +110,9 @@ writes a valid empty bundle and remains empty when reopened.
 Full reads, validation, and writes verify every resource checksum in the input
 bundle. The selection controls which resources are decoded and which series are
 reconciled across resources.
+The saved collection report combines the counts, diagnostics, and source
+identities recorded by its member resources. Reopening verifies that these
+records agree.
 
 The writer validates the complete selection before publishing the directory.
 Writes default to a new path. To replace a bundle, pass `overwrite=True` on a
