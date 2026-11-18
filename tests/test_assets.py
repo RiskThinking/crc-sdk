@@ -264,6 +264,29 @@ def test_sql_snapshot_checksum_is_independent_of_execution_batch_size() -> None:
     assert len(checksums) == 1
 
 
+@pytest.mark.parametrize("snapshot_rows", [16, 65_536])
+def test_sql_snapshot_ignores_bitmap_padding_and_slice_offsets(
+    monkeypatch: pytest.MonkeyPatch, snapshot_rows: int
+) -> None:
+    monkeypatch.setattr("crc_sdk._assets._SQL_SNAPSHOT_BATCH_ROWS", snapshot_rows)
+    assets = Assets.sql(
+        "SELECT i AS asset_id, 0.0 AS longitude, 0.0 AS latitude, "
+        "CASE WHEN i % 2 = 0 THEN NULL ELSE i::DOUBLE END AS scalar, "
+        "CASE WHEN i % 2 = 0 THEN NULL ELSE [i, NULL, i+2] END AS nested "
+        "FROM range(37) r(i) ORDER BY i",
+        location=PointColumns(),
+    )
+    results = []
+    for batch_rows in (7, 128):
+        with ExecutionScope(Runtime(batch_rows=batch_rows)) as scope:
+            results.append(assets._materialize(scope))
+    first, second = results
+    assert first.table.equals(second.table, check_metadata=True)
+    assert first.table["nested"][:3].to_pylist() == [None, [1, None, 3], None]
+    assert first.source is not None and second.source is not None
+    assert first.source.resources[0].sha256 == second.source.resources[0].sha256
+
+
 def test_offline_sql_cannot_open_an_external_reader(tmp_path: Path) -> None:
     assets = Assets.sql(
         "SELECT * FROM read_csv_auto('http://127.0.0.1:1/assets.csv')",

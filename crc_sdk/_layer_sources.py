@@ -52,6 +52,7 @@ from ._recipes import _key
 from ._selection import (
     ResolvedSelection,
     SelectionState,
+    _validate_static_selection,
     selected_metadata,
     support_intersects,
 )
@@ -533,13 +534,14 @@ class _FieldsNode(SourceNode[EvidenceMetadata]):
     def _prepare(
         self, scope: ExecutionScope, *, inventory: bool = False, acquire: bool = True
     ) -> tuple[EvidenceMetadata, ResolvedSelection, tuple[_FieldPart, ...]]:
-        if _empty(self.state):
-            metadata = _metadata("ftw", self.state, (), None)
+        state, requested = payload_selection(self.state, self.release)
+        if _empty(state):
+            _validate_static_selection(state, _variables("ftw"))
+            metadata = _metadata("ftw", state, (), None)
             resolved = SelectionState().resolve(metadata.spec)
             return selected_metadata(metadata, resolved), resolved, ()
         catalog, resources = self._catalogue(scope)
         published = inventory_release(resources, id="ftw:selected-source-snapshot")
-        state, requested = payload_selection(self.state, self.release)
         pin = inventory_payload_pin(published, requested)
         periods = tuple(Period.window(y, y) for y in sorted(catalog))
         if not inventory and state.periods is None and state.series is None:

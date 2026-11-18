@@ -65,6 +65,7 @@ _EvaluationSeries: TypeAlias = tuple[str | None, SeriesKey]
 
 _UNMATCHED = frozenset({"no_covering_support", "outside_max_distance"})
 _EXPOSURE_FAILURES_WITHOUT_FIT = _UNMATCHED | {"query_outside_support"}
+_RELATIVE_RESULT_TOLERANCE = 1e-12
 
 
 class QueryKind(Enum):
@@ -1077,6 +1078,9 @@ class EvaluationValidator:
         self._coordinates = {
             value: index for index, value in enumerate(metadata.query.values)
         }
+        self._ranks = {
+            value: rank for rank, value in enumerate(sorted(metadata.query.values))
+        }
         self._assets = frozenset(metadata.asset_ids or ())
         self._contexts = dict(metadata._resolved_contexts)
         # Live rows already execute the response kernel. Verify it on replay
@@ -1118,12 +1122,12 @@ class EvaluationValidator:
             );
             CREATE TABLE contexts (identity TEXT PRIMARY KEY, resolution TEXT NOT NULL);
             CREATE TABLE source_supports (
-                identity TEXT PRIMARY KEY, resource TEXT, fit_failure TEXT
+                identity TEXT PRIMARY KEY, member TEXT, resource TEXT, fit_failure TEXT
             );
             CREATE TABLE source_exposures (
-                support TEXT NOT NULL, position INTEGER NOT NULL,
+                support TEXT NOT NULL, query_rank INTEGER NOT NULL,
                 value REAL, failure TEXT,
-                PRIMARY KEY (support, position)
+                PRIMARY KEY (support, query_rank)
             );
             CREATE TABLE outcomes (
                 event TEXT NOT NULL,
@@ -1224,7 +1228,7 @@ class EvaluationValidator:
         self,
         key: tuple[str | None, SeriesKey, str],
         resource: str | None,
-        position: int,
+        rank: int,
         value: object,
         failure: EvaluationFailure | None,
     ) -> None:
@@ -1235,8 +1239,8 @@ class EvaluationValidator:
         )
         support = (resource, fit_failure)
         self._db.execute(
-            "INSERT OR IGNORE INTO source_supports VALUES (?, ?, ?)",
-            (identity, *support),
+            "INSERT OR IGNORE INTO source_supports VALUES (?, ?, ?, ?)",
+            (identity, key[0], *support),
         )
         saved = self._db.execute(
             "SELECT resource, fit_failure FROM source_supports WHERE identity = ?",
@@ -1246,12 +1250,12 @@ class EvaluationValidator:
             raise ValueError("source support has inconsistent resource or fit failure")
         self._db.execute(
             "INSERT OR IGNORE INTO source_exposures VALUES (?, ?, ?, ?)",
-            (identity, position, value, outcome),
+            (identity, rank, value, outcome),
         )
         saved = self._db.execute(
             "SELECT value, failure FROM source_exposures "
-            "WHERE support = ? AND position = ?",
-            (identity, position),
+            "WHERE support = ? AND query_rank = ?",
+            (identity, rank),
         ).fetchone()
         if saved != (value, outcome):
             raise ValueError("exposures disagree for the same source support and query")
@@ -1330,15 +1334,27 @@ class EvaluationValidator:
                 raise ValueError("a retained exposure requires one value or failure")
             _validate_match(row, metadata, member, series, exposure_failure)
             _validate_exposure_failure(exposure_failure)
-        if metadata.report.complete and (support := match[0]) is not None:
-            if response is None or not metadata.include_exposure:
-                self._check_source_exposure(
-                    (member, series, support),
-                    match[1],
-                    query_position,
-                    value if response is None else exposure_value,
-                    failure if response is None else exposure_failure,
-                )
+        if (
+            metadata.report.complete
+            and (support := match[0]) is not None
+            and (response is None or not metadata.include_exposure)
+        ):
+            rank = self._ranks[query]
+            probability = metadata._series[member, series].probability
+            if (
+                metadata.query.kind is QueryKind.RETURN_PERIOD
+                and probability is not None
+                and probability.tail is cf.Tail.LOWER
+            ):
+                # A longer lower-tail return period has a smaller probability.
+                rank = -rank
+            self._check_source_exposure(
+                (member, series, support),
+                match[1],
+                rank,
+                value if response is None else exposure_value,
+                failure if response is None else exposure_failure,
+            )
         match_key = _dump((asset_id, member, *series))
         match_record = _dump(match)
         self._db.execute(
@@ -1433,6 +1449,48 @@ class EvaluationValidator:
             ) in self._stored_failure_details:
                 self._verified_failure_codes.add(failure.code)
 
+    def _check_exposure_grid(self, metadata: EvaluationMetadata) -> None:
+        declared_failures = {
+            (item.member_id, item.resource_id): item.metadata.report.counts.no_data
+            for item in metadata.inputs
+        }
+        for member, resource, count in self._db.execute(
+            "SELECT member, resource, count(*) FROM source_supports "
+            "WHERE fit_failure IS NOT NULL GROUP BY member, resource"
+        ):
+            if count > declared_failures[member, resource]:
+                raise ValueError(
+                    "evaluation fit failures exceed the input no-data count"
+                )
+
+        current = None
+        largest: float | None = None
+        ended = False
+        for support, value in self._db.execute(
+            "SELECT exposure.support, exposure.value FROM source_exposures AS exposure "
+            "JOIN source_supports ON exposure.support = source_supports.identity "
+            "WHERE source_supports.fit_failure IS NULL "
+            "ORDER BY exposure.support, exposure.query_rank"
+        ):
+            if support != current:
+                current, largest, ended = support, None, False
+            if value is None:
+                ended = largest is not None
+                continue
+            if ended:
+                raise ValueError(
+                    f"query support has a gap for source support {support}"
+                )
+            if (
+                largest is not None
+                and value < largest
+                and not math.isclose(value, largest, rel_tol=_RELATIVE_RESULT_TOLERANCE)
+            ):
+                raise ValueError(
+                    f"exposure quantiles decrease for source support {support}"
+                )
+            largest = value if largest is None else max(largest, value)
+
     def _check_response_values(self, metadata: EvaluationMetadata) -> None:
         impacts = {
             (item.response_id, item.id): item.impact for item in metadata.resolutions
@@ -1474,7 +1532,7 @@ class EvaluationValidator:
             else:
                 assert expected is not None
                 matches = value is not None and math.isclose(
-                    value, expected, rel_tol=1e-12
+                    value, expected, rel_tol=_RELATIVE_RESULT_TOLERANCE
                 )
             if not matches:
                 raise ValueError(
@@ -1508,6 +1566,8 @@ class EvaluationValidator:
                 raise ValueError(
                     "evaluation resolution assignments disagree with its rows"
                 )
+        if self._metadata.report.complete:
+            self._check_exposure_grid(current)
         if self._response_variables:
             self._check_response_values(current)
         if current.report.complete:

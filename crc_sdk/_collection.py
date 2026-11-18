@@ -64,10 +64,10 @@ from ._recipes import (
     _bounded_node,
     _Checked,
     _checked_stream,
-    _declared_variable_ids,
+    _declared_ids,
     _invalid,
     _key,
-    _pending_payload_release,
+    _payload_source,
     _report_view,
     _select_node,
     _sources,
@@ -119,10 +119,106 @@ class _Entry:
     def verify_payload(self, scope: ExecutionScope) -> None:
         if self.payload_pin is None:
             return
-        source = scope.metadata(self.node).source
+        actual = self.actual_payload(scope)
+        source = actual.resource.metadata.source
         if source is None or source.release is None:
             raise OSError("source did not report its required exact payload release")
         check_release(source.release, self.payload_pin)
+
+    def actual_payload(self, scope: ExecutionScope) -> _Entry:
+        source_node = _payload_source(cast(Node[object], self.node))
+        assert source_node is not None
+        for _ in scope.iter_batches(source_node):
+            pass
+        return replace(
+            self,
+            resource=replace(self.resource, metadata=scope.metadata(self.node)),
+            payload_pin=None,
+        )
+
+    def could_match_payload(self, reference: SeriesReference) -> bool:
+        source = self.resource.metadata.source
+        return (
+            reference.release is not None
+            and source is not None
+            and source.release is not None
+            and source.release.id == f"inventory:{reference.release.id}"
+            and _payload_source(cast(Node[object], self.node)) is not None
+            and any(
+                _reference_matches(
+                    item,
+                    replace(reference, release=None),
+                    self.resource.metadata,
+                    check_science=False,
+                )
+                for item in self.resource.metadata.spec.series
+            )
+        )
+
+
+def _has_reference(entry: _Entry, ref: SeriesReference) -> bool:
+    for item in entry.resource.metadata.spec.series:
+        try:
+            if _reference_matches(item, ref, entry.resource.metadata):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def _plan_release_selection(
+    scope: ExecutionScope,
+    entries: dict[str, _Entry],
+    references: tuple[SeriesReference, ...],
+    *,
+    inspect: bool,
+) -> None:
+    """Prefer exact metadata, resolving live candidates only when necessary."""
+    unresolved = [
+        (
+            ref,
+            tuple(
+                name
+                for name, entry in entries.items()
+                if entry.could_match_payload(ref)
+            ),
+        )
+        for ref in references
+        if ref.release is not None
+        and not ref.release.id.startswith("inventory:")
+        and not any(_has_reference(entry, ref) for entry in entries.values())
+    ]
+    checks: dict[str, set[ReleaseReference]] = {}
+    for ref, names in unresolved:
+        assert ref.release is not None
+        for name in names:
+            checks.setdefault(name, set()).add(ref.release)
+    # A single candidate can verify its exact checksum immediately before
+    # yielding rows. Competing payloads must be resolved before planning the
+    # member and resource table so a mismatch can be treated as a filter.
+    if not inspect:
+        competing = {
+            name for _, names in unresolved if len(names) > 1 for name in names
+        }
+        competing.update(name for name, pins in checks.items() if len(pins) > 1)
+        for name in checks:
+            if name in competing:
+                entries[name] = entries[name].actual_payload(scope)
+        for ref, names in unresolved:
+            if (
+                names
+                and all(name in competing for name in names)
+                and not any(_has_reference(entries[name], ref) for name in names)
+            ):
+                source = entries[names[0]].resource.metadata.source
+                if source is not None and source.release is not None:
+                    check_release(source.release, ref.release)
+    for name, pins in checks.items():
+        if any(
+            ref.release in pins and entries[name].could_match_payload(ref)
+            for ref in references
+        ):
+            entries[name] = replace(entries[name], payload_pin=next(iter(pins)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -282,9 +378,12 @@ def _needed_inventory(
                         any_variable = True
         for ref in selection.series or ():
             if not any(
-                entry.matches(item, ref, check_science=False)
+                entry.could_match_payload(ref)
+                or any(
+                    entry.matches(item, ref, check_science=False)
+                    for item in entry.resource.metadata.spec.series
+                )
                 for entry in entries
-                for item in entry.resource.metadata.spec.series
             ):
                 variables.add(ref.variable.id)
     return variables, any_variable
@@ -610,11 +709,8 @@ class _CollectionNode(Node[CollectionMetadata]):
                 for resource_id in member.resource_ids:
                     entry = plan.entries[resource_id]
                     started.append(entry)
-                    verified = entry.payload_pin is None
+                    entry.verify_payload(scope)
                     for batch in scope.iter_batches(entry.node):
-                        if not verified:
-                            entry.verify_payload(scope)
-                            verified = True
                         if member_check is not None:
                             # The resource streams already validate their own models.
                             try:
@@ -640,8 +736,6 @@ class _CollectionNode(Node[CollectionMetadata]):
                         produced += batch.num_rows
                         no_data += batch.num_rows - batch.column("failure").null_count
                         yield result
-                    if not verified:
-                        entry.verify_payload(scope)
                     child = scope.report(entry.node)
                     if child.valid is False:
                         if child.diagnostics:
@@ -986,6 +1080,15 @@ class DatasetCollection:
         active_members = planning.members
         active_variables = planning.active_variables
         source_state = planning.source_state
+        references = source_state.series or ()
+        exact_only = (
+            bool(references)
+            and all(
+                ref.release is not None and not ref.release.id.startswith("inventory:")
+                for ref in references
+            )
+            and not (planning.rename_variables or planning.rename_scenarios)
+        )
 
         def plan_member(
             name: str, dataset: Dataset | CanonicalReader, *, metadata_only: bool
@@ -1027,15 +1130,15 @@ class DatasetCollection:
             known[name] = _Entry(
                 CollectionResource(id=resource_id, metadata=metadata),
                 node,
-                _pending_payload_release(cast(Node[object], node)),
             )
 
         deferred = []
+        live_candidates = []
         for name, dataset in self._inputs:
             if name not in names:
                 continue
             declared = (
-                _declared_variable_ids(cast(Node[object], dataset._node))
+                _declared_ids(cast(Node[object], dataset._node), "variables")
                 if isinstance(dataset, Dataset)
                 else None
             )
@@ -1050,20 +1153,52 @@ class DatasetCollection:
                 )
             ):
                 deferred.append((name, dataset, declared))
+            elif (
+                exact_only
+                and isinstance(dataset, Dataset)
+                and _payload_source(cast(Node[object], dataset._node)) is not None
+            ):
+                live_candidates.append((name, dataset))
             else:
+                plan_member(name, dataset, metadata_only=False)
+        # Exact selection can already be proven by saved inputs. Only then
+        # is it safe to leave a live publication outside the plan.
+        for name, dataset in live_candidates:
+            if not all(
+                any(_has_reference(entry, ref) for entry in known.values())
+                for ref in references
+            ):
                 plan_member(name, dataset, metadata_only=False)
         # An excluded member may declare a selector used independently of the
         # active series. Discover it only if the active metadata cannot do so.
         for name, dataset, declared in deferred:
             missing, any_variable = _needed_inventory(planning, known)
             needed = missing | planning.rename_variables
+            scenarios = (
+                _declared_ids(cast(Node[object], dataset._node), "scenarios")
+                if planning.rename_scenarios and isinstance(dataset, Dataset)
+                else None
+            )
             if (
                 any_variable
                 or planning.rename_scenarios
+                and (
+                    scenarios is None
+                    or not scenarios.isdisjoint(planning.rename_scenarios)
+                )
                 or needed
                 and (declared is None or not declared.isdisjoint(needed))
             ):
                 plan_member(name, dataset, metadata_only=True)
+
+        if references:
+            active_entries = {
+                name: entry
+                for name, entry in known.items()
+                if active_members is None or name in active_members
+            }
+            _plan_release_selection(scope, active_entries, references, inspect=inspect)
+            known.update(active_entries)
 
         members = tuple(
             CollectionMember(
@@ -1298,7 +1433,9 @@ class DatasetCollection:
                 if active_variables is not None:
                     if not active_variables:
                         continue
-                    declared = _declared_variable_ids(cast(Node[object], dataset._node))
+                    declared = _declared_ids(
+                        cast(Node[object], dataset._node), "variables"
+                    )
                     if declared is not None and declared.isdisjoint(active_variables):
                         continue
                 candidate = Dataset._create(

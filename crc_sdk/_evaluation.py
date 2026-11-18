@@ -15,7 +15,7 @@ import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
 
 from ._assets import Assets
-from ._collection import DatasetCollection, _CollectionNode
+from ._collection import DatasetCollection, _CollectionNode, _PlanningScope
 from ._collection_schema import CollectionMetadata
 from ._contextual_impact import ContextualImpact, ResponseContext
 from ._dataset_schema import (
@@ -1044,12 +1044,40 @@ class Evaluation(_Results):
         return self._updated(_replace(self._plan, responses=tuple(items.values())))
 
     def explain(self, *, runtime: Runtime | None = None) -> Explanation:
-        source = self._plan._response_source().explain(runtime=runtime)
+        config = Runtime() if runtime is None else runtime
+        if not isinstance(config, Runtime):
+            raise TypeError("runtime must be Runtime")
+        plan = self._plan
+        recipe = plan._response_source()
+        query = plan.query
+        if plan._empty(recipe):
+            return Explanation(
+                operations=(
+                    Operation(Stage.SELECTION, "Return empty evaluation selection"),
+                ),
+                requirements=(_QUERY_REQUIRED,) if query is None else (),
+                cache=config.cache,
+                workers=config.workers,
+                batch_rows=config.batch_rows,
+                memory_limit=config.memory_limit,
+            )
+        source = (
+            recipe._explain(
+                config, _PlanningScope(variables=plan._collection_projection(recipe))
+            )
+            if isinstance(recipe, DatasetCollection)
+            else recipe.explain(runtime=config)
+        )
+        if plan.selection.responses == ():
+            return (
+                _replace(source, requirements=(*source.requirements, _QUERY_REQUIRED))
+                if query is None
+                else source
+            )
         operations = (
             *source.operations,
             Operation(Stage.JOINING, "Index selected source supports and match assets"),
         )
-        query = self._plan.query
         if query is None:
             return _replace(
                 source,

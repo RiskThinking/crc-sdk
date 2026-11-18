@@ -18,7 +18,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from email.message import Message
 from pathlib import Path
-from typing import TypeVar, cast
+from typing import ClassVar, TypeVar, cast
 
 import pyarrow as pa  # type: ignore[import-untyped]
 
@@ -45,6 +45,7 @@ class SourceNode(Node[MetadataT]):
     """An explicitly selectable source, never inferred from method names."""
 
     state: SelectionState
+    _publishes_payload_release: ClassVar[bool] = False
 
     @abstractmethod
     def selected(self, state: SelectionState) -> SourceNode[MetadataT]:
@@ -61,8 +62,8 @@ class SourceNode(Node[MetadataT]):
         """Return a local bound on emitted variable IDs, if one is known."""
         return None
 
-    def _pending_payload_release(self) -> ReleaseReference | None:
-        """Return an exact pin verified by this source before it yields rows."""
+    def _scenario_ids(self) -> frozenset[str] | None:
+        """Return a local bound on emitted scenario IDs, if one is known."""
         return None
 
     def checked(

@@ -421,6 +421,8 @@ def _variable(provider: str, operation: str) -> Variable:
 
 @dataclass(frozen=True, slots=True)
 class _ClimateNode(SourceNode[EvidenceMetadata]):
+    _publishes_payload_release = True
+
     provider: str
     indicator: str | None
     release: ReleaseReference | None
@@ -525,6 +527,14 @@ class _ClimateNode(SourceNode[EvidenceMetadata]):
         operations = _OPERATIONS if operation is None else (operation,)
         variable = _native_variable if self.raw else _variable
         return frozenset(variable(self.provider, name).id for name in operations)
+
+    def _scenario_ids(self) -> frozenset[str] | None:
+        if self.provider == "era5":
+            return frozenset()
+        scenario = self.scenario
+        if scenario is None:
+            return None
+        return frozenset((scenario if isinstance(scenario, str) else scenario.id,))
 
     def _explicitly_empty(self) -> bool:
         state = self.state

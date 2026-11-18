@@ -28,6 +28,7 @@ from crc_sdk import (
     Samples,
     UnavailableStationYear,
     ValidationError,
+    Variable,
     _layer_sources,
     _source_io,
 )
@@ -744,6 +745,44 @@ def test_noaa_annual_observations_central_curves_and_confidence_evidence_stay_di
     np.testing.assert_equal(curve.quantile([0.9, 0.99]), [1.5, 2.5])
 
 
+@pytest.mark.parametrize("confidence", [False, True])
+def test_noaa_published_selection_pins_only_participating_stations(
+    transport: NativeTransport, monkeypatch: pytest.MonkeyPatch, confidence: bool
+) -> None:
+    def add_station(uri: str, path: Path) -> int:
+        url = urlsplit(uri)
+        query = parse_qs(url.query)
+        if url.path.endswith("product.json") and query.get("station") == ["8518751"]:
+            pytest.fail("excluded station detail was acquired")
+        status = transport(uri, path)
+        if url.path.endswith("product.json") and "station" not in query:
+            catalogue = json.loads(path.read_text())
+            entries = catalogue["ExtremeWaterLevels"]
+            entries.append(
+                {**entries[0], "stationId": "8518751", "stationName": "Other"}
+            )
+            path.write_bytes(_json(catalogue))
+        return status
+
+    monkeypatch.setattr(_source_io, "_download", add_station)
+    one = NOAAWaterLevels().select(stations="8518750")
+    both = NOAAWaterLevels().select(stations=["8518750", "8518751"])
+    source = one.confidence_intervals() if confidence else one.levels()
+    candidate = both.confidence_intervals() if confidence else both.levels()
+    (reference,) = source.inspect().series
+    canonical = source.read()
+    assert reference.release is not None
+    for selected in (
+        candidate.select(variables=reference.variable),
+        candidate.select(series=reference),
+    ):
+        assert selected.inspect().releases == (reference.release,)
+        result = selected.read()
+        assert result.metadata.source is not None
+        assert result.metadata.source.release == reference.release
+        assert result.table.equals(canonical.table)
+
+
 def test_ibtracs_preserves_track_points_grouping_agency_and_knots(
     transport: NativeTransport,
 ) -> None:
@@ -1369,6 +1408,29 @@ def test_field_inspection_references_pin_published_assets_without_bulk_read(
     assert result.table.num_rows == 1
     assert result.metadata.source is not None
     assert result.metadata.source.release == inventory.releases[0]
+
+
+def test_empty_field_selection_validates_known_variable_science(
+    transport: NativeTransport,
+) -> None:
+    source = FieldsOfTheWorld()
+    valid = source.select(series=[], variables="ftw:field_area")
+    assert not valid.inspect().series
+    assert valid.read().table.num_rows == 0
+
+    for variable, match in (
+        ("typo", "unknown requested identity"),
+        (
+            Variable("ftw:field_area", measurement=cf.Ratio()),
+            "conflicting scientific definition",
+        ),
+    ):
+        invalid = source.select(series=[], variables=variable)
+        with pytest.raises(ValueError, match=match):
+            invalid.inspect()
+        with pytest.raises(ValueError, match=match):
+            invalid.read()
+    assert transport.calls == []
 
 
 def test_field_inspection_scopes_series_by_variable_and_publication_year(

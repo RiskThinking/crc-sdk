@@ -478,11 +478,15 @@ class Assets:
                     "Supply an owned asset table or a local asset file."
                 ) from error
             sink = pa.BufferOutputStream()
+            indices = pa.array(
+                np.arange(min(_SQL_SNAPSHOT_BATCH_ROWS, table.num_rows), dtype=np.int32)
+            )
             with pa.ipc.new_stream(sink, table.schema) as writer:
-                # Use fixed batches so execution batch size cannot change the checksum.
                 for offset in range(0, table.num_rows, _SQL_SNAPSHOT_BATCH_ROWS):
                     chunk = table.slice(offset, _SQL_SNAPSHOT_BATCH_ROWS)
-                    writer.write_table(chunk.combine_chunks())
+                    # Gather each fixed window into fresh buffers. DuckDB batch
+                    # offsets and padding in null bitmaps are not data.
+                    writer.write_table(chunk.take(indices.slice(0, chunk.num_rows)))
             snapshot = sink.getvalue()
             table = pa.ipc.open_stream(snapshot).read_all()
             query_digest = hashlib.sha256(self._query.encode()).hexdigest()
