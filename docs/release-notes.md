@@ -6,7 +6,8 @@
 
 This breaking release requires Python 3.11 or later and `crc-framework` 1.x.
 Import data and workflow interfaces from `crc_sdk` and numerical, measurement,
-and impact interfaces from `crc_framework`.
+and impact interfaces from `crc_framework`. To upgrade existing code, follow the
+[1.0 migration guide](migration-v1.md).
 
 - Use your own variable and scenario IDs. Declare scientific meaning using
   typed measurements and probability records. Leave scenario or period absent
