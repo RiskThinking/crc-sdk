@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 import types
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import cast
 
@@ -12,8 +12,6 @@ import pyarrow as pa  # type: ignore[import-untyped]
 
 from ._dataset_schema import (
     DatasetMetadata,
-    ExecutionCounts,
-    ExecutionDiagnostic,
     ExecutionReport,
     ReleaseReference,
     SourceIdentity,
@@ -58,28 +56,6 @@ from ._source_io import release_snapshot
 
 _METADATA_KEY = b"crc.collection"
 _RESOURCE_PATH = re.compile(r"resources/[0-9a-f]{64}\.parquet")
-
-
-def _collection_report(
-    reports: Iterable[ExecutionReport], *, complete: bool = False
-) -> ExecutionReport:
-    diagnostics: dict[str, ExecutionDiagnostic] = {}
-    sources: dict[str, SourceIdentity] = {}
-    counts = dict.fromkeys(ExecutionCounts.__dataclass_fields__, 0)
-    for report in reports:
-        for diagnostic in report.diagnostics:
-            diagnostics.setdefault(_dump(diagnostic._document()), diagnostic)
-        for source in report.source_identities:
-            sources.setdefault(_dump(source._document()), source)
-        for name in counts:
-            counts[name] += getattr(report.counts, name)
-    return ExecutionReport(
-        complete,
-        True if complete else None,
-        tuple(diagnostics.values()),
-        ExecutionCounts(**counts),
-        tuple(sources.values()),
-    )
 
 
 def _member_ids(value: IdentifierSelector) -> tuple[str, ...] | None:

@@ -50,7 +50,8 @@ from crc_sdk import (
     _collection_bundle,
 )
 from crc_sdk._collection_bundle import MANIFEST
-from crc_sdk._collection_schema import _collection_report, collection_metadata_schema
+from crc_sdk._collection_schema import collection_metadata_schema
+from crc_sdk._dataset_schema import _combine_reports
 from crc_sdk._runtime import ProgressEvent
 from crc_sdk._schema import rows_to_table, table_to_rows
 
@@ -457,7 +458,7 @@ def _install_shards(
         ),
         resources=tuple(resources),
         selection=CollectionSelection(),
-        report=_collection_report(
+        report=_combine_reports(
             (resource.metadata.report for resource in resources),
             complete=True,
         ),

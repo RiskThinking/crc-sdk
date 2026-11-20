@@ -25,6 +25,7 @@ from ._dataset_schema import (
     Stage,
     SupportKind,
     Transformation,
+    _combine_reports,
     _digest,
     _identifier,
     _object,
@@ -40,7 +41,7 @@ from ._declarations import (
 )
 from ._graph import ExecutionScope, NodeStream
 from ._inspection import Capability, Inspection, Operation, SeriesReference
-from ._recipes import Dataset, _Checked, _checked_stream, _key
+from ._recipes import Dataset, _Checked, _checked_stream, _key, _sources
 from ._runtime import LocalPath
 from ._selection import (
     ResolvedSelection,
@@ -335,6 +336,7 @@ class _CRCNode(SourceNode[DatasetMetadata]):
             document, resource = fetch_json(
                 scope, self.catalog, license="CC-BY-NC-4.0", attribution="RiskThinking"
             )
+            resources = [resource]
             if isinstance(document, Mapping) and set(document) == {
                 "schema_version",
                 "release",
@@ -351,6 +353,7 @@ class _CRCNode(SourceNode[DatasetMetadata]):
                     license="CC-BY-NC-4.0",
                     attribution="RiskThinking",
                 )
+                resources.append(resource)
             else:
                 uri = self.catalog
             id, entries = release_index(document)
@@ -364,7 +367,7 @@ class _CRCNode(SourceNode[DatasetMetadata]):
                 provider="crc",
                 product="crc-open",
                 release=actual,
-                resources=(resource,),
+                resources=tuple(resources),
             )
             return uri, entries, source
 
@@ -428,6 +431,7 @@ class _CRCNode(SourceNode[DatasetMetadata]):
                 metadata, provenance=_merged_provenance(parts, metadata.spec)
             )
         identities = list(source.resources)
+        verified_reports: list[ExecutionReport] = []
 
         def batches() -> Iterator[pa.RecordBatch]:
             for entry, _, resolved in selected:
@@ -502,6 +506,9 @@ class _CRCNode(SourceNode[DatasetMetadata]):
                             "release dataset report counts disagree with "
                             "the consumed rows"
                         )
+                    verified_reports.append(
+                        replace(report, source_identities=_sources(entry.metadata))
+                    )
 
         stream = _checked_stream(scope, metadata, batches())
         stream.verify_before_yield = True
@@ -510,7 +517,20 @@ class _CRCNode(SourceNode[DatasetMetadata]):
         def report() -> ExecutionReport:
             assert original is not None
             final = replace(source, resources=tuple(identities))
-            return replace(original(), source_identities=(final,))
+            selected_counts = original().counts
+            combined = _combine_reports(verified_reports)
+            return replace(
+                combined,
+                counts=replace(
+                    combined.counts,
+                    requested=max(combined.counts.requested, selected_counts.requested),
+                    produced=selected_counts.produced,
+                    no_data=selected_counts.no_data,
+                ),
+                source_identities=tuple(
+                    dict.fromkeys((final, *combined.source_identities))
+                ),
+            )
 
         stream.report = report
         stream.final_metadata = lambda: replace(

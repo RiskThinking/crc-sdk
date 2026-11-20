@@ -15,8 +15,8 @@ from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from ._collection_schema import CollectionMetadata, _collection_report
-from ._dataset_schema import _digest
+from ._collection_schema import CollectionMetadata
+from ._dataset_schema import _combine_reports, _digest
 from ._errors import CapabilityError
 from ._runtime import LocalPath, _local_path
 
@@ -67,7 +67,7 @@ def read_manifest(path: Path) -> CollectionMetadata:
                 "published collection resources must be complete and valid"
             )
     resources = {resource.id: resource for resource in result.resources}
-    combined = _collection_report(
+    combined = _combine_reports(
         (
             resources[r].metadata.report
             for member in result.members
