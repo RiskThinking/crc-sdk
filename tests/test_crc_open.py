@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
 import pytest
 from crc_framework import (
     DepthAboveGround,
+    DiagnosticSeverity,
     DistributionFamily,
     LengthUnit,
     SampleFit,
@@ -22,12 +25,16 @@ from crc_sdk import (
     Cache,
     CRCOpen,
     Dataset,
+    ExecutionDiagnostic,
     IdentityRename,
     Period,
     Probability,
+    ResourceIdentity,
     Runtime,
     Samples,
+    SourceIdentity,
     SpatialMatch,
+    Stage,
     ValidationError,
     Variable,
 )
@@ -123,11 +130,98 @@ def test_current_pointer_checks_both_hash_and_identity(tmp_path: Path) -> None:
         },
     }
     pointer.write_text(json.dumps(document))
-    assert CRCOpen(catalog=pointer).read().report.valid
+    result = CRCOpen(catalog=pointer).read()
+    assert result.report.valid
+    assert result.metadata.source is not None
+    assert {item.uri for item in result.metadata.source.resources} == {
+        pointer.as_uri(),
+        index.as_uri(),
+        (tmp_path / "depth.parquet").as_uri(),
+    }
     document["release"]["id"] = "wrong"  # type: ignore[index]
     pointer.write_text(json.dumps(document))
     with pytest.raises(ValidationError, match="pointer identity"):
         CRCOpen(catalog=pointer).inspect()
+
+
+def test_release_terminals_keep_verified_dataset_reports(tmp_path: Path) -> None:
+    upstream = SourceIdentity(
+        "fixture",
+        "observations",
+        resources=(
+            ResourceIdentity(
+                "https://example.org/observations",
+                "sha256:" + "a" * 64,
+                license="CC-BY-4.0",
+                attribution="Fixture author",
+                retrieved_at=datetime(2025, 1, 1, tzinfo=UTC),
+            ),
+        ),
+    )
+    warning = ExecutionDiagnostic(
+        "incomplete_years",
+        DiagnosticSeverity.WARNING,
+        Stage.REDUCTION,
+        "Three observation years failed coverage",
+    )
+    datasets = []
+    for name, longitude in (("harbour", 24.0), ("airport", 22.0)):
+        payload = Dataset.from_quantiles(
+            {
+                "support_id": [name] * 2,
+                "longitude": [longitude] * 2,
+                "latitude": [60.0] * 2,
+                "probability": [0.9, 0.99],
+                "value": [0.3, 0.85],
+            },
+            variable=Variable("company:depth"),
+        ).read()
+        original_report = replace(
+            payload.report,
+            counts=replace(
+                payload.report.counts,
+                requested=2,
+                skipped=1,
+                usable_years=8,
+                incomplete_years=3,
+            ),
+            diagnostics=(warning,),
+        )
+        metadata = replace(payload.metadata, report=original_report, source=upstream)
+        path = tmp_path / f"{name}.parquet"
+        pq.write_table(
+            payload.table.replace_schema_metadata(
+                {b"crc.dataset": metadata.to_json().encode()}
+            ),
+            path,
+        )
+        datasets.append(Dataset.open(path))
+
+    recipe = CRCOpen(catalog=_release_index(tmp_path, *datasets))
+    report = recipe.validate()
+    assert report.valid
+    assert report.counts.requested == 4
+    assert report.counts.produced == 2
+    assert report.counts.skipped == 2
+    assert report.counts.usable_years == 16
+    assert report.counts.incomplete_years == 6
+    assert report.diagnostics == (warning,)
+    assert report.source_identities[1:] == (upstream,)
+
+    selected = recipe.select(area=Bounds(west=23.0, south=59.0, east=25.0, north=61.0))
+    with selected.execute() as execution:
+        preview = execution.read(limit=1)
+        saved = execution.write(tmp_path / "selected.parquet")
+    assert preview.report.counts.produced == 1
+    assert preview.report.counts.skipped == 2
+    assert preview.report.diagnostics == (warning,)
+    assert preview.report.source_identities[1:] == (upstream,)
+    assert saved.report == preview.report
+    assert saved.path is not None
+    reopened = Dataset.open(saved.path).read().report
+    assert reopened.counts == preview.report.counts
+    assert reopened.diagnostics == preview.report.diagnostics
+    assert reopened.source_identities[:2] == preview.report.source_identities
 
 
 def test_exact_typed_selectors_reject_conflicting_science(tmp_path: Path) -> None:

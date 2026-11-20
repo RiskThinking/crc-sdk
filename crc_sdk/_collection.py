@@ -31,7 +31,6 @@ from ._collection_schema import (
     CollectionMetadata,
     CollectionResource,
     CollectionSelection,
-    _collection_report,
     _reference_matches,
     _release_key,
     _requested_ids,
@@ -44,6 +43,7 @@ from ._dataset_schema import (
     ReleaseReference,
     SourceIdentity,
     Stage,
+    _combine_reports,
     _dump,
     _identifier,
 )
@@ -801,7 +801,7 @@ class _CollectionNode(Node[CollectionMetadata]):
                 )
 
         def report() -> ExecutionReport:
-            combined = _collection_report(scope.report(entry.node) for entry in started)
+            combined = _combine_reports(scope.report(entry.node) for entry in started)
             return replace(
                 combined,
                 counts=replace(combined.counts, produced=produced, no_data=no_data),

@@ -316,6 +316,8 @@ assert replayed.table.equals(published.table, check_metadata=False)
 
 A read checks each participating file's checksum, Arrow schema, indexed
 scientific metadata, and complete row counts before delivering rows. It
+retains each verified file's source identities, diagnostics, and missing-data
+counts. Produced and no-data counts describe the selected rows. The read also
 retains the transformation history needed to replay fitted curves. Files
 combined in one read must agree on the history of any shared variable or
 scenario identity. Pass a returned series reference directly to `select` to
