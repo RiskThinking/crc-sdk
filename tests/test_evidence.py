@@ -28,7 +28,7 @@ from jsonschema import Draft202012Validator, FormatChecker
 from referencing import Registry, Resource
 
 from crc_sdk import Observations, ObservationTimeSelection, Sampling
-from crc_sdk._dataset_schema import ExecutionReport
+from crc_sdk._dataset_schema import ExecutionReport, RetainedFailure
 from crc_sdk._declarations import (
     Calendar,
     DataSpec,
@@ -125,7 +125,7 @@ def test_failed_fits_follow_explicit_retention_policy(policy: FitFailure) -> Non
     assert fitted.report.diagnostics[0].severity.value == "warning"
     if policy is FitFailure.KEEP_NO_DATA:
         assert len(rows) == 1 and rows[0].curve is None and rows[0].fit is None
-        assert rows[0].failure is not None
+        assert isinstance(rows[0].failure, RetainedFailure)
         assert rows[0].failure.record.evidence_count == 2
         assert not rows[0].failure.record.converged
         assert fitted.report.counts.no_data == fitted.report.counts.produced == 1

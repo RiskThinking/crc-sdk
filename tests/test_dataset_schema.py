@@ -350,7 +350,7 @@ def test_successful_fit_and_retained_failure_keep_authoritative_records() -> Non
     report = validate_rows([failed_row], failed_info)
     assert report.counts.no_data == 1
     decoded_failure = table_to_rows(rows_to_table([failed_row], failed_info))[0].failure
-    assert decoded_failure is not None
+    assert isinstance(decoded_failure, RetainedFailure)
     assert decoded_failure.record.to_json() == failure.record.to_json()
     assert decoded_failure.code == error.value.code
     with pytest.raises(ValueError, match="exactly one"):

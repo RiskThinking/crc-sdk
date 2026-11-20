@@ -42,9 +42,14 @@ from crc_sdk import (
     Variable,
 )
 from crc_sdk._climate_sampling import _ClimateNode
-from crc_sdk._dataset_schema import DatasetMetadata
+from crc_sdk._dataset_schema import DatasetMetadata, SourceUnavailable
 from crc_sdk._graph import ExecutionScope, Node, NodeStream
-from crc_sdk._schema import dataset_arrow_schema
+from crc_sdk._schema import (
+    dataset_arrow_schema,
+    rows_to_table,
+    table_to_rows,
+    write_parquet,
+)
 
 DEPTH = cf.DepthAboveGround(unit=cf.LengthUnit.METRE)
 VARIABLE = Variable("company:water-depth", measurement=DEPTH)
@@ -146,6 +151,57 @@ def sites(*longitudes: float) -> Assets:
         },
         columns=["portfolio"],
     )
+
+
+@pytest.mark.parametrize("include_exposure", [False, True])
+def test_source_unavailable_remains_a_matched_failure(
+    tmp_path: Path, include_exposure: bool
+) -> None:
+    original = data(longitudes=(0.0, 1.0)).read()
+    missing, available = table_to_rows(original.table)
+    # A provider's verbatim code can coincide with an evaluation failure code.
+    unavailable = SourceUnavailable(
+        "no_covering_support", "Source has no informative values."
+    )
+    counts = replace(original.report.counts, no_data=1)
+    metadata = replace(
+        original.metadata, report=replace(original.report, counts=counts)
+    )
+    path = write_parquet(
+        tmp_path / "source.parquet",
+        rows_to_table(
+            [replace(missing, curve=None, failure=unavailable), available], metadata
+        ),
+    )
+    dataset = Dataset.open(path)
+    assert dataset.validate().counts.no_data == 1
+    evaluation = dataset.evaluate(sites(0, 1, 2)).probabilities([0.95])
+    if not include_exposure:
+        evaluation = evaluation.impact(
+            "ratio",
+            cf.Impact.linear(input=DEPTH, output=cf.Ratio(), slope=2),
+            variable=VARIABLE,
+        ).select(responses="ratio")
+    saved = evaluation.write(tmp_path / "evaluation.parquet")
+    result = EvaluationArtifact.open(saved.path).read()
+    rows = result.table.to_pylist()
+    assert [row["support_id"] for row in rows] == [
+        missing.support_id,
+        available.support_id,
+        None,
+    ]
+    assert rows[0]["failure"] == {
+        "code": unavailable.code,
+        "message": unavailable.message,
+        "record": None,
+        "kind": "source_unavailable",
+    }
+    assert rows[1]["value"] is not None and rows[1]["failure"] is None
+    assert rows[2]["failure"]["code"] == "no_covering_support"
+    assert rows[2]["failure"]["kind"] is None
+    assert result.report.counts.no_data == 2
+    if not include_exposure:
+        assert rows[0]["exposure"]["failure"] == rows[0]["failure"]
 
 
 def test_empty_assets_execute_and_validate_the_upstream_fit() -> None:
@@ -823,7 +879,9 @@ def test_saved_support_cannot_mix_a_failed_fit_and_successful_query(
     )
     artifact = EvaluationArtifact.open(altered)
     assert artifact.validate().valid is False
-    with pytest.raises(ValidationError, match="inconsistent resource or fit failure"):
+    with pytest.raises(
+        ValidationError, match="inconsistent resource or retained failure"
+    ):
         artifact.read()
 
     # The complete original failure grid also needs upstream failed-fit evidence.
@@ -836,7 +894,7 @@ def test_saved_support_cannot_mix_a_failed_fit_and_successful_query(
     pq.write_table(table.replace_schema_metadata(headers), inconsistent)
     artifact = EvaluationArtifact.open(inconsistent)
     assert artifact.validate().valid is False
-    with pytest.raises(ValidationError, match="fit failures exceed the input"):
+    with pytest.raises(ValidationError, match="source failures exceed the input"):
         artifact.read()
 
 

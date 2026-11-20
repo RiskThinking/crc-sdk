@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import Enum
 from pathlib import Path
-from typing import TypeAlias, cast
+from typing import Literal, TypeAlias, cast
 
 import crc_framework as cf
 import pyarrow as pa  # type: ignore[import-untyped]
@@ -285,12 +285,19 @@ class EvaluationFailure:
     code: str
     message: str
     record: cf.FitRecord | None = None
+    kind: Literal["source_unavailable"] | None = None
 
     def __post_init__(self) -> None:
         _identifier(self.code, "failure code")
         _text(self.message, "failure message")
+        if self.kind not in (None, "source_unavailable"):
+            raise ValueError("unknown evaluation failure kind")
         if self.record is not None:
-            if not isinstance(self.record, cf.FitRecord) or self.record.converged:
+            if (
+                self.kind is not None
+                or not isinstance(self.record, cf.FitRecord)
+                or self.record.converged
+            ):
                 raise ValueError(
                     "evaluation failure records must describe a failed fit"
                 )
@@ -303,6 +310,7 @@ class EvaluationFailure:
             "code": self.code,
             "message": self.message,
             "record": None if self.record is None else self.record.to_json(),
+            "kind": self.kind,
         }
 
 
@@ -842,6 +850,7 @@ def evaluation_arrow_schema(
             pa.field("code", pa.string(), nullable=False),
             pa.field("message", pa.string(), nullable=False),
             pa.field("record", pa.string()),
+            pa.field("kind", pa.string()),
         ]
     )
     fields = [
@@ -1098,14 +1107,18 @@ def evaluation_table(
 def _read_failure(value: object) -> EvaluationFailure | None:
     if value is None:
         return None
-    data = _object(value, {"code", "message", "record"})
+    data = _object(value, {"code", "message", "record", "kind"})
     record = data["record"]
     if record is not None and not isinstance(record, str):
         raise ValueError("evaluation failure fit record must be canonical JSON")
+    kind = data["kind"]
+    if kind is not None and kind != "source_unavailable":
+        raise ValueError("unknown evaluation failure kind")
     return EvaluationFailure(
         _identifier(data["code"], "failure code"),
         _text(data["message"], "failure message"),
         None if record is None else cf.FitRecord.from_json(record),
+        kind,
     )
 
 
@@ -1127,12 +1140,17 @@ def _validate_match(
             if metadata.spatial.kind is SpatialMatchKind.COVERING
             else "outside_max_distance"
         )
-        if failure is None or failure.code != expected or failure.record is not None:
+        if (
+            failure is None
+            or failure.code != expected
+            or failure.record is not None
+            or failure.kind is not None
+        ):
             raise ValueError("an unmatched asset requires its spatial failure reason")
         return None, None, None
     if series not in metadata._resource_series.get((member, resource), ()):
         raise ValueError("matched resource does not declare the evaluation series")
-    if failure is not None and failure.code in _UNMATCHED:
+    if failure is not None and failure.kind is None and failure.code in _UNMATCHED:
         raise ValueError("matched support cannot carry an unmatched failure reason")
     if metadata.spatial.kind is SpatialMatchKind.COVERING:
         if distance is not None:
@@ -1146,12 +1164,12 @@ def _validate_match(
 
 
 def _validate_exposure_failure(failure: EvaluationFailure | None) -> None:
-    if failure is None:
+    if failure is None or failure.kind == "source_unavailable":
         return
     requires_fit = failure.code not in _EXPOSURE_FAILURES_WITHOUT_FIT
     if (failure.record is not None) != requires_fit:
         raise ValueError(
-            "exposure failure must describe a spatial match, query, or failed fit"
+            "exposure failure must describe a spatial match, query, or source failure"
         )
 
 
@@ -1190,7 +1208,7 @@ def _validate_response(
     if actual is None:
         raise ValueError("row references an unknown response resolution")
     if row["support_id"] is None or (
-        failure is not None and failure.record is not None
+        failure is not None and (failure.record is not None or failure.kind is not None)
     ):
         raise ValueError("a response cannot resolve without evaluated source evidence")
     if response.context is not None and asset is not None:
@@ -1265,7 +1283,8 @@ class EvaluationValidator:
             );
             CREATE TABLE contexts (identity TEXT PRIMARY KEY, resolution TEXT NOT NULL);
             CREATE TABLE source_supports (
-                identity TEXT PRIMARY KEY, member TEXT, resource TEXT, fit_failure TEXT
+                identity TEXT PRIMARY KEY, member TEXT, resource TEXT,
+                source_failure TEXT
             );
             CREATE TABLE source_exposures (
                 support TEXT NOT NULL, query_rank INTEGER NOT NULL,
@@ -1377,20 +1396,25 @@ class EvaluationValidator:
     ) -> None:
         identity = _dump(key)
         outcome = None if failure is None else _dump(failure._arrow())
-        fit_failure = (
-            outcome if failure is not None and failure.record is not None else None
+        source_failure = (
+            outcome
+            if failure is not None
+            and (failure.record is not None or failure.kind is not None)
+            else None
         )
-        support = (resource, fit_failure)
+        support = (resource, source_failure)
         self._db.execute(
             "INSERT OR IGNORE INTO source_supports VALUES (?, ?, ?, ?)",
             (identity, key[0], *support),
         )
         saved = self._db.execute(
-            "SELECT resource, fit_failure FROM source_supports WHERE identity = ?",
+            "SELECT resource, source_failure FROM source_supports WHERE identity = ?",
             (identity,),
         ).fetchone()
         if saved != support:
-            raise ValueError("source support has inconsistent resource or fit failure")
+            raise ValueError(
+                "source support has inconsistent resource or retained failure"
+            )
         self._db.execute(
             "INSERT OR IGNORE INTO source_exposures VALUES (?, ?, ?, ?)",
             (identity, rank, value, outcome),
@@ -1598,7 +1622,7 @@ class EvaluationValidator:
             for item in metadata.inputs
         }
         for member, resource, total, failed in self._db.execute(
-            "SELECT member, resource, count(*), count(fit_failure) "
+            "SELECT member, resource, count(*), count(source_failure) "
             "FROM source_supports GROUP BY member, resource"
         ):
             counts = declared_counts[member, resource]
@@ -1608,7 +1632,7 @@ class EvaluationValidator:
                 )
             if failed > counts.no_data:
                 raise ValueError(
-                    "evaluation fit failures exceed the input no-data count"
+                    "evaluation source failures exceed the input no-data count"
                 )
             if total - failed > counts.produced - counts.no_data:
                 raise ValueError(
@@ -1621,7 +1645,7 @@ class EvaluationValidator:
         for support, value in self._db.execute(
             "SELECT exposure.support, exposure.value FROM source_exposures AS exposure "
             "JOIN source_supports ON exposure.support = source_supports.identity "
-            "WHERE source_supports.fit_failure IS NULL "
+            "WHERE source_supports.source_failure IS NULL "
             "ORDER BY exposure.support, exposure.query_rank"
         ):
             if support != current:
@@ -1679,7 +1703,9 @@ class EvaluationValidator:
             if problem is not None:
                 actual = {} if failure is None else _load(failure)
                 matches = (
-                    actual.get("code") == problem.code and actual.get("record") is None
+                    actual.get("code") == problem.code
+                    and actual.get("record") is None
+                    and actual.get("kind") is None
                 )
             else:
                 assert expected is not None

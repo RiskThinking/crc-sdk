@@ -193,6 +193,28 @@ def fixture_cases() -> dict[str, object]:
             value=None,
             failure={"code": "no_covering_support", "message": "No covering support."},
         )
+    unavailable = deepcopy(direct)
+    unavailable["metadata"]["inputs"][0]["metadata"]["report"]["counts"]["no_data"] = 1
+    unavailable["metadata"]["report"]["counts"]["no_data"] = 2
+    unavailable["metadata"]["report"]["diagnostics"] = [
+        {
+            "code": "insufficient_informative_support",
+            "severity": "warning",
+            "stage": "evaluation",
+            "message": "No informative source values are available.",
+            "support_id": "site",
+            "query_value": 100.0,
+        }
+    ]
+    for row in unavailable["rows"]:
+        row.update(
+            value=None,
+            failure={
+                "kind": "source_unavailable",
+                "code": "insufficient_informative_support",
+                "message": "No informative source values are available.",
+            },
+        )
     empty = {
         "metadata": json.loads(
             EvaluationMetadata(
@@ -211,6 +233,7 @@ def fixture_cases() -> dict[str, object]:
         {"name": "explicit-empty", "document": empty},
         {"name": "calibrated-user-case-and-covering-priority", "document": case_result},
         {"name": "named-only-with-exposure-proof", "document": projected},
+        {"name": "matched-source-unavailable", "document": unavailable},
     ]
 
     rejected = []
@@ -232,6 +255,11 @@ def fixture_cases() -> dict[str, object]:
     failure_with_value = deepcopy(direct)
     failure_with_value["rows"][0]["failure"] = {"code": "x", "message": "Contradiction"}
     reject("failure-with-value", failure_with_value, structural=True)
+    unavailable_budget = deepcopy(unavailable)
+    unavailable_budget["metadata"]["inputs"][0]["metadata"]["report"]["counts"][
+        "no_data"
+    ] = 0
+    reject("source-unavailable-exceeds-upstream-count", unavailable_budget)
     missing = deepcopy(direct)
     missing["rows"].pop()
     reject("missing-query-row", missing)

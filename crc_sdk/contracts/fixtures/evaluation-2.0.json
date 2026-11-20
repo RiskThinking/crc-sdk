@@ -1102,6 +1102,152 @@
           }
         ]
       }
+    },
+    {
+      "name": "matched-source-unavailable",
+      "document": {
+        "metadata": {
+          "asset_fields": "/////3gAAAAQAAAAAAAKAAwABgAFAAgACgAAAAABBAAMAAAACAAIAAAABAAIAAAABAAAAAEAAAAUAAAAEAAUAAgAAAAHAAwAAAAQABAAAAAAAAAFEAAAACAAAAAEAAAAAAAAAAgAAABhc3NldF9pZAAAAAAEAAQABAAAAAAAAAA=",
+          "asset_ids": [
+            "a"
+          ],
+          "include_exposure": true,
+          "inputs": [
+            {
+              "member_id": null,
+              "metadata": {
+                "provenance": [],
+                "report": {
+                  "complete": true,
+                  "counts": {
+                    "incomplete_years": 0,
+                    "matched_assets": 0,
+                    "no_data": 1,
+                    "produced": 1,
+                    "requested": 1,
+                    "skipped": 0,
+                    "unmatched_assets": 0,
+                    "usable_years": 0
+                  },
+                  "diagnostics": [],
+                  "source_identities": [],
+                  "valid": true
+                },
+                "schema_version": "2.0",
+                "spatial": {
+                  "index_resolution": 9,
+                  "supports": [
+                    "point"
+                  ]
+                },
+                "spec": {
+                  "periods": [],
+                  "scenarios": [],
+                  "series": [
+                    {
+                      "period_id": null,
+                      "probability": {
+                        "kind": "annual",
+                        "tail": "upper"
+                      },
+                      "scenario_id": null,
+                      "variable_id": "project:depth"
+                    }
+                  ],
+                  "variables": [
+                    {
+                      "id": "project:depth",
+                      "measurement": {
+                        "kind": "depth_above_ground",
+                        "unit": "m"
+                      }
+                    }
+                  ]
+                }
+              },
+              "resource_id": null
+            }
+          ],
+          "query": {
+            "kind": "return_period",
+            "values": [
+              100.0,
+              10.0
+            ]
+          },
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 1,
+              "no_data": 2,
+              "produced": 2,
+              "requested": 2,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [
+              {
+                "code": "insufficient_informative_support",
+                "severity": "warning",
+                "stage": "evaluation",
+                "message": "No informative source values are available.",
+                "support_id": "site",
+                "query_value": 100.0
+              }
+            ],
+            "source_identities": [],
+            "valid": true
+          },
+          "resolutions": [],
+          "responses": [],
+          "schema_version": "2.0",
+          "spatial": {
+            "kind": "covering"
+          }
+        },
+        "rows": [
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": null,
+            "resolution_id": null,
+            "query_value": 100.0,
+            "value": null,
+            "failure": {
+              "kind": "source_unavailable",
+              "code": "insufficient_informative_support",
+              "message": "No informative source values are available."
+            }
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": null,
+            "resolution_id": null,
+            "query_value": 10.0,
+            "value": null,
+            "failure": {
+              "kind": "source_unavailable",
+              "code": "insufficient_informative_support",
+              "message": "No informative source values are available."
+            }
+          }
+        ]
+      }
     }
   ],
   "rejected": [
@@ -1628,6 +1774,153 @@
         ]
       },
       "structural": true
+    },
+    {
+      "name": "source-unavailable-exceeds-upstream-count",
+      "document": {
+        "metadata": {
+          "asset_fields": "/////3gAAAAQAAAAAAAKAAwABgAFAAgACgAAAAABBAAMAAAACAAIAAAABAAIAAAABAAAAAEAAAAUAAAAEAAUAAgAAAAHAAwAAAAQABAAAAAAAAAFEAAAACAAAAAEAAAAAAAAAAgAAABhc3NldF9pZAAAAAAEAAQABAAAAAAAAAA=",
+          "asset_ids": [
+            "a"
+          ],
+          "include_exposure": true,
+          "inputs": [
+            {
+              "member_id": null,
+              "metadata": {
+                "provenance": [],
+                "report": {
+                  "complete": true,
+                  "counts": {
+                    "incomplete_years": 0,
+                    "matched_assets": 0,
+                    "no_data": 0,
+                    "produced": 1,
+                    "requested": 1,
+                    "skipped": 0,
+                    "unmatched_assets": 0,
+                    "usable_years": 0
+                  },
+                  "diagnostics": [],
+                  "source_identities": [],
+                  "valid": true
+                },
+                "schema_version": "2.0",
+                "spatial": {
+                  "index_resolution": 9,
+                  "supports": [
+                    "point"
+                  ]
+                },
+                "spec": {
+                  "periods": [],
+                  "scenarios": [],
+                  "series": [
+                    {
+                      "period_id": null,
+                      "probability": {
+                        "kind": "annual",
+                        "tail": "upper"
+                      },
+                      "scenario_id": null,
+                      "variable_id": "project:depth"
+                    }
+                  ],
+                  "variables": [
+                    {
+                      "id": "project:depth",
+                      "measurement": {
+                        "kind": "depth_above_ground",
+                        "unit": "m"
+                      }
+                    }
+                  ]
+                }
+              },
+              "resource_id": null
+            }
+          ],
+          "query": {
+            "kind": "return_period",
+            "values": [
+              100.0,
+              10.0
+            ]
+          },
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 1,
+              "no_data": 2,
+              "produced": 2,
+              "requested": 2,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [
+              {
+                "code": "insufficient_informative_support",
+                "severity": "warning",
+                "stage": "evaluation",
+                "message": "No informative source values are available.",
+                "support_id": "site",
+                "query_value": 100.0
+              }
+            ],
+            "source_identities": [],
+            "valid": true
+          },
+          "resolutions": [],
+          "responses": [],
+          "schema_version": "2.0",
+          "spatial": {
+            "kind": "covering"
+          }
+        },
+        "rows": [
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": null,
+            "resolution_id": null,
+            "query_value": 100.0,
+            "value": null,
+            "failure": {
+              "kind": "source_unavailable",
+              "code": "insufficient_informative_support",
+              "message": "No informative source values are available."
+            }
+          },
+          {
+            "asset_id": "a",
+            "member_id": null,
+            "resource_id": null,
+            "variable_id": "project:depth",
+            "scenario_id": null,
+            "period_id": null,
+            "support_id": "site",
+            "distance_metres": null,
+            "response_id": null,
+            "resolution_id": null,
+            "query_value": 10.0,
+            "value": null,
+            "failure": {
+              "kind": "source_unavailable",
+              "code": "insufficient_informative_support",
+              "message": "No informative source values are available."
+            }
+          }
+        ]
+      },
+      "structural": false
     },
     {
       "name": "missing-query-row",

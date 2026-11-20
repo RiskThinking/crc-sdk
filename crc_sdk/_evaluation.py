@@ -23,6 +23,7 @@ from ._dataset_schema import (
     DatasetMetadata,
     ExecutionDiagnostic,
     ExecutionReport,
+    SourceUnavailable,
     Stage,
     _identifier,
 )
@@ -864,6 +865,10 @@ def _value(
         return None, EvaluationFailure(
             match_failure or "no_covering_support",
             "No source support matched this asset and series.",
+        )
+    if isinstance(row.failure, SourceUnavailable):
+        return None, EvaluationFailure(
+            row.failure.code, row.failure.message, kind="source_unavailable"
         )
     if row.failure is not None:
         return None, EvaluationFailure(

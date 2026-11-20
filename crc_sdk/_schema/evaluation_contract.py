@@ -152,19 +152,31 @@ def evaluation_json_schema() -> dict[str, object]:
                 ),
             ]
         },
-        "failure": _record(
-            {
-                "code": identifier,
-                "message": {"type": "string", "minLength": 1},
-                "record": {
-                    "allOf": [
-                        {"$ref": FITTING_SCHEMA},
-                        {"properties": {"converged": {"const": False}}},
-                    ]
-                },
-            },
-            ["code", "message"],
-        ),
+        "failure": {
+            "oneOf": [
+                _record(
+                    {
+                        "code": identifier,
+                        "message": {"type": "string", "minLength": 1},
+                        "record": {
+                            "allOf": [
+                                {"$ref": FITTING_SCHEMA},
+                                {"properties": {"converged": {"const": False}}},
+                            ]
+                        },
+                    },
+                    ["code", "message"],
+                ),
+                _record(
+                    {
+                        "kind": {"const": "source_unavailable"},
+                        "code": identifier,
+                        "message": {"type": "string", "minLength": 1},
+                    },
+                    ["kind", "code", "message"],
+                ),
+            ]
+        },
     }
     metadata = _record(
         {

@@ -64,6 +64,7 @@ def _rows(values: list[dict[str, Any]]) -> list[EvaluationRow]:
                 None
                 if "record" not in failure
                 else cf.FitRecord.from_json(_dump(failure["record"])),
+                kind=failure.get("kind"),
             ),
         )
 

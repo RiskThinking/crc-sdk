@@ -178,11 +178,13 @@ response and compares its value within a relative tolerance of `1e-12`. With a
 named-only selection, each response row retains the source value or failure in
 its `exposure` field for validation. Validation also checks retained asset
 attributes, recorded source releases, and diagnostics for missing results.
-Rows that share a source support agree on its fit outcome and on the exposure
+Rows that share a source support agree on its availability and on the exposure
 at each query coordinate. Validation checks that exposure quantiles are
 nondecreasing in non-exceedance order and that supported queries form one
-contiguous range. Upstream counts separately bound matches to failed fits and
-matches to supports with curves.
+contiguous range. A matched source-unavailable outcome retains its provider code
+and message and has `failure.kind` set to `source_unavailable`. Upstream counts
+separately bound matches with source unavailability or failed fits and matches
+to supports with curves.
 The evaluation report carries acquired input checksums, upstream diagnostics,
 skipped counts, and annual completeness counts from the input reports. Reopening
 checks those inherited facts against the embedded input metadata.

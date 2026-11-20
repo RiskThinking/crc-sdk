@@ -17,12 +17,14 @@ numerical evidence or law for each original spatial support.
 | `geometry` | Exact 2D WGS84 source support as WKB, when required |
 | `curve` | Current framework distribution or quantile evidence |
 | `fit` | Authoritative successful fitting record, when fitted |
-| `failure` | Retained failed fitting record with its code and message |
+| `failure` | Source unavailability or a retained fitting failure, with its code and message |
 
 The key is `(variable_id, scenario_id, period_id, support_id, cell_id)`; null
 dimensions participate consistently in uniqueness. Every row references a
-declared series. A row contains exactly one curve or failure. A supplied
-quantile curve has no fictional fit record.
+declared series. A row contains exactly one curve or failure. A fitting
+failure carries its authoritative fit record. Source unavailability carries
+`kind: source_unavailable` in JSON. In Arrow, a failure with a null `record`
+represents source unavailability. Both failure outcomes count toward `no_data`.
 
 ## Numerical and spatial meaning
 
@@ -88,8 +90,9 @@ Provider precipitation mass flux uses water-equivalent depth, where one
 kilogram per square metre corresponds to one millimetre of water.
 
 A complete artifact's produced count equals its row count, and its no-data count
-matches retained failures. Failed records identify actual attempts and their
-outcomes. They never carry a fabricated numerical curve.
+matches retained failures. Each source-unavailable row preserves the known
+support and the provider's reason. Each failed fitting row describes its attempt
+and outcome.
 
 The packaged JSON Schema describes structure and current variants. Typed
 validation additionally enforces descriptor foreign keys, generated period
