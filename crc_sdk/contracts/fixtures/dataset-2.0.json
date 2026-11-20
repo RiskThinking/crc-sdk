@@ -783,6 +783,67 @@
       }
     },
     {
+      "name": "retained-source-unavailable",
+      "document": {
+        "metadata": {
+          "provenance": [],
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 0,
+              "no_data": 1,
+              "produced": 1,
+              "requested": 1,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [],
+            "source_identities": [],
+            "valid": true
+          },
+          "schema_version": "2.0",
+          "spatial": {
+            "index_resolution": 4,
+            "supports": [
+              "cell"
+            ]
+          },
+          "spec": {
+            "periods": [],
+            "scenarios": [],
+            "series": [
+              {
+                "period_id": null,
+                "scenario_id": null,
+                "variable_id": "user:depth"
+              }
+            ],
+            "variables": [
+              {
+                "id": "user:depth"
+              }
+            ]
+          }
+        },
+        "rows": [
+          {
+            "cell_id": 594475228122316799,
+            "failure": {
+              "code": "no_source_values",
+              "kind": "source_unavailable",
+              "message": "No source values are available."
+            },
+            "period_id": null,
+            "scenario_id": null,
+            "support_id": "user:support",
+            "variable_id": "user:depth"
+          }
+        ]
+      }
+    },
+    {
       "name": "fitting-failure-diagnostic",
       "document": {
         "metadata": {
@@ -1983,6 +2044,169 @@
     }
   ],
   "rejected": [
+    {
+      "name": "source-unavailable-with-fit-record",
+      "structural": true,
+      "document": {
+        "metadata": {
+          "provenance": [],
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 0,
+              "no_data": 1,
+              "produced": 1,
+              "requested": 1,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [],
+            "source_identities": [],
+            "valid": true
+          },
+          "schema_version": "2.0",
+          "spatial": {
+            "index_resolution": 4,
+            "supports": [
+              "cell"
+            ]
+          },
+          "spec": {
+            "periods": [],
+            "scenarios": [],
+            "series": [
+              {
+                "period_id": null,
+                "scenario_id": null,
+                "variable_id": "user:depth"
+              }
+            ],
+            "variables": [
+              {
+                "id": "user:depth"
+              }
+            ]
+          }
+        },
+        "rows": [
+          {
+            "cell_id": 594475228122316799,
+            "failure": {
+              "code": "no_source_values",
+              "kind": "source_unavailable",
+              "message": "No source values are available.",
+              "record": {
+                "attempts": [
+                  {
+                    "diagnostic": {
+                      "message": "unsupported operation: gumbel_r has no feasible likelihood fit under the supplied constraints"
+                    },
+                    "specification": {
+                      "constraints": null,
+                      "estimator": "mle",
+                      "fallbacks": [],
+                      "family": "gumbel_r",
+                      "kind": "samples",
+                      "minimum_samples": 3
+                    },
+                    "status": "failed"
+                  }
+                ],
+                "converged": false,
+                "engine_version": "crc-framework/1.0.0",
+                "estimator": null,
+                "evidence_count": 8,
+                "excluded_count": 0,
+                "probability_interval": null,
+                "selected_attempt": null,
+                "specification": {
+                  "constraints": null,
+                  "estimator": "mle",
+                  "fallbacks": [],
+                  "family": "gumbel_r",
+                  "kind": "samples",
+                  "minimum_samples": 3
+                },
+                "used_count": 8,
+                "value_interval": [
+                  1.0,
+                  1.0
+                ],
+                "weights": null
+              }
+            },
+            "period_id": null,
+            "scenario_id": null,
+            "support_id": "user:support",
+            "variable_id": "user:depth"
+          }
+        ]
+      }
+    },
+    {
+      "name": "source-unavailable-bad-count",
+      "structural": false,
+      "document": {
+        "metadata": {
+          "provenance": [],
+          "report": {
+            "complete": true,
+            "counts": {
+              "incomplete_years": 0,
+              "matched_assets": 0,
+              "no_data": 0,
+              "produced": 1,
+              "requested": 1,
+              "skipped": 0,
+              "unmatched_assets": 0,
+              "usable_years": 0
+            },
+            "diagnostics": [],
+            "source_identities": [],
+            "valid": true
+          },
+          "schema_version": "2.0",
+          "spatial": {
+            "index_resolution": 4,
+            "supports": [
+              "cell"
+            ]
+          },
+          "spec": {
+            "periods": [],
+            "scenarios": [],
+            "series": [
+              {
+                "period_id": null,
+                "scenario_id": null,
+                "variable_id": "user:depth"
+              }
+            ],
+            "variables": [
+              {
+                "id": "user:depth"
+              }
+            ]
+          }
+        },
+        "rows": [
+          {
+            "cell_id": 594475228122316799,
+            "failure": {
+              "code": "no_source_values",
+              "kind": "source_unavailable",
+              "message": "No source values are available."
+            },
+            "period_id": null,
+            "scenario_id": null,
+            "support_id": "user:support",
+            "variable_id": "user:depth"
+          }
+        ]
+      }
+    },
     {
       "name": "unknown-temporal-measurement-change-field",
       "structural": true,

@@ -695,7 +695,30 @@ class RetainedFailure:
         }
 
 
-def _failure(value: object) -> RetainedFailure:
+@dataclass(frozen=True, slots=True)
+class SourceUnavailable:
+    code: str
+    message: str
+
+    def __post_init__(self) -> None:
+        _identifier(self.code, "failure.code")
+        _text(self.message, "failure.message")
+
+    def _document(self) -> dict[str, object]:
+        return {
+            "kind": "source_unavailable",
+            "code": self.code,
+            "message": self.message,
+        }
+
+
+def _failure(value: object) -> RetainedFailure | SourceUnavailable:
+    if isinstance(value, dict) and value.get("kind") == "source_unavailable":
+        v = _object(value, {"kind", "code", "message"})
+        return SourceUnavailable(
+            _identifier(v["code"], "failure.code"),
+            _text(v["message"], "failure.message"),
+        )
     v = _object(value, {"code", "message", "record"})
     return RetainedFailure(
         _identifier(v["code"], "code"),

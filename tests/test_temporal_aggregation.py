@@ -24,7 +24,7 @@ from crc_sdk._aggregation import (
     _ordinal,
     days_in_month,
 )
-from crc_sdk._dataset_schema import FittingDiagnostic
+from crc_sdk._dataset_schema import FittingDiagnostic, RetainedFailure
 from crc_sdk._declarations import Calendar, Period, Probability, SeriesSpec, Variable
 from crc_sdk._errors import CapabilityError, ValidationError
 from crc_sdk._evidence import (
@@ -246,7 +246,7 @@ def test_incomplete_year_is_retained_and_not_fitted_as_a_valid_observation() -> 
     assert report.counts.incomplete_years == 1
     kept = annual.fit(specification, on_failure=FitFailure.KEEP_NO_DATA).read()
     row = table_to_rows(kept.table)[0]
-    assert row.curve is None and row.failure is not None
+    assert row.curve is None and isinstance(row.failure, RetainedFailure)
     assert row.failure.record.excluded_count == 0
     assert kept.report.counts.incomplete_years == 1
 

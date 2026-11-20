@@ -386,36 +386,62 @@
       ]
     },
     "failure": {
-      "type": "object",
-      "properties": {
-        "code": {
-          "type": "string",
-          "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
-        },
-        "message": {
-          "type": "string",
-          "minLength": 1
-        },
-        "record": {
-          "allOf": [
-            {
-              "$ref": "https://climateriskcommons.org/schemas/fitting/1.0"
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
             },
-            {
-              "properties": {
-                "converged": {
-                  "const": false
+            "message": {
+              "type": "string",
+              "minLength": 1
+            },
+            "record": {
+              "allOf": [
+                {
+                  "$ref": "https://climateriskcommons.org/schemas/fitting/1.0"
+                },
+                {
+                  "properties": {
+                    "converged": {
+                      "const": false
+                    }
+                  }
                 }
-              }
+              ]
             }
-          ]
+          },
+          "required": [
+            "code",
+            "message"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "source_unavailable"
+            },
+            "code": {
+              "type": "string",
+              "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+            },
+            "message": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "kind",
+            "code",
+            "message"
+          ],
+          "additionalProperties": false
         }
-      },
-      "required": [
-        "code",
-        "message"
-      ],
-      "additionalProperties": false
+      ]
     },
     "metadata": {
       "type": "object",

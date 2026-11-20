@@ -49,6 +49,7 @@ from crc_sdk._dataset_schema import (
     ResourceIdentity,
     RetainedFailure,
     SourceIdentity,
+    SourceUnavailable,
     SpatialContract,
     Stage,
     SupportKind,
@@ -198,6 +199,21 @@ def fixture_cases() -> dict[str, object]:
         dataset_to_json([replace(row, curve=None, failure=failure)], failed_info)
     )
     accepted.append({"name": "retained-fit-failure", "document": failed})
+    unavailable = json.loads(
+        dataset_to_json(
+            [
+                replace(
+                    row,
+                    curve=None,
+                    failure=SourceUnavailable(
+                        "no_source_values", "No source values are available."
+                    ),
+                )
+            ],
+            failed_info,
+        )
+    )
+    accepted.append({"name": "retained-source-unavailable", "document": unavailable})
     diagnostic_info = replace(
         failed_info,
         report=replace(
@@ -351,6 +367,13 @@ def fixture_cases() -> dict[str, object]:
 
     def reject(name, document, structural):
         rejected.append({"name": name, "structural": structural, "document": document})
+
+    value = deepcopy(unavailable)
+    value["rows"][0]["failure"]["record"] = failed["rows"][0]["failure"]["record"]
+    reject("source-unavailable-with-fit-record", value, True)
+    value = deepcopy(unavailable)
+    value["metadata"]["report"]["counts"]["no_data"] = 0
+    reject("source-unavailable-bad-count", value, False)
 
     value = deepcopy(reduced)
     value["metadata"]["provenance"][-1]["measurements"][0]["unknown"] = True

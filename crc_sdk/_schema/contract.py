@@ -187,19 +187,31 @@ def dataset_json_schema() -> dict[str, object]:
                     ),
                 ]
             },
-            "failure": _record(
-                {
-                    "code": identifier,
-                    "message": text,
-                    "record": {
-                        "allOf": [
-                            {"$ref": FITTING_SCHEMA},
-                            {"properties": {"converged": {"const": False}}},
-                        ]
-                    },
-                },
-                ["code", "message", "record"],
-            ),
+            "failure": {
+                "oneOf": [
+                    _record(
+                        {
+                            "code": identifier,
+                            "message": text,
+                            "record": {
+                                "allOf": [
+                                    {"$ref": FITTING_SCHEMA},
+                                    {"properties": {"converged": {"const": False}}},
+                                ]
+                            },
+                        },
+                        ["code", "message", "record"],
+                    ),
+                    _record(
+                        {
+                            "kind": {"const": "source_unavailable"},
+                            "code": identifier,
+                            "message": text,
+                        },
+                        ["kind", "code", "message"],
+                    ),
+                ]
+            },
             "metadata": _record(
                 {
                     "schema_version": {"const": "2.0"},

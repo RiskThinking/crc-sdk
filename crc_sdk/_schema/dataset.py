@@ -23,6 +23,7 @@ from .._dataset_schema import (
     ExecutionCounts,
     ExecutionReport,
     RetainedFailure,
+    SourceUnavailable,
     SupportKind,
     _boolean,
     _dump,
@@ -155,7 +156,7 @@ class DatasetRow:
     geometry: bytes | None = None
     curve: Distribution | QuantileCurve | None = None
     fit: FitRecord | None = None
-    failure: RetainedFailure | None = None
+    failure: RetainedFailure | SourceUnavailable | None = None
 
     def __post_init__(self) -> None:
         _identifier(self.variable_id, "variable_id")
@@ -172,8 +173,10 @@ class DatasetRow:
             self.curve, (Distribution, QuantileCurve)
         ):
             raise TypeError("curve must be a framework Distribution or QuantileCurve")
-        if self.failure is not None and not isinstance(self.failure, RetainedFailure):
-            raise TypeError("failure must be RetainedFailure")
+        if self.failure is not None and not isinstance(
+            self.failure, (RetainedFailure, SourceUnavailable)
+        ):
+            raise TypeError("failure must be RetainedFailure or SourceUnavailable")
         if self.fit is not None:
             if (
                 not isinstance(self.fit, FitRecord)
@@ -443,7 +446,7 @@ def dataset_arrow_schema(metadata: DatasetMetadata | None = None) -> pa.Schema:
                     [
                         pa.field("code", pa.string(), nullable=False),
                         pa.field("message", pa.string(), nullable=False),
-                        pa.field("record", pa.large_string(), nullable=False),
+                        pa.field("record", pa.large_string()),
                     ]
                 ),
             ),
@@ -475,7 +478,9 @@ def rows_to_table(rows: Sequence[DatasetRow], metadata: DatasetMetadata) -> pa.T
                 else {
                     "code": row.failure.code,
                     "message": row.failure.message,
-                    "record": row.failure.record.to_json(),
+                    "record": row.failure.record.to_json()
+                    if isinstance(row.failure, RetainedFailure)
+                    else None,
                 },
             }
         )
@@ -516,6 +521,8 @@ def table_to_rows(
                 fit=None if value["fit"] is None else FitRecord.from_json(value["fit"]),
                 failure=None
                 if failure is None
+                else SourceUnavailable(failure["code"], failure["message"])
+                if failure["record"] is None
                 else RetainedFailure(
                     failure["code"],
                     failure["message"],
