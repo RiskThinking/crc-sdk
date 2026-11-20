@@ -71,29 +71,6 @@ jobs:
           "$wheel_python" -I "$GITHUB_WORKSPACE/tools/check_wheels.py"
           "$wheel_python" -I -m pytest -q --import-mode=importlib "$GITHUB_WORKSPACE/tests"
           "$wheel_python" -I "$GITHUB_WORKSPACE/tools/check_examples.py"
-      - name: Verify the current CRC Open release and its datasets
-        working-directory: ${{ runner.temp }}
-        run: |
-          "$RUNNER_TEMP/contract-venv/bin/python" -I - <<'PY'
-          from crc_sdk import CRCOpen
-
-          source = CRCOpen()
-          inspection = source.inspect()
-          if not inspection.releases or not inspection.series:
-              raise SystemExit("Publish a current, nonempty CRC Open release before releasing the SDK")
-          expected = inspection.releases[0]
-          report = source.validate()
-          if report.valid is not True or report.counts.produced == 0:
-              raise SystemExit("The current CRC Open release must contain validated dataset rows")
-          publication = report.source_identities[0] if report.source_identities else None
-          actual = None if publication is None else publication.release
-          if (
-              actual is None
-              or actual.id != expected.id
-              or actual.sha256 != expected.sha256
-          ):
-              raise SystemExit("The current CRC Open release changed during validation")
-          PY
       - uses: actions/upload-artifact@v4
         with:
           name: sdk-release

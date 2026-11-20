@@ -73,16 +73,18 @@ specific pairing.
    `crc_sdk/contracts/api/release.json` to `pyproject.toml`, generated contracts,
    lockfiles, and release checks.
    Run `uv lock` after changing dependencies.
-2. Publish the framework version recorded in the ledger and a [current CRC Open
-   release index](sources.md#discover-a-crc-open-release). Merge the SDK and
+2. Publish the framework version recorded in the ledger. Merge the SDK and
    push the SDK package tag, such as `v1.0.0`.
 3. The SDK release workflow checks that the tag matches the SDK package
    version and runs paired CI at the exact framework tag in the ledger. It
    builds the wheel and source distribution, installs the wheel with the exact
    published framework version, and verifies the installed contracts, tests,
-   and examples. It checks that the default CRC Open endpoint resolves to a
-   nonempty current-format index. The release publishes the verified artifacts
-   to GitHub and PyPI.
+   and examples against local fixtures. The release publishes the verified
+   artifacts to GitHub and PyPI.
+
+The data publisher verifies CRC Open shards and the release index before
+updating the publication pointer. SDK release tests exercise the reader with a
+local Dataset 2.0 release. [CRC Open discovery](sources.md#discover-a-crc-open-release)
 
 ## Contributor credits
 
