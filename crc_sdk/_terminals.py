@@ -35,7 +35,14 @@ from ._errors import CapabilityError, ValidationError
 from ._evidence import EvidenceKind, EvidenceMetadata, FitFailure
 from ._graph import DataValidationError, ExecutionScope, Node
 from ._inspection import ArtifactMetadata
-from ._runtime import LocalPath, Runtime, _local_path, _memory_bytes, _positive
+from ._runtime import (
+    LocalPath,
+    Runtime,
+    _arrow_nbytes,
+    _local_path,
+    _memory_bytes,
+    _positive,
+)
 from ._schema import dataset_arrow_schema
 
 if TYPE_CHECKING:
@@ -438,12 +445,14 @@ class Execution(Generic[MetadataT, ArtifactT]):
                     for batch in iterator:
                         if limit is not None:
                             batch = batch.slice(0, limit - count)
-                        collected_bytes += batch.nbytes
-                        if memory_limit is not None and collected_bytes > memory_limit:
-                            raise MemoryError(
-                                "Collected output exceeds Runtime(memory_limit=...). "
-                                "Use batches() or write() for streaming output."
-                            )
+                        if memory_limit is not None:
+                            collected_bytes += _arrow_nbytes(batch)
+                            if collected_bytes > memory_limit:
+                                raise MemoryError(
+                                    "Collected output exceeds "
+                                    "Runtime(memory_limit=...). "
+                                    "Use batches() or write() for streaming output."
+                                )
                         batches.append(batch)
                         count += batch.num_rows
                         if limit is not None and count >= limit:
@@ -487,6 +496,13 @@ class Execution(Generic[MetadataT, ArtifactT]):
         return self.report
 
     def write(self, path: LocalPath, *, overwrite: bool = False) -> ArtifactT:
+        from ._evaluation_schema import (
+            EvaluationMetadata,
+            _check_evaluation_fields,
+            _convert_parquet_assets,
+            _evaluation_parquet_schema,
+        )
+
         self._active()
         destination = _publication_path(path, overwrite)
         node = self._recipe._node
@@ -494,6 +510,9 @@ class Execution(Generic[MetadataT, ArtifactT]):
             metadata = self._scope.metadata(node)
         except DataValidationError as error:
             raise ValidationError(report=self.report) from error
+        evaluation = isinstance(metadata, EvaluationMetadata)
+        schema = _schema(metadata)
+        storage_schema = _evaluation_parquet_schema(schema) if evaluation else schema
         destination.parent.mkdir(parents=True, exist_ok=True)
         descriptor, name = tempfile.mkstemp(
             prefix=f".{destination.name}.", suffix=".parquet", dir=destination.parent
@@ -504,10 +523,14 @@ class Execution(Generic[MetadataT, ArtifactT]):
             try:
                 # Metadata is finalized in the footer after the only output pass.
                 with pq.ParquetWriter(
-                    staging, _schema(metadata).remove_metadata()
+                    staging, storage_schema.remove_metadata()
                 ) as writer:
                     written = 0
                     for batch in self._scope.iter_batches(node):
+                        if evaluation:
+                            batch = _convert_parquet_assets(
+                                batch, storage_schema, writing=True
+                            )
                         writer.write_batch(batch.replace_schema_metadata(None))
                         written += batch.num_rows
                         self._scope.emit(Stage.WRITING, written)
@@ -517,13 +540,17 @@ class Execution(Generic[MetadataT, ArtifactT]):
                     metadata = _with_report(self._scope.metadata(node), report)
                     schema = _schema(metadata)
                     footer = dict(schema.metadata or {})
+                    storage_schema = storage_schema.with_metadata(schema.metadata)
                     footer[b"ARROW:schema"] = base64.b64encode(
-                        schema.serialize().to_pybytes()
+                        storage_schema.serialize().to_pybytes()
                     )
                     writer.add_key_value_metadata(footer)
                     self._scope.emit(Stage.WRITING, written, written)
             except DataValidationError as error:
                 raise ValidationError(report=self.report) from error
+            if evaluation:
+                with pq.ParquetFile(staging) as stored:
+                    _check_evaluation_fields(stored.schema_arrow, schema, parquet=True)
             with staging.open("rb") as handle:
                 os.fsync(handle.fileno())
                 digest = "sha256:" + hashlib.file_digest(handle, "sha256").hexdigest()

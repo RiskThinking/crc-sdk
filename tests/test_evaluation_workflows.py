@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import replace
+from datetime import date
 from pathlib import Path
 
 import crc_framework as cf
@@ -205,6 +206,94 @@ def test_retained_arrow_temporal_values_survive_batched_eval_and_replay(
     assert attrs.field("opened").cast(pa.int64()).to_pylist() == [123, 123]
     assert attrs.field("duration").cast(pa.int64()).to_pylist() == [987, 987]
     assert attrs.field("snapshots").values.cast(pa.int64()).to_pylist() == [456, 456]
+
+
+def test_parquet_restores_retained_arrow_types_normalized_by_its_decoder(
+    tmp_path: Path,
+) -> None:
+    attributes = pa.table(
+        {
+            "asset_id": ["available", "absent"],
+            "longitude": [0.0, 0.0],
+            "latitude": [0.0, 0.0],
+            "opened": pa.array([123, None], type=pa.timestamp("s", tz="UTC")),
+            "daily_start": pa.array([4, None], type=pa.time32("s")),
+            "commissioned": pa.array([date(1968, 1, 1), None], type=pa.date64()),
+            "nested": pa.array(
+                [[{"timestamp": 456}], None],
+                type=pa.list_(pa.struct([("timestamp", pa.timestamp("s"))])),
+            ),
+            "code": pa.DictionaryArray.from_arrays(
+                pa.array([0, None], type=pa.int16()), pa.array([123], type=pa.int32())
+            ),
+            "label": pa.array(["long attribute value", None], type=pa.string_view()),
+            "labels": pa.array(
+                [["first", "second"], None], type=pa.list_view(pa.string_view())
+            ),
+        }
+    )
+    recipe = annual().evaluate(Assets(attributes)).probabilities([0.9, 0.99])
+    runtime = Runtime(batch_rows=1)
+    result = recipe.read(runtime=runtime)
+    path = tmp_path / "assets.parquet"
+    saved = recipe.write(path, runtime=runtime)
+    for artifact in (saved, EvaluationArtifact.open(path)):
+        assert artifact.inspect().schema == result.table.schema
+        replay = artifact.read(runtime=runtime)
+        assert replay.report.valid is True
+        assert replay.table.schema.equals(result.table.schema, check_metadata=True)
+        assert replay.table.to_pylist() == result.table.to_pylist()
+
+
+def test_unsupported_retained_arrow_type_preserves_destination(
+    tmp_path: Path,
+) -> None:
+    attrs = pa.table(
+        {
+            "asset_id": ["asset"],
+            "longitude": [0.0],
+            "latitude": [0.0],
+            "flag": pa.UnionArray.from_sparse(
+                pa.array([0], type=pa.int8()), [pa.array([True])]
+            ),
+        }
+    )
+    recipe = annual().evaluate(Assets(attrs)).probabilities([0.9])
+    assert recipe.read().report.valid is True
+    path = tmp_path / "assets.parquet"
+    path.write_bytes(b"previous artifact")
+    with pytest.raises(pa.ArrowNotImplementedError):
+        recipe.write(path, overwrite=True)
+    assert path.read_bytes() == b"previous artifact"
+    assert list(tmp_path.iterdir()) == [path]
+
+
+def test_dictionary_restore_keeps_parquet_row_group_boundaries(tmp_path: Path) -> None:
+    per_group = 80
+    codes = pa.chunked_array(
+        [
+            pa.DictionaryArray.from_arrays(
+                pa.array(range(per_group), type=pa.int8()),
+                pa.array(range(first, first + per_group), type=pa.int32()),
+            )
+            for first in (0, per_group)
+        ]
+    )
+    count = len(codes)
+    attrs = pa.table(
+        {
+            "asset_id": list(range(count)),
+            "longitude": [0.0] * count,
+            "latitude": [0.0] * count,
+            "code": codes,
+        }
+    )
+    recipe = annual().evaluate(Assets(attrs, columns=["code"])).probabilities([0.9])
+    path = tmp_path / "codes.parquet"
+    recipe.write(path)
+    restored = EvaluationArtifact.open(path).read().table["asset"].flatten()[0]
+    assert restored.type == codes.type
+    assert restored.to_pylist() == list(range(count))
 
 
 def test_direct_collection_and_saved_selection_agree(tmp_path: Path) -> None:

@@ -7,7 +7,7 @@ import binascii
 import hashlib
 import math
 import sqlite3
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import Enum
@@ -16,7 +16,9 @@ from typing import TypeAlias, cast
 
 import crc_framework as cf
 import pyarrow as pa  # type: ignore[import-untyped]
+import pyarrow.compute as pc  # type: ignore[import-untyped]
 
+from ._assets import _sql_materialized_array, _sql_materialized_type
 from ._contextual_impact import ContextualImpact, ResponseContext
 from ._dataset_schema import (
     DatasetMetadata,
@@ -918,14 +920,155 @@ def _same_fields(schema: pa.Schema, expected: pa.Schema) -> bool:
     )
 
 
-def evaluation_metadata_from_schema(schema: pa.Schema) -> EvaluationMetadata:
+def _parquet_asset_type(kind: pa.DataType) -> pa.DataType:
+    """Account for the logical types the Parquet decoder normalizes."""
+    if pa.types.is_timestamp(kind) and kind.unit == "s":
+        return pa.timestamp("ms", kind.tz)
+    if pa.types.is_time32(kind) and kind.unit == "s":
+        return pa.time32("ms")
+    if pa.types.is_date64(kind):
+        return pa.date32()
+    if pa.types.is_dictionary(kind):
+        value = kind.value_type
+        if pa.types.is_large_string(value):
+            value = pa.string()
+        elif pa.types.is_large_binary(value):
+            value = pa.binary()
+        if pa.types.is_string(value) or pa.types.is_binary(value):
+            return pa.dictionary(kind.index_type, value, ordered=kind.ordered)
+        return _parquet_asset_type(value)
+
+    def convert(field: pa.Field) -> pa.Field:
+        return field.with_type(_parquet_asset_type(field.type))
+
+    if pa.types.is_struct(kind):
+        return pa.struct([convert(field) for field in kind])
+    if pa.types.is_list(kind):
+        return pa.list_(convert(kind.value_field))
+    if pa.types.is_large_list(kind):
+        return pa.large_list(convert(kind.value_field))
+    if pa.types.is_fixed_size_list(kind):
+        return pa.list_(convert(kind.value_field), kind.list_size)
+    if pa.types.is_list_view(kind):
+        return pa.list_view(convert(kind.value_field))
+    if pa.types.is_large_list_view(kind):
+        return pa.large_list_view(convert(kind.value_field))
+    if pa.types.is_map(kind):
+        return pa.map_(
+            convert(kind.key_field),
+            convert(kind.item_field),
+            keys_sorted=kind.keys_sorted,
+        )
+    return kind
+
+
+def _check_evaluation_fields(
+    schema: pa.Schema, expected: pa.Schema, *, parquet: bool = False
+) -> None:
+    if _same_fields(schema, expected):
+        return
+    if parquet and any(
+        _same_fields(schema, _map_asset_field(candidate, _parquet_asset_type))
+        for candidate in (expected, _evaluation_parquet_schema(expected))
+    ):
+        return
+    raise ValueError("Arrow fields do not match canonical evaluation schema 2.0")
+
+
+def _map_asset_field(
+    schema: pa.Schema, convert: Callable[[pa.DataType], pa.DataType]
+) -> pa.Schema:
+    index = schema.get_field_index("asset")
+    if index == -1:
+        return schema
+    field = schema.field(index)
+    return schema.set(index, field.with_type(convert(field.type)))
+
+
+def _evaluation_parquet_schema(schema: pa.Schema) -> pa.Schema:
+    # Physical arrays make view types writable on every supported Arrow version.
+    return _map_asset_field(schema, _sql_materialized_type)
+
+
+def _restore_asset_type(array: pa.Array, target: pa.DataType) -> pa.Array:
+    if array.type == target:
+        return array
+    if pa.types.is_dictionary(target):
+        encoded = (
+            array if pa.types.is_dictionary(array.type) else array.dictionary_encode()
+        )
+        return pa.DictionaryArray.from_arrays(
+            encoded.indices.cast(target.index_type),
+            encoded.dictionary.cast(target.value_type),
+            ordered=target.ordered,
+        )
+    if pa.types.is_struct(target):
+        return pa.StructArray.from_arrays(
+            [
+                _restore_asset_type(array.field(i), field.type)
+                for i, field in enumerate(target)
+            ],
+            fields=list(target),
+            mask=array.is_null(),
+        )
+    if (pa.types.is_list_view(target) or pa.types.is_large_list_view(target)) and (
+        isinstance(array, (pa.ListArray, pa.LargeListArray))
+    ):
+        offsets = array.offsets
+        view = (
+            pa.ListViewArray if pa.types.is_list_view(target) else pa.LargeListViewArray
+        )
+        return view.from_arrays(
+            offsets.slice(0, len(array)),
+            pc.subtract(offsets.slice(1), offsets.slice(0, len(array))),
+            _restore_asset_type(array.values, target.value_type),
+            type=target,
+            mask=array.is_null(),
+        )
+    if isinstance(
+        array,
+        (
+            pa.ListArray,
+            pa.LargeListArray,
+            pa.FixedSizeListArray,
+            pa.ListViewArray,
+            pa.LargeListViewArray,
+            pa.MapArray,
+        ),
+    ):
+        return pa.Array.from_buffers(
+            target,
+            len(array),
+            array.buffers()[: array.type.num_buffers],
+            offset=array.offset,
+            children=[_restore_asset_type(array.values, target.field(0).type)],
+        )
+    return array.cast(target)
+
+
+def _convert_parquet_assets(
+    batch: pa.RecordBatch, schema: pa.Schema, *, writing: bool = False
+) -> pa.RecordBatch:
+    index = schema.get_field_index("asset")
+    if index == -1:
+        return batch
+    field = schema.field(index)
+    assets = batch.column(index)
+    if assets.type == field.type:
+        return batch
+    convert = _sql_materialized_array if writing else _restore_asset_type
+    return batch.set_column(index, field, convert(assets, field.type))
+
+
+def evaluation_metadata_from_schema(
+    schema: pa.Schema, *, parquet: bool = False
+) -> EvaluationMetadata:
     value = (schema.metadata or {}).get(_METADATA_KEY)
     if value is None:
         raise ValueError("canonical evaluation metadata is missing")
     metadata = EvaluationMetadata.from_json(value.decode("utf-8"))
     expected = evaluation_arrow_schema(metadata, include_metadata=False)
-    if not _same_fields(schema, expected):
-        raise ValueError("Arrow fields do not match canonical evaluation schema 2.0")
+    _check_evaluation_fields(schema, expected, parquet=parquet)
     return metadata
 
 
