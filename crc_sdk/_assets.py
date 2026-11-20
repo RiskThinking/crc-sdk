@@ -27,7 +27,7 @@ from ._dataset_schema import ResourceIdentity, SourceIdentity, _identifier
 from ._errors import CapabilityError
 from ._geometry import cell_polygon
 from ._graph import ExecutionScope
-from ._runtime import CacheMode, LocalPath, _local_path, _memory_bytes
+from ._runtime import CacheMode, LocalPath, _arrow_nbytes, _local_path, _memory_bytes
 from ._schema.dataset import _cell
 from ._table_input import TableInput, snapshot_table
 
@@ -502,12 +502,13 @@ class Assets:
                     ],
                     schema=selected_schema,
                 )
-            size += batch.nbytes
-            if budget is not None and size > budget:
-                raise MemoryError(
-                    "Assets exceed Runtime(memory_limit=...). Reduce retained "
-                    "columns or increase the limit."
-                )
+            if budget is not None:
+                size += _arrow_nbytes(batch)
+                if size > budget:
+                    raise MemoryError(
+                        "Assets exceed Runtime(memory_limit=...). Reduce retained "
+                        "columns or increase the limit."
+                    )
             owned.append(batch)
         return pa.Table.from_batches(owned, schema=selected_schema)
 
@@ -615,6 +616,7 @@ class Assets:
                     ),
                 ),
             )
+        table.validate(full=True)
         if len(set(table.column_names)) != len(table.column_names):
             raise ValueError("asset column names must be unique")
         if self._id_column not in table.column_names:
@@ -684,7 +686,10 @@ class Assets:
         )
         if (
             budget is not None
-            and table.nbytes + context_only.nbytes + sum(map(len, geometry)) > budget
+            and _arrow_nbytes(table)
+            + _arrow_nbytes(context_only)
+            + sum(map(len, geometry))
+            > budget
         ):
             raise MemoryError(
                 "Assets exceed Runtime(memory_limit=...). Reduce retained columns "

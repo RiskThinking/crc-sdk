@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import math
 import types
-from collections.abc import Iterator, Sequence
+from bisect import bisect_left
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from dataclasses import replace as _replace
 from pathlib import Path
@@ -40,6 +41,7 @@ from ._evaluation_schema import (
     EvaluationValidator,
     QueryKind,
     _apply_response,
+    _convert_parquet_assets,
     _resolution_id,
     evaluation_arrow_schema,
     evaluation_metadata_from_schema,
@@ -890,6 +892,36 @@ def _value(
     return cast(float, row.curve.quantile(coordinate)), None
 
 
+def _asset_batch_parts(
+    assets: pa.Table | None, indices: list[int], row_count: int
+) -> Iterator[tuple[int, int, pa.StructArray | None]]:
+    if assets is None:
+        yield 0, row_count, None
+        return
+    # Keep the original Arrow batch boundaries. Different dictionaries can
+    # have more distinct values together than their shared index type holds.
+    first, start = indices[0], 0
+    for batch in assets.slice(first, indices[-1] - first + 1).to_batches():
+        end = bisect_left(indices, first + batch.num_rows, lo=start)
+        if end > start:
+            positions = [index - first for index in indices[start:end]]
+            try:
+                columns = batch.take(pa.array(positions, type=pa.int64())).columns
+            except pa.ArrowNotImplementedError:
+                # Some Arrow view types lack a take kernel.
+                columns = [
+                    pa.concat_arrays([column.slice(i, 1) for i in positions])
+                    for column in batch.columns
+                ]
+            yield (
+                start,
+                end,
+                pa.StructArray.from_arrays(columns, fields=list(assets.schema)),
+            )
+        first += batch.num_rows
+        start = end
+
+
 def _evaluation_batches(
     scope: ExecutionScope,
     rows: list[EvaluationRow],
@@ -900,19 +932,15 @@ def _evaluation_batches(
     asset_indices: list[int],
 ) -> Iterator[pa.RecordBatch]:
     with native_data(scope=scope, source="evaluation"):
-        retained = None
-        if assets is not None:
-            gathered = assets.take(pa.array(asset_indices, type=pa.int64()))
-            retained = pa.StructArray.from_arrays(
-                [column.combine_chunks() for column in gathered.columns],
-                fields=list(assets.schema),
-            )
-        for batch in evaluation_table(
-            rows, metadata, include_metadata=False, retained=retained
-        ).to_batches():
-            validator.check(batch)
-            scope.emit(Stage.EVALUATION, validator._produced)
-            yield batch
+        for start, end, retained in _asset_batch_parts(
+            assets, asset_indices, len(rows)
+        ):
+            for batch in evaluation_table(
+                rows[start:end], metadata, include_metadata=False, retained=retained
+            ).to_batches():
+                validator.check(batch)
+                scope.emit(Stage.EVALUATION, validator._produced)
+                yield batch
 
 
 class _Results:
@@ -1241,7 +1269,8 @@ class _EvaluationFile(Node[EvaluationMetadata]):
         with native_data(scope=scope, source=str(self.path)):
             discovery = scope.enter_context(pq.ParquetFile(handle))
             schema = discovery.schema_arrow
-            metadata = evaluation_metadata_from_schema(schema)
+            metadata = evaluation_metadata_from_schema(schema, parquet=True)
+            logical = evaluation_arrow_schema(metadata)
             if not metadata.report.complete or metadata.report.valid is not True:
                 raise ValueError(
                     "The evaluation artifact requires a complete valid report"
@@ -1255,6 +1284,7 @@ class _EvaluationFile(Node[EvaluationMetadata]):
         validator = EvaluationValidator(metadata, scope_directory=scope.directory)
         scope.callback(validator.close)
         produced = no_data = 0
+        restore_assets = not schema.equals(logical, check_metadata=False)
 
         def batches() -> Iterator[pa.RecordBatch]:
             nonlocal produced, no_data
@@ -1271,10 +1301,19 @@ class _EvaluationFile(Node[EvaluationMetadata]):
                         raise OSError(
                             "Evaluation artifact changed after metadata discovery"
                         )
-                    if reader.num_row_groups:
+                    row_groups: Iterable[list[int] | None] = (
+                        ([index] for index in range(reader.num_row_groups))
+                        if restore_assets
+                        else (None,)
+                        if reader.num_row_groups
+                        else ()
+                    )
+                    for group in row_groups:
                         for batch in reader.iter_batches(
-                            batch_size=scope.runtime.batch_rows
+                            batch_size=scope.runtime.batch_rows, row_groups=group
                         ):
+                            if restore_assets:
+                                batch = _convert_parquet_assets(batch, logical)
                             validator.check(batch, metadata)
                             produced += batch.num_rows
                             no_data += batch.column(
@@ -1296,7 +1335,7 @@ class _EvaluationFile(Node[EvaluationMetadata]):
                 ),
             )
 
-        return NodeStream(schema, metadata, batches(), report=report)
+        return NodeStream(logical, metadata, batches(), report=report)
 
 
 class EvaluationArtifact(_Results):

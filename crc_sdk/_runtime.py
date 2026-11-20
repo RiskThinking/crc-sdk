@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Self
 
 import duckdb
+import pyarrow as pa  # type: ignore[import-untyped]
 
 from ._dataset_schema import Stage
 
@@ -62,6 +63,14 @@ def _memory_bytes(value: str | int | None) -> int | None:
     }
     result = int(float(match.group(1)) * powers[unit])
     return _positive(result, "memory_limit")
+
+
+def _arrow_nbytes(value: pa.Table | pa.RecordBatch) -> int:
+    try:
+        return int(value.nbytes)
+    except pa.ArrowTypeError:
+        # Older Arrow versions cannot size the logical slices of view arrays.
+        return int(value.get_total_buffer_size())
 
 
 class CacheMode(Enum):
