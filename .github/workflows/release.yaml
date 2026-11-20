@@ -85,11 +85,12 @@ jobs:
           report = source.validate()
           if report.valid is not True or report.counts.produced == 0:
               raise SystemExit("The current CRC Open release must contain validated dataset rows")
-          if not any(
-              identity.release is not None
-              and identity.release.id == expected.id
-              and identity.release.sha256 == expected.sha256
-              for identity in report.source_identities
+          publication = report.source_identities[0] if report.source_identities else None
+          actual = None if publication is None else publication.release
+          if (
+              actual is None
+              or actual.id != expected.id
+              or actual.sha256 != expected.sha256
           ):
               raise SystemExit("The current CRC Open release changed during validation")
           PY
