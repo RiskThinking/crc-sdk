@@ -19,6 +19,8 @@ distributions, fitting specifications, measurements, units, and impacts.
 | Fit | `fit` with a framework fitting specification |
 | Evaluate assets | `evaluate`, then `probabilities` or `return_periods` |
 | Add a named response | `impact` |
+| Simulate annual insured losses | `LossRun` with a named damage response and `PolicyColumns` |
+| Compare paired annual loss runs | `future.compare(baseline)` on `LossResult` |
 | Inspect metadata | `inspect` |
 | Describe work without I/O | `explain` |
 | Collect or preview | `read(limit=None)` |
@@ -52,14 +54,20 @@ their original source. Bounded previews report incomplete traversal and cannot
 silently become fitting samples.
 
 `write` returns `Dataset`, `Samples`, `Observations`, `Projections`, `Layer`,
-`EvaluationArtifact`, or `DatasetCollection` according to the data kind. Each
-saved handle has a path and can be reopened by that type's `open` method. A saved
-collection is a portable directory bundle containing its selected dependencies.
+`EvaluationArtifact`, `DatasetCollection`, or `LossArtifact` according to the data
+kind. Each saved handle has a path and can be reopened by that type's `open`
+method. A saved collection is a portable directory bundle containing its
+selected dependencies.
 Publication is atomic on supported local filesystems. [Collection guide](collections.md)
 
 An explicit `execute(runtime=...)` scope owns one runtime. Its `read`, `batches`,
 `validate`, and `write` methods reuse that scope. `explain(runtime=...)` describes
 effective cache and resource settings without I/O.
+
+`LossRun.read()` returns immutable trial totals and optional interest losses in a
+`LossResult`. `summary()` computes metrics from that sample, and `compare()`
+pairs climate runs on their common primary trial stream. A `LossArtifact` can
+reopen the same sample for both operations. [Annual insured loss](insurance.md)
 
 ## Verify declarations and installed packages
 

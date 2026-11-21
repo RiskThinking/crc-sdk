@@ -65,6 +65,8 @@ scenario or period when your source establishes those facts. [Evaluation guide](
 - [Collections](docs/collections.md): selected scientific members and portable bundles.
 - [Evaluation](docs/evaluation.md): match assets, query event levels, and add
   calibrated named responses.
+- [Annual insured loss](docs/insurance.md) for one-peril simulation, paired
+  climate comparisons, and saved loss samples.
 - [Python interface contract](docs/api-reference.md): canonical imports and
   installed-package enforcement.
 - [Development](docs/development.md): setup, checks, generated contracts, and

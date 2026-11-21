@@ -35,6 +35,7 @@ uv run python tools/generate_dataset_contracts.py --check
 uv run python tools/generate_evidence_contracts.py --check
 uv run python tools/generate_collection_contracts.py --check
 uv run python tools/generate_evaluation_contracts.py --check
+uv run python tools/generate_loss_contracts.py --check
 uv run python ../crc-framework-rs/tools/sync_data_contracts.py --sdk . --check
 ```
 

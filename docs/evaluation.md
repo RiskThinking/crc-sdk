@@ -194,6 +194,9 @@ limit the responses in the default selection. The returned table has one row
 per asset, participating series, requested coordinate, and exposure or named
 response.
 
+Use a named damage fraction response and an annual probability grid to
+simulate losses for a policy book. [Annual insured loss](insurance.md)
+
 ### Calibrate your own cases
 
 Use `ContextualImpact` when your preferred numerical model varies by an asset's

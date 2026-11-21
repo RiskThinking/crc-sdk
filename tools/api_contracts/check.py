@@ -36,6 +36,7 @@ BUILTINS = {
     "tuple",
     "list",
     "dict",
+    "range",
     "type",
     "BaseException",
     "Self",
@@ -192,8 +193,12 @@ def _signature(value: Mapping[str, Any], known: set[str], where: str) -> None:
                     require(reference in known, f"{where}.{name}: unknown enum default")
                 elif "tuple" in default:
                     require(
-                        default["tuple"] == [],
-                        f"{where}.{name}: only an empty tuple default is supported",
+                        isinstance(default["tuple"], list)
+                        and all(
+                            item is None or isinstance(item, (str, int, float, bool))
+                            for item in default["tuple"]
+                        ),
+                        f"{where}.{name}: tuple default must contain scalar values",
                     )
                 else:
                     require(
@@ -255,6 +260,7 @@ def validate_contract(contract: dict[str, Any], release: dict[str, Any]) -> None
             "numerical",
             "impact",
             "evidence",
+            "annual-loss",
         }
         and all(
             isinstance(version, str) and re.fullmatch(r"[0-9]+\.[0-9]+", version)
@@ -481,6 +487,7 @@ def check_schema_versions(release: Mapping[str, Any]) -> None:
         ("evaluation", "schemas"),
         ("collection", "schemas"),
         ("evidence", "schemas"),
+        ("annual-loss", "schemas"),
         ("taxonomy", "taxonomy"),
     ):
         version = release["formats"][name]
@@ -550,7 +557,14 @@ def _default_matches(actual: Any, expected: Any) -> bool:
                 and f"{type(actual).__qualname__}.{actual.name}" == expected["enum"]
             )
         if "tuple" in expected:
-            return isinstance(actual, tuple) and list(actual) == expected["tuple"]
+            return (
+                isinstance(actual, tuple)
+                and len(actual) == len(expected["tuple"])
+                and all(
+                    _default_matches(item, choice)
+                    for item, choice in zip(actual, expected["tuple"], strict=True)
+                )
+            )
         return actual is Ellipsis
     return bool(type(actual) is type(expected) and actual == expected)
 

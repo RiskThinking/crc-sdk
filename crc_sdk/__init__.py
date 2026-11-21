@@ -80,6 +80,9 @@ from ._inspection import (
     StationReference,
 )
 from ._layer_sources import CHIRPS, FieldsOfTheWorld
+from ._loss import LossExecution, LossRun
+from ._loss_artifact import LossArtifact, LossComparison, LossResult, LossRunMetadata
+from ._loss_inputs import PolicyColumns
 from ._observed_sources import (
     HYDAT,
     ISD,
@@ -163,6 +166,12 @@ __all__ = [
     "JRC",
     "Layer",
     "LayerColumns",
+    "LossArtifact",
+    "LossComparison",
+    "LossExecution",
+    "LossResult",
+    "LossRun",
+    "LossRunMetadata",
     "MeasurementChange",
     "NEX",
     "NOAASeaLevel",
@@ -173,6 +182,7 @@ __all__ = [
     "Period",
     "PeriodKind",
     "PointColumns",
+    "PolicyColumns",
     "Probability",
     "ProbabilityKind",
     "ProgressEvent",

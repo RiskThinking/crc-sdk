@@ -71,16 +71,18 @@ def main() -> None:
         ):
             raise SystemExit(f"installed data contracts disagree: {source}")
 
-    variable = crc_sdk.Variable("user:installed-depth")
+    depth = crc_framework.DepthAboveGround(unit=crc_framework.LengthUnit.METRE)
+    variable = crc_sdk.Variable("user:installed-depth", measurement=depth)
     dataset = crc_sdk.Dataset.from_quantiles(
         {
             "support_id": ["a", "a"],
             "longitude": [0, 0],
             "latitude": [0, 0],
-            "probability": [0.1, 0.9],
-            "value": [1, 2],
+            "probability": [0.0, 1.0],
+            "value": [0.0, 2.0],
         },
         variable=variable,
+        probability=crc_sdk.Probability.annual(tail=crc_framework.Tail.UPPER),
     )
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "dataset.parquet"
@@ -90,6 +92,40 @@ def main() -> None:
             saved = execution.write(path)
         assert saved.read().report.complete
         assert crc_sdk.Dataset.open(path).read().report.valid
+
+        assets = crc_sdk.Assets(
+            {"asset_id": ["interest"], "longitude": [0], "latitude": [0]}
+        )
+        damage = crc_framework.Impact.linear(
+            slope=0.2,
+            input=depth,
+            output=crc_framework.Ratio(unit=crc_framework.RatioUnit.FRACTION),
+        )
+        evaluation = (
+            saved.evaluate(assets)
+            .probabilities([0.0, 1.0])
+            .impact("damage", damage, variable=variable)
+        )
+        loss = crc_sdk.LossRun(
+            evaluation,
+            damage_response="damage",
+            peril="flood",
+            policy=crc_sdk.PolicyColumns(
+                total_insured_value=100.0,
+                currency="USD",
+                valuation_basis="replacement value",
+            ),
+            spec=crc_framework.AnnualLossSpec(trials=64),
+            include_components=True,
+        )
+        with loss.execute() as execution:
+            assert execution.validate().valid
+            result = execution.read()
+            saved_loss = execution.write(Path(directory) / "loss.parquet")
+        reopened_loss = crc_sdk.LossArtifact.open(saved_loss.path).read()
+        assert reopened_loss.metadata.run_id == result.metadata.run_id
+        assert reopened_loss.summary() == result.summary()
+        assert reopened_loss.components is not None
     print(
         f"Installed framework {versions['framework']} and SDK {versions['sdk']}: "
         "versions, shared contracts, execution, and persistence verified"

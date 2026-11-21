@@ -9,7 +9,7 @@ import subprocess
 import sys
 from enum import Enum
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any, Generic, Literal, TypeVar
 
 import pytest
@@ -204,6 +204,7 @@ def test_framework_types_cannot_be_reexported_by_sdk(
         ("collection", "2.0"),
         ("taxonomy", "2.0"),
         ("dataset", "3.0"),
+        ("annual-loss", "2.0"),
     ],
 )
 def test_release_ledger_must_match_owned_formats(
@@ -287,6 +288,19 @@ def test_omitted_selection_default_is_a_singleton(checker: ModuleType) -> None:
     assert not checker._default_matches(None, expected)
 
 
+def test_tuple_defaults_preserve_values_and_types(
+    checker: ModuleType, declarations: tuple[dict[str, Any], dict[str, Any]]
+) -> None:
+    contract, release = declarations
+    level = contract["exports"]["LossResult"]["methods"]["summary"]["parameters"][0]
+    assert checker._default_matches((0.95, 0.99, 0.995), level["default"])
+    assert not checker._default_matches((0.95, 0.99), level["default"])
+    assert not checker._default_matches((10.0,), {"tuple": [10]})
+    level["default"]["tuple"] = [0.95, [0.99]]
+    with pytest.raises(checker.ContractError, match="tuple default"):
+        checker.validate_contract(contract, release)
+
+
 @pytest.mark.parametrize("extra", ["root_alias", "method_alias"])
 def test_runtime_rejects_undeclared_aliases_outside_all(
     checker: ModuleType,
@@ -336,12 +350,17 @@ def test_runtime_rejects_undeclared_aliases_outside_all(
     monkeypatch.setattr(checker, "import_runtime", lambda path: package)
     monkeypatch.setattr(checker, "files", lambda owner: tmp_path)
     monkeypatch.setattr(checker, "packaged_errors", lambda path: [])
-    monkeypatch.setattr(checker.importlib.metadata, "version", lambda name: "1.0.0")
 
     def missing(name: str) -> None:
         raise ModuleNotFoundError(name)
 
-    monkeypatch.setattr(checker.importlib, "import_module", missing)
+    monkeypatch.setattr(
+        checker,
+        "importlib",
+        SimpleNamespace(
+            import_module=missing, metadata=SimpleNamespace(version=lambda _: "1.0.0")
+        ),
+    )
     with pytest.raises(checker.ContractError, match="undeclared public"):
         checker.check_runtime(contract, release)
 
@@ -440,12 +459,17 @@ def test_function_exports_validate_their_signature(
     monkeypatch.setattr(checker, "import_runtime", lambda path: package)
     monkeypatch.setattr(checker, "files", lambda owner: tmp_path)
     monkeypatch.setattr(checker, "packaged_errors", lambda path: [])
-    monkeypatch.setattr(checker.importlib.metadata, "version", lambda name: "1.0.0")
 
     def missing(name: str) -> None:
         raise ModuleNotFoundError(name)
 
-    monkeypatch.setattr(checker.importlib, "import_module", missing)
+    monkeypatch.setattr(
+        checker,
+        "importlib",
+        SimpleNamespace(
+            import_module=missing, metadata=SimpleNamespace(version=lambda _: "1.0.0")
+        ),
+    )
     checker.check_runtime(contract, release)
     delattr(package, "identity")
     with pytest.raises(
