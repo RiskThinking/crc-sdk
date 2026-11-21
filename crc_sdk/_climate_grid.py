@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
+from itertools import groupby
 from typing import Any
 
 import numpy as np
@@ -26,6 +27,57 @@ class GridCell:
     cell_id: int
     source_row: int | None = None
     source_column: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _GridWindow:
+    rows: range
+    columns: range
+    output_indices: tuple[int, ...]
+    row_offsets: tuple[int, ...]
+    column_offsets: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class GridReadPlan:
+    windows: tuple[_GridWindow, ...]
+    cell_count: int
+    bytes_per_step: int
+
+    @classmethod
+    def from_cells(cls, cells: tuple[GridCell, ...]) -> GridReadPlan:
+        by_column: dict[int, list[int]] = {}
+        for index, cell in enumerate(cells):
+            by_column.setdefault(cell.column, []).append(index)
+        windows: list[_GridWindow] = []
+        bytes_per_step = 0
+        # Adjacent storage columns have the same difference from their position
+        # in the sorted selection. A wrap on the native axis creates two runs.
+        for _, run in groupby(
+            enumerate(sorted(by_column)), key=lambda item: item[1] - item[0]
+        ):
+            columns = [column for _, column in run]
+            output_indices = tuple(
+                index for column in columns for index in by_column[column]
+            )
+            first_row = min(cells[index].row for index in output_indices)
+            last_row = max(cells[index].row for index in output_indices)
+            first_column = columns[0]
+            rows = range(first_row, last_row + 1)
+            window_columns = range(first_column, columns[-1] + 1)
+            windows.append(
+                _GridWindow(
+                    rows,
+                    window_columns,
+                    output_indices,
+                    tuple(cells[index].row - first_row for index in output_indices),
+                    tuple(
+                        cells[index].column - first_column for index in output_indices
+                    ),
+                )
+            )
+            bytes_per_step += len(rows) * len(window_columns) * 8
+        return cls(tuple(windows), len(cells), bytes_per_step)
 
 
 def calendar_name(value: object) -> Calendar:
@@ -196,7 +248,7 @@ def grid_values(
     lon_name: str,
     start: int,
     stop: int,
-    cells: tuple[GridCell, ...],
+    plan: GridReadPlan,
     memory_limit: int | None = None,
 ) -> np.ndarray[Any, Any]:
     dimensions = tuple(
@@ -207,29 +259,29 @@ def grid_values(
         raise ValueError(
             f"source variable dimensions {dimensions!r} do not match {wanted!r}"
         )
-    if not cells:
-        return np.empty((stop - start, 0), dtype=np.float64)
-    r0, r1 = min(c.row for c in cells), max(c.row for c in cells) + 1
-    c0, c1 = min(c.column for c in cells), max(c.column for c in cells) + 1
-    required = (stop - start) * (r1 - r0) * (c1 - c0) * 8
+    count = stop - start
+    required = count * plan.bytes_per_step
     if memory_limit is not None and required > memory_limit:
         raise MemoryError(
             f"Source grid reduction needs at least {required} bytes; "
             "select a smaller area or increase Runtime(memory_limit=...)."
         )
+    result = np.empty((count, plan.cell_count), dtype=np.float64)
+    if not count:
+        return result
+    time_axis, lat_axis, lon_axis = (dimensions.index(name) for name in wanted)
     selection = [slice(None)] * 3
-    for name, value in (
-        (time_name, slice(start, stop)),
-        (lat_name, slice(r0, r1)),
-        (lon_name, slice(c0, c1)),
-    ):
-        selection[dimensions.index(name)] = value
-    raw = array[tuple(selection)]
-    values = _unpack_grid_values(raw, array.attrs)
-    values = np.transpose(values, [dimensions.index(name) for name in wanted])
-    return values[
-        :, [cell.row - r0 for cell in cells], [cell.column - c0 for cell in cells]
-    ]
+    selection[time_axis] = slice(start, stop)
+    for window in plan.windows:
+        selection[lat_axis] = slice(window.rows.start, window.rows.stop)
+        selection[lon_axis] = slice(window.columns.start, window.columns.stop)
+        raw = array[tuple(selection)]
+        unpacked = _unpack_grid_values(raw, array.attrs)
+        values = np.transpose(unpacked, (time_axis, lat_axis, lon_axis))
+        result[:, window.output_indices] = values[
+            :, window.row_offsets, window.column_offsets
+        ]
+    return result
 
 
 def annual_records(

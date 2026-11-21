@@ -1109,7 +1109,13 @@ class _EDONode(SourceNode[EvidenceMetadata]):
     def open(self, scope: ExecutionScope) -> NodeStream[EvidenceMetadata]:
         import numpy as np
 
-        from ._climate_grid import calendar_name, cf_calendar, grid_cells, grid_values
+        from ._climate_grid import (
+            GridReadPlan,
+            calendar_name,
+            cf_calendar,
+            grid_cells,
+            grid_values,
+        )
         from ._climate_io import netcdf_window_snapshot
         from ._declarations import Calendar
         from ._evidence import evidence_table
@@ -1209,7 +1215,7 @@ class _EDONode(SourceNode[EvidenceMetadata]):
                         lon_name="lon",
                         start=int(start),
                         stop=int(stop),
-                        cells=cells,
+                        plan=GridReadPlan.from_cells(cells),
                         memory_limit=_memory_bytes(scope.runtime.memory_limit),
                     )
                     records: list[dict[str, object]] = []

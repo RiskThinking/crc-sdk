@@ -1502,6 +1502,72 @@ def test_era5_native_hourly_measurements_missing_data_and_bounded_preview(
     assert saved.read().table.num_rows == 49
 
 
+def test_era5_greenwich_window_reads_only_selected_columns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from crc_sdk import _climate_sampling as module
+
+    path = tmp_path / "greenwich.zarr"
+    group = zarr.open_group(str(path), mode="w", zarr_format=2)
+    _array(group, "latitude", [51.75, 51.5, 51.25], ["latitude"])
+    _array(group, "longitude", np.arange(1440) / 4, ["longitude"])
+    _array(
+        group,
+        "time",
+        np.arange(24),
+        ["time"],
+        units="hours since 2001-01-01 00:00:00",
+    )
+    temperature = 273.15 + np.arange(3)[None, :, None] + np.arange(1440)[None, None, :]
+    _array(
+        group,
+        "2m_temperature",
+        np.broadcast_to(temperature, (24, 3, 1440)),
+        ["time", "latitude", "longitude"],
+        units="K",
+    )
+    group.attrs.update(valid_time_start="2001-01-01", valid_time_stop="2001-12-31")
+    zarr.consolidate_metadata(str(path))
+    monkeypatch.setattr(
+        module, "ERA5_STORE", replace(module.ERA5_STORE, url=path.as_uri())
+    )
+
+    reads: list[tuple[slice, ...]] = []
+    original = zarr.Array.__getitem__
+
+    def read(array: zarr.Array[Any], selection: Any) -> Any:
+        if array.name.endswith("/2m_temperature"):
+            reads.append(selection)
+        return original(array, selection)
+
+    monkeypatch.setattr(zarr.Array, "__getitem__", read)
+    recipe = ERA5(
+        indicator=ERA5.Indicator.ANNUAL_MAXIMUM_DAILY_MAXIMUM_TEMPERATURE,
+        coverage=Coverage.minimum_fraction(1 / 365),
+    ).select(
+        area=Bounds(west=-0.5, south=51.25, east=0.5, north=51.75),
+        time=Period.window(2001, 2001),
+    )
+    columns = [0, 1, 2, 1438, 1439]
+    expected = [row + column for row in range(3) for column in columns]
+    annual = recipe.read(runtime=Runtime(memory_limit=10_000))
+    assert annual.table["value"].to_pylist() == pytest.approx(expected)
+    assert reads == [
+        (slice(0, 24), slice(0, 3), slice(0, 3)),
+        (slice(0, 24), slice(0, 3), slice(1438, 1440)),
+    ]
+
+    reads.clear()
+    with recipe.observations().batches(runtime=Runtime(memory_limit=500)) as stream:
+        raw = [value for batch in stream for value in batch.column("value").to_pylist()]
+    assert raw == pytest.approx([273.15 + value for value in expected] * 24)
+    assert reads == [
+        (slice(start, start + 4), slice(0, 3), run)
+        for start in range(0, 24, 4)
+        for run in (slice(0, 3), slice(1438, 1440))
+    ]
+
+
 def test_native_era5_precipitation_retains_interval_end_and_composes_reductions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1661,7 +1727,7 @@ def test_current_grid_decoder_retains_cf_packing_nodata_and_dateline_footprints(
 ) -> None:
     from shapely import from_wkb  # type: ignore[import-untyped]
 
-    from crc_sdk._climate_grid import grid_cells, grid_values
+    from crc_sdk._climate_grid import GridReadPlan, grid_cells, grid_values
 
     path = tmp_path / "packed.zarr"
     group = _grid(path, variable="tasmax", days=2)
@@ -1696,7 +1762,7 @@ def test_current_grid_decoder_retains_cf_packing_nodata_and_dateline_footprints(
         lon_name="lon",
         start=0,
         stop=2,
-        cells=cells,
+        plan=GridReadPlan.from_cells(cells),
     )
     assert values[0].tolist() == pytest.approx([275.15, 275.15])
     assert np.isnan(values[1]).all()
