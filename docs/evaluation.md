@@ -246,6 +246,9 @@ framework `Impact` for numerical operations such as expectation or pushforward.
 `write` executes the complete recipe, validates the rows, and publishes the
 evaluation as Parquet. The saved handle exposes the path and the typed
 metadata. Another process can open that path and read the saved result.
+Evaluation metadata stores asset IDs once. Resolutions in the artifact JSON
+refer to zero-based positions in that asset list. The Python resolution still
+exposes the original IDs as `asset_ids`.
 
 ```python
 from crc_sdk import EvaluationArtifact
@@ -264,4 +267,6 @@ assert events.report.complete and events.report.valid
 Use `batches()` for a stream, `read(limit=...)` for a bounded preview, or call
 `write()` directly if you only need to save the result. The execution scope
 above shares computed rows across validation, preview, and writing.
+If the metadata exceeds the Parquet footer limit, split the assets into
+smaller evaluations before calling `write()`.
 [Execution and persistence](execution.md)

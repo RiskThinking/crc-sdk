@@ -262,12 +262,14 @@ class EvaluationResolution:
             and self.asset_ids == other.asset_ids
         )
 
-    def _document(self) -> dict[str, object]:
+    def _document(self, asset_positions: Mapping[AssetId, int]) -> dict[str, object]:
         document: dict[str, object] = {
             "response_id": self.response_id,
             "id": self.id,
             "impact": _load(self.impact.to_json()),
-            "asset_ids": self.asset_ids,
+            "asset_positions": [
+                asset_positions[asset_id] for asset_id in self.asset_ids
+            ],
         }
         if isinstance(self.context, ResponseContext):
             document["context"] = _load(self.context.to_json())
@@ -701,12 +703,17 @@ class EvaluationMetadata:
         object.__setattr__(self, "_resolved_contexts", contexts)
 
     def _document(self) -> dict[str, object]:
+        positions = (
+            {asset_id: i for i, asset_id in enumerate(self.asset_ids or ())}
+            if self.resolutions
+            else {}
+        )
         result: dict[str, object] = {
             "schema_version": self.schema_version,
             "query": self.query._document(),
             "inputs": [value._document() for value in self.inputs],
             "responses": [value._document() for value in self.responses],
-            "resolutions": [value._document() for value in self.resolutions],
+            "resolutions": [value._document(positions) for value in self.resolutions],
             "spatial": self.spatial._document(),
             "include_exposure": self.include_exposure,
             "report": self.report._document(),
@@ -743,6 +750,13 @@ class EvaluationMetadata:
         if doc["schema_version"] != "2.0":
             raise ValueError("expected evaluation schema 2.0")
         query = _object(doc["query"], {"kind", "values"})
+        asset_ids = (
+            None
+            if "asset_ids" not in doc
+            else tuple(
+                _asset_id(item) for item in _array(doc["asset_ids"], "asset_ids")
+            )
+        )
         asset_fields = None
         if "asset_fields" in doc:
             try:
@@ -772,7 +786,7 @@ class EvaluationMetadata:
                     _response(item) for item in _array(doc["responses"], "responses")
                 ),
                 resolutions=tuple(
-                    _resolution(item)
+                    _resolution(item, asset_ids or ())
                     for item in _array(doc["resolutions"], "resolutions")
                 ),
                 spatial=spatial_match_from_document(doc["spatial"]),
@@ -780,11 +794,7 @@ class EvaluationMetadata:
                 report=_report(doc["report"]),
                 source=None if "source" not in doc else _source(doc["source"]),
                 asset_fields=asset_fields,
-                asset_ids=None
-                if "asset_ids" not in doc
-                else tuple(
-                    _asset_id(item) for item in _array(doc["asset_ids"], "asset_ids")
-                ),
+                asset_ids=asset_ids,
             )
         except cf.ImpactError as error:
             raise ValueError(f"invalid evaluation model: {error}") from error
@@ -825,14 +835,22 @@ def _response(value: object) -> EvaluationResponse:
     )
 
 
-def _resolution(value: object) -> EvaluationResolution:
-    doc = _object(value, {"id", "response_id", "impact", "asset_ids"}, {"context"})
+def _resolution(value: object, asset_ids: tuple[AssetId, ...]) -> EvaluationResolution:
+    doc = _object(
+        value, {"id", "response_id", "impact", "asset_positions"}, {"context"}
+    )
+    positions = _array(doc["asset_positions"], "resolution asset_positions")
+    members: list[AssetId] = []
+    for position in positions:
+        if type(position) is not int or not 0 <= position < len(asset_ids):
+            raise ValueError(
+                "evaluation resolution references an invalid asset position"
+            )
+        members.append(asset_ids[position])
     result = EvaluationResolution(
         _identifier(doc["response_id"], "response_id"),
         cf.Impact.from_json(_dump(doc["impact"])),
-        asset_ids=tuple(
-            _asset_id(item) for item in _array(doc["asset_ids"], "resolution asset_ids")
-        ),
+        asset_ids=tuple(members),
         context=None
         if "context" not in doc
         else ResponseContext.from_json(_dump(doc["context"])),

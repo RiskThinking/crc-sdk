@@ -220,8 +220,8 @@
           },
           "resolutions": [
             {
-              "asset_ids": [
-                "a"
+              "asset_positions": [
+                0
               ],
               "id": "sha256:0755d6b285037b00c9eadcaeaef8534e39ca7aa7e8491af8af45d7baa3cb9437",
               "impact": {
@@ -702,8 +702,8 @@
           },
           "resolutions": [
             {
-              "asset_ids": [
-                "a"
+              "asset_positions": [
+                0
               ],
               "context": {
                 "kind": "response_context",
@@ -907,8 +907,8 @@
           },
           "resolutions": [
             {
-              "asset_ids": [
-                "a"
+              "asset_positions": [
+                0
               ],
               "id": "sha256:0755d6b285037b00c9eadcaeaef8534e39ca7aa7e8491af8af45d7baa3cb9437",
               "impact": {
@@ -2127,8 +2127,8 @@
           },
           "resolutions": [
             {
-              "asset_ids": [
-                "a"
+              "asset_positions": [
+                0
               ],
               "id": "sha256:0755d6b285037b00c9eadcaeaef8534e39ca7aa7e8491af8af45d7baa3cb9437",
               "impact": {
@@ -2414,8 +2414,8 @@
           },
           "resolutions": [
             {
-              "asset_ids": [
-                "a"
+              "asset_positions": [
+                0
               ],
               "id": "sha256:0755d6b285037b00c9eadcaeaef8534e39ca7aa7e8491af8af45d7baa3cb9437",
               "impact": {
@@ -2697,8 +2697,8 @@
           },
           "resolutions": [
             {
-              "asset_ids": [
-                "a"
+              "asset_positions": [
+                0
               ],
               "id": "sha256:0755d6b285037b00c9eadcaeaef8534e39ca7aa7e8491af8af45d7baa3cb9437",
               "impact": {
@@ -3519,8 +3519,8 @@
           },
           "resolutions": [
             {
-              "asset_ids": [
-                "a"
+              "asset_positions": [
+                0
               ],
               "id": "sha256:0755d6b285037b00c9eadcaeaef8534e39ca7aa7e8491af8af45d7baa3cb9437",
               "impact": {
@@ -3820,8 +3820,8 @@
           },
           "resolutions": [
             {
-              "asset_ids": [
-                "a"
+              "asset_positions": [
+                0
               ],
               "id": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
               "impact": {
@@ -4121,8 +4121,8 @@
           },
           "resolutions": [
             {
-              "asset_ids": [
-                "unknown"
+              "asset_positions": [
+                1
               ],
               "id": "sha256:0755d6b285037b00c9eadcaeaef8534e39ca7aa7e8491af8af45d7baa3cb9437",
               "impact": {
@@ -4720,8 +4720,8 @@
           },
           "resolutions": [
             {
-              "asset_ids": [
-                "a"
+              "asset_positions": [
+                0
               ],
               "id": "sha256:0755d6b285037b00c9eadcaeaef8534e39ca7aa7e8491af8af45d7baa3cb9437",
               "impact": {
@@ -5021,8 +5021,8 @@
           },
           "resolutions": [
             {
-              "asset_ids": [
-                "a"
+              "asset_positions": [
+                0
               ],
               "id": "sha256:0755d6b285037b00c9eadcaeaef8534e39ca7aa7e8491af8af45d7baa3cb9437",
               "impact": {
@@ -5621,8 +5621,8 @@
           },
           "resolutions": [
             {
-              "asset_ids": [
-                "a"
+              "asset_positions": [
+                0
               ],
               "context": {
                 "kind": "response_context",

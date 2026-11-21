@@ -102,6 +102,10 @@ def test_contextual_impact_persists_verified_user_cases(tmp_path: Path) -> None:
         )
     )
     saved = recipe.write(tmp_path / "cases.parquet")
+    footer = json.loads(pq.read_schema(saved.path).metadata[b"crc.evaluation"])
+    assert footer["asset_ids"] == ["A01", "A02"]
+    assert [item["asset_positions"] for item in footer["resolutions"]] == [[0], [1]]
+    assert all("asset_ids" not in item for item in footer["resolutions"])
     result = EvaluationArtifact.open(saved.path).read(runtime=Runtime(batch_rows=1))
     assert result.table["value"].to_pylist() == pytest.approx([1.0, 2.0, 1.0, 3.0])
     assert "asset" not in result.table.column_names

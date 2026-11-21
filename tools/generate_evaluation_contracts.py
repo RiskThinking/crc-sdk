@@ -293,10 +293,10 @@ def fixture_cases() -> dict[str, object]:
     forged_resolution["metadata"]["resolutions"][0]["id"] = "sha256:" + "f" * 64
     reject("forged-resolution-hash", forged_resolution)
     wrong_binding = deepcopy(composed)
-    wrong_binding["metadata"]["resolutions"][0]["asset_ids"] = ["unknown"]
+    wrong_binding["metadata"]["resolutions"][0]["asset_positions"] = [1]
     reject("resolution-assigns-unknown-asset", wrong_binding)
     missing_binding = deepcopy(composed)
-    missing_binding["metadata"]["resolutions"][0].pop("asset_ids")
+    missing_binding["metadata"]["resolutions"][0].pop("asset_positions")
     reject("resolution-without-asset-assignments", missing_binding, structural=True)
     wrong_proof = deepcopy(composed)
     wrong_proof["metadata"]["responses"][-1]["context"]["region"] = "asia"

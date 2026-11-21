@@ -117,14 +117,14 @@ def evaluation_json_schema() -> dict[str, object]:
                 "response_id": identifier,
                 "impact": science_ref("impact-2.0"),
                 "context": {"$ref": "#/$defs/case_context"},
-                "asset_ids": {
+                "asset_positions": {
                     "type": "array",
                     "minItems": 1,
                     "uniqueItems": True,
-                    "items": asset_id,
+                    "items": {"type": "integer", "minimum": 0},
                 },
             },
-            ["id", "response_id", "impact", "asset_ids"],
+            ["id", "response_id", "impact", "asset_positions"],
         ),
         "spatial": {
             "oneOf": [

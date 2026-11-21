@@ -40,9 +40,15 @@ from crc_sdk import (
     Stage,
     ValidationError,
     Variable,
+    _evaluation,
+    _terminals,
 )
 from crc_sdk._climate_sampling import _ClimateNode
 from crc_sdk._dataset_schema import DatasetMetadata, SourceUnavailable
+from crc_sdk._evaluation_schema import (
+    _evaluation_parquet_schema,
+    evaluation_arrow_schema,
+)
 from crc_sdk._graph import ExecutionScope, Node, NodeStream
 from crc_sdk._schema import (
     dataset_arrow_schema,
@@ -80,6 +86,50 @@ def data(
 
 def annual() -> Dataset:
     return data(Probability.annual(tail=cf.Tail.UPPER))
+
+
+def test_oversized_evaluation_footer_fails_before_matching(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assets = Assets(
+        {"asset_id": ["long-asset-id" * 1024], "longitude": [0], "latitude": [0]}
+    )
+    evaluation = annual().evaluate(assets).return_periods([10])
+    path = tmp_path / "evaluation.parquet"
+    path.write_bytes(b"original")
+    monkeypatch.setattr(_terminals, "_PARQUET_THRIFT_STRING_LIMIT", 10_000)
+    monkeypatch.setattr(
+        _evaluation,
+        "_index_inputs",
+        lambda *args: pytest.fail("unexpected source work"),
+    )
+    with pytest.raises(ValueError, match="Parquet footer size limit.*Split the assets"):
+        evaluation.write(path, overwrite=True)
+    assert path.read_bytes() == b"original"
+    assert list(tmp_path.iterdir()) == [path]
+
+
+def test_final_evaluation_footer_is_checked_before_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    evaluation = annual().evaluate(sites(0)).probabilities([0.5])
+    with ExecutionScope() as scope:
+        planned = scope.metadata(evaluation._node)
+    stored = evaluation.read().metadata
+    planned_size = (
+        _evaluation_parquet_schema(evaluation_arrow_schema(planned)).serialize().size
+    )
+    final_size = (
+        _evaluation_parquet_schema(evaluation_arrow_schema(stored)).serialize().size
+    )
+    assert final_size > planned_size
+    monkeypatch.setattr(
+        _terminals, "_PARQUET_THRIFT_STRING_LIMIT", 4 * ((planned_size + 2) // 3)
+    )
+    path = tmp_path / "evaluation.parquet"
+    with pytest.raises(ValueError, match="Parquet footer size limit"):
+        evaluation.write(path)
+    assert not list(tmp_path.iterdir())
 
 
 def test_large_finite_return_period_inverts_the_direct_upper_tail(
