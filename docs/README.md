@@ -13,6 +13,7 @@ guide.
 | [Sources and native evidence](sources.md) | Provider capabilities, discovery, temporal reductions, user evidence, and assets |
 | [Python interface contract](api-reference.md) | Canonical imports, ownership, and installed-package checks |
 | [Source resource terms](data-licences.md) | License, attribution, retrieval time, and content identity |
+| [Migrating to 1.0](migration-v1.md) | 0.x to 1.0 changes, with before/after examples |
 | [Release notes](release-notes.md) | Package and artifact versions, and CRC Open availability |
 | [Development](development.md) | Paired checkout setup, checks, generated resources, and releases |
 

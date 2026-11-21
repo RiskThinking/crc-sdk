@@ -18,6 +18,8 @@ Python 3.11 or later is required. H3 and geometry validation are part of the cor
 package. Source-format extras are `raster`, `netcdf`, and `zarr`.
 Source readers import those dependencies only when needed.
 
+Upgrading from 0.x? Start with the [1.0 migration guide](docs/migration-v1.md).
+
 ## Query a dataset
 
 Supply quantile values as columns in a Python mapping. This example has two
@@ -69,6 +71,8 @@ scenario or period when your source establishes those facts. [Evaluation guide](
   installed-package enforcement.
 - [Development](docs/development.md): setup, checks, generated contracts, and
   releases.
+- [Migrating to 1.0](docs/migration-v1.md): 0.x to 1.0 changes with before/after
+  examples.
 - [Release notes](docs/release-notes.md)
 
 ## Contributors
