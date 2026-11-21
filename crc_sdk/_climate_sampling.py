@@ -29,6 +29,7 @@ from ._aggregation import (
 )
 from ._climate_grid import (
     GridCell,
+    GridReadPlan,
     annual_records,
     calendar_name,
     cf_calendar,
@@ -1162,12 +1163,10 @@ def _raw_grid_records(
     if not cells:
         return
     budget = _memory_bytes(scope.runtime.memory_limit)
-    rectangular_cells = (max(c.row for c in cells) - min(c.row for c in cells) + 1) * (
-        max(c.column for c in cells) - min(c.column for c in cells) + 1
-    )
+    plan = GridReadPlan.from_cells(cells)
     steps = max(1, scope.runtime.batch_rows // len(cells))
     if budget is not None:
-        steps = min(steps, max(1, budget // (8 * rectangular_cells)))
+        steps = min(steps, max(1, budget // plan.bytes_per_step))
     for start in range(first, stop, steps):
         end = min(stop, start + steps)
         values = grid_values(
@@ -1177,7 +1176,7 @@ def _raw_grid_records(
             lon_name=lon_name,
             start=start,
             stop=end,
-            cells=cells,
+            plan=plan,
             memory_limit=budget,
         )
         block_stamps: Any = stamps[start:end]
@@ -1336,7 +1335,7 @@ def _era5_source(
                 lon_name=ERA5_STORE.lon_name,
                 start=t0,
                 stop=t1,
-                cells=grid,
+                plan=GridReadPlan.from_cells(grid),
                 memory_limit=_memory_bytes(scope.runtime.memory_limit),
             )
             values = values * 1000 if interval_end else values - 273.15
@@ -1537,7 +1536,7 @@ def _cmip_source(
             lon_name="lon",
             start=t0,
             stop=t1,
-            cells=cells,
+            plan=GridReadPlan.from_cells(cells),
             memory_limit=_memory_bytes(scope.runtime.memory_limit),
         )
         values = values * 86400 if native.startswith("rx") else values - 273.15
@@ -1905,7 +1904,7 @@ def _nex_source(
             lon_name="lon",
             start=0,
             stop=len(ordinals),
-            cells=cells,
+            plan=GridReadPlan.from_cells(cells),
             memory_limit=_memory_bytes(scope.runtime.memory_limit),
         )
         values = values * 86400 if native.startswith("rx") else values - 273.15
