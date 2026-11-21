@@ -4,100 +4,129 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      framework_ref:
+        description: Paired framework branch or commit
+        type: string
   workflow_call:
+    inputs:
+      framework_ref:
+        type: string
 
 permissions:
   contents: read
 
 jobs:
   lint:
-    name: Lint
+    name: Contracts and lint
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: crc-sdk
     steps:
       - uses: actions/checkout@v7
+        with:
+          path: crc-sdk
+      - uses: actions/checkout@v7
+        with:
+          repository: RiskThinking/crc-framework-rs
+          ref: ${{ inputs.framework_ref || vars.CRC_FRAMEWORK_REF || 'main' }}
+          path: crc-framework-rs
+          persist-credentials: false
       - uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
-      - name: Check lockfile and install all extras
+          cache-dependency-glob: '**/uv.lock'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crc-framework-rs -> target
+      - name: Install locked paired packages
         run: uv sync --locked --all-extras --python 3.12
-      - name: Ruff lint
-        run: uv run --locked --all-extras --python 3.12 ruff check .
-      - name: Ruff format
-        run: uv run --locked --all-extras --python 3.12 ruff format --check .
+      - name: Verify declared release and Python contracts
+        run: |
+          .venv/bin/python tools/api_contracts/check.py
+          .venv/bin/python tools/generate_dataset_contracts.py --check
+          .venv/bin/python tools/generate_evidence_contracts.py --check
+          .venv/bin/python tools/generate_collection_contracts.py --check
+          .venv/bin/python tools/generate_evaluation_contracts.py --check
+          .venv/bin/python ../crc-framework-rs/tools/sync_data_contracts.py --sdk . --check
+          .venv/bin/python ../crc-framework-rs/tools/api_contracts/check.py
+      - name: Ruff
+        run: |
+          uv run --locked --all-extras --python 3.12 ruff check .
+          uv run --locked --all-extras --python 3.12 ruff format --check .
       - name: Mypy
         run: uv run --locked --all-extras --python 3.12 mypy
 
   tests:
-    name: Python ${{ matrix.python }}
-    runs-on: ubuntu-latest
-    # Newer interpreters remain visible while native dependencies catch up.
-    continue-on-error: ${{ matrix.python == '3.14' }}
+    name: ${{ matrix.os }} Python ${{ matrix.python }}${{ matrix.pyarrow && format(' / PyArrow {0}', matrix.pyarrow) || '' }}
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        python:
-          - '3.11'
-          - '3.12'
-          - '3.13'
-          - '3.14'
-          # - '3.15'  # Restore when h5py supports Python 3.15.
+        include:
+          - {os: ubuntu-latest, python: '3.11'}
+          - {os: ubuntu-latest, python: '3.12'}
+          - {os: ubuntu-latest, python: '3.13'}
+          - {os: ubuntu-latest, python: '3.14'}
+          - {os: windows-latest, python: '3.12'}
+          - {os: ubuntu-latest, python: '3.12', pyarrow: '18.0.0'}
+    defaults:
+      run:
+        shell: bash
+        working-directory: crc-sdk
     steps:
       - uses: actions/checkout@v7
+        with:
+          path: crc-sdk
+      - uses: actions/checkout@v7
+        with:
+          repository: RiskThinking/crc-framework-rs
+          ref: ${{ inputs.framework_ref || vars.CRC_FRAMEWORK_REF || 'main' }}
+          path: crc-framework-rs
+          persist-credentials: false
       - uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
-      - name: Check lockfile and install all extras
-        run: uv sync --locked --all-extras --python "${{ matrix.python }}"
-      - name: Run tests against locked dependencies
-        run: uv run --locked --all-extras --python "${{ matrix.python }}" pytest -q
-      - name: Test minimum supported framework
-        if: matrix.python == '3.12'
-        shell: bash
+          cache-dependency-glob: '**/uv.lock'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crc-framework-rs -> target
+      - name: Build paired wheels
         run: |
-          set -euo pipefail
-          minimum=$(.venv/bin/python -c 'import re, tomllib; p=tomllib.load(open("pyproject.toml", "rb")); d=next(d for d in p["project"]["dependencies"] if d.startswith("crc-framework>=")); print(re.fullmatch(r"crc-framework>=(\d+\.\d+\.\d+),<[^,]+", d)[1])')
-          uv pip install --python .venv/bin/python --no-deps "crc-framework==$minimum"
-          .venv/bin/python -m pytest -q
-      - name: Build distributions
-        run: uv build
-      - name: Verify built wheel in a clean environment
-        shell: bash
+          uv build --project ../crc-framework-rs --wheel --python "${{ matrix.python }}" --out-dir "$RUNNER_TEMP/framework-wheel"
+          uv build --no-sources --python "${{ matrix.python }}" --out-dir "$RUNNER_TEMP/sdk-wheel"
+      - name: Verify base installs and public interfaces
         run: |
           set -euo pipefail
           uv venv --python "${{ matrix.python }}" "$RUNNER_TEMP/wheel-venv"
-          uv pip install --python "$RUNNER_TEMP/wheel-venv/bin/python" dist/*.whl
-          uv pip check --python "$RUNNER_TEMP/wheel-venv/bin/python"
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            wheel_python="$RUNNER_TEMP/wheel-venv/Scripts/python.exe"
+          else
+            wheel_python="$RUNNER_TEMP/wheel-venv/bin/python"
+          fi
+          uv pip install --python "$wheel_python" "$RUNNER_TEMP"/framework-wheel/*.whl "$RUNNER_TEMP"/sdk-wheel/*.whl
+          uv pip check --python "$wheel_python"
+          echo "WHEEL_PYTHON=$wheel_python" >> "$GITHUB_ENV"
           cd "$RUNNER_TEMP"
-          "$RUNNER_TEMP/wheel-venv/bin/python" -c 'import importlib.metadata as m; import crc_sdk; from crc_sdk.impacts import ImpactExpression; from crc_framework import DiscreteDistribution, impact_registry_manifest; print("crc-sdk", m.version("crc-sdk"), "crc-framework", m.version("crc-framework")); print(crc_sdk.__file__)'
-
-  windows:
-    name: Windows Python 3.12
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.2.0
-        with:
-          enable-cache: true
-      - name: Check lockfile and install all extras
-        run: uv sync --locked --all-extras --python 3.12
-      - name: Run tests against locked dependencies
-        run: uv run --locked --all-extras --python 3.12 pytest -q
-      - name: Build distributions
-        run: uv build
-      - name: Verify universal wheel with a binary framework dependency
-        shell: pwsh
+          "$wheel_python" -I "$GITHUB_WORKSPACE/crc-framework-rs/tools/api_contracts/check.py" --runtime
+          "$wheel_python" -I "$GITHUB_WORKSPACE/crc-sdk/tools/api_contracts/check.py" --runtime
+          "$wheel_python" -I "$GITHUB_WORKSPACE/crc-sdk/tools/check_wheels.py"
+      - name: Run offline tests and guides on installed wheels
+        env:
+          PYARROW_VERSION: ${{ matrix.pyarrow }}
         run: |
-          $ErrorActionPreference = 'Stop'
-          $wheel = @(Get-ChildItem dist/*-py3-none-any.whl)
-          if ($wheel.Count -ne 1) { throw 'Expected one universal SDK wheel' }
-          $venv = Join-Path $env:RUNNER_TEMP 'wheel-venv'
-          uv venv --python 3.12 $venv
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $python = Join-Path $venv 'Scripts/python.exe'
-          uv pip install --python $python --only-binary crc-framework $wheel[0].FullName
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          uv pip check --python $python
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Set-Location $env:RUNNER_TEMP
-          & $python -c 'import importlib.metadata as m; import crc_sdk; from crc_framework import DiscreteDistribution, impact_registry_manifest; print("crc-sdk", m.version("crc-sdk"), "crc-framework", m.version("crc-framework")); print(crc_sdk.__file__)'
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          set -euo pipefail
+          wheels=( "$RUNNER_TEMP"/sdk-wheel/*.whl )
+          uv export --locked --all-extras --no-emit-local --no-hashes --output-file "$RUNNER_TEMP/test-requirements.txt" --quiet
+          if [[ -n "$PYARROW_VERSION" ]]; then
+            sed -i "/^pyarrow==/s/==[0-9.]*/==$PYARROW_VERSION/" "$RUNNER_TEMP/test-requirements.txt"
+          fi
+          uv pip install --python "$WHEEL_PYTHON" -r "$RUNNER_TEMP/test-requirements.txt" "${wheels[0]}[zarr,netcdf,raster,test]" "$RUNNER_TEMP"/framework-wheel/*.whl
+          uv pip check --python "$WHEEL_PYTHON"
+          cd "$RUNNER_TEMP"
+          "$WHEEL_PYTHON" -I -m pytest -q --import-mode=importlib "$GITHUB_WORKSPACE/crc-sdk/tests"
+          "$WHEEL_PYTHON" -I "$GITHUB_WORKSPACE/crc-sdk/tools/check_examples.py"

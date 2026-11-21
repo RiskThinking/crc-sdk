@@ -1,0 +1,313 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://climateriskcommons.org/schemas/taxonomy/1.0",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "namespace",
+    "revision",
+    "variables",
+    "scenarios",
+    "presets"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "namespace": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+    },
+    "revision": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+    },
+    "variables": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/variable"
+      },
+      "uniqueItems": true
+    },
+    "scenarios": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/scenario"
+      },
+      "uniqueItems": true
+    },
+    "presets": {
+      "type": "object",
+      "propertyNames": {
+        "minLength": 1,
+        "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+      },
+      "additionalProperties": {
+        "$ref": "https://climateriskcommons.org/schemas/fitting/1.0#/$defs/specification"
+      }
+    }
+  },
+  "$defs": {
+    "scientific_value": {
+      "anyOf": [
+        {
+          "type": [
+            "null",
+            "boolean",
+            "number",
+            "string"
+          ]
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/scientific_value"
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/scientific_value"
+          }
+        }
+      ]
+    },
+    "variable": {
+      "type": "object",
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+        },
+        "measurement": {
+          "$ref": "https://climateriskcommons.org/schemas/measurement-1.0.schema.json"
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "scenario": {
+      "type": "object",
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+        },
+        "definition": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/scientific_value"
+          }
+        },
+        "schema": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/scientific_value"
+          }
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "dependentRequired": {
+        "schema": [
+          "definition"
+        ]
+      }
+    },
+    "period": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "start",
+            "end"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^period:[0-9a-f]{64}$"
+            },
+            "kind": {
+              "const": "window"
+            },
+            "start": {
+              "type": "integer"
+            },
+            "end": {
+              "type": "integer"
+            },
+            "calendar": {
+              "enum": [
+                "gregorian",
+                "no_leap",
+                "360_day",
+                "all_leap",
+                "julian",
+                "proleptic_gregorian"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "kind"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^period:[0-9a-f]{64}$"
+            },
+            "kind": {
+              "enum": [
+                "timeless",
+                "unknown"
+              ]
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "probability": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "tail"
+          ],
+          "properties": {
+            "kind": {
+              "const": "annual"
+            },
+            "tail": {
+              "enum": [
+                "upper",
+                "lower"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "distribution",
+                "confidence",
+                "projection"
+              ]
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "series": {
+      "type": "object",
+      "required": [
+        "variable_id",
+        "scenario_id",
+        "period_id"
+      ],
+      "properties": {
+        "variable_id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+        },
+        "scenario_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "period_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^period:[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "probability": {
+          "$ref": "#/$defs/probability"
+        }
+      },
+      "additionalProperties": false
+    },
+    "data_spec": {
+      "type": "object",
+      "required": [
+        "variables",
+        "scenarios",
+        "periods",
+        "series"
+      ],
+      "properties": {
+        "variables": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/variable"
+          },
+          "uniqueItems": true
+        },
+        "scenarios": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/scenario"
+          },
+          "uniqueItems": true
+        },
+        "periods": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/period"
+          },
+          "uniqueItems": true
+        },
+        "series": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/series"
+          },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

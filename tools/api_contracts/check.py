@@ -1,0 +1,909 @@
+"""Validate the declared Python interface and installed implementation.
+
+Static validation reads only contract files and package metadata. Runtime
+validation is a release requirement and checks the complete declared surface.
+"""
+
+from __future__ import annotations
+
+import argparse
+import ast
+import importlib
+import importlib.metadata
+import inspect
+import json
+import re
+import sys
+import tomllib
+import types
+from collections.abc import Mapping
+from enum import Enum
+from importlib.resources import files
+from importlib.resources.abc import Traversable
+from pathlib import Path
+from typing import Any, ForwardRef, Literal, TypeVar, Union, get_args, get_origin
+
+ROOT = Path(__file__).resolve().parents[2]
+PACKAGE = ROOT / "crc_sdk"
+CONTRACTS = PACKAGE / "contracts" / "api"
+BUILTINS = {
+    "str",
+    "int",
+    "float",
+    "bool",
+    "bytes",
+    "None",
+    "tuple",
+    "list",
+    "dict",
+    "type",
+    "BaseException",
+    "Self",
+    "Mapping",
+    "Sequence",
+    "Iterator",
+    "Iterable",
+    "Callable",
+    "AbstractContextManager",
+    "Enum",
+    "Path",
+    "Literal",
+}
+PARAMETER_KINDS = {
+    "positional_only": inspect.Parameter.POSITIONAL_ONLY,
+    "positional_or_keyword": inspect.Parameter.POSITIONAL_OR_KEYWORD,
+    "keyword_only": inspect.Parameter.KEYWORD_ONLY,
+}
+EXPORT_KINDS = {"class", "enum", "exception", "protocol", "function"}
+REMOVED_CONTRACT_RESOURCES = (
+    "contracts/dataset",
+    "contracts/evaluation",
+    "contracts/api/legacy-baseline.json",
+    "contracts/api/manifest.json",
+    "contracts/taxonomy/manifest.json",
+    "contracts/taxonomy/seed.json",
+    "contracts/taxonomy/reconciliation.json",
+)
+
+
+class ContractError(ValueError):
+    """A declared or implemented interface differs from the release contract."""
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise ContractError(message)
+
+
+def load_contracts(
+    directory: Path | Traversable = CONTRACTS,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            require(key not in result, f"duplicate JSON field: {key}")
+            result[key] = value
+        return result
+
+    values = [
+        json.loads(
+            directory.joinpath(name).read_text(), object_pairs_hook=unique_object
+        )
+        for name in ("public-api.json", "release.json")
+    ]
+    return values[0], values[1]
+
+
+def _annotation(expression: object, known: set[str], where: str) -> None:
+    require(isinstance(expression, str) and bool(expression), f"{where}: missing type")
+    assert isinstance(expression, str)
+    try:
+        tree = ast.parse(expression, mode="eval")
+    except SyntaxError as error:
+        raise ContractError(f"{where}: invalid annotation {expression!r}") from error
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            require(node.id not in {"Any", "object"}, f"{where}: untyped interface")
+            require(node.id in known, f"{where}: unknown type {node.id}")
+        elif isinstance(node, ast.Attribute):
+            require(
+                ast.unparse(node) in known,
+                f"{where}: unknown qualified type {ast.unparse(node)}",
+            )
+        elif isinstance(node, ast.Constant):
+            require(
+                node.value is None or node.value is Ellipsis,
+                f"{where}: annotations must reference typed choices",
+            )
+        else:
+            require(
+                isinstance(
+                    node,
+                    (
+                        ast.Expression,
+                        ast.Attribute,
+                        ast.Subscript,
+                        ast.BinOp,
+                        ast.BitOr,
+                        ast.Tuple,
+                        ast.List,
+                        ast.Load,
+                    ),
+                ),
+                f"{where}: unsupported annotation expression",
+            )
+
+
+def _signature(value: Mapping[str, Any], known: set[str], where: str) -> None:
+    require(
+        set(value) <= {"parameters", "returns", "binding", "available_for"},
+        f"{where}: unknown signature field",
+    )
+    require(
+        value.get("binding", "instance") in {"instance", "class", "static"},
+        f"{where}: invalid binding",
+    )
+    parameters = value.get("parameters")
+    require(isinstance(parameters, list), f"{where}: parameters must be declared")
+    assert isinstance(parameters, list)
+    names: set[str] = set()
+    keyword_seen = False
+    positional_default = False
+    for parameter in parameters:
+        require(isinstance(parameter, dict), f"{where}: invalid parameter")
+        require(
+            set(parameter) <= {"name", "kind", "annotation", "default"},
+            f"{where}: unknown parameter field",
+        )
+        name = parameter.get("name")
+        require(isinstance(name, str) and name.isidentifier(), f"{where}: invalid name")
+        require(
+            name not in names and name not in {"self", "cls"},
+            f"{where}: duplicate or implicit receiver {name}",
+        )
+        names.add(name)
+        kind = parameter.get("kind")
+        require(kind in PARAMETER_KINDS, f"{where}.{name}: invalid parameter kind")
+        keyword_seen = keyword_seen or kind == "keyword_only"
+        require(
+            not keyword_seen or kind == "keyword_only",
+            f"{where}: positional argument after keyword-only arguments",
+        )
+        if kind != "keyword_only":
+            require(
+                not positional_default or "default" in parameter,
+                f"{where}: required positional argument after default",
+            )
+            positional_default = positional_default or "default" in parameter
+        _annotation(parameter.get("annotation"), known, f"{where}.{name}")
+        if "default" in parameter:
+            default = parameter["default"]
+            if isinstance(default, dict):
+                require(
+                    set(default) in ({"enum"}, {"sentinel"}, {"tuple"}),
+                    f"{where}.{name}: invalid structured default",
+                )
+                if "enum" in default:
+                    reference = default["enum"]
+                    require(
+                        isinstance(reference, str) and "." in reference,
+                        f"{where}.{name}: invalid enum default",
+                    )
+                    require(reference in known, f"{where}.{name}: unknown enum default")
+                elif "tuple" in default:
+                    require(
+                        default["tuple"] == [],
+                        f"{where}.{name}: only an empty tuple default is supported",
+                    )
+                else:
+                    require(
+                        default["sentinel"] == "omitted",
+                        f"{where}.{name}: unknown omission sentinel",
+                    )
+            else:
+                require(
+                    default is None
+                    or isinstance(default, (str, int, float, bool, list)),
+                    f"{where}.{name}: unsupported default",
+                )
+    _annotation(value.get("returns"), known, f"{where}.return")
+
+
+def validate_contract(contract: dict[str, Any], release: dict[str, Any]) -> None:
+    require(
+        set(contract)
+        <= {
+            "schema_version",
+            "package",
+            "canonical_module",
+            "exports",
+            "type_aliases",
+            "external_symbols",
+            "external_modules",
+            "external_types",
+            "input_protocols",
+            "generic_parameters",
+            "opaque_native_types",
+            "naming",
+            "semantics",
+            "removals",
+            "provider_indicators",
+            "catalog_reference_rules",
+        },
+        "unknown API contract field",
+    )
+    require(contract.get("schema_version") == "1.0", "unsupported API contract schema")
+    require(contract.get("package") == "crc-sdk", "wrong package owner")
+    require(contract.get("canonical_module") == "crc_sdk", "wrong canonical import")
+    require(release.get("schema_version") == "1.0", "unsupported release ledger schema")
+    packages = release.get("packages")
+    require(
+        isinstance(packages, dict)
+        and set(packages) == {"framework", "sdk", "framework_requirement"}
+        and all(isinstance(version, str) and version for version in packages.values()),
+        "release ledger must declare package versions and the framework requirement",
+    )
+    formats = release.get("formats")
+    require(
+        isinstance(formats, dict)
+        and set(formats)
+        == {
+            "dataset",
+            "evaluation",
+            "collection",
+            "taxonomy",
+            "numerical",
+            "impact",
+            "evidence",
+        }
+        and all(
+            isinstance(version, str) and re.fullmatch(r"[0-9]+\.[0-9]+", version)
+            for version in formats.values()
+        ),
+        "release ledger must declare major.minor format versions",
+    )
+    exports = contract.get("exports")
+    require(isinstance(exports, dict) and bool(exports), "public allowlist is empty")
+    assert isinstance(exports, dict)
+    require(list(exports) == sorted(exports), "public allowlist must be sorted")
+    require(
+        all(name.isidentifier() and not name.startswith("_") for name in exports),
+        "invalid canonical public name",
+    )
+    aliases = contract.get("type_aliases", {})
+    external = contract.get("external_symbols", {})
+    require(
+        set(external) == {"crc_framework"}, "numerical types must be framework-owned"
+    )
+    modules = contract.get("external_modules", [])
+    known = (
+        BUILTINS
+        | set(exports)
+        | set(aliases)
+        | set(external)
+        | set(modules)
+        | set(contract.get("generic_parameters", []))
+        | set(contract.get("input_protocols", {}))
+        | set(contract.get("opaque_native_types", []))
+    )
+    known.update(contract.get("external_types", []))
+    known.update(
+        f"{module}.{name}" for module, names in external.items() for name in names
+    )
+    for name, value in exports.items():
+        known.update(f"{name}.{member}" for member in value.get("members", {}))
+        for nested_name, nested in value.get("nested_enums", {}).items():
+            known.add(f"{name}.{nested_name}")
+            known.update(
+                f"{name}.{nested_name}.{member}" for member in nested.get("members", {})
+            )
+    for name, expression in aliases.items():
+        require(
+            name.isidentifier() and name not in exports,
+            f"{name}: internal alias must not create another public export",
+        )
+        _annotation(expression, known, f"type_aliases.{name}")
+    for name, protocol in contract.get("input_protocols", {}).items():
+        for method_name, signature in protocol.get("methods", {}).items():
+            _signature(signature, known, f"{name}.{method_name}")
+        for field_name, expression in protocol.get("properties", {}).items():
+            _annotation(expression, known, f"{name}.{field_name}")
+    for name, value in exports.items():
+        require(isinstance(value, dict), f"{name}: declaration must be an object")
+        require(value.get("kind") in EXPORT_KINDS, f"{name}: invalid declaration kind")
+        require(
+            set(value)
+            <= {
+                "kind",
+                "constructor",
+                "methods",
+                "properties",
+                "inherits",
+                "members",
+                "nested_enums",
+                "generic_parameters",
+                "parameters",
+                "returns",
+            },
+            f"{name}: unknown declaration field",
+        )
+        if value["kind"] == "function":
+            require(
+                set(value) == {"kind", "parameters", "returns"},
+                f"{name}: invalid function declaration",
+            )
+            _signature(
+                {"parameters": value["parameters"], "returns": value["returns"]},
+                known,
+                name,
+            )
+            continue
+        require(
+            not {"parameters", "returns"} & set(value),
+            f"{name}: call signature belongs to a function",
+        )
+        if value["kind"] == "enum":
+            members = value.get("members")
+            require(isinstance(members, dict) and bool(members), f"{name}: empty enum")
+            assert isinstance(members, dict)
+            require(
+                all(key.isidentifier() and key == key.upper() for key in members),
+                f"{name}: enum names must be uppercase identifiers",
+            )
+            encoded = [json.dumps(item, sort_keys=True) for item in members.values()]
+            require(
+                len(encoded) == len(set(encoded)), f"{name}: enum aliases are forbidden"
+            )
+        for parent in value.get("inherits", []):
+            require(
+                parent in exports and parent != name,
+                f"{name}: unknown or recursive base",
+            )
+        if "constructor" in value:
+            _signature(value["constructor"], known, f"{name}.__init__")
+        methods = value.get("methods", {})
+        properties = value.get("properties", {})
+        require(
+            not set(methods) & set(properties),
+            f"{name}: method/property name collision",
+        )
+        for method_name, signature in methods.items():
+            require(method_name.isidentifier(), f"{name}: invalid method name")
+            _signature(signature, known, f"{name}.{method_name}")
+        for property_name, annotation in properties.items():
+            require(property_name.isidentifier(), f"{name}: invalid property name")
+            _annotation(annotation, known, f"{name}.{property_name}")
+        for nested_name, nested in value.get("nested_enums", {}).items():
+            require(
+                nested_name.isidentifier() and nested.get("kind") == "enum",
+                f"{name}: invalid nested enum",
+            )
+            members = nested.get("members", {})
+            require(
+                bool(members) and len(members) == len(set(members.values())),
+                f"{name}.{nested_name}: empty enum or aliases",
+            )
+    # Resolve inheritance now so cycles cannot hide a missing contract.
+    for name in exports:
+        expanded_members(exports, name)
+    removed = contract.get("removals", {})
+    for field in ("symbols", "modules", "schema_fields", "wire_formats"):
+        values = removed.get(field)
+        require(
+            isinstance(values, list) and bool(values),
+            f"missing removal inventory: {field}",
+        )
+        assert isinstance(values, list)
+        require(len(values) == len(set(values)), f"duplicate removal: {field}")
+    require(
+        not {f"crc_sdk.{name}" for name in exports} & set(removed["symbols"]),
+        "a removed symbol appears in the public allowlist",
+    )
+    for name, value in exports.items():
+        methods, _ = expanded_members(exports, name)
+        require(
+            not set(methods) & set(removed_methods(contract, name)),
+            f"{name}: removed method remains declared",
+        )
+        require(
+            name not in external.get("crc_framework", []),
+            f"{name}: SDK must not re-export framework-owned types",
+        )
+    require(
+        contract.get("naming", {}).get("one_name_per_concept") is True,
+        "canonical naming rule is required",
+    )
+    for provider, inventory in contract.get("provider_indicators", {}).items():
+        members = exports[provider]["nested_enums"]["Indicator"]["members"]
+        require(
+            set(members) == set(inventory["members"]),
+            f"{provider}: scientific indicator inventory differs from enum",
+        )
+        require(
+            len({item["native_indicator"] for item in inventory["members"].values()})
+            == len(members),
+            f"{provider}: duplicate native indicator mapping",
+        )
+
+
+def removed_methods(contract: Mapping[str, Any], name: str) -> set[str]:
+    removals = contract["removals"]["methods"]
+    require(isinstance(removals, dict), "removed methods must be scoped by owner")
+    result = set(removals.get("*", ()))
+    result.update(removals.get(name, ()))
+    return result
+
+
+def expanded_members(
+    exports: Mapping[str, Any],
+    name: str,
+    ancestry: tuple[str, ...] = (),
+) -> tuple[dict[str, Any], dict[str, str]]:
+    require(
+        name not in ancestry, f"inheritance cycle: {' -> '.join((*ancestry, name))}"
+    )
+    methods: dict[str, Any] = {}
+    properties: dict[str, str] = {}
+    declaration = exports[name]
+    for parent in declaration.get("inherits", []):
+        inherited_methods, inherited_properties = expanded_members(
+            exports, parent, (*ancestry, name)
+        )
+        methods.update(inherited_methods)
+        properties.update(inherited_properties)
+    methods.update(declaration.get("methods", {}))
+    properties.update(declaration.get("properties", {}))
+    require(
+        not set(methods) & set(properties), f"{name}: inherited member name collision"
+    )
+    return methods, properties
+
+
+def check_versions(release: Mapping[str, Any], root: Path = ROOT) -> None:
+    project = tomllib.loads((root / "pyproject.toml").read_text())["project"]
+    require(
+        project["version"] == release["packages"]["sdk"],
+        "pyproject.toml version differs from release ledger",
+    )
+    requirements = [
+        item for item in project["dependencies"] if item.startswith("crc-framework")
+    ]
+    require(
+        requirements == [release["packages"]["framework_requirement"]],
+        "framework dependency differs from release ledger",
+    )
+
+
+def check_schema_versions(release: Mapping[str, Any]) -> None:
+    resources = PACKAGE / "contracts"
+    for name, directory in (
+        ("dataset", "schemas"),
+        ("evaluation", "schemas"),
+        ("collection", "schemas"),
+        ("evidence", "schemas"),
+        ("taxonomy", "taxonomy"),
+    ):
+        version = release["formats"][name]
+        schemas = {
+            path.name
+            for path in (resources / directory).glob(f"{name}-[0-9]*.schema.json")
+        }
+        require(
+            schemas == {f"{name}-{version}.schema.json"},
+            f"{name} schema does not match release ledger version {version}: "
+            f"{sorted(schemas)}",
+        )
+
+
+def _normalized_annotation(value: Any) -> str:
+    if value is inspect.Signature.empty:
+        return "<missing>"
+    if isinstance(value, ForwardRef):
+        value = value.__forward_arg__
+    if isinstance(value, str):
+        return (
+            re.sub(r"\s+", "", value)
+            .replace("typing.", "")
+            .replace("typing_extensions.", "")
+            .replace("cf.", "")
+            .replace("crc_framework.", "")
+            .replace("crc_sdk.", "")
+            .replace("pa.", "pyarrow.")
+            .replace("datetime.datetime", "datetime")
+        )
+    if value is None or value is type(None):
+        return "None"
+    if value is Ellipsis:
+        return "..."
+    if isinstance(value, TypeVar):
+        return value.__name__
+    if isinstance(value, Enum):
+        return f"{type(value).__qualname__}.{value.name}"
+    origin = get_origin(value)
+    arguments = get_args(value)
+    if origin is Literal:
+        return "Literal[" + ",".join(_normalized_annotation(v) for v in arguments) + "]"
+    if origin in (Union, types.UnionType):
+        return "|".join(_normalized_annotation(v) for v in arguments)
+    if origin is not None:
+        name = getattr(value, "_name", None) or getattr(origin, "__qualname__", None)
+        if isinstance(name, str):
+            return (
+                name
+                + "["
+                + ",".join(_normalized_annotation(v) for v in arguments)
+                + "]"
+            )
+    if isinstance(value, type):
+        if value.__module__ == "builtins" or value.__module__.startswith(
+            ("crc_sdk", "crc_framework")
+        ):
+            return value.__qualname__
+    return _normalized_annotation(inspect.formatannotation(value))
+
+
+def _default_matches(actual: Any, expected: Any) -> bool:
+    if isinstance(expected, dict):
+        if "enum" in expected:
+            return (
+                isinstance(actual, Enum)
+                and f"{type(actual).__qualname__}.{actual.name}" == expected["enum"]
+            )
+        if "tuple" in expected:
+            return isinstance(actual, tuple) and list(actual) == expected["tuple"]
+        return actual is Ellipsis
+    return bool(type(actual) is type(expected) and actual == expected)
+
+
+def _specialized_annotation(value: Any, bindings: Mapping[str, str]) -> str:
+    annotation = _normalized_annotation(value)
+    for name, replacement in bindings.items():
+        annotation = re.sub(rf"\b{re.escape(name)}\b", replacement, annotation)
+    return annotation
+
+
+def _generic_bindings(owner: type) -> dict[str, str]:
+    bindings: dict[str, str] = {}
+    for base in owner.__mro__:
+        for declaration in vars(base).get("__orig_bases__", ()):
+            origin = get_origin(declaration)
+            for variable, argument in zip(
+                getattr(origin, "__parameters__", ()), get_args(declaration)
+            ):
+                name = getattr(variable, "__name__", str(variable))
+                value = _specialized_annotation(argument, bindings)
+                if value != name:
+                    bindings[name] = value
+    for _ in range(len(bindings)):
+        updated = {
+            name: _specialized_annotation(value, bindings)
+            for name, value in bindings.items()
+        }
+        if updated == bindings:
+            break
+        bindings = updated
+    return bindings
+
+
+def _check_runtime_signature(
+    value: Any,
+    expected: Mapping[str, Any],
+    where: str,
+    *,
+    bindings: Mapping[str, str] | None = None,
+) -> list[str]:
+    errors = []
+    try:
+        actual = inspect.signature(value)
+    except (TypeError, ValueError) as error:
+        return [f"{where}: signature unavailable: {error}"]
+    parameters = list(actual.parameters.values())
+    if parameters and parameters[0].name in {"self", "cls"}:
+        parameters = parameters[1:]
+    expected_parameters = expected["parameters"]
+    if [item.name for item in parameters] != [
+        item["name"] for item in expected_parameters
+    ]:
+        errors.append(f"{where}: parameter names differ")
+        return errors
+    for parameter, declaration in zip(parameters, expected_parameters, strict=True):
+        if parameter.kind != PARAMETER_KINDS[declaration["kind"]]:
+            errors.append(f"{where}.{parameter.name}: parameter kind differs")
+        if _specialized_annotation(
+            parameter.annotation, bindings or {}
+        ) != _normalized_annotation(declaration["annotation"]):
+            errors.append(f"{where}.{parameter.name}: annotation differs")
+        if "default" in declaration:
+            if not _default_matches(parameter.default, declaration["default"]):
+                errors.append(f"{where}.{parameter.name}: default differs")
+        elif parameter.default is not inspect.Parameter.empty:
+            errors.append(f"{where}.{parameter.name}: unexpected default")
+    constructor_return = inspect.isclass(value) and actual.return_annotation in {
+        None,
+        "None",
+    }
+    if not constructor_return and _specialized_annotation(
+        actual.return_annotation, bindings or {}
+    ) != _normalized_annotation(expected["returns"]):
+        errors.append(f"{where}: return annotation differs")
+    return errors
+
+
+def import_runtime(package_root: Path | None = None) -> Any:
+    if package_root is not None:
+        package_root = package_root.resolve()
+        # The checker itself lives outside the package import path. Explicitly
+        # choose the installation under review instead of a source checkout.
+        sys.path[:] = [
+            str(package_root),
+            *[
+                entry
+                for entry in sys.path
+                if Path(entry or ".").resolve() != ROOT
+                and Path(entry or ".").resolve() != package_root
+            ],
+        ]
+    return importlib.import_module("crc_sdk")
+
+
+def _packaged_removal_errors(
+    package: Traversable, contract: Mapping[str, Any], release: Mapping[str, Any]
+) -> list[str]:
+    errors = []
+    prefix = contract["canonical_module"] + "."
+    for module_name in contract["removals"]["modules"]:
+        if not module_name.startswith(prefix):
+            continue
+        parts = module_name.removeprefix(prefix).split(".")
+        directory = package.joinpath(*parts)
+        module = package.joinpath(*parts[:-1], parts[-1] + ".py")
+        if directory.is_dir() or module.is_file():
+            errors.append(f"{module_name}: removed public namespace remains packaged")
+    for path in REMOVED_CONTRACT_RESOURCES:
+        resource = package.joinpath(path)
+        if resource.is_file() or resource.is_dir():
+            errors.append(f"{path}: superseded contract resource remains packaged")
+    schemas = package.joinpath("contracts", "schemas")
+    if schemas.is_dir():
+        current = {
+            f"{name}-{version}.schema.json"
+            for name, version in release["formats"].items()
+        }
+        for resource in schemas.iterdir():
+            if resource.name.endswith(".json") and resource.name not in current:
+                errors.append(
+                    f"contracts/schemas/{resource.name}: undeclared schema artifact"
+                )
+    return errors
+
+
+def packaged_errors(installed: Path, declared: Path = PACKAGE) -> list[str]:
+    def inventory(package: Path) -> set[Path]:
+        return {
+            path.relative_to(package)
+            for path in package.rglob("*")
+            if path.is_file()
+            and (path.suffix in {".py", ".pyi", ".json"} or path.name == "py.typed")
+        }
+
+    expected = inventory(declared)
+    actual = inventory(installed)
+    errors = [
+        f"{path}: missing from installed package" for path in sorted(expected - actual)
+    ]
+    errors.extend(
+        f"{path}: unexpected file in installed package"
+        for path in sorted(actual - expected)
+    )
+    for path in sorted(expected & actual):
+        source = (declared / path).read_text(encoding="utf-8")
+        if (installed / path).read_text(encoding="utf-8") != source:
+            errors.append(f"{path}: installed resource differs from release checkout")
+    return errors
+
+
+def check_runtime(
+    contract: Mapping[str, Any],
+    release: Mapping[str, Any],
+    package_root: Path | None = None,
+) -> None:
+    if package_root is not None:
+        package_root = package_root.resolve()
+    package = import_runtime(package_root)
+    installed_contract, installed_release = load_contracts(
+        files(package).joinpath("contracts", "api")
+    )
+    validate_contract(installed_contract, installed_release)
+    require(
+        installed_contract == contract and installed_release == release,
+        "installed contract files differ from the source release declarations",
+    )
+    errors = _packaged_removal_errors(files(package), contract, release)
+    require(package.__file__ is not None, "installed crc_sdk has no package location")
+    errors.extend(packaged_errors(Path(package.__file__).resolve().parent))
+    if package_root is not None and not Path(
+        package.__file__ or ""
+    ).resolve().is_relative_to(package_root):
+        errors.append("crc_sdk: import did not come from --package-root")
+    if importlib.metadata.version("crc-sdk") != release["packages"]["sdk"]:
+        errors.append("crc-sdk: installed package version differs")
+    from crc_framework._version import python_version
+
+    framework_version = importlib.metadata.version("crc-framework")
+    if framework_version != python_version(release["packages"]["framework"]):
+        errors.append(
+            "crc-framework: installed package version differs from paired release"
+        )
+    expected_exports = set(contract["exports"])
+    actual_exports = getattr(package, "__all__", ())
+    if len(actual_exports) != len(set(actual_exports)):
+        errors.append("crc_sdk: duplicate exports")
+    if set(actual_exports) != expected_exports:
+        missing = sorted(expected_exports - set(actual_exports))
+        unexpected = sorted(set(actual_exports) - expected_exports)
+        errors.append(
+            f"crc_sdk: exports differ (missing={missing}, unexpected={unexpected})"
+        )
+    undeclared_attributes = {
+        name
+        for name in vars(package)
+        if not name.startswith("_") and name not in expected_exports
+    }
+    if undeclared_attributes:
+        errors.append(
+            f"crc_sdk: undeclared public attributes {sorted(undeclared_attributes)}"
+        )
+    for qualified in contract["removals"]["symbols"]:
+        module_name, _, name = qualified.rpartition(".")
+        try:
+            module = importlib.import_module(module_name)
+        except ModuleNotFoundError:
+            continue
+        if hasattr(module, name):
+            errors.append(f"{qualified}: removed symbol remains accessible")
+    for module_name in contract["removals"]["modules"]:
+        try:
+            importlib.import_module(module_name)
+        except ModuleNotFoundError:
+            continue
+        errors.append(f"{module_name}: removed public module remains importable")
+    for name, declaration in contract["exports"].items():
+        where = f"crc_sdk.{name}"
+        value = getattr(package, name, None)
+        if value is None:
+            errors.append(f"{where}: declared export is missing")
+            continue
+        if declaration["kind"] == "enum":
+            if not inspect.isclass(value) or not issubclass(value, Enum):
+                errors.append(f"{where}: enum implementation required")
+            elif {
+                key: item.value for key, item in value.__members__.items()
+            } != declaration["members"]:
+                errors.append(f"{where}: enum members or values differ")
+            continue
+        if declaration["kind"] == "function":
+            if not inspect.isfunction(value):
+                errors.append(f"{where}: function implementation required")
+            else:
+                errors.extend(_check_runtime_signature(value, declaration, where))
+            continue
+        if not inspect.isclass(value):
+            errors.append(f"{where}: class implementation required")
+            continue
+        if declaration["kind"] == "protocol" and not getattr(
+            value, "_is_protocol", False
+        ):
+            errors.append(f"{where}: protocol implementation required")
+        if declaration["kind"] == "exception" and not issubclass(value, Exception):
+            errors.append(f"{where}: exception implementation required")
+        if "constructor" in declaration:
+            errors.extend(
+                _check_runtime_signature(value, declaration["constructor"], where)
+            )
+        methods, properties = expanded_members(contract["exports"], name)
+        bindings = _generic_bindings(value)
+        for method_name, signature in methods.items():
+            method_value = getattr(value, method_name, None)
+            if not callable(method_value):
+                errors.append(f"{where}.{method_name}: method missing")
+                continue
+            raw = inspect.getattr_static(value, method_name)
+            binding = (
+                "class"
+                if isinstance(raw, classmethod)
+                else "static"
+                if isinstance(raw, staticmethod)
+                else "instance"
+            )
+            if binding != signature.get("binding", "instance"):
+                errors.append(f"{where}.{method_name}: binding differs")
+            errors.extend(
+                _check_runtime_signature(
+                    method_value, signature, f"{where}.{method_name}", bindings=bindings
+                )
+            )
+        annotations: dict[str, Any] = {}
+        for base in reversed(value.__mro__):
+            annotations.update(getattr(base, "__annotations__", {}))
+        for property_name, annotation in properties.items():
+            descriptor = inspect.getattr_static(value, property_name, None)
+            actual_type = annotations.get(property_name, inspect.Signature.empty)
+            if isinstance(descriptor, property) and descriptor.fget is not None:
+                actual_type = inspect.signature(descriptor.fget).return_annotation
+            if _specialized_annotation(actual_type, bindings) != _normalized_annotation(
+                annotation
+            ):
+                errors.append(f"{where}.{property_name}: property/field type differs")
+        allowed_members = (
+            set(methods) | set(properties) | set(declaration.get("nested_enums", {}))
+        )
+        for base in value.__mro__:
+            if not base.__module__.startswith("crc_sdk"):
+                continue
+            own_members = set(vars(base)) | set(getattr(base, "__annotations__", {}))
+            unexpected_members = {
+                member
+                for member in own_members
+                if not member.startswith("_") and member not in allowed_members
+            }
+            if unexpected_members:
+                errors.append(
+                    f"{where}: undeclared public members {sorted(unexpected_members)}"
+                )
+        for forbidden in removed_methods(contract, name):
+            if hasattr(value, forbidden):
+                errors.append(f"{where}.{forbidden}: removed method remains accessible")
+        for enum_name, enum_spec in declaration.get("nested_enums", {}).items():
+            enum_value = getattr(value, enum_name, None)
+            if not inspect.isclass(enum_value) or not issubclass(enum_value, Enum):
+                errors.append(f"{where}.{enum_name}: nested enum missing")
+            elif {
+                key: item.value for key, item in enum_value.__members__.items()
+            } != enum_spec["members"]:
+                errors.append(f"{where}.{enum_name}: nested enum members differ")
+    require(
+        not errors,
+        "runtime interface is not release-ready:\n"
+        + "\n".join(f"- {item}" for item in errors),
+    )
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--runtime",
+        action="store_true",
+        help="require installed implementation conformance",
+    )
+    parser.add_argument(
+        "--package-root",
+        type=Path,
+        help="site-packages directory to inspect without source shadowing",
+    )
+    arguments = parser.parse_args()
+    try:
+        contract, release = load_contracts()
+        validate_contract(contract, release)
+        check_versions(release)
+        check_schema_versions(release)
+        if arguments.package_root is not None and not arguments.runtime:
+            raise ContractError("--package-root requires --runtime")
+        if arguments.runtime:
+            check_runtime(contract, release, arguments.package_root)
+    except (
+        ContractError,
+        ImportError,
+        OSError,
+        importlib.metadata.PackageNotFoundError,
+    ) as error:
+        print(error, file=sys.stderr)
+        return 1
+    print(
+        "Python interface and release contract verified"
+        + (" against runtime" if arguments.runtime else " (declarations only)")
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

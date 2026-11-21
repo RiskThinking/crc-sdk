@@ -1,0 +1,1094 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://climateriskcommons.org/schemas/evidence/1.0",
+  "title": "Canonical evidence metadata",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "spec": {
+      "$ref": "#/$defs/data_spec"
+    },
+    "spatial": {
+      "$ref": "#/$defs/spatial"
+    },
+    "source": {
+      "$ref": "#/$defs/source"
+    },
+    "report": {
+      "$ref": "#/$defs/report"
+    },
+    "provenance": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/transformation"
+      }
+    },
+    "kind": {
+      "enum": [
+        "samples",
+        "observations",
+        "projections",
+        "layer"
+      ]
+    },
+    "sampling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "calendar",
+        "step",
+        "timestamp"
+      ],
+      "properties": {
+        "calendar": {
+          "enum": [
+            "gregorian",
+            "no_leap",
+            "360_day",
+            "all_leap",
+            "julian",
+            "proleptic_gregorian"
+          ]
+        },
+        "timestamp": {
+          "enum": [
+            "start",
+            "end"
+          ]
+        },
+        "step": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "value",
+            "unit"
+          ],
+          "properties": {
+            "value": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "maximum": 1.7976931348623157e+308
+            },
+            "unit": {
+              "enum": [
+                "s",
+                "h",
+                "d",
+                "month",
+                "yr"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "empty_supports": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "properties": {
+          "support_id": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+          },
+          "cell_id": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 18446744073709551615
+          },
+          "geometry": {
+            "type": "string",
+            "minLength": 42,
+            "pattern": "^(?:[0-9a-f]{2})+$"
+          }
+        },
+        "required": [
+          "support_id",
+          "cell_id",
+          "geometry"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "spec",
+    "spatial",
+    "report",
+    "provenance",
+    "kind"
+  ],
+  "additionalProperties": false,
+  "dependentSchemas": {
+    "empty_supports": {
+      "properties": {
+        "kind": {
+          "const": "observations"
+        },
+        "report": {
+          "properties": {
+            "counts": {
+              "properties": {
+                "produced": {
+                  "const": 0
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "counts": {
+      "type": "object",
+      "properties": {
+        "requested": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "produced": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "skipped": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "no_data": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "matched_assets": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unmatched_assets": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "usable_years": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "incomplete_years": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "requested",
+        "produced",
+        "skipped",
+        "no_data",
+        "matched_assets",
+        "unmatched_assets",
+        "usable_years",
+        "incomplete_years"
+      ],
+      "additionalProperties": false
+    },
+    "data_spec": {
+      "type": "object",
+      "required": [
+        "variables",
+        "scenarios",
+        "periods",
+        "series"
+      ],
+      "properties": {
+        "variables": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/variable"
+          },
+          "uniqueItems": true
+        },
+        "scenarios": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/scenario"
+          },
+          "uniqueItems": true
+        },
+        "periods": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/period"
+          },
+          "uniqueItems": true
+        },
+        "series": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/series"
+          },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "diagnostic": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+            },
+            "severity": {
+              "enum": [
+                "error",
+                "warning",
+                "info"
+              ]
+            },
+            "stage": {
+              "enum": [
+                "acquisition",
+                "decoding",
+                "selection",
+                "reduction",
+                "fitting",
+                "joining",
+                "evaluation",
+                "validation",
+                "writing"
+              ]
+            },
+            "message": {
+              "type": "string",
+              "minLength": 1
+            },
+            "source": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+            },
+            "support_id": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+            },
+            "query_value": {
+              "type": "number"
+            },
+            "remedy": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "code",
+            "severity",
+            "stage",
+            "message"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+            },
+            "severity": {
+              "enum": [
+                "error",
+                "warning",
+                "info"
+              ]
+            },
+            "stage": {
+              "const": "fitting"
+            },
+            "message": {
+              "type": "string",
+              "minLength": 1
+            },
+            "source": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+            },
+            "support_id": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+            },
+            "query_value": {
+              "type": "number"
+            },
+            "remedy": {
+              "type": "string",
+              "minLength": 1
+            },
+            "record": {
+              "$ref": "https://climateriskcommons.org/schemas/fitting/1.0"
+            }
+          },
+          "required": [
+            "code",
+            "severity",
+            "stage",
+            "message",
+            "record"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "station_year_unavailable"
+            },
+            "severity": {
+              "const": "warning"
+            },
+            "stage": {
+              "enum": [
+                "acquisition",
+                "decoding"
+              ]
+            },
+            "message": {
+              "type": "string",
+              "minLength": 1
+            },
+            "source": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+            },
+            "query_value": {
+              "type": "number"
+            },
+            "remedy": {
+              "type": "string",
+              "minLength": 1
+            },
+            "station_id": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+            },
+            "year": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9999
+            },
+            "minimum_fraction": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "maximum": 1
+            }
+          },
+          "required": [
+            "code",
+            "severity",
+            "stage",
+            "message",
+            "station_id",
+            "year",
+            "minimum_fraction"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "period": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "start",
+            "end"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^period:[0-9a-f]{64}$"
+            },
+            "kind": {
+              "const": "window"
+            },
+            "start": {
+              "type": "integer"
+            },
+            "end": {
+              "type": "integer"
+            },
+            "calendar": {
+              "enum": [
+                "gregorian",
+                "no_leap",
+                "360_day",
+                "all_leap",
+                "julian",
+                "proleptic_gregorian"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "kind"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^period:[0-9a-f]{64}$"
+            },
+            "kind": {
+              "enum": [
+                "timeless",
+                "unknown"
+              ]
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "probability": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "tail"
+          ],
+          "properties": {
+            "kind": {
+              "const": "annual"
+            },
+            "tail": {
+              "enum": [
+                "upper",
+                "lower"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "distribution",
+                "confidence",
+                "projection"
+              ]
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "release": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "retrieved_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "sha256"
+      ],
+      "additionalProperties": false
+    },
+    "report": {
+      "type": "object",
+      "properties": {
+        "complete": {
+          "type": "boolean"
+        },
+        "valid": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "counts": {
+          "$ref": "#/$defs/counts"
+        },
+        "diagnostics": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/diagnostic"
+          }
+        },
+        "source_identities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/source"
+          }
+        }
+      },
+      "required": [
+        "complete",
+        "valid",
+        "counts",
+        "diagnostics",
+        "source_identities"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "valid": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "complete": {
+                "const": true
+              },
+              "diagnostics": {
+                "not": {
+                  "contains": {
+                    "properties": {
+                      "severity": {
+                        "const": "error"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "resource": {
+      "type": "object",
+      "properties": {
+        "uri": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "license": {
+          "type": "string",
+          "minLength": 1
+        },
+        "attribution": {
+          "type": "string",
+          "minLength": 1
+        },
+        "retrieved_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "uri",
+        "sha256"
+      ],
+      "additionalProperties": false
+    },
+    "scenario": {
+      "type": "object",
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+        },
+        "definition": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/scientific_value"
+          }
+        },
+        "schema": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/scientific_value"
+          }
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "dependentRequired": {
+        "schema": [
+          "definition"
+        ]
+      }
+    },
+    "scientific_value": {
+      "anyOf": [
+        {
+          "type": [
+            "null",
+            "boolean",
+            "number",
+            "string"
+          ]
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/scientific_value"
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/scientific_value"
+          }
+        }
+      ]
+    },
+    "series": {
+      "type": "object",
+      "required": [
+        "variable_id",
+        "scenario_id",
+        "period_id"
+      ],
+      "properties": {
+        "variable_id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+        },
+        "scenario_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "period_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^period:[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "probability": {
+          "$ref": "#/$defs/probability"
+        }
+      },
+      "additionalProperties": false
+    },
+    "source": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+        },
+        "product": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+        },
+        "member": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+        },
+        "release": {
+          "$ref": "#/$defs/release"
+        },
+        "resources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/resource"
+          }
+        }
+      },
+      "required": [
+        "provider",
+        "product",
+        "resources"
+      ],
+      "additionalProperties": false
+    },
+    "spatial": {
+      "type": "object",
+      "properties": {
+        "supports": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "point",
+              "polygon",
+              "cell"
+            ]
+          },
+          "uniqueItems": true,
+          "minItems": 1
+        },
+        "index_resolution": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 15
+        }
+      },
+      "required": [
+        "supports"
+      ],
+      "additionalProperties": false
+    },
+    "transformation": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "unit_conversion"
+            },
+            "variable_id": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+            },
+            "source_unit": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+            },
+            "target_unit": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+            },
+            "scale": {
+              "type": "number",
+              "not": {
+                "const": 0
+              }
+            },
+            "offset": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "kind",
+            "variable_id",
+            "source_unit",
+            "target_unit",
+            "scale",
+            "offset"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "rename"
+            },
+            "dimension": {
+              "enum": [
+                "variable",
+                "scenario"
+              ]
+            },
+            "mapping": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+              },
+              "additionalProperties": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "dimension",
+            "mapping"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "observation_time_selection"
+            },
+            "time": {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/period"
+                },
+                {
+                  "properties": {
+                    "kind": {
+                      "const": "window"
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "time"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "operation",
+            "coverage",
+            "input_sampling",
+            "output_sampling"
+          ],
+          "properties": {
+            "kind": {
+              "const": "temporal_reduction"
+            },
+            "operation": {
+              "enum": [
+                "daily_total",
+                "daily_maximum",
+                "daily_minimum",
+                "rolling_total",
+                "annual_maximum",
+                "annual_minimum"
+              ]
+            },
+            "coverage": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "maximum": 1
+            },
+            "input_sampling": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "calendar",
+                "step",
+                "timestamp"
+              ],
+              "properties": {
+                "calendar": {
+                  "enum": [
+                    "gregorian",
+                    "no_leap",
+                    "360_day",
+                    "all_leap",
+                    "julian",
+                    "proleptic_gregorian"
+                  ]
+                },
+                "timestamp": {
+                  "enum": [
+                    "start",
+                    "end"
+                  ]
+                },
+                "step": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "value",
+                    "unit"
+                  ],
+                  "properties": {
+                    "value": {
+                      "type": "number",
+                      "exclusiveMinimum": 0,
+                      "maximum": 1.7976931348623157e+308
+                    },
+                    "unit": {
+                      "enum": [
+                        "s",
+                        "h",
+                        "d",
+                        "month",
+                        "yr"
+                      ]
+                    }
+                  }
+                }
+              }
+            },
+            "output_sampling": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "calendar",
+                "step",
+                "timestamp"
+              ],
+              "properties": {
+                "calendar": {
+                  "enum": [
+                    "gregorian",
+                    "no_leap",
+                    "360_day",
+                    "all_leap",
+                    "julian",
+                    "proleptic_gregorian"
+                  ]
+                },
+                "timestamp": {
+                  "enum": [
+                    "start",
+                    "end"
+                  ]
+                },
+                "step": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "value",
+                    "unit"
+                  ],
+                  "properties": {
+                    "value": {
+                      "type": "number",
+                      "exclusiveMinimum": 0,
+                      "maximum": 1.7976931348623157e+308
+                    },
+                    "unit": {
+                      "enum": [
+                        "s",
+                        "h",
+                        "d",
+                        "month",
+                        "yr"
+                      ]
+                    }
+                  }
+                }
+              }
+            },
+            "window": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "value",
+                "unit"
+              ],
+              "properties": {
+                "value": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "unit": {
+                  "const": "d"
+                }
+              }
+            },
+            "measurements": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "variable_id",
+                  "input",
+                  "output"
+                ],
+                "properties": {
+                  "variable_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+                  },
+                  "input": {
+                    "$ref": "https://climateriskcommons.org/schemas/measurement-1.0.schema.json"
+                  },
+                  "output": {
+                    "$ref": "https://climateriskcommons.org/schemas/measurement-1.0.schema.json"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "variable": {
+      "type": "object",
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+        },
+        "measurement": {
+          "$ref": "https://climateriskcommons.org/schemas/measurement-1.0.schema.json"
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
