@@ -94,17 +94,66 @@ def annual_loss_json_schema() -> dict[str, object]:
                 "items": ref("input_resource"),
             },
         ),
+        "peril": record(
+            terms_sha256=digest,
+            input_sha256=digest,
+            evidence=ref("evidence"),
+        ),
+        "dependence": {
+            "oneOf": [
+                record(
+                    perils={"type": "array", "maxItems": 0},
+                    correlation=null,
+                    calibration_source=null,
+                    observation_count=null,
+                    observations_sha256=null,
+                ),
+                {
+                    **record(
+                        perils={
+                            "type": "array",
+                            "minItems": 2,
+                            "uniqueItems": True,
+                            "items": identifier,
+                        },
+                        correlation={
+                            "type": "array",
+                            "minItems": 2,
+                            "items": {
+                                "type": "array",
+                                "minItems": 2,
+                                "items": {
+                                    "type": "number",
+                                    "minimum": -1,
+                                    "maximum": 1,
+                                },
+                            },
+                        },
+                        calibration_source=identifier,
+                        observation_count=nullable(positive),
+                        observations_sha256=nullable(digest),
+                    ),
+                    "if": {"properties": {"observation_count": null}},
+                    "then": {"properties": {"observations_sha256": null}},
+                    "else": {"properties": {"observations_sha256": digest}},
+                },
+            ]
+        },
         "metadata": {
             **record(
                 version={"const": ANNUAL_LOSS_VERSION},
                 loss_basis={"const": "insured"},
                 run_id=digest,
-                peril=identifier,
+                perils={
+                    "type": "object",
+                    "minProperties": 1,
+                    "propertyNames": identifier,
+                    "additionalProperties": ref("peril"),
+                },
+                dependence=nullable(ref("dependence")),
                 currency=identifier,
                 valuation_basis=identifier,
                 portfolio_sha256=digest,
-                input_sha256=digest,
-                evidence=ref("evidence"),
                 report={
                     "allOf": [
                         dataset("report"),
@@ -126,6 +175,13 @@ def annual_loss_json_schema() -> dict[str, object]:
             "if": {"properties": {"component_count": {"const": 0}}},
             "then": {"properties": {"components_sha256": null}},
             "else": {"properties": {"components_sha256": digest}},
+            "allOf": [
+                {
+                    "if": {"properties": {"perils": {"maxProperties": 1}}},
+                    "then": {"properties": {"dependence": null}},
+                    "else": {"properties": {"dependence": ref("dependence")}},
+                }
+            ],
         },
         "component_ids": {
             "type": "array",
@@ -155,10 +211,11 @@ def annual_loss_json_schema() -> dict[str, object]:
         "$id": f"https://climateriskcommons.org/schemas/annual-loss/{ANNUAL_LOSS_VERSION}",
         "title": "Insured annual loss sample",
         "$comment": (
-            "The run ID and peril in metadata scope all trial rows. Trial IDs are "
-            "zero-based and consecutive. Component IDs are stored on trial 0, and "
-            "every trial's loss vector follows that ID order. The typed reader "
-            "checks footer and payload digests, and component and trial alignment."
+            "The run ID and declared perils in metadata scope all trial rows. Trial "
+            "IDs are zero-based and consecutive. Component IDs are stored on trial "
+            "0, and every trial's loss vector follows that order. Component IDs are "
+            "insured interest IDs for one peril and peril IDs for multiple perils. "
+            "The typed reader checks footer and payload digests and their alignment."
         ),
         **record(metadata=ref("metadata"), rows={"type": "array", "minItems": 1}),
         "$defs": definitions,

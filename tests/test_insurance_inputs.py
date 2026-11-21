@@ -113,7 +113,7 @@ def test_loss_resolves_exact_annual_member_and_requires_complete_grid() -> None:
     assert "baseline" in report.diagnostics[-1].message
 
     chosen = _run(recipe.select(members="baseline")).read()
-    assert chosen.metadata.evidence["member_id"] == "baseline"
+    assert chosen.metadata.perils["river-flood"].series.member == "baseline"
     assert chosen.report.counts.requested == 3
 
     distribution = _hazard(probability=Probability.distribution())
@@ -276,8 +276,10 @@ def test_loss_fingerprints_are_ordered_and_include_hazard_under_zero_damage() ->
         _evaluation(_hazard((0.0, 0.52, 0.9)), _assets("one", "two"), impact=model)
     ).read()
     assert changed.metadata.portfolio_sha256 == first.metadata.portfolio_sha256
-    assert changed.metadata.vulnerability_sha256 == first.metadata.vulnerability_sha256
-    assert changed.metadata.input_sha256 != first.metadata.input_sha256
+    changed_peril = next(iter(changed.metadata.perils.values()))
+    first_peril = next(iter(first.metadata.perils.values()))
+    assert changed_peril.vulnerability_sha256 == first_peril.vulnerability_sha256
+    assert changed_peril.input_sha256 != first_peril.input_sha256
     assert changed.metadata.run_id != first.metadata.run_id
     assert not changed.totals.any()
 

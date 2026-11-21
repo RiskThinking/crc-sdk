@@ -128,7 +128,8 @@ class PolicyColumns:
 @dataclass(frozen=True, slots=True)
 class _LossInputs:
     interests: tuple[cf.InsuredInterest, ...]
-    portfolio_sha256: str
+    book_sha256: str
+    terms_sha256: str
     input_sha256: str
     evidence: dict[str, ScientificValue]
     report: ExecutionReport
@@ -421,11 +422,12 @@ def prepare_loss_inputs(
     policy: PolicyColumns,
     tail_completion: cf.TailCompletion | None,
     scope: ExecutionScope,
+    required_asset_columns: tuple[str, ...] = (),
 ) -> _LossInputs:
     """Resolve the selected source graph and require full book coverage."""
     node = _EvaluationNode(
         evaluation._plan,
-        required_asset_columns=policy._columns(),
+        required_asset_columns=(*required_asset_columns, *policy._columns()),
         collect_context_failures=True,
     )
     try:
@@ -462,7 +464,8 @@ def prepare_loss_inputs(
         )
     response = node.responses[0]
     probability_grid = metadata.query.values
-    portfolio_digest = hashlib.sha256()
+    book_digest = hashlib.sha256()
+    terms_digest = hashlib.sha256()
     supports_digest = hashlib.sha256()
     curves_digest = hashlib.sha256()
     vulnerability_digest = hashlib.sha256()
@@ -538,16 +541,12 @@ def prepare_loss_inputs(
         resolution_id = first.resolution_id or response.model.sha256
         counts[resolution_id] += 1
         _update(
-            portfolio_digest,
-            (
-                asset_id,
-                interest.longitude,
-                interest.latitude,
-                tiv,
-                terms.deductible,
-                terms.limit,
-                terms.share,
-            ),
+            book_digest,
+            (asset_id, interest.longitude, interest.latitude, tiv),
+        )
+        _update(
+            terms_digest,
+            (asset_id, terms.deductible, terms.limit, terms.share),
         )
         _update(
             supports_digest,
@@ -620,5 +619,10 @@ def prepare_loss_inputs(
         ),
     )
     return _LossInputs(
-        tuple(interests), _hex(portfolio_digest), _hex(input_digest), evidence, report
+        tuple(interests),
+        _hex(book_digest),
+        _hex(terms_digest),
+        _hex(input_digest),
+        evidence,
+        report,
     )

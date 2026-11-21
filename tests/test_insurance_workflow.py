@@ -157,7 +157,10 @@ def test_scope_reuses_simulation_and_writes_reopenable_paired_runs(
     comparison = future.compare(reopened)
     assert future.metadata.run_id != reopened.metadata.run_id
     assert future.metadata.portfolio_sha256 == reopened.metadata.portfolio_sha256
-    assert future.metadata.input_sha256 != reopened.metadata.input_sha256
+    assert (
+        future.metadata.perils[_PERIL].input_sha256
+        != reopened.metadata.perils[_PERIL].input_sha256
+    )
     np.testing.assert_array_equal(
         comparison.trial_differences, future.totals - reopened.totals
     )
@@ -169,7 +172,10 @@ def test_scope_reuses_simulation_and_writes_reopenable_paired_runs(
     np.testing.assert_array_equal(repeated.totals, reopened.totals)
     changed_hazard = _recipe("future", stream=1, future_scale=2.1).read()
     assert changed_hazard.metadata.portfolio_sha256 == future.metadata.portfolio_sha256
-    assert changed_hazard.metadata.input_sha256 != future.metadata.input_sha256
+    assert (
+        changed_hazard.metadata.perils[_PERIL].input_sha256
+        != future.metadata.perils[_PERIL].input_sha256
+    )
     assert changed_hazard.metadata.run_id != future.metadata.run_id
     with pytest.raises(ValueError, match="secondary"):
         _recipe("future").read().compare(reopened)
@@ -223,7 +229,10 @@ def test_recipe_explain_is_lazy_and_tail_completion_is_explicit(tmp_path: Path) 
         ranks=_RANKS[1:-1], tail_completion=cf.TailCompletion(lower=0.0, upper=0.9)
     ).read()
     assert result.report.valid is True
-    assert result.metadata.input_sha256 != _recipe().read().metadata.input_sha256
+    assert (
+        result.metadata.perils[_PERIL].input_sha256
+        != _recipe().read().metadata.perils[_PERIL].input_sha256
+    )
 
 
 def test_loss_run_reads_one_file_snapshot_and_records_checksum(tmp_path: Path) -> None:
@@ -260,3 +269,125 @@ def test_loss_run_reads_one_file_snapshot_and_records_checksum(tmp_path: Path) -
         item.code == "asset_policy_columns_required"
         for item in missing.explain().requirements
     )
+
+
+def _constant_run(
+    assets: Assets,
+    peril: str,
+    *,
+    limit: str | float,
+    damage: float = 0.8,
+    insured_value: float = 100.0,
+    stream: int = 0,
+) -> LossRun:
+    ratio = cf.Ratio(unit=cf.RatioUnit.FRACTION)
+    variable = Variable(f"test:{peril}", measurement=ratio)
+    ranks = [0.0, 1.0]
+    evaluation = (
+        Dataset.from_quantiles(
+            {
+                "support_id": ["site", "site"],
+                "longitude": [24.0, 24.0],
+                "latitude": [60.0, 60.0],
+                "probability": ranks,
+                "value": [damage, damage],
+            },
+            variable=variable,
+            probability=Probability.annual(tail=cf.Tail.UPPER),
+        )
+        .evaluate(assets)
+        .probabilities(ranks)
+        .impact(
+            _DAMAGE,
+            cf.Impact.linear(slope=1, input=ratio, output=ratio),
+            variable=variable,
+        )
+    )
+    return LossRun(
+        evaluation,
+        damage_response=_DAMAGE,
+        peril=peril,
+        policy=PolicyColumns(
+            total_insured_value=insured_value,
+            limit=limit,
+            currency="EUR",
+            valuation_basis="replacement cost",
+        ),
+        spec=cf.AnnualLossSpec(trials=32, damage_cv=0.0),
+        secondary_stream=stream,
+        include_components=True,
+    )
+
+
+def test_separate_peril_terms_share_snapshot_and_count_insured_value_once(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "book.csv"
+    path.write_text(
+        "asset_id,longitude,latitude,flood_limit,wind_limit\nA,24,60,70,60\n"
+    )
+    assets = Assets(path, columns=[])
+    flood = _constant_run(assets, "flood", limit="flood_limit")
+    wind = _constant_run(assets, "wind", limit="wind_limit")
+    independence = cf.PerilDependence.independent()
+    run = LossRun.separate_perils([wind, flood], dependence=independence)
+    with (
+        patch.object(arrow_csv, "open_csv", wraps=arrow_csv.open_csv) as open_csv,
+        run.execute() as execution,
+    ):
+        report = execution.validate()
+        assert report.valid is True
+        assert report.counts.requested == report.counts.produced == 4
+        assert report.counts.matched_assets == 1
+        original = execution.read()
+        saved = execution.write(tmp_path / "portfolio.parquet")
+        assert open_csv.call_count == 1
+
+    reopened = LossArtifact.open(saved.path).read()
+    assert reopened.metadata.run_id == original.metadata.run_id
+    assert reopened.metadata.dependence == independence
+    assert reopened.metadata.perils["wind"].series.variable.id == "test:wind"
+    assert reopened.metadata.total_insured_value == 100
+    np.testing.assert_array_equal(reopened.totals, 130.0)
+    assert reopened.components is not None
+    np.testing.assert_array_equal(reopened.components["flood"], 70.0)
+    np.testing.assert_array_equal(reopened.components["wind"], 60.0)
+    assert reopened.summary() == original.summary()
+    assert reopened.summary().loss_cost == pytest.approx(1.3)
+    reverse = LossRun.separate_perils([flood, wind], dependence=independence)
+    assert reverse.read().metadata.run_id == reopened.metadata.run_id
+
+    future = LossRun.separate_perils(
+        [
+            _constant_run(assets, "flood", limit="flood_limit", stream=1),
+            _constant_run(assets, "wind", limit="wind_limit", damage=0.5, stream=1),
+        ],
+        dependence=independence,
+    ).read()
+    assert future.compare(reopened).average_annual_loss_change == -10.0
+
+
+def test_separate_perils_reject_mismatched_book_and_dependence(tmp_path: Path) -> None:
+    assets = Assets({"asset_id": ["A"], "longitude": [24], "latitude": [60]})
+    flood = _constant_run(assets, "flood", limit=70)
+    wind = _constant_run(assets, "wind", limit=60, insured_value=150)
+    dependence = cf.PerilDependence.from_correlation(
+        ["flood", "surge"], [[1.0, 0.4], [0.4, 1.0]], calibration_source="test"
+    )
+    with pytest.raises(ValueError, match="exactly the run's perils"):
+        LossRun.separate_perils([flood, wind], dependence=dependence)
+    with pytest.raises(ValueError, match="unique peril names"):
+        LossRun.separate_perils(
+            [flood, flood], dependence=cf.PerilDependence.independent()
+        )
+    run = LossRun.separate_perils(
+        [flood, wind], dependence=cf.PerilDependence.independent()
+    )
+    report = run.validate()
+    assert report.valid is False
+    assert report.diagnostics[-1].code == "peril_book_mismatch"
+    path = tmp_path / "portfolio.parquet"
+    path.write_bytes(b"existing portfolio")
+    with pytest.raises(ValidationError, match="identical asset IDs"):
+        run.write(path, overwrite=True)
+    assert path.read_bytes() == b"existing portfolio"

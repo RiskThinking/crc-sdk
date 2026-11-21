@@ -20,9 +20,9 @@ and impact interfaces from `crc_framework`.
   the original data support by default. Each named impact response keeps its
   own measurement, units, and resolved model. [Collections](collections.md) ·
   [Evaluation](evaluation.md)
-- Simulate one-peril annual insured losses from a named damage response and
-  policy terms, then compare paired climate runs and recompute metrics on saved
-  samples. [Annual insured loss](insurance.md)
+- Simulate annual insured losses from named damage responses and policy terms.
+  Combine separately insured perils with explicit dependence, compare paired
+  climate runs, and recompute metrics on saved samples. [Annual insured loss](insurance.md)
 
 Dataset and evaluation artifacts use format `2.0`. Portable collection bundles,
 native evidence, taxonomy catalogs, and annual loss artifacts use format

@@ -81,7 +81,13 @@ from ._inspection import (
 )
 from ._layer_sources import CHIRPS, FieldsOfTheWorld
 from ._loss import LossExecution, LossRun
-from ._loss_artifact import LossArtifact, LossComparison, LossResult, LossRunMetadata
+from ._loss_artifact import (
+    LossArtifact,
+    LossComparison,
+    LossResult,
+    LossRunMetadata,
+    PerilLossEvidence,
+)
 from ._loss_inputs import PolicyColumns
 from ._observed_sources import (
     HYDAT,
@@ -179,6 +185,7 @@ __all__ = [
     "ObservationTimeSelection",
     "Observations",
     "Operation",
+    "PerilLossEvidence",
     "Period",
     "PeriodKind",
     "PointColumns",

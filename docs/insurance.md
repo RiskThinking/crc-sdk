@@ -148,10 +148,10 @@ print(change.average_annual_loss_change)
 
 The sample keeps zero-loss years and stable trial IDs. A saved artifact carries
 the simulation specification, source evidence, run and sample identities, and
-the execution report. `result.metadata.series` gives the selected member,
-variable, scenario, period, and annual probability definition.
-`result.metadata.damage_response` names the response and
-`result.metadata.evidence` records its resolved models and matching evidence.
+the execution report. Use `result.metadata.perils[peril]` for a peril's
+provenance. Its `series` gives the selected member, variable, scenario, period,
+and annual probability definition. Its `damage_response` names the response
+and `evidence` records the resolved models and spatial matching evidence.
 `result.report.source_identities` has source checksums and attribution.
 `result.report.counts` and `result.report.diagnostics` describe evaluation
 coverage and diagnostics.
@@ -170,9 +170,83 @@ streams give separate secondary damage draws. The result carries the two run
 IDs and trial differences computed as future loss minus baseline loss. The
 example uses a small sample. The reference specification uses 20,000 trials.
 
+## Combine perils with separate coverage terms
+
+Reuse single-peril recipes with `LossRun.separate_perils`. Every recipe needs
+the same asset IDs, WGS84 locations, insured values, currency, valuation basis,
+simulation specification, secondary stream, and component setting. Coverage
+terms may differ. The method applies each peril's terms to its own damage and
+then sums insured payouts for each trial. Total insured value counts each
+interest once. Because each peril pays separately, the portfolio loss for a
+trial can exceed total insured value. A shared deductible or limit across
+perils requires a different contract model.
+
+```python
+from crc_framework import PerilDependence, SpeedUnit, WindSpeed
+
+wind_peril = "windstorm"
+wind_response = "wind_damage_fraction"
+wind_speed = WindSpeed(unit=SpeedUnit.METRES_PER_SECOND)
+wind_variable = Variable("example:wind-speed", measurement=wind_speed)
+wind_damage = Impact.linear(
+    slope=0.018, intercept=-0.25, minimum=0.0, maximum=1.0,
+    input=wind_speed, output=Ratio(unit=RatioUnit.FRACTION),
+)
+wind = Dataset.from_quantiles(
+    {
+        "support_id": ["west"] * 5 + ["east"] * 5,
+        "longitude": [24.0] * 5 + [24.3] * 5,
+        "latitude": [60.0] * 5 + [60.1] * 5,
+        "probability": probabilities * 2,
+        "value": [0, 12, 24, 36, 44, 0, 11, 22, 32, 41],
+    },
+    variable=wind_variable,
+    period=Period.window(1981, 2010),
+    probability=Probability.annual(tail=Tail.UPPER),
+)
+wind_run = LossRun(
+    wind.evaluate(assets).probabilities(probabilities).impact(
+        wind_response, wind_damage, variable=wind_variable,
+    ),
+    peril=wind_peril,
+    damage_response=wind_response,
+    policy=PolicyColumns(
+        total_insured_value=insured_values,
+        deductible_fraction=0.02,
+        limit=100_000.0,
+        currency=policy.currency,
+        valuation_basis=policy.valuation_basis,
+    ),
+    spec=spec,
+    include_components=True,
+)
+portfolio_run = LossRun.separate_perils(
+    [baseline_run, wind_run], dependence=PerilDependence.independent(),
+)
+portfolio = portfolio_run.read()
+assert set(portfolio.metadata.perils) == {peril, wind_peril}
+assert portfolio.metadata.total_insured_value == 1_200_000.0
+assert portfolio.components is not None
+```
+
+Choose `PerilDependence.independent()` when independence is the stated model
+assumption. For a fitted latent Gaussian model, use
+`PerilDependence.calibrate(perils, annual_ranks, calibration_source=...)`. Each
+row is the same observation year across all peril columns and contains interior
+non-exceedance ranks. `PerilDependence.from_correlation()` accepts a declared
+latent correlation matrix and its calibration source. The model reuses one
+spatial factor across perils and gives each peril independent secondary
+damage draws. The saved run records the dependence model and, for calibration
+from observations, the paired sample count and digest. A paired climate
+comparison holds the perils, coverage terms, vulnerability, and dependence fixed.
+
+For a single peril, `include_components=True` retains each asset's annual
+losses. For a combined run it retains peril totals, so component VaR and CVaR
+refer to perils. Set `include_components=False` for the smallest saved sample.
+
 ## Read the Parquet layout
 
-An Annual Loss 1.0 file holds one run and one peril. It stores one row per
+An Annual Loss 1.0 file holds one run with its peril provenance. It stores one row per
 zero-based `trial_id`, with a 64-bit floating-point `insured_loss` in the
 declared currency. With components enabled, trial 0 holds the ordered
 `component_ids`, and each trial contains a corresponding `component_losses`

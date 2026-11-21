@@ -3103,6 +3103,22 @@
             }
           ],
           "returns": "LossExecution"
+        },
+        "separate_perils": {
+          "parameters": [
+            {
+              "name": "runs",
+              "kind": "positional_or_keyword",
+              "annotation": "Sequence[LossRun]"
+            },
+            {
+              "name": "dependence",
+              "kind": "keyword_only",
+              "annotation": "crc_framework.PerilDependence"
+            }
+          ],
+          "returns": "LossRun",
+          "binding": "class"
         }
       }
     },
@@ -3116,15 +3132,9 @@
       },
       "properties": {
         "run_id": "str",
-        "peril": "str",
         "currency": "str",
         "valuation_basis": "str",
         "portfolio_sha256": "str",
-        "input_sha256": "str",
-        "vulnerability_sha256": "str",
-        "evidence": "Mapping[str, ScientificValue]",
-        "series": "SeriesReference",
-        "damage_response": "str",
         "report": "ExecutionReport",
         "spec": "crc_framework.AnnualLossSpec",
         "secondary_stream": "int",
@@ -3136,7 +3146,9 @@
         "component_count": "int",
         "totals_sha256": "str",
         "components_sha256": "str | None",
-        "trial_count": "int"
+        "trial_count": "int",
+        "perils": "Mapping[str, PerilLossEvidence]",
+        "dependence": "crc_framework.PerilDependence | None"
       }
     },
     "MeasurementChange": {
@@ -3582,6 +3594,17 @@
       "properties": {
         "stage": "Stage",
         "description": "str"
+      }
+    },
+    "PerilLossEvidence": {
+      "kind": "class",
+      "properties": {
+        "series": "SeriesReference",
+        "damage_response": "str",
+        "evidence": "Mapping[str, ScientificValue]",
+        "input_sha256": "str",
+        "terms_sha256": "str",
+        "vulnerability_sha256": "str"
       }
     },
     "Period": {
@@ -4892,7 +4915,9 @@
               "name": "preferred_supports",
               "kind": "keyword_only",
               "annotation": "Sequence[str]",
-              "default": {"tuple": []}
+              "default": {
+                "tuple": []
+              }
             }
           ],
           "returns": "SpatialMatch",
@@ -5290,6 +5315,7 @@
       "AnnualLossSpec",
       "AnnualLossSummary",
       "CorrelationRepair",
+      "PerilDependence",
       "TailCompletion"
     ]
   },

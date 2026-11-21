@@ -47,6 +47,7 @@ from ._declarations import (
 )
 from ._errors import ValidationError
 from ._inspection import SeriesReference
+from ._loss_inputs import _LossInputs
 from ._runtime import LocalPath, _local_path
 from ._terminals import _publication_path
 
@@ -187,8 +188,8 @@ def _validate_selection(document: dict[str, object]) -> int:
 
 
 def _validated_evidence(
-    raw: object, report: ExecutionReport, component_count: int
-) -> Mapping[str, ScientificValue]:
+    raw: object, insured: int
+) -> tuple[Mapping[str, ScientificValue], int]:
     if not isinstance(raw, Mapping):
         raise ValueError("evidence must be an object")
     evidence = cast(Mapping[str, ScientificValue], _freeze(raw))
@@ -219,16 +220,9 @@ def _validated_evidence(
     ):
         _digest(document[key])
     probability_count = _validate_selection(document)
-    coverage = report.counts
-    insured = coverage.matched_assets
     if (
         _integer(document["matched_support_count"], "matched_support_count", 1)
         > insured
-        or coverage.unmatched_assets
-        or coverage.no_data
-        or coverage.requested != insured * probability_count
-        or coverage.produced != coverage.requested
-        or component_count not in (0, insured)
     ):
         raise ValueError(
             "Annual loss metadata must account for the complete insured book"
@@ -257,7 +251,101 @@ def _validated_evidence(
             _source(resource["source"])
         for transformation in _array(resource["transformations"], "transformations"):
             _transformation(transformation)
-    return evidence
+    return evidence, probability_count
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class PerilLossEvidence:
+    """Resolved hazard selection, vulnerability, coverage terms, and provenance."""
+
+    terms_sha256: str
+    input_sha256: str
+    evidence: Mapping[str, ScientificValue]
+
+    def __init__(self) -> None:
+        raise TypeError("Read peril evidence from LossRunMetadata.perils")
+
+    @property
+    def series(self) -> SeriesReference:
+        """The selected annual hazard variable, scenario, period and member."""
+        return _series_reference(
+            _plain(self.evidence["series"]), self.evidence["member_id"]
+        )
+
+    @property
+    def damage_response(self) -> str:
+        return cast(str, self.evidence["damage_response"])
+
+    @property
+    def vulnerability_sha256(self) -> str:
+        return cast(str, self.evidence["vulnerability_sha256"])
+
+    def _identity(self) -> dict[str, object]:
+        return {
+            "terms_sha256": self.terms_sha256,
+            "input_sha256": self.input_sha256,
+            "vulnerability_sha256": self.vulnerability_sha256,
+        }
+
+    def _document(self) -> dict[str, object]:
+        return {
+            "terms_sha256": self.terms_sha256,
+            "input_sha256": self.input_sha256,
+            "evidence": _plain(self.evidence),
+        }
+
+
+def _peril_evidence(document: object, insured: int) -> tuple[PerilLossEvidence, int]:
+    record = _object(document, {"terms_sha256", "input_sha256", "evidence"})
+    evidence, probability_count = _validated_evidence(record["evidence"], insured)
+    value = object.__new__(PerilLossEvidence)
+    object.__setattr__(value, "terms_sha256", _digest(record["terms_sha256"]))
+    object.__setattr__(value, "input_sha256", _digest(record["input_sha256"]))
+    object.__setattr__(value, "evidence", evidence)
+    return value, probability_count
+
+
+def _perils(
+    value: object, report: ExecutionReport, component_count: int
+) -> Mapping[str, PerilLossEvidence]:
+    if not isinstance(value, dict) or not value:
+        raise ValueError("Annual loss metadata requires at least one declared peril")
+    coverage = report.counts
+    insured = coverage.matched_assets
+    perils = {}
+    expected = 0
+    for name, document in value.items():
+        name = _identifier(name, "peril")
+        evidence, q_count = _peril_evidence(document, insured)
+        perils[name] = evidence
+        expected += insured * q_count
+    expected_components = insured if len(perils) == 1 else len(perils)
+    if (
+        coverage.unmatched_assets
+        or coverage.no_data
+        or coverage.requested != expected
+        or coverage.produced != expected
+        or component_count not in (0, expected_components)
+    ):
+        raise ValueError(
+            "Annual loss metadata must account for the complete insured book"
+        )
+    return MappingProxyType(dict(sorted(perils.items())))
+
+
+def _dependence(
+    value: object, perils: Mapping[str, PerilLossEvidence]
+) -> crc_framework.PerilDependence | None:
+    if len(perils) == 1:
+        if value is not None:
+            raise ValueError("Cross-peril dependence requires multiple perils")
+        return None
+    if value is None:
+        raise ValueError("Multi-peril annual loss requires explicit peril dependence")
+    dependence = crc_framework.PerilDependence.from_json(_dump(value))
+    if dependence.perils and dependence.perils != tuple(perils):
+        raise ValueError("Peril dependence must cover exactly the simulated perils")
+    return dependence
 
 
 @dataclass(frozen=True, slots=True, init=False)
@@ -265,12 +353,11 @@ class LossRunMetadata:
     """Resolved provenance and storage checksums for an insured loss run."""
 
     run_id: str
-    peril: str
+    perils: Mapping[str, PerilLossEvidence]
+    dependence: crc_framework.PerilDependence | None
     currency: str
     valuation_basis: str
     portfolio_sha256: str
-    input_sha256: str
-    evidence: Mapping[str, ScientificValue]
     report: ExecutionReport
     spec: AnnualLossSpec
     secondary_stream: int
@@ -290,31 +377,19 @@ class LossRunMetadata:
     def trial_count(self) -> int:
         return self.spec.trials
 
-    @property
-    def series(self) -> SeriesReference:
-        """The selected annual hazard variable, scenario, period and member."""
-        return _series_reference(
-            _plain(self.evidence["series"]), self.evidence["member_id"]
-        )
-
-    @property
-    def damage_response(self) -> str:
-        return cast(str, self.evidence["damage_response"])
-
-    @property
-    def vulnerability_sha256(self) -> str:
-        return cast(str, self.evidence["vulnerability_sha256"])
-
     def _identity(self) -> dict[str, object]:
         return {
             "version": ANNUAL_LOSS_VERSION,
             "loss_basis": "insured",
-            "peril": self.peril,
+            "perils": {
+                name: evidence._identity() for name, evidence in self.perils.items()
+            },
+            "dependence": None
+            if self.dependence is None
+            else _load(self.dependence.to_json()),
             "currency": self.currency,
             "valuation_basis": self.valuation_basis,
             "portfolio_sha256": self.portfolio_sha256,
-            "input_sha256": self.input_sha256,
-            "vulnerability_sha256": self.vulnerability_sha256,
             "spec": _spec_document(self.spec),
             "secondary_stream": self.secondary_stream,
             "stream_layout": _STREAM_LAYOUT,
@@ -324,13 +399,13 @@ class LossRunMetadata:
         }
 
     def _document(self) -> dict[str, object]:
-        document = self._identity()
-        del document["vulnerability_sha256"]
         repair = self.correlation_repair
         return {
-            **document,
+            **self._identity(),
             "run_id": self.run_id,
-            "evidence": _plain(self.evidence),
+            "perils": {
+                name: evidence._document() for name, evidence in self.perils.items()
+            },
             "report": self.report._document(),
             "total_insured_value": self.total_insured_value,
             "correlation_repair": None
@@ -369,7 +444,7 @@ def _metadata_from_document(document: object, *, new: bool = False) -> LossRunMe
             "Annual loss metadata requires a complete valid execution report"
         )
     count = _integer(v["component_count"], "component_count")
-    evidence = _validated_evidence(v["evidence"], report, count)
+    perils = _perils(v["perils"], report, count)
     components_sha256 = v["components_sha256"]
     if (components_sha256 is None) != (count == 0):
         raise ValueError("Component count and checksum must agree")
@@ -380,12 +455,11 @@ def _metadata_from_document(document: object, *, new: bool = False) -> LossRunMe
         raise ValueError("secondary_stream must be an unsigned 64-bit integer")
     metadata = object.__new__(LossRunMetadata)
     for key, value in {
-        "peril": _identifier(v["peril"], "peril"),
+        "perils": perils,
+        "dependence": _dependence(v["dependence"], perils),
         "currency": _identifier(v["currency"], "currency"),
         "valuation_basis": _identifier(v["valuation_basis"], "valuation_basis"),
         "portfolio_sha256": _digest(v["portfolio_sha256"]),
-        "input_sha256": _digest(v["input_sha256"]),
-        "evidence": evidence,
         "report": report,
         "spec": _spec(v["spec"]),
         "secondary_stream": stream,
@@ -433,7 +507,7 @@ def _readonly(values: FloatArray) -> FloatArray:
 
 @dataclass(frozen=True, slots=True, init=False, eq=False)
 class LossResult:
-    """Immutable annual insured totals and optional aligned interest losses."""
+    """Immutable annual totals and optional aligned interest or peril losses."""
 
     metadata: LossRunMetadata
     totals: numpy.typing.NDArray[numpy.float64]
@@ -471,11 +545,10 @@ class LossResult:
             raise TypeError("baseline must be a LossResult")
         before, after = baseline.metadata, self.metadata
         paired_fields = (
-            "peril",
+            "dependence",
             "currency",
             "valuation_basis",
             "portfolio_sha256",
-            "vulnerability_sha256",
             "spec",
             "rng_algorithm",
             "framework_version",
@@ -488,6 +561,15 @@ class LossResult:
             for field in paired_fields
             if getattr(before, field) != getattr(after, field)
         ]
+        if before.perils.keys() != after.perils.keys():
+            differences.append("perils")
+        else:
+            for name, peril in before.perils.items():
+                other = after.perils[name]
+                if peril.terms_sha256 != other.terms_sha256:
+                    differences.append(f"terms_sha256 for {name!r}")
+                if peril.vulnerability_sha256 != other.vulnerability_sha256:
+                    differences.append(f"vulnerability_sha256 for {name!r}")
         if before.secondary_stream == after.secondary_stream:
             differences.append("secondary_stream must differ")
         if differences:
@@ -559,14 +641,19 @@ def _component_checksum(components: Mapping[str, FloatArray], trials: int) -> st
 def make_loss_result(
     simulation: crc_framework.AnnualLossSimulation,
     *,
-    peril: str,
+    peril_inputs: Mapping[str, _LossInputs],
+    dependence: crc_framework.PerilDependence | None,
     currency: str,
     valuation_basis: str,
     portfolio_sha256: str,
-    input_sha256: str,
-    evidence: Mapping[str, ScientificValue],
     report: ExecutionReport,
 ) -> LossResult:
+    if any(inputs.book_sha256 != portfolio_sha256 for inputs in peril_inputs.values()):
+        raise ValueError("All simulated perils must describe the same insured book")
+    if simulation.dependence != dependence or (
+        dependence is not None and simulation.perils != tuple(sorted(peril_inputs))
+    ):
+        raise ValueError("Loss run provenance disagrees with the simulated perils")
     components = simulation.components
     if components is not None:
         components = MappingProxyType(dict(sorted(components.items())))
@@ -576,12 +663,18 @@ def make_loss_result(
         {
             "version": ANNUAL_LOSS_VERSION,
             "loss_basis": "insured",
-            "peril": peril,
+            "perils": {
+                name: {
+                    "terms_sha256": inputs.terms_sha256,
+                    "input_sha256": inputs.input_sha256,
+                    "evidence": inputs.evidence,
+                }
+                for name, inputs in peril_inputs.items()
+            },
+            "dependence": None if dependence is None else _load(dependence.to_json()),
             "currency": currency,
             "valuation_basis": valuation_basis,
             "portfolio_sha256": portfolio_sha256,
-            "input_sha256": input_sha256,
-            "evidence": evidence,
             "report": report._document(),
             "spec": _spec_document(simulation.spec),
             "secondary_stream": simulation.secondary_stream,
@@ -684,6 +777,7 @@ def _scan_artifact(
     ids: tuple[str, ...] | None = None
     insured_value = metadata.total_insured_value
     rounding_allowance = 1e-12 * insured_value
+    peril_count = len(metadata.perils)
     first = 0
     for batch in parquet.iter_batches(batch_size=_batch_size(width)):
         stop = first + len(batch)
@@ -695,19 +789,25 @@ def _scan_artifact(
         losses_array = cast(FloatArray, losses.to_numpy())
         if losses.null_count or not _losses_valid(losses_array):
             raise ValueError("Annual insured losses must be finite and nonnegative")
-        if numpy.any(losses_array - insured_value > rounding_allowance):
-            raise ValueError("Annual insured losses exceed total insured value")
+        if numpy.any(losses_array / peril_count - insured_value > rounding_allowance):
+            raise ValueError(
+                "Annual insured losses exceed total insured value across perils"
+            )
         total_digest.update(_wire_bytes(losses_array))
         if totals is not None:
             totals[first:stop] = losses_array
         if width:
             first_ids = _read_component_ids(batch.column(2), first, width)
             if first_ids is not None:
+                if peril_count > 1 and first_ids != tuple(metadata.perils):
+                    raise ValueError("Component IDs must match the simulated perils")
                 ids = first_ids
                 component_digest.update(_dump(list(ids)).encode())
             matrix = _read_component_matrix(batch.column(3), width)
             if not _losses_valid(matrix):
                 raise ValueError("Component losses must be finite and nonnegative")
+            if numpy.any(matrix - insured_value > rounding_allowance):
+                raise ValueError("Component losses exceed total insured value")
             with numpy.errstate(over="ignore", invalid="ignore"):
                 sums = matrix.sum(axis=1)
                 tolerance = 1e-12 * numpy.maximum(sums, losses_array)

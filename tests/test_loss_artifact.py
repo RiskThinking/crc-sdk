@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from datetime import UTC, datetime
 from importlib.resources import files
 from pathlib import Path
@@ -35,6 +35,7 @@ from crc_sdk._loss_artifact import (
     make_loss_result,
     write_loss_artifact,
 )
+from crc_sdk._loss_inputs import _LossInputs
 
 
 def _digest(character: str) -> str:
@@ -50,8 +51,12 @@ def _sample(
     trials: int = 15,
     vulnerability: str = "c",
     retrieved_day: int = 1,
+    dependence: cf.PerilDependence | None = None,
+    wind_deductible: float = 10,
 ) -> LossResult:
-    curve = cf.QuantileCurve([0, 0.5, 1], [0, 0, end])
+    curve = cf.QuantileCurve(
+        [0, 0.5, 1], [0, 0, end] if dependence is None else [end, end, end]
+    )
     interests = (
         cf.InsuredInterest(
             "dock",
@@ -67,12 +72,6 @@ def _sample(
             total_insured_value=200,
             damage_curve=curve,
         ),
-    )
-    sample = cf.simulate_annual_losses(
-        interests,
-        spec=cf.AnnualLossSpec(trials=trials, damage_cv=0),
-        secondary_stream=stream,
-        include_components=include_components,
     )
     source = SourceIdentity(
         "local",
@@ -121,12 +120,12 @@ def _sample(
             }
         ],
     }
-    return make_loss_result(
-        sample,
-        peril="flood",
-        currency=currency,
-        valuation_basis="replacement cost",
-        portfolio_sha256=_digest("a"),
+    spec = cf.AnnualLossSpec(trials=trials, damage_cv=0)
+    book = _digest("a")
+    flood = _LossInputs(
+        interests=interests,
+        book_sha256=book,
+        terms_sha256=_digest("0"),
         input_sha256=_digest("1" if end == 0.25 else "2"),
         evidence=evidence,
         report=ExecutionReport(
@@ -135,6 +134,51 @@ def _sample(
             counts=ExecutionCounts(requested=6, produced=6, matched_assets=2),
             source_identities=(source,),
         ),
+    )
+    peril_inputs = {"flood": flood}
+    report = flood.report
+    if dependence is None:
+        sample = cf.simulate_annual_losses(
+            interests,
+            spec=spec,
+            secondary_stream=stream,
+            include_components=include_components,
+        )
+    else:
+        wind_interests = tuple(
+            cf.InsuredInterest(
+                interest.id,
+                longitude=interest.longitude,
+                latitude=interest.latitude,
+                total_insured_value=interest.total_insured_value,
+                damage_curve=curve,
+                terms=cf.PolicyTerms(deductible=wind_deductible),
+            )
+            for interest in interests
+        )
+        peril_inputs["wind"] = replace(
+            flood,
+            interests=wind_interests,
+            terms_sha256=_sha256(str(wind_deductible).encode()),
+        )
+        sample = cf.simulate_separate_peril_losses(
+            {name: inputs.interests for name, inputs in peril_inputs.items()},
+            dependence=dependence,
+            spec=spec,
+            secondary_stream=stream,
+            include_components=include_components,
+        )
+        report = replace(
+            report, counts=ExecutionCounts(requested=12, produced=12, matched_assets=2)
+        )
+    return make_loss_result(
+        sample,
+        peril_inputs=peril_inputs,
+        dependence=dependence,
+        currency=currency,
+        valuation_basis="replacement cost",
+        portfolio_sha256=book,
+        report=report,
     )
 
 
@@ -173,8 +217,8 @@ def test_loss_parquet_roundtrip_and_json_schema(
     assert reopened.report == expected.report
     actual = reopened.read()
     assert actual.metadata == expected.metadata
-    assert actual.metadata.series.variable.id == "flood-depth"
-    assert actual.metadata.damage_response == "damage"
+    assert actual.metadata.perils["flood"].series.variable.id == "flood-depth"
+    assert actual.metadata.perils["flood"].damage_response == "damage"
     assert actual.summary(levels=[0.95]) == expected.summary(levels=[0.95])
     assert actual.trial_ids == range(4100)
     numpy.testing.assert_array_equal(actual.totals, expected.totals)
@@ -227,6 +271,65 @@ def test_run_identity_and_paired_reopened_comparison(tmp_path: Path) -> None:
         future.compare(_sample(trials=12))
 
 
+@pytest.mark.parametrize("components", (False, True))
+@pytest.mark.parametrize("model", ("independent", "declared", "calibrated"))
+def test_separate_peril_artifact_counts_book_once_and_reopens(
+    tmp_path: Path, *, components: bool, model: str
+) -> None:
+    declared = cf.PerilDependence.from_correlation(
+        ["wind", "flood"], [[1, 0.25], [0.25, 1]], calibration_source="example"
+    )
+    independent = cf.PerilDependence.independent()
+    calibrated = cf.PerilDependence.calibrate(
+        ["wind", "flood"],
+        [[0.2, 0.2], [0.75, 0.4], [0.5, 0.7], [0.8, 0.9]],
+        calibration_source="synthetic same-year records",
+    )
+    dependence = {
+        "independent": independent,
+        "declared": declared,
+        "calibrated": calibrated,
+    }[model]
+    expected = _sample(end=1, include_components=components, dependence=dependence)
+    path = tmp_path / "portfolio.parquet"
+    write_loss_artifact(path, expected)
+    reopened = LossArtifact.open(path).read()
+
+    assert tuple(reopened.metadata.perils) == ("flood", "wind")
+    assert reopened.metadata.dependence == dependence
+    assert reopened.metadata.total_insured_value == 300
+    assert reopened.report.counts.matched_assets == 2
+    numpy.testing.assert_array_equal(reopened.totals, [580.0] * len(reopened.trial_ids))
+    assert reopened.summary() == expected.summary()
+    if components:
+        assert reopened.components is not None
+        assert tuple(reopened.components) == ("flood", "wind")
+        assert reopened.components["flood"][0] == 300
+        assert reopened.components["wind"][0] == 280
+    else:
+        assert reopened.components is None
+    _assert_schema(
+        {
+            "metadata": json.loads(reopened.metadata.to_json()),
+            "rows": pq.read_table(path).to_pylist(),
+        }
+    )
+
+    baseline = _sample(end=0.5, stream=1, dependence=dependence)
+    assert reopened.compare(baseline).average_annual_loss_change == 300
+    with pytest.raises(ValueError, match="terms_sha256 for 'wind'"):
+        reopened.compare(
+            _sample(end=0.5, stream=1, dependence=dependence, wind_deductible=20)
+        )
+    with pytest.raises(ValueError, match="dependence"):
+        reopened.compare(
+            _sample(
+                stream=1,
+                dependence=declared if dependence == independent else independent,
+            )
+        )
+
+
 def test_loss_write_preserves_destination_until_verified(tmp_path: Path) -> None:
     original = _sample()
     path = tmp_path / "loss.parquet"
@@ -275,7 +378,7 @@ def test_loss_artifact_detects_schema_footer_and_payload_corruption(
     with pytest.raises(ValidationError, match="exceed total insured value"):
         opened.read()
     forged = json.loads(footer[_DOCUMENT])
-    forged["peril"] = "other-peril"
+    forged["perils"]["other-peril"] = forged["perils"].pop("flood")
     document = _dump(forged).encode()
     pq.write_table(table.replace_schema_metadata({**footer, _DOCUMENT: document}), path)
     with pytest.raises(ValidationError, match="metadata checksum"):

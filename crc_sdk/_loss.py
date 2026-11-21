@@ -1,8 +1,9 @@
-"""Run one-peril insurance simulation on a selected hazard evaluation."""
+"""Run annual insurance simulation on selected hazard evaluations."""
 
 from __future__ import annotations
 
 import operator
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from types import TracebackType
 from typing import Self
@@ -10,7 +11,13 @@ from typing import Self
 import crc_framework as cf
 import numpy as np
 
-from ._dataset_schema import ExecutionDiagnostic, ExecutionReport, Stage, _identifier
+from ._dataset_schema import (
+    ExecutionDiagnostic,
+    ExecutionReport,
+    Stage,
+    _combine_reports,
+    _identifier,
+)
 from ._errors import ValidationError
 from ._evaluation import Evaluation
 from ._graph import ExecutionScope
@@ -21,23 +28,54 @@ from ._loss_artifact import (
     make_loss_result,
     write_loss_artifact,
 )
-from ._loss_inputs import PolicyColumns, precheck_loss_inputs, prepare_loss_inputs
+from ._loss_inputs import (
+    PolicyColumns,
+    _LossInputs,
+    precheck_loss_inputs,
+    prepare_loss_inputs,
+)
 from ._runtime import LocalPath, Runtime, _memory_bytes
 from ._terminals import _publication_path
 
 
+@dataclass(frozen=True, slots=True)
+class _PerilRun:
+    peril: str
+    evaluation: Evaluation = field(repr=False)
+    damage_response: str
+    policy: PolicyColumns
+    tail_completion: cf.TailCompletion | None
+
+    def explain(self, runtime: Runtime | None) -> Explanation:
+        evaluation = self.evaluation.explain(runtime=runtime)
+        missing = self.evaluation._plan.assets._missing_bound_columns(
+            self.policy._columns()
+        )
+        if not missing:
+            return evaluation
+        return replace(
+            evaluation,
+            requirements=(
+                *evaluation.requirements,
+                Requirement(
+                    "asset_policy_columns_required",
+                    f"Add the policy columns {list(missing)!r} for {self.peril!r} "
+                    "to the assets or set constant values in PolicyColumns.",
+                    "policy",
+                ),
+            ),
+        )
+
+
 @dataclass(frozen=True, slots=True, init=False)
 class LossRun:
-    """A lazy recipe for annual insured losses for one peril and book."""
+    """A lazy recipe for annual insured losses on one fixed book."""
 
-    _evaluation: Evaluation = field(repr=False)
-    _damage_response: str
-    _peril: str
-    _policy: PolicyColumns
+    _perils: tuple[_PerilRun, ...]
     _spec: cf.AnnualLossSpec
-    _tail_completion: cf.TailCompletion | None
     _secondary_stream: int
     _include_components: bool
+    _dependence: cf.PerilDependence | None
 
     def __init__(
         self,
@@ -66,46 +104,92 @@ class LossRun:
         selected = precheck_loss_inputs(
             evaluation, damage_response=damage_response, tail_completion=tail_completion
         )
-        object.__setattr__(self, "_evaluation", selected)
-        object.__setattr__(self, "_damage_response", damage_response)
-        object.__setattr__(self, "_peril", peril)
-        object.__setattr__(self, "_policy", policy)
+        peril_run = _PerilRun(peril, selected, damage_response, policy, tail_completion)
+        object.__setattr__(self, "_perils", (peril_run,))
         object.__setattr__(
             self, "_spec", cf.AnnualLossSpec.reference() if spec is None else spec
         )
-        object.__setattr__(self, "_tail_completion", tail_completion)
         object.__setattr__(self, "_secondary_stream", stream)
         object.__setattr__(self, "_include_components", include_components)
+        object.__setattr__(self, "_dependence", None)
+
+    @classmethod
+    def separate_perils(
+        cls, runs: Sequence[LossRun], *, dependence: cf.PerilDependence
+    ) -> LossRun:
+        """Combine a fixed book whose policy terms apply to each peril separately."""
+        if not isinstance(dependence, cf.PerilDependence):
+            raise TypeError("dependence must be PerilDependence")
+        selected = tuple(runs)
+        if len(selected) < 2:
+            raise ValueError("separate_perils requires at least two single-peril runs")
+        if any(
+            not isinstance(run, cls) or run._dependence is not None for run in selected
+        ):
+            raise TypeError("runs must contain single-peril LossRun recipes")
+        perils = tuple(
+            sorted((run._perils[0] for run in selected), key=lambda p: p.peril)
+        )
+        names = tuple(peril.peril for peril in perils)
+        if len(set(names)) != len(names):
+            raise ValueError("separate_perils requires unique peril names")
+        if dependence.correlation is not None and dependence.perils != names:
+            raise ValueError(
+                "calibrated dependence must cover exactly the run's perils"
+            )
+        first = selected[0]
+        policy = first._perils[0].policy
+        for run in selected[1:]:
+            other = run._perils[0].policy
+            if (other.currency, other.valuation_basis) != (
+                policy.currency,
+                policy.valuation_basis,
+            ):
+                raise ValueError("All perils must use one currency and valuation basis")
+            if (run._spec, run._secondary_stream, run._include_components) != (
+                first._spec,
+                first._secondary_stream,
+                first._include_components,
+            ):
+                raise ValueError(
+                    "All perils must use the same spec, secondary_stream and "
+                    "include_components setting"
+                )
+        result = object.__new__(cls)
+        object.__setattr__(result, "_perils", perils)
+        object.__setattr__(result, "_spec", first._spec)
+        object.__setattr__(result, "_secondary_stream", first._secondary_stream)
+        object.__setattr__(result, "_include_components", first._include_components)
+        object.__setattr__(result, "_dependence", dependence)
+        return result
 
     def explain(self, *, runtime: Runtime | None = None) -> Explanation:
-        evaluation = self._evaluation.explain(runtime=runtime)
-        requirements = evaluation.requirements
-        missing = self._evaluation._plan.assets._missing_bound_columns(
-            self._policy._columns()
-        )
-        if missing:
-            requirements = (
-                *requirements,
-                Requirement(
-                    "asset_policy_columns_required",
-                    f"Add the policy columns {list(missing)!r} to the assets or "
-                    "supply constant values in PolicyColumns.",
-                    "policy",
-                ),
-            )
+        explanations = tuple(peril.explain(runtime) for peril in self._perils)
+        operations = []
+        for peril, explanation in zip(self._perils, explanations, strict=True):
+            if self._dependence is not None:
+                operations.append(
+                    Operation(Stage.SELECTION, f"Resolve {peril.peril!r}")
+                )
+            operations.extend(explanation.operations)
+        scope = ", ".join(repr(peril.peril) for peril in self._perils)
         return replace(
-            evaluation,
-            requirements=requirements,
+            explanations[0],
+            source=explanations[0].source if self._dependence is None else None,
+            requirements=tuple(
+                requirement
+                for value in explanations
+                for requirement in value.requirements
+            ),
             operations=(
-                *evaluation.operations,
+                *operations,
                 Operation(
                     Stage.VALIDATION,
                     "Resolve portfolio terms and complete damage curves",
                 ),
                 Operation(
                     Stage.EVALUATION,
-                    f"Simulate {self._spec.trials:,} annual insured losses "
-                    f"for {self._peril!r}",
+                    f"Simulate {self._spec.trials:,} annual insured losses for {scope}",
                 ),
             ),
         )
@@ -170,28 +254,109 @@ class LossExecution:
     def report(self) -> ExecutionReport:
         return self._report
 
+    def _resolve_inputs(self) -> tuple[dict[str, _LossInputs], ExecutionReport]:
+        recipes = self._recipe._perils
+        columns: dict[str, set[str]] = {}
+        for recipe in recipes:
+            plan = recipe.evaluation._plan
+            names = columns.setdefault(plan.assets._key, set())
+            names.update(recipe.policy._columns())
+            for response in plan._selected_responses():
+                names.update(response.columns)
+
+        inputs: dict[str, _LossInputs] = {}
+        reports: list[ExecutionReport] = []
+        for recipe in recipes:
+            try:
+                resolved = prepare_loss_inputs(
+                    recipe.evaluation,
+                    damage_response=recipe.damage_response,
+                    policy=recipe.policy,
+                    tail_completion=recipe.tail_completion,
+                    scope=self._scope,
+                    required_asset_columns=tuple(
+                        sorted(columns[recipe.evaluation._plan.assets._key])
+                    ),
+                )
+            except ValidationError as error:
+                if len(recipes) == 1 or error is self._scope._callback_error:
+                    raise
+                failed = error.report
+                report = _combine_reports((*reports, failed))
+                diagnostic = ExecutionDiagnostic(
+                    "invalid_peril_inputs",
+                    cf.DiagnosticSeverity.ERROR,
+                    Stage.VALIDATION,
+                    f"Peril {recipe.peril!r} has invalid insurance inputs.",
+                )
+                raise ValidationError(
+                    report=replace(
+                        report,
+                        valid=False,
+                        diagnostics=(diagnostic, *report.diagnostics),
+                        counts=replace(
+                            report.counts,
+                            matched_assets=failed.counts.matched_assets,
+                            unmatched_assets=failed.counts.unmatched_assets,
+                        ),
+                    )
+                ) from error
+            inputs[recipe.peril] = resolved
+            reports.append(resolved.report)
+
+        first = inputs[recipes[0].peril]
+        report = _combine_reports(reports, complete=True)
+        report = replace(
+            report, counts=replace(report.counts, matched_assets=len(first.interests))
+        )
+        for peril, resolved in inputs.items():
+            if resolved.book_sha256 != first.book_sha256:
+                diagnostic = ExecutionDiagnostic(
+                    "peril_book_mismatch",
+                    cf.DiagnosticSeverity.ERROR,
+                    Stage.VALIDATION,
+                    f"Perils {recipes[0].peril!r} and {peril!r} must have identical "
+                    "asset IDs, WGS84 coordinates and total insured values.",
+                )
+                raise ValidationError(
+                    report=replace(
+                        report,
+                        valid=False,
+                        diagnostics=(*report.diagnostics, diagnostic),
+                    )
+                )
+        return inputs, report
+
     def _simulate(self) -> LossResult:
         recipe = self._recipe
-        inputs = prepare_loss_inputs(
-            recipe._evaluation,
-            damage_response=recipe._damage_response,
-            policy=recipe._policy,
-            tail_completion=recipe._tail_completion,
-            scope=self._scope,
-        )
-        self._report = replace(inputs.report, complete=False, valid=None)
+        inputs, report = self._resolve_inputs()
+        first = next(iter(inputs.values()))
+        self._report = replace(report, complete=False, valid=None)
         trials = recipe._spec.trials
         self._scope.emit(Stage.EVALUATION, 0, trials)
         memory_limit = _memory_bytes(self._scope.runtime.memory_limit)
         limits = {} if memory_limit is None else {"memory_limit": memory_limit}
+        spec = recipe._spec
+        stream = recipe._secondary_stream
+        components = recipe._include_components
         try:
-            simulation = cf.simulate_annual_losses(
-                inputs.interests,
-                spec=recipe._spec,
-                secondary_stream=recipe._secondary_stream,
-                include_components=recipe._include_components,
-                **limits,
-            )
+            if recipe._dependence is None:
+                simulation = cf.simulate_annual_losses(
+                    first.interests,
+                    spec=spec,
+                    secondary_stream=stream,
+                    include_components=components,
+                    **limits,
+                )
+            else:
+                simulation = cf.simulate_separate_peril_losses(
+                    {peril: resolved.interests for peril, resolved in inputs.items()},
+                    dependence=recipe._dependence,
+                    spec=spec,
+                    secondary_stream=stream,
+                    include_components=components,
+                    **limits,
+                )
         except ValueError as error:
             diagnostic = ExecutionDiagnostic(
                 "annual_loss_simulation_failed",
@@ -201,20 +366,19 @@ class LossExecution:
             )
             raise ValidationError(
                 report=replace(
-                    inputs.report,
+                    report,
                     valid=False,
-                    diagnostics=(*inputs.report.diagnostics, diagnostic),
+                    diagnostics=(*report.diagnostics, diagnostic),
                 )
             ) from error
         result = make_loss_result(
             simulation,
-            peril=recipe._peril,
-            currency=recipe._policy.currency,
-            valuation_basis=recipe._policy.valuation_basis,
-            portfolio_sha256=inputs.portfolio_sha256,
-            input_sha256=inputs.input_sha256,
-            evidence=inputs.evidence,
-            report=inputs.report,
+            peril_inputs=inputs,
+            dependence=recipe._dependence,
+            currency=recipe._perils[0].policy.currency,
+            valuation_basis=recipe._perils[0].policy.valuation_basis,
+            portfolio_sha256=first.book_sha256,
+            report=report,
         )
         self._scope.emit(Stage.EVALUATION, trials, trials)
         self._report = result.report

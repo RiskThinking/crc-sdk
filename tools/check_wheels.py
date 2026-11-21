@@ -126,6 +126,36 @@ def main() -> None:
         assert reopened_loss.metadata.run_id == result.metadata.run_id
         assert reopened_loss.summary() == result.summary()
         assert reopened_loss.components is not None
+
+        policy = crc_sdk.PolicyColumns(
+            total_insured_value=100.0,
+            currency="USD",
+            valuation_basis="replacement value",
+            limit=40.0,
+        )
+        second = crc_sdk.LossRun(
+            evaluation,
+            damage_response="damage",
+            peril="surge",
+            policy=policy,
+            spec=crc_framework.AnnualLossSpec(trials=64),
+            include_components=True,
+        )
+        dependence = crc_framework.PerilDependence.from_correlation(
+            ["flood", "surge"],
+            [[1.0, 0.5], [0.5, 1.0]],
+            calibration_source="wheel smoke fixture",
+        )
+        combined = crc_sdk.LossRun.separate_perils(
+            [second, loss], dependence=dependence
+        )
+        combined_path = Path(directory) / "combined-loss.parquet"
+        combined_result = combined.write(combined_path).read()
+        assert combined_result.metadata.total_insured_value == 100.0
+        assert combined_result.metadata.dependence == dependence
+        assert combined_result.components is not None
+        assert set(combined_result.components) == {"flood", "surge"}
+        assert crc_sdk.LossArtifact.open(combined_path).validate().valid
     print(
         f"Installed framework {versions['framework']} and SDK {versions['sdk']}: "
         "versions, shared contracts, execution, and persistence verified"
