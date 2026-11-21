@@ -11,6 +11,7 @@ import pytest
 from h3.api import basic_int as h3  # type: ignore[import-untyped]
 from shapely.geometry import Point, Polygon, box  # type: ignore[import-untyped]
 
+from crc_sdk._climate_grid import cell_polygon
 from crc_sdk._evaluation_spatial import (
     Distance,
     SpatialIndex,
@@ -125,6 +126,22 @@ def test_covering_priority_uses_only_matching_supports() -> None:
         ).match(asset)
     with pytest.raises(ValueError, match="unique support IDs"):
         SpatialMatch.covering(preferred_supports=["first", "first"])
+
+
+def test_rectangular_edge_ownership_across_the_antimeridian() -> None:
+    west = replace(_point("west", 179), geometry=cell_polygon(179, 0, 180, 1).wkb)
+    east = replace(_point("east", -179), geometry=cell_polygon(180, 0, 181, 1).wkb)
+    crosses = replace(_point("crosses", 179), geometry=cell_polygon(179, 1, 181, 2).wkb)
+    for lon in (-180, 180):
+        assert _index([east, west]).match(Point(lon, 0.5).wkb).row is east
+        assert _index([crosses, west, east]).match(Point(lon, 1).wkb).row is crosses
+
+
+def test_anchored_rectangles_with_overlapping_interiors_remain_ambiguous() -> None:
+    a = replace(_point("a", 0), geometry=box(0, 0, 2, 2).wkb)
+    b = replace(_point("b", 0), geometry=box(0, 0, 1, 1).wkb)
+    with pytest.raises(SpatialMatchError, match="Multiple declared supports"):
+        _index([a, b]).match(Point(0, 0.5).wkb)
 
 
 def test_delivery_cells_share_one_original_support() -> None:

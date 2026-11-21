@@ -76,12 +76,13 @@ its boundary. H3 cells provide coverage when the series declares cell support.
 Equivalent delivery copies of the same original support are matched once.
 Conflicting geometry or models for one support raise a validation error.
 Unmatched assets retain rows with a null `support_id` and a failure reason.
-Overlapping covering supports raise a validation error by default. If you know
-which source supports should take priority, use
+At a shared edge, a point belongs to the rectangular grid cell to the north
+or east. A point on the outer boundary can still match the adjoining cell.
+For other overlaps, use
 `SpatialMatch.covering(preferred_supports=["site-survey", "regional-model"])`.
-The first ID in the list that covers the asset wins. If the list leaves an
-overlap unresolved, evaluation raises a validation error. The priority order is
-stored in saved evaluations.
+The first ID in the list that covers the asset wins, including on a shared
+edge. Unresolved overlaps produce an `overlapping_supports` row failure for
+that asset and series. Saved evaluations retain the priority order.
 
 Use `SpatialMatch.nearest` with point assets and point-supported series. Set
 an explicit distance cap. Results include the matched support and its

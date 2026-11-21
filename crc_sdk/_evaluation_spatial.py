@@ -11,7 +11,7 @@ from typing import cast
 from h3.api import basic_int as h3  # type: ignore[import-untyped]
 from shapely import STRtree, from_wkb  # type: ignore[import-untyped]
 from shapely.affinity import translate  # type: ignore[import-untyped]
-from shapely.geometry import Point, box  # type: ignore[import-untyped]
+from shapely.geometry import MultiPolygon, Point, Polygon, box  # type: ignore[import-untyped]
 from shapely.geometry.base import BaseGeometry  # type: ignore[import-untyped]
 
 from ._dataset_schema import _array, _identifier, _number, _object
@@ -145,6 +145,7 @@ class MatchResult:
     row: DatasetRow | None
     distance_metres: float | None = None
     failure_code: str | None = None
+    failure_message: str | None = None
 
 
 def _point_key(point: Point) -> tuple[float, float]:
@@ -152,6 +153,31 @@ def _point_key(point: Point) -> tuple[float, float]:
     if abs(latitude) == 90:
         return latitude, 0.0
     return latitude, -180.0 if longitude == 180 else longitude
+
+
+def _rectangular_quadrants(point: Point, shape: BaseGeometry) -> set[tuple[bool, bool]]:
+    """Return the local (north, east) quadrants inside an axis-aligned cell."""
+    if not isinstance(shape, (Polygon, MultiPolygon)):
+        return set()
+    pieces = shape.geoms if isinstance(shape, MultiPolygon) else (shape,)
+    x, y = point.x, point.y
+    longitudes = (x, -x) if abs(x) == 180 else (x,)
+    quadrants: set[tuple[bool, bool]] = set()
+    for piece in pieces:
+        west, south, east, north = piece.bounds
+        if not piece.equals(box(west, south, east, north)):
+            return set()
+        for longitude in longitudes:
+            if west <= longitude <= east and south <= y <= north:
+                vertical = [(False, south < y), (True, y < north)]
+                horizontal = [(False, west < longitude), (True, longitude < east)]
+                quadrants.update(
+                    (above, right)
+                    for above, has_height in vertical
+                    for right, has_width in horizontal
+                    if has_height and has_width
+                )
+    return quadrants
 
 
 def _source_supports(rows: Sequence[DatasetRow]) -> tuple[DatasetRow, ...]:
@@ -300,10 +326,28 @@ class SpatialIndex:
                 rank, preferred = min(ranked)
                 if sum(priority == rank for priority, _ in ranked) == 1:
                     return MatchResult(self._rows[preferred])
+            if isinstance(asset, Point):
+                owner = self._grid_edge_owner(asset, indices)
+                if owner is not None:
+                    return MatchResult(self._rows[owner])
             raise self._ambiguity("overlapping_supports", indices)
         if not indices:
             return MatchResult(None, failure_code="no_covering_support")
         return MatchResult(self._rows[next(iter(indices))])
+
+    def _grid_edge_owner(self, point: Point, indices: set[int]) -> int | None:
+        owners: dict[tuple[bool, bool], int] = {}
+        for index in indices:
+            geometry = self._rows[index].geometry
+            if geometry is None:
+                return None
+            quadrants = _rectangular_quadrants(point, from_wkb(geometry))
+            if not quadrants or not quadrants.isdisjoint(owners):
+                return None
+            owners.update(dict.fromkeys(quadrants, index))
+        # Shared edges belong to the cell to the north or east. Where the
+        # preferred cell is absent, keep coverage from the remaining cells.
+        return owners[max(owners)]
 
     def _nearest(self, asset: BaseGeometry) -> MatchResult:
         if not isinstance(asset, Point):

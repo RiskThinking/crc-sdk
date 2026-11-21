@@ -1157,13 +1157,20 @@ def test_bounded_nearest_and_lower_tail_queries() -> None:
 
 def test_write_and_reopen_preserves_covering_support_priority(tmp_path: Path) -> None:
     duplicate_supports = data(
-        Probability.annual(tail=cf.Tail.UPPER), longitudes=(0.0, 0.0)
+        Probability.annual(tail=cf.Tail.UPPER), longitudes=(0.0, 0.0, 1.0)
     )
-    assets = sites(0.0)
-    assert (
-        duplicate_supports.evaluate(assets).return_periods([10]).validate().valid
-        is False
-    )
+    assets = sites(0.0, 1.0)
+    unresolved = duplicate_supports.evaluate(assets).return_periods([10])
+    path = tmp_path / "overlap.parquet"
+    unresolved.write(path)
+    replay = EvaluationArtifact.open(path).read()
+    assert replay.report.valid
+    assert replay.report.counts.unmatched_assets == 1
+    assert replay.table["support_id"].to_pylist() == [None, "site-2"]
+    failure = replay.table["failure"][0].as_py()
+    assert failure["code"] == "overlapping_supports"
+    assert "site-0" in failure["message"] and "site-1" in failure["message"]
+    assert replay.table["value"].to_pylist() == [None, 1.0]
     policy = SpatialMatch.covering(preferred_supports=["site-1", "site-0"])
     saved = (
         duplicate_supports.evaluate(assets, spatial=policy)
@@ -1172,7 +1179,7 @@ def test_write_and_reopen_preserves_covering_support_priority(tmp_path: Path) ->
     )
     result = EvaluationArtifact.open(saved.path).read()
     assert result.metadata.spatial == policy
-    assert result.table["support_id"].to_pylist() == ["site-1"]
+    assert result.table["support_id"].to_pylist() == ["site-1", "site-2"]
 
 
 @pytest.mark.parametrize("choose_variables", [False, True])
