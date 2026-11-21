@@ -50,6 +50,7 @@ if TYPE_CHECKING:
 
 MetadataT = TypeVar("MetadataT", bound=ArtifactMetadata)
 ArtifactT = TypeVar("ArtifactT", covariant=True)
+_PARQUET_THRIFT_STRING_LIMIT = 100_000_000
 SampleFitSpec: TypeAlias = crc_framework.SampleFit | crc_framework.ModelSelection
 QuantileFitSpec: TypeAlias = (
     crc_framework.QuantileFit
@@ -76,6 +77,15 @@ def _schema(metadata: ArtifactMetadata) -> pa.Schema:
     if isinstance(metadata, CollectionMetadata):
         return collection_arrow_schema(metadata)
     return evaluation_arrow_schema(metadata)
+
+
+def _check_evaluation_footer_size(schema_bytes: int) -> None:
+    # The embedded Arrow schema is the largest Thrift string in the footer.
+    if 4 * ((schema_bytes + 2) // 3) > _PARQUET_THRIFT_STRING_LIMIT:
+        raise ValueError(
+            "Evaluation metadata exceeds the Parquet footer size limit. "
+            "Split the assets into smaller evaluations before writing."
+        )
 
 
 def _unit(measurement: crc_framework.Measurement | None) -> str:
@@ -513,6 +523,8 @@ class Execution(Generic[MetadataT, ArtifactT]):
         evaluation = isinstance(metadata, EvaluationMetadata)
         schema = _schema(metadata)
         storage_schema = _evaluation_parquet_schema(schema) if evaluation else schema
+        if evaluation:
+            _check_evaluation_footer_size(storage_schema.serialize().size)
         destination.parent.mkdir(parents=True, exist_ok=True)
         descriptor, name = tempfile.mkstemp(
             prefix=f".{destination.name}.", suffix=".parquet", dir=destination.parent
@@ -541,9 +553,10 @@ class Execution(Generic[MetadataT, ArtifactT]):
                     schema = _schema(metadata)
                     footer = dict(schema.metadata or {})
                     storage_schema = storage_schema.with_metadata(schema.metadata)
-                    footer[b"ARROW:schema"] = base64.b64encode(
-                        storage_schema.serialize().to_pybytes()
-                    )
+                    serialized_schema = storage_schema.serialize()
+                    if evaluation:
+                        _check_evaluation_footer_size(serialized_schema.size)
+                    footer[b"ARROW:schema"] = base64.b64encode(serialized_schema)
                     writer.add_key_value_metadata(footer)
                     self._scope.emit(Stage.WRITING, written, written)
             except DataValidationError as error:
