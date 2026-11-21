@@ -65,7 +65,8 @@ AssetId: TypeAlias = str | int
 _SourceKey: TypeAlias = tuple[str | None, str | None]
 _EvaluationSeries: TypeAlias = tuple[str | None, SeriesKey]
 
-_UNMATCHED = frozenset({"no_covering_support", "outside_max_distance"})
+_COVERING_FAILURES = frozenset({"no_covering_support", "overlapping_supports"})
+_UNMATCHED = _COVERING_FAILURES | {"outside_max_distance"}
 _EXPOSURE_FAILURES_WITHOUT_FIT = _UNMATCHED | {"query_outside_support"}
 _RELATIVE_RESULT_TOLERANCE = 1e-12
 
@@ -1135,14 +1136,14 @@ def _validate_match(
     if support is None:
         if resource is not None or distance is not None:
             raise ValueError("an unmatched asset cannot have a resource or distance")
-        expected = (
-            "no_covering_support"
+        reasons = (
+            _COVERING_FAILURES
             if metadata.spatial.kind is SpatialMatchKind.COVERING
-            else "outside_max_distance"
+            else {"outside_max_distance"}
         )
         if (
             failure is None
-            or failure.code != expected
+            or failure.code not in reasons
             or failure.record is not None
             or failure.kind is not None
         ):
@@ -1523,7 +1524,9 @@ class EvaluationValidator:
                 failure if response is None else exposure_failure,
             )
         match_key = _dump((asset_id, member, *series))
-        match_record = _dump(match)
+        match_record = _dump(
+            (match, failure.code if match[0] is None and failure is not None else None)
+        )
         self._db.execute(
             "INSERT OR IGNORE INTO matches VALUES (?, ?)", (match_key, match_record)
         )

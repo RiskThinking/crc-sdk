@@ -11,6 +11,7 @@ import pytest
 from shapely import from_wkb  # type: ignore[import-untyped]
 
 from crc_sdk import (
+    Assets,
     Bounds,
     Cache,
     Dataset,
@@ -77,6 +78,38 @@ def test_raster_quantiles_do_not_require_annual_probability_meaning(
     recipe = Dataset.from_raster(rasters, variable=_VARIABLE)
     assert recipe.inspect().series[0].probability is None
     assert recipe.read().metadata.spec.series[0].probability is None
+
+
+def test_evaluation_assigns_raster_edges_to_one_cell(tmp_path: Path) -> None:
+    rasterio = pytest.importorskip("rasterio")
+    paths = {q: tmp_path / f"q-{q}.tif" for q in (0.9, 0.99)}
+    for offset, path in enumerate(paths.values()):
+        with rasterio.open(
+            path,
+            "w",
+            driver="GTiff",
+            width=2,
+            height=2,
+            count=1,
+            dtype="float64",
+            crs="EPSG:4326",
+            transform=rasterio.transform.from_origin(-75.25, 45.25, 0.25, 0.25),
+        ) as raster:
+            raster.write(np.array([[100.0, 200.0], [300.0, 400.0]]) + offset, 1)
+    assets = Assets(
+        {
+            "asset_id": ["corner", "vertical", "horizontal", "outer", "interior"],
+            "longitude": [-75.0, -75.0, -75.125, -74.75, -75.125],
+            "latitude": [45.0, 44.875, 45.0, 45.25, 44.875],
+        }
+    )
+    result = _recipe(paths).evaluate(assets).return_periods([50]).read()
+    assert result.table["value"].to_pylist() == pytest.approx(
+        [cell + 8 / 9 for cell in (200, 400, 100, 200, 300)]
+    )
+    assert (
+        result.report.counts.matched_assets == 5 and result.report.counts.no_data == 0
+    )
 
 
 def test_raster_builder_and_inspection_are_pure_immutable_and_empty_no_io(

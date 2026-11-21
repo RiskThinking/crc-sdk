@@ -48,7 +48,12 @@ from ._evaluation_schema import (
     evaluation_metadata_from_schema,
     evaluation_table,
 )
-from ._evaluation_spatial import SpatialIndex, SpatialMatch, SpatialMatchError
+from ._evaluation_spatial import (
+    MatchResult,
+    SpatialIndex,
+    SpatialMatch,
+    SpatialMatchError,
+)
 from ._graph import DataValidationError, ExecutionScope, Node, NodeStream
 from ._inspection import (
     Bounds,
@@ -653,6 +658,13 @@ class _EvaluationNode(Node[EvaluationMetadata]):
                     try:
                         matches[key] = index.match(assets.geometries[i])
                     except SpatialMatchError as error:
+                        if error.code == "overlapping_supports":
+                            matches[key] = MatchResult(
+                                None,
+                                failure_code=error.code,
+                                failure_message=str(error),
+                            )
+                            continue
                         raise _diagnostic(
                             error.code,
                             f"Asset {asset_id!r}: {error}",
@@ -672,8 +684,7 @@ class _EvaluationNode(Node[EvaluationMetadata]):
                         else resources[(key, support.support_id, support.cell_id)]
                     )
                     exposures = tuple(
-                        _value(query, value, item, support, match.failure_code)
-                        for value in query.values
+                        _value(query, value, item, match) for value in query.values
                     )
                     finite_exposure = any(
                         level is not None and math.isfinite(level)
@@ -858,13 +869,13 @@ def _value(
     query: EvaluationQuery,
     value: float,
     series: SeriesSpec,
-    row: DatasetRow | None,
-    match_failure: str | None,
+    match: MatchResult,
 ) -> tuple[float | None, EvaluationFailure | None]:
+    row = match.row
     if row is None:
         return None, EvaluationFailure(
-            match_failure or "no_covering_support",
-            "No source support matched this asset and series.",
+            match.failure_code or "no_covering_support",
+            match.failure_message or "No source support matched this asset and series.",
         )
     if isinstance(row.failure, SourceUnavailable):
         return None, EvaluationFailure(
