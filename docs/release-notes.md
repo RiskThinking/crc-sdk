@@ -20,10 +20,13 @@ and impact interfaces from `crc_framework`.
   the original data support by default. Each named impact response keeps its
   own measurement, units, and resolved model. [Collections](collections.md) ·
   [Evaluation](evaluation.md)
+- Simulate annual insured losses from named damage responses and policy terms.
+  Combine separately insured perils with explicit dependence, compare paired
+  climate runs, and recompute metrics on saved samples. [Annual insured loss](insurance.md)
 
 Dataset and evaluation artifacts use format `2.0`. Portable collection bundles,
-native evidence, and taxonomy catalogs use format `1.0`. The package reads
-files in these formats. [Version ledger](../crc_sdk/contracts/api/release.json)
+native evidence, taxonomy catalogs, and annual loss artifacts use format
+`1.0`. [Version ledger](../crc_sdk/contracts/api/release.json)
 
 ### CRC Open availability
 

@@ -10,6 +10,7 @@ guide.
 | [Collections](collections.md) | Scientific membership, normalized rows, selected snapshots, and portable bundles |
 | [Execution and persistence](execution.md) | Automatic graph execution, fitting, selection, previews, streaming, caching, and atomic writes |
 | [Evaluation](evaluation.md) | Asset matching, probability and return-period queries, named responses, and saved evaluations |
+| [Annual insured loss](insurance.md) | Policy columns, one-peril simulation, paired climate comparisons, and portable annual losses |
 | [Sources and native evidence](sources.md) | Provider capabilities, discovery, temporal reductions, user evidence, and assets |
 | [Python interface contract](api-reference.md) | Canonical imports, ownership, and installed-package checks |
 | [Source resource terms](data-licences.md) | License, attribution, retrieval time, and content identity |

@@ -15,7 +15,7 @@ import crc_framework as cf
 import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
 
-from ._assets import Assets
+from ._assets import AssetData, Assets
 from ._collection import DatasetCollection, _CollectionNode, _PlanningScope
 from ._collection_schema import CollectionMetadata
 from ._contextual_impact import ContextualImpact, ResponseContext
@@ -457,8 +457,16 @@ def _empty_metadata(query: EvaluationQuery, plan: _Plan) -> EvaluationMetadata:
 
 
 class _EvaluationNode(Node[EvaluationMetadata]):
-    def __init__(self, plan: _Plan) -> None:
+    def __init__(
+        self,
+        plan: _Plan,
+        *,
+        required_asset_columns: tuple[str, ...] = (),
+        collect_context_failures: bool = False,
+    ) -> None:
         self.plan = plan
+        self.required_asset_columns = required_asset_columns
+        self.collect_context_failures = collect_context_failures
         self.source = plan._response_source()
         source_node = (
             _CollectionNode(
@@ -477,6 +485,8 @@ class _EvaluationNode(Node[EvaluationMetadata]):
             plan.spatial._document(),
             None if plan.query is None else (plan.query.kind.value, plan.query.values),
             plan.selection.responses,
+            required_asset_columns,
+            collect_context_failures,
             [
                 (
                     r.name,
@@ -489,6 +499,20 @@ class _EvaluationNode(Node[EvaluationMetadata]):
                 for r in self.responses
             ],
         )
+
+    def _asset_data(
+        self, scope: ExecutionScope, responses: Sequence[Response]
+    ) -> AssetData:
+        columns = tuple(
+            dict.fromkeys(
+                (
+                    *self.required_asset_columns,
+                    *(col for r in responses for col in r.columns),
+                )
+            )
+        )
+        with native_data(scope=scope, source="assets"):
+            return self.plan.assets._materialize(scope, required_columns=columns)
 
     def open(self, scope: ExecutionScope) -> NodeStream[EvaluationMetadata]:
         plan = self.plan
@@ -520,8 +544,7 @@ class _EvaluationNode(Node[EvaluationMetadata]):
         required_columns = tuple(
             dict.fromkeys(col for r in responses for col in r.columns)
         )
-        with native_data(scope=scope, source="assets"):
-            assets = plan.assets._materialize(scope, required_columns=required_columns)
+        assets = self._asset_data(scope, responses)
         ids = tuple(assets.table[assets.id_column].to_pylist())
         asset_schema = _asset_fields(plan.assets, assets.table.schema)
         assert asset_schema is not None
@@ -649,6 +672,7 @@ class _EvaluationNode(Node[EvaluationMetadata]):
             scope.emit(Stage.JOINING, sum(map(len, grouped.values())))
             pending: list[EvaluationRow] = []
             pending_assets: list[int] = []
+            context_failures: list[ExecutionDiagnostic] = []
             asset_values = assets.table.select(asset_columns) if asset_columns else None
             contexts = assets.context
             for i, asset_id in enumerate(ids):
@@ -697,6 +721,7 @@ class _EvaluationNode(Node[EvaluationMetadata]):
                     for response in outputs:
                         resolved = None
                         resolution_id = None
+                        context_failure = None
                         if (
                             response is not None
                             and support is not None
@@ -707,14 +732,22 @@ class _EvaluationNode(Node[EvaluationMetadata]):
                                     context, resolved_models
                                 )
                             except cf.ImpactError as error:
-                                raise _diagnostic(
+                                diagnostic = _diagnostic(
                                     error.code,
                                     f"Asset {asset_id!r}, response {response.name!r}: "
                                     f"{error.message}",
                                     stage=Stage.EVALUATION,
                                     support_id=support.support_id,
-                                ) from error
-                            if not isinstance(response.model, cf.Impact):
+                                )
+                                if not self.collect_context_failures:
+                                    raise diagnostic from error
+                                context_failures.extend(diagnostic.diagnostics)
+                                context_failure = EvaluationFailure(
+                                    error.code, error.message
+                                )
+                            if resolved is not None and not isinstance(
+                                response.model, cf.Impact
+                            ):
                                 resolution_id = _resolution_id(resolved, case_context)
                                 resolution_key = (response.name, resolution_id)
                                 if resolution_key not in resolutions:
@@ -740,7 +773,12 @@ class _EvaluationNode(Node[EvaluationMetadata]):
                             result, failure = source_exposure
                             if response is not None and failure is None:
                                 assert result is not None
-                                result, failure = _apply_response(result, resolved)
+                                if context_failure is not None and math.isfinite(
+                                    result
+                                ):
+                                    result, failure = None, context_failure
+                                else:
+                                    result, failure = _apply_response(result, resolved)
                             if failure is not None:
                                 no_data += 1
                                 note(
@@ -795,6 +833,8 @@ class _EvaluationNode(Node[EvaluationMetadata]):
                     assets=asset_values,
                     asset_indices=pending_assets,
                 )
+            if context_failures:
+                raise DataValidationError(tuple(context_failures))
             with native_data(scope=scope, source="evaluation"):
                 validator.finish(metadata(complete=True))
 

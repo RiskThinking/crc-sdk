@@ -51,6 +51,7 @@ jobs:
           .venv/bin/python tools/generate_evidence_contracts.py --check
           .venv/bin/python tools/generate_collection_contracts.py --check
           .venv/bin/python tools/generate_evaluation_contracts.py --check
+          .venv/bin/python tools/generate_loss_contracts.py --check
           .venv/bin/python ../crc-framework-rs/tools/sync_data_contracts.py --sdk . --check
           .venv/bin/python ../crc-framework-rs/tools/api_contracts/check.py
       - name: Ruff

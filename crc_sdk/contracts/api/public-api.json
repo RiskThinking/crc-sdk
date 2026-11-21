@@ -2843,6 +2843,314 @@
         "period_id": "str | None"
       }
     },
+    "LossArtifact": {
+      "kind": "class",
+      "methods": {
+        "open": {
+          "parameters": [
+            {
+              "name": "path",
+              "kind": "positional_or_keyword",
+              "annotation": "LocalPath"
+            }
+          ],
+          "returns": "LossArtifact",
+          "binding": "class"
+        },
+        "read": {
+          "parameters": [],
+          "returns": "LossResult"
+        },
+        "validate": {
+          "parameters": [],
+          "returns": "ExecutionReport"
+        }
+      },
+      "properties": {
+        "path": "Path",
+        "metadata": "LossRunMetadata",
+        "report": "ExecutionReport"
+      }
+    },
+    "LossComparison": {
+      "kind": "class",
+      "properties": {
+        "baseline_run_id": "str",
+        "future_run_id": "str",
+        "baseline_average_annual_loss": "float",
+        "future_average_annual_loss": "float",
+        "average_annual_loss_change": "float",
+        "trial_differences": "numpy.typing.NDArray[numpy.float64]",
+        "trial_ids": "range"
+      }
+    },
+    "LossExecution": {
+      "kind": "class",
+      "constructor": {
+        "parameters": [
+          {
+            "name": "recipe",
+            "kind": "positional_or_keyword",
+            "annotation": "LossRun"
+          },
+          {
+            "name": "runtime",
+            "kind": "keyword_only",
+            "annotation": "Runtime | None",
+            "default": null
+          }
+        ],
+        "returns": "Self"
+      },
+      "methods": {
+        "validate": {
+          "parameters": [],
+          "returns": "ExecutionReport"
+        },
+        "read": {
+          "parameters": [],
+          "returns": "LossResult"
+        },
+        "write": {
+          "parameters": [
+            {
+              "name": "path",
+              "kind": "positional_or_keyword",
+              "annotation": "LocalPath"
+            },
+            {
+              "name": "overwrite",
+              "kind": "keyword_only",
+              "annotation": "bool",
+              "default": false
+            }
+          ],
+          "returns": "LossArtifact"
+        }
+      },
+      "properties": {
+        "report": "ExecutionReport"
+      }
+    },
+    "LossResult": {
+      "kind": "class",
+      "methods": {
+        "summary": {
+          "parameters": [
+            {
+              "name": "levels",
+              "kind": "keyword_only",
+              "annotation": "Sequence[float]",
+              "default": {
+                "tuple": [
+                  0.95,
+                  0.99,
+                  0.995
+                ]
+              }
+            },
+            {
+              "name": "return_periods",
+              "kind": "keyword_only",
+              "annotation": "Sequence[float]",
+              "default": {
+                "tuple": [
+                  10,
+                  25,
+                  50,
+                  100,
+                  200,
+                  250
+                ]
+              }
+            }
+          ],
+          "returns": "crc_framework.AnnualLossSummary"
+        },
+        "compare": {
+          "parameters": [
+            {
+              "name": "baseline",
+              "kind": "positional_or_keyword",
+              "annotation": "LossResult"
+            }
+          ],
+          "returns": "LossComparison"
+        }
+      },
+      "properties": {
+        "metadata": "LossRunMetadata",
+        "totals": "numpy.typing.NDArray[numpy.float64]",
+        "components": "Mapping[str, numpy.typing.NDArray[numpy.float64]] | None",
+        "trial_ids": "range",
+        "report": "ExecutionReport"
+      }
+    },
+    "LossRun": {
+      "kind": "class",
+      "constructor": {
+        "parameters": [
+          {
+            "name": "evaluation",
+            "kind": "positional_or_keyword",
+            "annotation": "Evaluation"
+          },
+          {
+            "name": "damage_response",
+            "kind": "keyword_only",
+            "annotation": "str"
+          },
+          {
+            "name": "peril",
+            "kind": "keyword_only",
+            "annotation": "str"
+          },
+          {
+            "name": "policy",
+            "kind": "keyword_only",
+            "annotation": "PolicyColumns"
+          },
+          {
+            "name": "spec",
+            "kind": "keyword_only",
+            "annotation": "crc_framework.AnnualLossSpec | None",
+            "default": null
+          },
+          {
+            "name": "tail_completion",
+            "kind": "keyword_only",
+            "annotation": "crc_framework.TailCompletion | None",
+            "default": null
+          },
+          {
+            "name": "secondary_stream",
+            "kind": "keyword_only",
+            "annotation": "int",
+            "default": 0
+          },
+          {
+            "name": "include_components",
+            "kind": "keyword_only",
+            "annotation": "bool",
+            "default": false
+          }
+        ],
+        "returns": "Self"
+      },
+      "methods": {
+        "explain": {
+          "parameters": [
+            {
+              "name": "runtime",
+              "kind": "keyword_only",
+              "annotation": "Runtime | None",
+              "default": null
+            }
+          ],
+          "returns": "Explanation"
+        },
+        "validate": {
+          "parameters": [
+            {
+              "name": "runtime",
+              "kind": "keyword_only",
+              "annotation": "Runtime | None",
+              "default": null
+            }
+          ],
+          "returns": "ExecutionReport"
+        },
+        "read": {
+          "parameters": [
+            {
+              "name": "runtime",
+              "kind": "keyword_only",
+              "annotation": "Runtime | None",
+              "default": null
+            }
+          ],
+          "returns": "LossResult"
+        },
+        "write": {
+          "parameters": [
+            {
+              "name": "path",
+              "kind": "positional_or_keyword",
+              "annotation": "LocalPath"
+            },
+            {
+              "name": "overwrite",
+              "kind": "keyword_only",
+              "annotation": "bool",
+              "default": false
+            },
+            {
+              "name": "runtime",
+              "kind": "keyword_only",
+              "annotation": "Runtime | None",
+              "default": null
+            }
+          ],
+          "returns": "LossArtifact"
+        },
+        "execute": {
+          "parameters": [
+            {
+              "name": "runtime",
+              "kind": "keyword_only",
+              "annotation": "Runtime | None",
+              "default": null
+            }
+          ],
+          "returns": "LossExecution"
+        },
+        "separate_perils": {
+          "parameters": [
+            {
+              "name": "runs",
+              "kind": "positional_or_keyword",
+              "annotation": "Sequence[LossRun]"
+            },
+            {
+              "name": "dependence",
+              "kind": "keyword_only",
+              "annotation": "crc_framework.PerilDependence"
+            }
+          ],
+          "returns": "LossRun",
+          "binding": "class"
+        }
+      }
+    },
+    "LossRunMetadata": {
+      "kind": "class",
+      "methods": {
+        "to_json": {
+          "parameters": [],
+          "returns": "str"
+        }
+      },
+      "properties": {
+        "run_id": "str",
+        "currency": "str",
+        "valuation_basis": "str",
+        "portfolio_sha256": "str",
+        "report": "ExecutionReport",
+        "spec": "crc_framework.AnnualLossSpec",
+        "secondary_stream": "int",
+        "rng_algorithm": "str",
+        "framework_version": "str",
+        "sdk_version": "str",
+        "total_insured_value": "float",
+        "correlation_repair": "crc_framework.CorrelationRepair | None",
+        "component_count": "int",
+        "totals_sha256": "str",
+        "components_sha256": "str | None",
+        "trial_count": "int",
+        "perils": "Mapping[str, PerilLossEvidence]",
+        "dependence": "crc_framework.PerilDependence | None"
+      }
+    },
     "MeasurementChange": {
       "kind": "class",
       "constructor": {
@@ -3288,6 +3596,17 @@
         "description": "str"
       }
     },
+    "PerilLossEvidence": {
+      "kind": "class",
+      "properties": {
+        "series": "SeriesReference",
+        "damage_response": "str",
+        "evidence": "Mapping[str, ScientificValue]",
+        "input_sha256": "str",
+        "terms_sha256": "str",
+        "vulnerability_sha256": "str"
+      }
+    },
     "Period": {
       "kind": "class",
       "methods": {
@@ -3362,6 +3681,62 @@
       "properties": {
         "longitude": "str",
         "latitude": "str"
+      }
+    },
+    "PolicyColumns": {
+      "kind": "class",
+      "constructor": {
+        "parameters": [
+          {
+            "name": "total_insured_value",
+            "kind": "keyword_only",
+            "annotation": "str | float"
+          },
+          {
+            "name": "currency",
+            "kind": "keyword_only",
+            "annotation": "str"
+          },
+          {
+            "name": "valuation_basis",
+            "kind": "keyword_only",
+            "annotation": "str"
+          },
+          {
+            "name": "deductible",
+            "kind": "keyword_only",
+            "annotation": "str | float",
+            "default": 0.0
+          },
+          {
+            "name": "limit",
+            "kind": "keyword_only",
+            "annotation": "str | float | None",
+            "default": null
+          },
+          {
+            "name": "share",
+            "kind": "keyword_only",
+            "annotation": "str | float",
+            "default": 1.0
+          },
+          {
+            "name": "deductible_fraction",
+            "kind": "keyword_only",
+            "annotation": "str | float | None",
+            "default": null
+          }
+        ],
+        "returns": "Self"
+      },
+      "properties": {
+        "total_insured_value": "str | float",
+        "currency": "str",
+        "valuation_basis": "str",
+        "deductible": "str | float",
+        "limit": "str | float | None",
+        "share": "str | float",
+        "deductible_fraction": "str | float | None"
       }
     },
     "Probability": {
@@ -4540,7 +4915,9 @@
               "name": "preferred_supports",
               "kind": "keyword_only",
               "annotation": "Sequence[str]",
-              "default": {"tuple": []}
+              "default": {
+                "tuple": []
+              }
             }
           ],
           "returns": "SpatialMatch",
@@ -4934,7 +5311,12 @@
       "FitRecord",
       "Duration",
       "PrecipitationAmount",
-      "DegreeDayUnit"
+      "DegreeDayUnit",
+      "AnnualLossSpec",
+      "AnnualLossSummary",
+      "CorrelationRepair",
+      "PerilDependence",
+      "TailCompletion"
     ]
   },
   "external_modules": [
@@ -5003,7 +5385,8 @@
     "validation_errors": "validate returns data failures; other terminals raise ValidationError with same report",
     "impact_composition": "named responses add; duplicate response requires explicit replace",
     "no_aliases": "no implicit trim, casefold, taxonomy aliases, API aliases or historical parser paths",
-    "omitted_selection_default": "Ellipsis singleton; None and empty remain distinct"
+    "omitted_selection_default": "Ellipsis singleton; None and empty remain distinct",
+    "annual_loss": "single selected annual probability series and named fraction damage response; complete point book; explicit damage-tail endpoints when ranks omit 0 or 1"
   },
   "removals": {
     "symbols": [
@@ -5098,7 +5481,8 @@
     "types.EllipsisType",
     "datetime.date",
     "numpy.typing.NDArray",
-    "numpy.generic"
+    "numpy.generic",
+    "numpy.float64"
   ],
   "provider_indicators": {
     "ERA5": {

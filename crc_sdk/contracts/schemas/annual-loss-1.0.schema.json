@@ -1,0 +1,808 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://climateriskcommons.org/schemas/annual-loss/1.0",
+  "title": "Insured annual loss sample",
+  "$comment": "The run ID and declared perils in metadata scope all trial rows. Trial IDs are zero-based and consecutive. Component IDs are stored on trial 0, and every trial's loss vector follows that order. Component IDs are insured interest IDs for one peril and peril IDs for multiple perils. The typed reader checks footer and payload digests and their alignment.",
+  "type": "object",
+  "properties": {
+    "metadata": {
+      "$ref": "#/$defs/metadata"
+    },
+    "rows": {
+      "type": "array",
+      "minItems": 1
+    }
+  },
+  "required": [
+    "metadata",
+    "rows"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "spec": {
+      "type": "object",
+      "properties": {
+        "trials": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9223372036854775807
+        },
+        "seed": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "peak_correlation": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "decay_length_km": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "damage_cv": {
+          "type": "number",
+          "minimum": 0
+        },
+        "repair_tolerance": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "calibration_source": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "trials",
+        "seed",
+        "peak_correlation",
+        "decay_length_km",
+        "damage_cv",
+        "repair_tolerance",
+        "calibration_source"
+      ],
+      "additionalProperties": false
+    },
+    "correlation_repair": {
+      "type": "object",
+      "properties": {
+        "minimum_eigenvalue": {
+          "type": "number"
+        },
+        "maximum_change": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "minimum_eigenvalue",
+        "maximum_change"
+      ],
+      "additionalProperties": false
+    },
+    "selected_series": {
+      "type": "object",
+      "properties": {
+        "variable": {
+          "$ref": "https://climateriskcommons.org/schemas/dataset/2.0#/$defs/variable"
+        },
+        "scenario": {
+          "anyOf": [
+            {
+              "$ref": "https://climateriskcommons.org/schemas/dataset/2.0#/$defs/scenario"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "period": {
+          "anyOf": [
+            {
+              "$ref": "https://climateriskcommons.org/schemas/dataset/2.0#/$defs/period"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "probability": {
+          "allOf": [
+            {
+              "$ref": "https://climateriskcommons.org/schemas/dataset/2.0#/$defs/probability"
+            },
+            {
+              "properties": {
+                "kind": {
+                  "const": "annual"
+                }
+              }
+            }
+          ]
+        }
+      },
+      "required": [
+        "variable",
+        "scenario",
+        "period",
+        "probability"
+      ],
+      "additionalProperties": false
+    },
+    "tail_completion": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "const": "finite_endpoints"
+        },
+        "lower": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "upper": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "required": [
+        "name",
+        "lower",
+        "upper"
+      ],
+      "additionalProperties": false
+    },
+    "resolved_impact": {
+      "type": "object",
+      "properties": {
+        "resolution_id": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "impact_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "asset_count": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "resolution_id",
+        "impact_sha256",
+        "asset_count"
+      ],
+      "additionalProperties": false
+    },
+    "input_resource": {
+      "type": "object",
+      "properties": {
+        "member_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resource_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "https://climateriskcommons.org/schemas/dataset/2.0#/$defs/source"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "transformations": {
+          "type": "array",
+          "items": {
+            "$ref": "https://climateriskcommons.org/schemas/dataset/2.0#/$defs/transformation"
+          }
+        }
+      },
+      "required": [
+        "member_id",
+        "resource_id",
+        "source",
+        "transformations"
+      ],
+      "additionalProperties": false
+    },
+    "evidence": {
+      "type": "object",
+      "properties": {
+        "damage_response": {
+          "type": "string",
+          "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+        },
+        "response_model_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "vulnerability_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "member_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "variable_id": {
+          "type": "string",
+          "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+        },
+        "scenario_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "period_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^period:[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "series": {
+          "$ref": "#/$defs/selected_series"
+        },
+        "probability_grid": {
+          "type": "array",
+          "minItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          }
+        },
+        "tail_completion": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/tail_completion"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "matched_support_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "matched_supports_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "resolved_impacts": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/resolved_impact"
+          }
+        },
+        "input_resources": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/input_resource"
+          }
+        }
+      },
+      "required": [
+        "damage_response",
+        "response_model_sha256",
+        "vulnerability_sha256",
+        "member_id",
+        "variable_id",
+        "scenario_id",
+        "period_id",
+        "series",
+        "probability_grid",
+        "tail_completion",
+        "matched_support_count",
+        "matched_supports_sha256",
+        "resolved_impacts",
+        "input_resources"
+      ],
+      "additionalProperties": false
+    },
+    "peril": {
+      "type": "object",
+      "properties": {
+        "terms_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "input_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence"
+        }
+      },
+      "required": [
+        "terms_sha256",
+        "input_sha256",
+        "evidence"
+      ],
+      "additionalProperties": false
+    },
+    "dependence": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "perils": {
+              "type": "array",
+              "maxItems": 0
+            },
+            "correlation": {
+              "type": "null"
+            },
+            "calibration_source": {
+              "type": "null"
+            },
+            "observation_count": {
+              "type": "null"
+            },
+            "observations_sha256": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "perils",
+            "correlation",
+            "calibration_source",
+            "observation_count",
+            "observations_sha256"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "perils": {
+              "type": "array",
+              "minItems": 2,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+              }
+            },
+            "correlation": {
+              "type": "array",
+              "minItems": 2,
+              "items": {
+                "type": "array",
+                "minItems": 2,
+                "items": {
+                  "type": "number",
+                  "minimum": -1,
+                  "maximum": 1
+                }
+              }
+            },
+            "calibration_source": {
+              "type": "string",
+              "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+            },
+            "observation_count": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "observations_sha256": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "perils",
+            "correlation",
+            "calibration_source",
+            "observation_count",
+            "observations_sha256"
+          ],
+          "additionalProperties": false,
+          "if": {
+            "properties": {
+              "observation_count": {
+                "type": "null"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "observations_sha256": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "observations_sha256": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "const": "1.0"
+        },
+        "loss_basis": {
+          "const": "insured"
+        },
+        "run_id": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "perils": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/peril"
+          }
+        },
+        "dependence": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/dependence"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "currency": {
+          "type": "string",
+          "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+        },
+        "valuation_basis": {
+          "type": "string",
+          "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+        },
+        "portfolio_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "report": {
+          "allOf": [
+            {
+              "$ref": "https://climateriskcommons.org/schemas/dataset/2.0#/$defs/report"
+            },
+            {
+              "properties": {
+                "valid": {
+                  "const": true
+                }
+              }
+            }
+          ]
+        },
+        "spec": {
+          "$ref": "#/$defs/spec"
+        },
+        "secondary_stream": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "stream_layout": {
+          "const": "shared-primary-independent-secondary"
+        },
+        "rng_algorithm": {
+          "type": "string",
+          "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+        },
+        "framework_version": {
+          "type": "string",
+          "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+        },
+        "sdk_version": {
+          "type": "string",
+          "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+        },
+        "total_insured_value": {
+          "type": "number",
+          "minimum": 0
+        },
+        "correlation_repair": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/correlation_repair"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "component_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "totals_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "components_sha256": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "version",
+        "loss_basis",
+        "run_id",
+        "perils",
+        "dependence",
+        "currency",
+        "valuation_basis",
+        "portfolio_sha256",
+        "report",
+        "spec",
+        "secondary_stream",
+        "stream_layout",
+        "rng_algorithm",
+        "framework_version",
+        "sdk_version",
+        "total_insured_value",
+        "correlation_repair",
+        "component_count",
+        "totals_sha256",
+        "components_sha256"
+      ],
+      "additionalProperties": false,
+      "if": {
+        "properties": {
+          "component_count": {
+            "const": 0
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "components_sha256": {
+            "type": "null"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "components_sha256": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "perils": {
+                "maxProperties": 1
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "dependence": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "dependence": {
+                "$ref": "#/$defs/dependence"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "component_ids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+      }
+    },
+    "component_losses": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "number",
+        "minimum": 0
+      }
+    },
+    "total_row": {
+      "type": "object",
+      "properties": {
+        "trial_id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "insured_loss": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "trial_id",
+        "insured_loss"
+      ],
+      "additionalProperties": false
+    },
+    "first_component_row": {
+      "type": "object",
+      "properties": {
+        "trial_id": {
+          "const": 0
+        },
+        "insured_loss": {
+          "type": "number",
+          "minimum": 0
+        },
+        "component_ids": {
+          "$ref": "#/$defs/component_ids"
+        },
+        "component_losses": {
+          "$ref": "#/$defs/component_losses"
+        }
+      },
+      "required": [
+        "trial_id",
+        "insured_loss",
+        "component_ids",
+        "component_losses"
+      ],
+      "additionalProperties": false
+    },
+    "subsequent_component_row": {
+      "type": "object",
+      "properties": {
+        "trial_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "insured_loss": {
+          "type": "number",
+          "minimum": 0
+        },
+        "component_ids": {
+          "type": "null"
+        },
+        "component_losses": {
+          "$ref": "#/$defs/component_losses"
+        }
+      },
+      "required": [
+        "trial_id",
+        "insured_loss",
+        "component_ids",
+        "component_losses"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "if": {
+    "properties": {
+      "metadata": {
+        "properties": {
+          "component_count": {
+            "const": 0
+          }
+        }
+      }
+    }
+  },
+  "then": {
+    "properties": {
+      "rows": {
+        "items": {
+          "$ref": "#/$defs/total_row"
+        }
+      }
+    }
+  },
+  "else": {
+    "properties": {
+      "rows": {
+        "prefixItems": [
+          {
+            "$ref": "#/$defs/first_component_row"
+          }
+        ],
+        "items": {
+          "$ref": "#/$defs/subsequent_component_row"
+        }
+      }
+    }
+  }
+}
