@@ -489,17 +489,16 @@ def test_shared_dataset_fixtures_agree_across_schema_python_and_arrow() -> None:
     from referencing import Registry, Resource
 
     resources = []
-    framework_contracts = (
-        ROOT.parent / "crc-framework-rs/python/crc_framework/contracts"
-    )
+    framework_contracts = files("crc_framework").joinpath("contracts")
     for directory in (
-        framework_contracts / "scientific",
-        framework_contracts / "numerical",
-        ROOT / "crc_sdk/contracts/schemas",
+        framework_contracts.joinpath("scientific"),
+        framework_contracts.joinpath("numerical"),
+        files("crc_sdk").joinpath("contracts", "schemas"),
     ):
-        for path in directory.glob("*.schema.json"):
-            schema = json.loads(path.read_text())
-            resources.append((schema["$id"], Resource.from_contents(schema)))
+        for path in directory.iterdir():
+            if path.name.endswith(".schema.json"):
+                schema = json.loads(path.read_text(encoding="utf-8"))
+                resources.append((schema["$id"], Resource.from_contents(schema)))
     validator = Draft202012Validator(
         dataset_json_schema(),
         registry=Registry().with_resources(resources),
