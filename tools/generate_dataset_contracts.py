@@ -592,10 +592,27 @@ def fixture_cases() -> dict[str, object]:
     return {"accepted": accepted, "rejected": rejected}
 
 
+# Fit records name the framework build that produced them. Fixtures pin one
+# engine so a framework release does not change their bytes; the native
+# consumer keeps a byte-identical copy.
+FIXTURE_ENGINE = "crc-framework/1.0.0"
+
+
+def _pin_engine(value: object) -> object:
+    if isinstance(value, dict):
+        return {
+            key: FIXTURE_ENGINE if key == "engine_version" else _pin_engine(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_pin_engine(item) for item in value]
+    return value
+
+
 def build() -> dict[str, bytes]:
     values = {
         "schemas/dataset-2.0.schema.json": dataset_json_schema(),
-        "fixtures/dataset-2.0.json": fixture_cases(),
+        "fixtures/dataset-2.0.json": _pin_engine(fixture_cases()),
     }
     return {
         name: (json.dumps(value, indent=2, allow_nan=False) + "\n").encode()
