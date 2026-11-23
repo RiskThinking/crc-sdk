@@ -34,10 +34,16 @@ def main() -> None:
         if not contract:
             raise SystemExit(f"empty Python contract in {package}")
         ledgers.append(ledger)
-    if ledgers[0] != ledgers[1]:
+    # The SDK owns its own version; a framework release cannot name the SDK
+    # releases that will later pair with it. Everything else must agree.
+    framework_ledger, sdk_ledger = (
+        {**ledger, "packages": {**ledger["packages"], "sdk": None}}
+        for ledger in ledgers
+    )
+    if framework_ledger != sdk_ledger:
         raise SystemExit("framework and SDK release ledgers disagree")
 
-    versions = ledgers[0]["packages"]
+    versions = ledgers[1]["packages"]
     for distribution, key in (("crc-framework", "framework"), ("crc-sdk", "sdk")):
         actual = importlib.metadata.version(distribution)
         expected = (
