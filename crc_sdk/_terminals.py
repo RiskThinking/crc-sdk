@@ -534,9 +534,12 @@ class Execution(Generic[MetadataT, ArtifactT]):
         try:
             try:
                 # Metadata is finalized in the footer after the only output pass.
-                with pq.ParquetWriter(
-                    staging, storage_schema.remove_metadata()
-                ) as writer:
+                # The sink is closed even when the writer rejects the schema, so
+                # the staging file can be removed on Windows.
+                with (
+                    pa.OSFile(str(staging), mode="wb") as sink,
+                    pq.ParquetWriter(sink, storage_schema.remove_metadata()) as writer,
+                ):
                     written = 0
                     for batch in self._scope.iter_batches(node):
                         if evaluation:
