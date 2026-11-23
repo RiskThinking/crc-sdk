@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       framework_ref:
-        description: Paired framework branch or commit
+        description: Framework branch, tag or commit to build instead of the locked release
         type: string
   workflow_call:
     inputs:
@@ -16,6 +16,12 @@ on:
 
 permissions:
   contents: read
+
+concurrency:
+  # A new push to a pull request supersedes its running checks. Branch, tag and
+  # release runs get a group of their own, so they are never queued or cancelled.
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
 
 jobs:
   lint:
@@ -28,22 +34,39 @@ jobs:
       - uses: actions/checkout@v7
         with:
           path: crc-sdk
-      - uses: actions/checkout@v7
-        with:
-          repository: RiskThinking/crc-framework-rs
-          ref: ${{ inputs.framework_ref || vars.CRC_FRAMEWORK_REF || 'main' }}
-          path: crc-framework-rs
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@v10.2.0
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
           enable-cache: true
           cache-dependency-glob: '**/uv.lock'
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - name: Resolve the framework revision
+        id: framework
+        env:
+          FRAMEWORK_REF: ${{ inputs.framework_ref }}
+        run: |
+          version=$(uv run --no-project --python 3.12 python -c 'import json; print(json.load(open("crc_sdk/contracts/api/release.json"))["packages"]["framework"])')
+          echo "ref=${FRAMEWORK_REF:-v$version}" >> "$GITHUB_OUTPUT"
+      # The framework repository supplies the shared contract tools. Its source
+      # is built only when a framework_ref replaces the locked release.
+      - uses: actions/checkout@v7
+        with:
+          repository: RiskThinking/crc-framework-rs
+          ref: ${{ steps.framework.outputs.ref }}
+          path: crc-framework-rs
+          persist-credentials: false
+      - if: inputs.framework_ref
+        uses: dtolnay/rust-toolchain@stable
+      - if: inputs.framework_ref
+        uses: Swatinem/rust-cache@v2
         with:
           workspaces: crc-framework-rs -> target
-      - name: Install locked paired packages
-        run: uv sync --locked --all-extras --python 3.12
+      - name: Install locked packages
+        env:
+          FRAMEWORK_REF: ${{ inputs.framework_ref }}
+        run: |
+          uv sync --locked --all-extras --python 3.12
+          if [[ -n "$FRAMEWORK_REF" ]]; then
+            uv pip install --python .venv ../crc-framework-rs
+          fi
       - name: Verify declared release and Python contracts
         run: |
           .venv/bin/python tools/api_contracts/check.py
@@ -55,10 +78,10 @@ jobs:
           .venv/bin/python ../crc-framework-rs/tools/api_contracts/check.py
       - name: Ruff
         run: |
-          uv run --locked --all-extras --python 3.12 ruff check .
-          uv run --locked --all-extras --python 3.12 ruff format --check .
+          .venv/bin/ruff check .
+          .venv/bin/ruff format --check .
       - name: Mypy
-        run: uv run --locked --all-extras --python 3.12 mypy
+        run: .venv/bin/mypy
 
   tests:
     name: ${{ matrix.os }} Python ${{ matrix.python }}${{ matrix.pyarrow && format(' / PyArrow {0}', matrix.pyarrow) || '' }}
@@ -81,34 +104,55 @@ jobs:
       - uses: actions/checkout@v7
         with:
           path: crc-sdk
-      - uses: actions/checkout@v7
-        with:
-          repository: RiskThinking/crc-framework-rs
-          ref: ${{ inputs.framework_ref || vars.CRC_FRAMEWORK_REF || 'main' }}
-          path: crc-framework-rs
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@v10.2.0
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
           enable-cache: true
           cache-dependency-glob: '**/uv.lock'
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - name: Resolve the framework revision
+        id: framework
+        env:
+          FRAMEWORK_REF: ${{ inputs.framework_ref }}
+        run: |
+          version=$(uv run --no-project --python 3.12 python -c 'import json; print(json.load(open("crc_sdk/contracts/api/release.json"))["packages"]["framework"])')
+          echo "ref=${FRAMEWORK_REF:-v$version}" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        with:
+          repository: RiskThinking/crc-framework-rs
+          ref: ${{ steps.framework.outputs.ref }}
+          path: crc-framework-rs
+          persist-credentials: false
+      - if: inputs.framework_ref
+        uses: dtolnay/rust-toolchain@stable
+      - if: inputs.framework_ref
+        uses: Swatinem/rust-cache@v2
         with:
           workspaces: crc-framework-rs -> target
-      - name: Build paired wheels
+      - name: Build wheels
+        env:
+          FRAMEWORK_REF: ${{ inputs.framework_ref }}
         run: |
-          uv build --project ../crc-framework-rs --wheel --python "${{ matrix.python }}" --out-dir "$RUNNER_TEMP/framework-wheel"
-          uv build --no-sources --python "${{ matrix.python }}" --out-dir "$RUNNER_TEMP/sdk-wheel"
+          uv build --python "${{ matrix.python }}" --out-dir "$RUNNER_TEMP/sdk-wheel"
+          mkdir -p "$RUNNER_TEMP/framework-wheel"
+          if [[ -n "$FRAMEWORK_REF" ]]; then
+            uv build --project ../crc-framework-rs --wheel --python "${{ matrix.python }}" --out-dir "$RUNNER_TEMP/framework-wheel"
+          fi
+          # Locked versions constrain every install; a framework built from
+          # source replaces the locked release.
+          uv export --locked --all-extras --no-emit-project --no-hashes --output-file "$RUNNER_TEMP/locked.txt" --quiet
+          if [[ -n "$FRAMEWORK_REF" ]]; then
+            sed -i '/^crc-framework==/d' "$RUNNER_TEMP/locked.txt"
+          fi
       - name: Verify base installs and public interfaces
         run: |
           set -euo pipefail
+          shopt -s nullglob
           uv venv --python "${{ matrix.python }}" "$RUNNER_TEMP/wheel-venv"
           if [[ "$RUNNER_OS" == Windows ]]; then
             wheel_python="$RUNNER_TEMP/wheel-venv/Scripts/python.exe"
           else
             wheel_python="$RUNNER_TEMP/wheel-venv/bin/python"
           fi
-          uv pip install --python "$wheel_python" "$RUNNER_TEMP"/framework-wheel/*.whl "$RUNNER_TEMP"/sdk-wheel/*.whl
+          uv pip install --python "$wheel_python" -c "$RUNNER_TEMP/locked.txt" "$RUNNER_TEMP"/sdk-wheel/*.whl "$RUNNER_TEMP"/framework-wheel/*.whl
           uv pip check --python "$wheel_python"
           echo "WHEEL_PYTHON=$wheel_python" >> "$GITHUB_ENV"
           cd "$RUNNER_TEMP"
@@ -120,12 +164,12 @@ jobs:
           PYARROW_VERSION: ${{ matrix.pyarrow }}
         run: |
           set -euo pipefail
+          shopt -s nullglob
           wheels=( "$RUNNER_TEMP"/sdk-wheel/*.whl )
-          uv export --locked --all-extras --no-emit-local --no-hashes --output-file "$RUNNER_TEMP/test-requirements.txt" --quiet
           if [[ -n "$PYARROW_VERSION" ]]; then
-            sed -i "/^pyarrow==/s/==[0-9.]*/==$PYARROW_VERSION/" "$RUNNER_TEMP/test-requirements.txt"
+            sed -i "/^pyarrow==/s/==[0-9.]*/==$PYARROW_VERSION/" "$RUNNER_TEMP/locked.txt"
           fi
-          uv pip install --python "$WHEEL_PYTHON" -r "$RUNNER_TEMP/test-requirements.txt" "${wheels[0]}[zarr,netcdf,raster,test]" "$RUNNER_TEMP"/framework-wheel/*.whl
+          uv pip install --python "$WHEEL_PYTHON" -r "$RUNNER_TEMP/locked.txt" "${wheels[0]}[zarr,netcdf,raster,test]" "$RUNNER_TEMP"/framework-wheel/*.whl
           uv pip check --python "$WHEEL_PYTHON"
           cd "$RUNNER_TEMP"
           "$WHEEL_PYTHON" -I -m pytest -q --import-mode=importlib "$GITHUB_WORKSPACE/crc-sdk/tests"
