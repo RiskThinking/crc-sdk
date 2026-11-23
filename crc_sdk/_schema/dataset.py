@@ -374,6 +374,8 @@ def dataset_arrow_schema(metadata: DatasetMetadata | None = None) -> pa.Schema:
                     [
                         pa.field("values", numbers, nullable=False),
                         pa.field("probabilities", numbers, nullable=False),
+                        # Sample counts of empirical laws keep their exact ranks.
+                        pa.field("counts", pa.list_(pa.uint64())),
                     ]
                 ),
             ),
