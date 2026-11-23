@@ -100,7 +100,8 @@ def test_monthly_chirps_reads_only_selected_native_windows_and_replays_offline(
 
     def open_source(path: Any, *args: Any, **kwargs: Any) -> Any:
         result = original(path, *args, **kwargs)
-        return Reader(result) if str(path).startswith(publication.as_uri()) else result
+        source = str(path).startswith((publication.as_uri(), str(publication)))
+        return Reader(result) if source else result
 
     monkeypatch.setattr(rasterio, "open", open_source)
     inventory = _recipe().inspect()
