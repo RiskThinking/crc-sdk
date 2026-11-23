@@ -564,7 +564,8 @@ class Execution(Generic[MetadataT, ArtifactT]):
             if evaluation:
                 with pq.ParquetFile(staging) as stored:
                     _check_evaluation_fields(stored.schema_arrow, schema, parquet=True)
-            with staging.open("rb") as handle:
+            # Windows flushes only handles opened for writing.
+            with staging.open("r+b") as handle:
                 os.fsync(handle.fileno())
                 digest = "sha256:" + hashlib.file_digest(handle, "sha256").hexdigest()
             result = self._recipe._saved(destination, metadata, digest)
