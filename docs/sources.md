@@ -321,10 +321,11 @@ counts. Produced and no-data counts describe the selected rows. The read also
 retains the transformation history needed to replay fitted curves. Files
 combined in one read must agree on the history of any shared variable or
 scenario identity. Pass a returned series reference directly to `select` to
-pin that exact choice. For a known published variable or scenario, use a
-provider enum such as `CRCOpen.Variable.ANNUAL_MAXIMUM_DAILY_PRECIPITATION` or
-`CRCOpen.Scenario.SSP585` in the corresponding selector. User-owned IDs in a
-release can be selected by their exact values.
+pin that exact choice. Common published variables have provider enum members,
+such as `CRCOpen.Variable.ANNUAL_MAXIMUM_DAILY_PRECIPITATION` (`crc:rx1day`),
+and the scenario is `CRCOpen.Scenario.SSP585`. Select any other published
+variable by its exact ID, such as `"crc:hot_days"`; `inspect()` lists them all.
+User-owned IDs in a release are also selected by their exact values.
 
 ## Define asset inputs
 

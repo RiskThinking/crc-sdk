@@ -437,9 +437,12 @@ to `select(...)`.
 | `AgriculturalLayer` | `USDACropland`, `FieldsOfTheWorld` |
 | `OSClimateProvider`, `HazardDataset.from_zarr` | Removed |
 
-CRC Open hazard names are enum members, for example
-`CRCOpen.Variable.ANNUAL_MAXIMUM_DAILY_PRECIPITATION` (formerly `"rx1day"`) and
-`CRCOpen.Scenario.SSP585`.
+A 0.x CRC Open hazard name becomes the variable ID `crc:<name>`: `"hot_days"` is
+`"crc:hot_days"`. Common ones also have enum members, for example
+`CRCOpen.Variable.ANNUAL_MAXIMUM_DAILY_PRECIPITATION` (`"rx1day"`) and
+`CRCOpen.Variable.ANNUAL_MAXIMUM_DAILY_MAXIMUM_TEMPERATURE` (`"tx_max"`). The
+scenario is `CRCOpen.Scenario.SSP585`, and `horizon` becomes one of the
+release's periods (for most variables, four-year windows), which `inspect()` lists.
 
 **Note:** 0.11 downloaded the public CRC Open release by default. A production
 CRC Open release in Dataset 2.0 format is not yet published, so 1.0 needs an

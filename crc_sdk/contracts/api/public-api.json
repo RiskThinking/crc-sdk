@@ -293,23 +293,20 @@
         "Variable": {
           "kind": "enum",
           "members": {
-            "ANNUAL_MAXIMUM_DAILY_MAXIMUM_TEMPERATURE": "crc:txx",
-            "ANNUAL_MINIMUM_DAILY_MAXIMUM_TEMPERATURE": "crc:txn",
-            "ANNUAL_MAXIMUM_DAILY_MINIMUM_TEMPERATURE": "crc:tnx",
-            "ANNUAL_MINIMUM_DAILY_MINIMUM_TEMPERATURE": "crc:tnn",
+            "ANNUAL_MAXIMUM_DAILY_MAXIMUM_TEMPERATURE": "crc:tx_max",
+            "ANNUAL_MINIMUM_DAILY_MAXIMUM_TEMPERATURE": "crc:tx_min",
+            "ANNUAL_MAXIMUM_DAILY_MINIMUM_TEMPERATURE": "crc:tn_max",
+            "ANNUAL_MINIMUM_DAILY_MINIMUM_TEMPERATURE": "crc:tn_min",
             "ANNUAL_MAXIMUM_DAILY_PRECIPITATION": "crc:rx1day",
             "ANNUAL_MAXIMUM_FIVE_DAY_PRECIPITATION": "crc:rx5day",
             "ANNUAL_MEAN_WET_DAY_PRECIPITATION": "crc:sdii",
-            "ANNUAL_MAXIMUM_CONSECUTIVE_DRY_DAYS": "crc:cdd",
-            "ANNUAL_MAXIMUM_CONSECUTIVE_WET_DAYS": "crc:cwd",
-            "ANNUAL_FROST_DAY_COUNT": "crc:fd",
-            "ANNUAL_SUMMER_DAY_COUNT": "crc:su",
-            "ANNUAL_TROPICAL_NIGHT_COUNT": "crc:tr",
+            "ANNUAL_MAXIMUM_CONSECUTIVE_DRY_DAYS": "crc:max_consecutive_dry_days",
+            "ANNUAL_MAXIMUM_CONSECUTIVE_WET_DAYS": "crc:maximum_consecutive_wet_days",
+            "ANNUAL_FROST_DAY_COUNT": "crc:frost_days",
+            "ANNUAL_SUMMER_DAY_COUNT": "crc:summer_days",
+            "ANNUAL_TROPICAL_NIGHT_COUNT": "crc:tropical_nights",
             "ANNUAL_MEAN_DAILY_TEMPERATURE_RANGE": "crc:dtr",
-            "ANNUAL_TOTAL_WET_DAY_PRECIPITATION": "crc:prcptot",
-            "ANNUAL_PRECIPITATION_DAYS_AT_LEAST_TEN_MILLIMETRES": "crc:r10mm",
-            "ANNUAL_PRECIPITATION_DAYS_AT_LEAST_TWENTY_MILLIMETRES": "crc:r20mm",
-            "ANNUAL_PRECIPITATION_ABOVE_BASELINE_WET_DAY_NINETY_FIFTH_PERCENTILE": "crc:r95p"
+            "ANNUAL_TOTAL_WET_DAY_PRECIPITATION": "crc:prcptot"
           }
         },
         "Scenario": {
