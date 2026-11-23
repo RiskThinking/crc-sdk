@@ -690,13 +690,18 @@ def test_refuses_to_replace_arbitrary_or_extended_directory(tmp_path: Path) -> N
     unrelated = tmp_path / "unowned"
     unrelated.mkdir()
     (unrelated / "notes").write_text("keep")
-    with pytest.raises(ValueError, match="existing complete collection"):
+    # Without atomic directory exchange, every replacement is refused.
+    atomic = sys.platform in {"linux", "darwin"}
+    unavailable = "unavailable on this platform"
+    with pytest.raises(
+        ValueError, match="existing complete collection" if atomic else unavailable
+    ):
         recipe.write(unrelated, overwrite=True)
     assert (unrelated / "notes").read_text() == "keep"
     saved = tmp_path / "bundle"
     recipe.write(saved)
     (saved / "notes").write_text("keep")
-    with pytest.raises(ValueError, match="outside"):
+    with pytest.raises(ValueError, match="outside" if atomic else unavailable):
         recipe.write(saved, overwrite=True)
     assert (saved / "notes").read_text() == "keep"
 
