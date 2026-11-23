@@ -13,6 +13,7 @@ from types import ModuleType
 from typing import Any, Generic, Literal, TypeVar
 
 import pytest
+from crc_framework._version import python_version
 
 ROOT = Path(__file__).resolve().parents[1]
 ResultT = TypeVar("ResultT")
@@ -229,6 +230,15 @@ def test_duplicate_json_fields_are_rejected(
         checker.load_contracts(tmp_path)
 
 
+def _ledger_versions(release: dict[str, Any]) -> Any:
+    packages = release["packages"]
+    installed = {
+        "crc-sdk": packages["sdk"],
+        "crc-framework": python_version(packages["framework"]),
+    }
+    return lambda name: installed[name]
+
+
 def test_framework_version_floor_comes_from_the_ledger(
     checker: ModuleType,
     declarations: tuple[dict[str, Any], dict[str, Any]],
@@ -236,11 +246,15 @@ def test_framework_version_floor_comes_from_the_ledger(
 ) -> None:
     _, release = declarations
     project = tmp_path / "pyproject.toml"
+    packages = release["packages"]
+    requirement = packages["framework_requirement"]
     project.write_text(
-        '[project]\nversion = "1.0.0"\ndependencies = ["crc-framework>=1.0.0,<2"]\n'
+        f'[project]\nversion = "{packages["sdk"]}"\ndependencies = ["{requirement}"]\n'
     )
     checker.check_versions(release, tmp_path)
-    project.write_text(project.read_text().replace(">=1.0.0,<2", ">=0.6.0,<0.7"))
+    project.write_text(
+        project.read_text().replace(requirement, "crc-framework>=0.6.0,<0.7")
+    )
     with pytest.raises(checker.ContractError, match="framework dependency"):
         checker.check_versions(release, tmp_path)
 
@@ -336,7 +350,9 @@ def test_runtime_rejects_undeclared_aliases_outside_all(
     monkeypatch.setattr(checker, "import_runtime", lambda path: package)
     monkeypatch.setattr(checker, "files", lambda owner: tmp_path)
     monkeypatch.setattr(checker, "packaged_errors", lambda path: [])
-    monkeypatch.setattr(checker.importlib.metadata, "version", lambda name: "1.0.0")
+    monkeypatch.setattr(
+        checker.importlib.metadata, "version", _ledger_versions(release)
+    )
 
     def missing(name: str) -> None:
         raise ModuleNotFoundError(name)
@@ -440,7 +456,9 @@ def test_function_exports_validate_their_signature(
     monkeypatch.setattr(checker, "import_runtime", lambda path: package)
     monkeypatch.setattr(checker, "files", lambda owner: tmp_path)
     monkeypatch.setattr(checker, "packaged_errors", lambda path: [])
-    monkeypatch.setattr(checker.importlib.metadata, "version", lambda name: "1.0.0")
+    monkeypatch.setattr(
+        checker.importlib.metadata, "version", _ledger_versions(release)
+    )
 
     def missing(name: str) -> None:
         raise ModuleNotFoundError(name)
