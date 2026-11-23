@@ -39,8 +39,6 @@ jobs:
   validate:
     needs: versions
     uses: ./.github/workflows/ci.yml
-    with:
-      framework_ref: v${{ needs.versions.outputs.framework }}
 
   package:
     name: Test the release candidate
@@ -48,7 +46,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.2.0
+      - uses: astral-sh/setup-uv@v10.3.3
       - name: Build
         run: uv build --no-sources --python 3.12
 
@@ -71,7 +69,7 @@ jobs:
           "$wheel_python" -I "$GITHUB_WORKSPACE/tools/check_wheels.py"
           "$wheel_python" -I -m pytest -q --import-mode=importlib "$GITHUB_WORKSPACE/tests"
           "$wheel_python" -I "$GITHUB_WORKSPACE/tools/check_examples.py"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: sdk-release
           path: dist/
@@ -86,7 +84,7 @@ jobs:
       contents: write
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: sdk-release
           path: dist
