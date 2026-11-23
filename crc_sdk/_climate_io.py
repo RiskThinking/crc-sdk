@@ -374,6 +374,17 @@ def zarr_resources(snapshot: ZarrSnapshot) -> tuple[ResourceIdentity, ...]:
     return tuple(snapshot._resource_map.values())
 
 
+def _raster_location(uri: str) -> str:
+    # GDAL reads file URIs as "/C:/..." on Windows; open local files by path.
+    import urllib.parse
+    import urllib.request
+
+    parsed = urllib.parse.urlsplit(uri)
+    if parsed.scheme == "file":
+        return urllib.request.url2pathname(parsed.path)
+    return uri
+
+
 def raster_window_snapshot(
     scope: ExecutionScope,
     uri: str,
@@ -396,7 +407,7 @@ def raster_window_snapshot(
         options = {"GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR"}
         if before.get("etag"):
             options["GDAL_HTTP_HEADERS"] = "If-Match: " + before["etag"]
-        with rasterio.Env(**options), rasterio.open(uri) as source:
+        with rasterio.Env(**options), rasterio.open(_raster_location(uri)) as source:
             if source.crs is None or source.count != 1:
                 raise ValueError("source raster requires one band and an explicit CRS")
             windows = []
