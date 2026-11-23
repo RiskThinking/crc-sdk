@@ -27,6 +27,8 @@ dependencies = [
     "duckdb>=1.4,<2",
     "pyarrow>=18",
     "fsspec>=2024",
+    # PyArrow converts zoned timestamps with the IANA database, which Windows lacks.
+    "tzdata; sys_platform == 'win32'",
 ]
 
 [project.urls]
