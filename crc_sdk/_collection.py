@@ -1664,7 +1664,8 @@ def _finish_resource(
     finally:
         writer.close()
     relative = _resource_path(resource_id)
-    with (staging / relative).open("rb") as handle:
+    # Windows flushes only handles opened for writing.
+    with (staging / relative).open("r+b") as handle:
         os.fsync(handle.fileno())
         digest = "sha256:" + hashlib.file_digest(handle, "sha256").hexdigest()
     return replace(resource, path=relative, sha256=digest)
