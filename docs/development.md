@@ -4,11 +4,9 @@
 
 ## Setup and checks
 
-Development resolves `crc-framework` from the sibling checkout
-`../crc-framework-rs`. Check out the matching framework source there before
-installing the SDK environment. The `tool.uv.sources` entry is a development
-source override only; built SDK wheels retain the declared
-`crc-framework>=1.0.0,<2` dependency and do not contain a filesystem dependency.
+The lockfile pins the published `crc-framework` release recorded in
+`crc_sdk/contracts/api/release.json`, so no framework checkout or Rust
+toolchain is needed.
 
 ```sh
 uv sync --locked --all-extras
@@ -20,15 +18,30 @@ uv run ruff check .
 uv run ruff format --check .
 ```
 
-To install without uv, create a virtual environment and install the paired
-framework followed by `python -m pip install -e ".[zarr,netcdf,raster,test]"`.
+To install without uv, create a virtual environment and run
+`python -m pip install --pre -e ".[zarr,netcdf,raster,test]"`; `--pre` is
+needed while the framework requirement is a prerelease.
+
+To work against unreleased framework changes, check out
+[crc-framework-rs](https://github.com/RiskThinking/crc-framework-rs) next to
+this repository and replace the locked release in the environment:
+
+```sh
+uv sync --locked --all-extras
+uv pip install -e ../crc-framework-rs
+```
+
+The next `uv sync` restores the locked release. The installed-contract check
+(`tools/api_contracts/check.py --runtime`) reports a framework version that
+differs from the ledger.
 
 The test suite uses offline source fixtures. The example check runs the Python
 examples from the README and guides, using a fresh directory for each guide.
 It supplies a local release index to the CRC Open example and syntax-checks
 the explicitly marked live provider snippets.
 
-Check the generated artifact definitions against the paired framework.
+Check the generated artifact definitions. The last command needs a
+framework checkout at the release tag in the ledger.
 
 ```sh
 uv run python tools/generate_dataset_contracts.py --check
@@ -56,16 +69,17 @@ uv run python ../crc-framework-rs/tools/sync_data_contracts.py --sdk . --check
 
 ## CI
 
-CI runs contracts, lint, and typing checks. It tests the paired SDK and framework
-on Linux with Python 3.11–3.14 and on Windows.
+CI runs contracts, lint, and typing checks. It tests the SDK with the locked
+framework release on Linux with Python 3.11–3.14 and on Windows.
 CI verifies imports and contracts in a fresh base wheel installation, then
 runs the offline suite and guide examples against the installed wheels with
 locked test dependencies. A separate Linux Python 3.12 job checks the minimum
 supported PyArrow version.
 
-CI uses the framework's `main` branch by default. Set the `CRC_FRAMEWORK_REF`
-repository variable or dispatch the workflow with a framework ref to test a
-specific pairing.
+CI checks out the framework at the release tag in the ledger only for its
+contract tools. To test against unreleased framework code, dispatch the
+workflow with a `framework_ref`; CI then builds that framework revision from
+source and uses it instead of the locked release.
 
 ## Releases
 
@@ -74,9 +88,10 @@ specific pairing.
    lockfiles, and release checks.
    Run `uv lock` after changing dependencies.
 2. Publish the framework version recorded in the ledger. Merge the SDK and
-   push the SDK package tag, such as `v1.0.0`.
+   push the SDK package tag, which is `v` plus the `pyproject.toml` version,
+   such as `v1.0.0a1` or `v1.0.0`.
 3. The SDK release workflow checks that the tag matches the SDK package
-   version and runs paired CI at the exact framework tag in the ledger. It
+   version and runs CI with the locked framework release. It
    builds the wheel and source distribution, installs the wheel with the exact
    published framework version, and verifies the installed contracts, tests,
    and examples against local fixtures. The release publishes the verified
