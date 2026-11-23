@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from dataclasses import replace
 from pathlib import Path
 from typing import Literal
@@ -451,12 +452,21 @@ def test_saved_handles_pin_content_and_execution_replay_keeps_consumed_bytes(
     path = tmp_path / "depth.parquet"
     saved = quantile_recipe().write(path)
     latest = Dataset.open(path)
+    # Windows cannot replace a file that an open execution is still reading.
+    replaceable_while_open = sys.platform != "win32"
     with latest.execute() as execution:
         assert execution.validate().valid
         original = table_to_rows(execution.read().table)[0]
-        quantile_recipe(scale=10).write(path, overwrite=True)
+        if replaceable_while_open:
+            quantile_recipe(scale=10).write(path, overwrite=True)
+        else:
+            with pytest.raises(PermissionError):
+                quantile_recipe(scale=10).write(path, overwrite=True)
         same = table_to_rows(execution.read().table)[0]
         assert original._document() == same._document()
+    if not replaceable_while_open:
+        quantile_recipe(scale=10).write(path, overwrite=True)
+    assert [item.name for item in tmp_path.iterdir()] == [path.name]
     with pytest.raises(OSError, match="identity mismatch"):
         saved.read()
     changed = table_to_rows(Dataset.open(path).read().table)[0]
