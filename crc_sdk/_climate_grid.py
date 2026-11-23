@@ -283,18 +283,101 @@ def grid_values(
     if not count:
         return result
     time_axis, lat_axis, lon_axis = (dimensions.index(name) for name in wanted)
+    chunks = getattr(array, "chunks", None)
+    windows = plan.windows
+    block = count
+    if isinstance(chunks, tuple) and len(chunks) == 3:
+        # Windows that touch the same storage chunks are read together, so
+        # each chunk is decoded once rather than once per window.
+        buffer = _READ_BUFFER_BYTES
+        if memory_limit is not None:
+            buffer = min(buffer, memory_limit)
+        time_chunk = max(1, int(chunks[time_axis]))
+        windows = _chunk_windows(
+            windows, chunks[lat_axis], chunks[lon_axis], buffer // time_chunk
+        )
+        step_bytes = max(len(w.rows) * len(w.columns) * 8 for w in windows)
+        block = max(time_chunk, buffer // step_bytes // time_chunk * time_chunk)
     selection = [slice(None)] * 3
-    selection[time_axis] = slice(start, stop)
-    for window in plan.windows:
-        selection[lat_axis] = slice(window.rows.start, window.rows.stop)
-        selection[lon_axis] = slice(window.columns.start, window.columns.stop)
-        raw = array[tuple(selection)]
-        unpacked = _unpack_grid_values(raw, array.attrs)
-        values = np.transpose(unpacked, (time_axis, lat_axis, lon_axis))
-        result[:, window.output_indices] = values[
-            :, window.row_offsets, window.column_offsets
-        ]
+    for offset in range(0, count, block):
+        steps = slice(offset, min(offset + block, count))
+        selection[time_axis] = slice(start + steps.start, start + steps.stop)
+        for window in windows:
+            selection[lat_axis] = slice(window.rows.start, window.rows.stop)
+            selection[lon_axis] = slice(window.columns.start, window.columns.stop)
+            raw = array[tuple(selection)]
+            unpacked = _unpack_grid_values(raw, array.attrs)
+            values = np.transpose(unpacked, (time_axis, lat_axis, lon_axis))
+            result[steps, window.output_indices] = values[
+                :, window.row_offsets, window.column_offsets
+            ]
     return result
+
+
+# Upper bound on the source values held in memory per window read.
+_READ_BUFFER_BYTES = 64 * 1024 * 1024
+
+
+def _chunk_windows(
+    windows: tuple[_GridWindow, ...],
+    row_chunk: int,
+    column_chunk: int,
+    step_limit: int,
+) -> tuple[_GridWindow, ...]:
+    # A merged window must still fit the read buffer for one time chunk;
+    # otherwise its parts are read separately and may decode a chunk twice.
+    def span(values: range, size: int) -> tuple[int, int]:
+        size = max(1, int(size))
+        return values.start // size, (values.stop - 1) // size
+
+    groups: list[list[_GridWindow]] = []
+    for window in windows:
+        rows = span(window.rows, row_chunk)
+        columns = span(window.columns, column_chunk)
+        touching = [
+            group
+            for group in groups
+            if any(
+                span(other.rows, row_chunk)[0] <= rows[1]
+                and rows[0] <= span(other.rows, row_chunk)[1]
+                and span(other.columns, column_chunk)[0] <= columns[1]
+                and columns[0] <= span(other.columns, column_chunk)[1]
+                for other in group
+            )
+        ]
+        merged = [window, *(other for group in touching for other in group)]
+        combined = _merge_windows(merged)
+        if len(combined.rows) * len(combined.columns) * 8 > step_limit:
+            groups.append([window])
+            continue
+        for group in touching:
+            groups.remove(group)
+        groups.append(merged)
+    return tuple(_merge_windows(group) for group in groups)
+
+
+def _merge_windows(group: list[_GridWindow]) -> _GridWindow:
+    if len(group) == 1:
+        return group[0]
+    first_row = min(window.rows.start for window in group)
+    first_column = min(window.columns.start for window in group)
+    rows = range(first_row, max(window.rows.stop for window in group))
+    columns = range(first_column, max(window.columns.stop for window in group))
+    return _GridWindow(
+        rows,
+        columns,
+        tuple(index for window in group for index in window.output_indices),
+        tuple(
+            window.rows.start - first_row + offset
+            for window in group
+            for offset in window.row_offsets
+        ),
+        tuple(
+            window.columns.start - first_column + offset
+            for window in group
+            for offset in window.column_offsets
+        ),
+    )
 
 
 def annual_records(

@@ -1768,6 +1768,75 @@ def test_current_grid_decoder_retains_cf_packing_nodata_and_dateline_footprints(
     assert np.isnan(values[1]).all()
 
 
+@pytest.mark.parametrize(
+    ("chunks", "memory_limit"),
+    [((1, 7, 1440), None), ((5, 3, 4), None), ((2, 7, 1440), 4 * 1440 * 8 * 7)],
+)
+def test_grid_reads_match_direct_indexing_for_any_chunk_layout(
+    tmp_path: Path, chunks: tuple[int, int, int], memory_limit: int | None
+) -> None:
+    from crc_sdk._climate_grid import GridCell, GridReadPlan, grid_values
+
+    rng = np.random.default_rng(7)
+    source = rng.random((11, 7, 1440))
+    group = zarr.open_group(tmp_path / "grid.zarr", mode="w", zarr_format=3)
+    array = group.create_array("value", shape=source.shape, chunks=chunks, dtype="f8")
+    array[:] = source
+    array.attrs["_ARRAY_DIMENSIONS"] = ["time", "lat", "lon"]
+    columns = [0, 1, 2, 1438, 1439, 700, 701, 703, 2]
+    cells = tuple(
+        GridCell(int(rng.integers(0, 7)), column, 0.0, 0.0, b"", 0)
+        for column in columns
+    )
+    values = grid_values(
+        array,
+        time_name="time",
+        lat_name="lat",
+        lon_name="lon",
+        start=2,
+        stop=11,
+        plan=GridReadPlan.from_cells(cells),
+        memory_limit=memory_limit,
+    )
+    expected = source[2:11][:, [c.row for c in cells], [c.column for c in cells]]
+    assert np.array_equal(values, expected)
+
+
+def test_grid_reads_decode_each_full_width_chunk_once(tmp_path: Path) -> None:
+    from crc_sdk._climate_grid import GridCell, GridReadPlan, grid_values
+
+    group = zarr.open_group(tmp_path / "global.zarr", mode="w", zarr_format=3)
+    array = group.create_array(
+        "value", shape=(4, 9, 1440), chunks=(1, 9, 1440), dtype="f8"
+    )
+    array[:] = 1.0
+    array.attrs["_ARRAY_DIMENSIONS"] = ["time", "lat", "lon"]
+    reads: list[object] = []
+    original = type(array).__getitem__
+
+    class Counted:
+        attrs = array.attrs
+        chunks = array.chunks
+
+        def __getitem__(self, key: Any) -> Any:
+            reads.append(key)
+            return original(array, key)
+
+    cells = tuple(GridCell(4, column, 0.0, 0.0, b"", 0) for column in range(0, 400, 2))
+    plan = GridReadPlan.from_cells(cells)
+    assert len(plan.windows) == 200
+    grid_values(
+        Counted(),
+        time_name="time",
+        lat_name="lat",
+        lon_name="lon",
+        start=0,
+        stop=4,
+        plan=plan,
+    )
+    assert len(reads) == 1
+
+
 def test_offline_native_chunk_cache_miss_does_not_become_a_source_fill_value(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
