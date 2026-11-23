@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "packages": {
     "framework": "1.0.0-alpha.2",
-    "sdk": "1.0.0a1",
+    "sdk": "1.0.0a2",
     "framework_requirement": "crc-framework>=1.0.0a1,<2"
   },
   "formats": {

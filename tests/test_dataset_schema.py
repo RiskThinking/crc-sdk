@@ -653,3 +653,38 @@ def test_typed_retrieval_times_preserve_the_instant_in_rfc3339_utc() -> None:
     assert info.source is not None and info.source.release is not None
     assert info.source.release.retrieved_at == timestamp
     assert info.source.resources[0].retrieved_at == timestamp
+
+
+def test_decode_curves_returns_each_rows_framework_object() -> None:
+    from crc_sdk import decode_curves
+
+    curves = numerical_cases()
+    counts = ExecutionCounts(requested=len(curves), produced=len(curves))
+    table = rows_to_table(
+        [
+            DatasetRow("user:depth", f"support:{index}", CELL, curve=curve)
+            for index, curve in enumerate(curves)
+        ],
+        replace(
+            metadata(), report=ExecutionReport(complete=True, valid=True, counts=counts)
+        ),
+    )
+    decoded = decode_curves(table)
+    assert [value.to_json() for value in decoded if value is not None] == [
+        curve.to_json() for curve in curves
+    ]
+    assert decode_curves(table.to_batches()[0])[0] is not None
+    with pytest.raises(FitError) as error:
+        fit_samples([1] * 8, SampleFit(family=DistributionFamily.GUMBEL_RIGHT))
+    failed = DatasetRow(
+        "user:depth", "failed", CELL, failure=RetainedFailure.from_error(error.value)
+    )
+    no_data = ExecutionCounts(requested=1, produced=1, no_data=1)
+    failed_info = replace(
+        metadata(), report=ExecutionReport(complete=True, valid=True, counts=no_data)
+    )
+    assert decode_curves(rows_to_table([failed], failed_info)) == (None,)
+    with pytest.raises(ValueError, match="no curve column"):
+        decode_curves(table.drop_columns(["curve"]))
+    with pytest.raises(TypeError):
+        decode_curves(table.to_pylist())

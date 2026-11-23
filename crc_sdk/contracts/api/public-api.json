@@ -4540,7 +4540,9 @@
               "name": "preferred_supports",
               "kind": "keyword_only",
               "annotation": "Sequence[str]",
-              "default": {"tuple": []}
+              "default": {
+                "tuple": []
+              }
             }
           ],
           "returns": "SpatialMatch",
@@ -4873,6 +4875,17 @@
         "measurement": "crc_framework.Measurement | None",
         "label": "str | None"
       }
+    },
+    "decode_curves": {
+      "kind": "function",
+      "parameters": [
+        {
+          "name": "rows",
+          "kind": "positional_or_keyword",
+          "annotation": "pyarrow.Table | pyarrow.RecordBatch"
+        }
+      ],
+      "returns": "tuple[crc_framework.Distribution | crc_framework.QuantileCurve | None, ...]"
     },
     "scientific_identity": {
       "kind": "function",
