@@ -142,7 +142,18 @@ def _coordinate_bounds(
                 "an irregular climate grid must declare its CF cell bounds"
             )
         spacing = abs(float(differences[0]))
-    bounds = np.column_stack((values - spacing / 2, values + spacing / 2))
+    # Neighbouring cells share one computed edge, so a point on it is not left
+    # in a rounding gap or overlap between their polygons.
+    step = spacing if values.size < 2 or values[1] > values[0] else -spacing
+    edges = np.concatenate(
+        (
+            [values[0] - step / 2],
+            (values[:-1] + values[1:]) / 2,
+            [values[-1] + step / 2],
+        )
+    )
+    lower, upper = edges[:-1], edges[1:]
+    bounds = np.column_stack((np.minimum(lower, upper), np.maximum(lower, upper)))
     return values, bounds
 
 
@@ -152,8 +163,10 @@ def cell_polygon(west: float, south: float, east: float, north: float) -> Any:
     width = east - west
     if width <= 0 or width > 360 or north <= south:
         raise ValueError("source grid cell has invalid WGS84 boundaries")
-    left = (west + 180) % 360 - 180
-    right = left + width
+    # Shift both edges by the same multiple of 360; the subtraction is exact,
+    # so cells that share an edge in the source still share it here.
+    turns = 360 * math.floor((west + 180) / 360)
+    left, right = west - turns, east - turns
     if right <= 180:
         return box(left, south, right, north)
     return MultiPolygon(

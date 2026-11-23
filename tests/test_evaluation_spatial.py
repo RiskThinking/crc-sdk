@@ -7,11 +7,12 @@ from collections.abc import Sequence
 from dataclasses import replace
 
 import crc_framework as cf
+import numpy as np
 import pytest
 from h3.api import basic_int as h3  # type: ignore[import-untyped]
 from shapely.geometry import Point, Polygon, box  # type: ignore[import-untyped]
 
-from crc_sdk._climate_grid import cell_polygon
+from crc_sdk._climate_grid import _coordinate_bounds, cell_polygon
 from crc_sdk._evaluation_spatial import (
     Distance,
     SpatialIndex,
@@ -135,6 +136,52 @@ def test_rectangular_edge_ownership_across_the_antimeridian() -> None:
     for lon in (-180, 180):
         assert _index([east, west]).match(Point(lon, 0.5).wkb).row is east
         assert _index([crosses, west, east]).match(Point(lon, 1).wkb).row is crosses
+
+
+class _Axis:
+    def __init__(self, values: Sequence[float] | np.ndarray) -> None:
+        self.values = np.asarray(values, dtype=np.float64)
+        self.attrs: dict[str, str] = {}
+
+    def __getitem__(self, key: object) -> np.ndarray:
+        return self.values
+
+
+@pytest.mark.parametrize("start", [0.0, -180.0])
+def test_neighbouring_cells_on_inexact_spacings_share_their_edges(
+    start: float,
+) -> None:
+    # 0.1 degree and HadGEM3-MM spacings are not binary fractions. Edges read
+    # from CF bounds and edges derived from centres must both meet exactly.
+    for spacing in (0.1, 360 / 432):
+        count = round(360 / spacing)
+        edges = start + spacing * np.arange(count + 1)
+        centres = (edges[:-1] + edges[1:]) / 2
+        for bounds in (
+            np.column_stack((edges[:-1], edges[1:])),
+            _coordinate_bounds({"lon": _Axis(centres)}, "lon", fallback=None)[1],
+        ):
+            cells = [cell_polygon(w, 0, e, 1) for w, e in bounds]
+            for left, right in zip(cells, cells[1:]):
+                if left.geom_type == right.geom_type == "Polygon":
+                    east, west = left.bounds[2], right.bounds[0]
+                    assert east == west or (east, west) == (180, -180)
+    edge = start + 0.3
+    first = replace(
+        _point("first", edge), geometry=cell_polygon(edge - 0.1, 0, edge, 1).wkb
+    )
+    second = replace(
+        _point("second", edge), geometry=cell_polygon(edge, 0, edge + 0.1, 1).wkb
+    )
+    assert _index([first, second]).match(Point(edge, 0.5).wkb).row is second
+
+
+def test_descending_centres_keep_lower_and_upper_bounds() -> None:
+    values, bounds = _coordinate_bounds(
+        {"lat": _Axis([0.15, 0.05, -0.05])}, "lat", fallback=None
+    )
+    assert (bounds[:, 0] < bounds[:, 1]).all()
+    assert bounds[0, 0] == bounds[1, 1] and bounds[1, 0] == bounds[2, 1]
 
 
 def test_anchored_rectangles_with_overlapping_interiors_remain_ambiguous() -> None:
