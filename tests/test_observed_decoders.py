@@ -91,7 +91,8 @@ def test_isd_keeps_one_report_per_timestamp(tmp_path: Path) -> None:
     superseded: list[int] = []
     rows = list(isd_rows(path, "00701800001", 2020, superseded))
     assert [row["value"] for row in rows] == [-0.8, 2.0, 3.1, None, 4.0]
-    assert [row["time"] for row in rows] == sorted(row["time"] for row in rows)
+    times = [str(row["time"]) for row in rows]
+    assert times == sorted(times)
     assert superseded == [4]
 
 
