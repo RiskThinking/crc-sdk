@@ -524,10 +524,12 @@ def _catalogue_csv(provider: str, path: Path) -> tuple[StationReference, ...]:
                 number(lon, "station longitude", missing=True),
                 number(lat, "station latitude", missing=True),
             )
+            # A half-present or out-of-range pair locates nothing; the published
+            # catalogues contain both, and one such row must not reject the rest.
             if (
-                longitude is not None
-                and latitude is not None
-                and not (-180 <= longitude <= 180 and -90 <= latitude <= 90)
+                longitude is None
+                or latitude is None
+                or not (-180 <= longitude <= 180 and -90 <= latitude <= 90)
             ):
                 longitude, latitude = None, None
             result.append(
@@ -581,7 +583,9 @@ def _catalogue(
         )
         params: dict[str, object] = {"f": "json", "limit": 500}
         field = (
-            "monitoring_location_id"
+            # The monitoring-locations collection filters on `id`; daily values keep
+            # `monitoring_location_id`.
+            "id"
             if provider == "usgs"
             else "STATION_NUMBER"
             if provider == "hydat"

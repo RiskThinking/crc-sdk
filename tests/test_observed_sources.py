@@ -149,6 +149,8 @@ class NativeTransport:
             data = (
                 b'"USAF","WBAN","STATION NAME","LAT","LON","BEGIN","END"\n'
                 b'"123456","78901","Test","43.7","-79.4","20000101","20251231"\n'
+                # The live catalogue has stations with only one coordinate.
+                b'"654321","00001","Half","12.5","","20000101","20251231"\n'
             )
         elif u.path.endswith("parquet/GHCNh_TEST0000001_2020.parquet"):
             target = io.BytesIO()
@@ -191,14 +193,14 @@ class NativeTransport:
                 + '-01-01T01:00:00,43.7,-79.4,"+9999,9"\n'
             ).encode()
         elif "monitoring-locations" in u.path:
+            if "monitoring_location_id" in q:  # the live service rejects this filter
+                path.write_bytes(b"unknown property")
+                return 400
             data = _collection(
                 [
                     _feature(
                         "USGS-01234567",
-                        {
-                            "monitoring_location_id": "USGS-01234567",
-                            "monitoring_location_name": "River",
-                        },
+                        {"id": "USGS-01234567", "monitoring_location_name": "River"},
                     )
                 ]
             )

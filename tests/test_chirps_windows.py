@@ -203,3 +203,16 @@ def test_window_keeps_original_offsets_and_overlapping_pixel_identity(
     ]
     assert len(matches) == 1
     assert matches[0]["geometry"] == narrow_record["geometry"]
+
+
+def test_remote_raster_reads_send_the_etag_with_its_quotes() -> None:
+    from crc_sdk._climate_io import _gdal_options
+
+    with _gdal_options(None) as options:
+        assert "GDAL_HTTP_HEADER_FILE" not in options
+    with _gdal_options('"67be0fed-1c41a45"') as options:
+        headers = Path(options["GDAL_HTTP_HEADER_FILE"])
+        # GDAL_HTTP_HEADERS would strip these quotes and servers answer 412.
+        assert headers.read_text() == 'If-Match: "67be0fed-1c41a45"\n'
+        assert "GDAL_HTTP_HEADERS" not in options
+    assert not headers.exists()

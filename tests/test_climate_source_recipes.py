@@ -1248,6 +1248,53 @@ def test_idf_central_quantiles_and_published_confidence_intervals(
     assert first["interval"]["upper"] - first["interval"]["lower"] == pytest.approx(1.0)
 
 
+def test_idf_station_without_a_duration_estimate_is_a_missing_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import io
+    import zipfile
+
+    from crc_sdk._providers import eccc_idf
+    from crc_sdk._source_io import _download
+    from tests.test_eccc_idf import station_text
+
+    inner = io.BytesIO()
+    with zipfile.ZipFile(inner, "w") as archive:
+        archive.writestr("_ON_6158731_STATION.txt", station_text())
+        archive.writestr(
+            "_ON_6068158_STATION.txt", station_text("6068158", missing=("1h",))
+        )
+    root = tmp_path / "idf"
+    root.mkdir()
+    with zipfile.ZipFile(root / "idf_v3-40_2025-12-5.zip", "w") as output:
+        output.writestr("IDF/ON.zip", inner.getvalue())
+    (root / "index.html").write_text('<a href="idf_v3-40_2025-12-5.zip">archive</a>')
+    monkeypatch.setattr(eccc_idf, "ROOT", root.as_uri())
+    monkeypatch.setattr(
+        "crc_sdk._source_io._download",
+        lambda uri, destination: _download(
+            (root / "index.html").as_uri() if uri == root.as_uri() + "/" else uri,
+            destination,
+        ),
+    )
+    recipe = ECCCIDF(
+        province=ECCCIDF.Province.ONTARIO,
+        duration=cf.Duration(1, unit=cf.TimeUnit.HOUR),
+    )
+    runtime = Runtime(cache=Cache.reuse(tmp_path / "cache"))
+    result = recipe.read(runtime=runtime)
+    rows = {row["support_id"]: row for row in result.table.to_pylist()}
+    assert rows["6158731"]["failure"] is None
+    assert rows["6068158"]["curve"] is None
+    assert rows["6068158"]["failure"]["code"] == "source_missing"
+    assert result.report.counts.no_data == 1
+    confidence = recipe.confidence_intervals().read(runtime=runtime)
+    missing = [r for r in confidence.table.to_pylist() if r["support_id"] == "6068158"]
+    assert len(missing) == 6
+    assert all(r["value"] is None and r["interval"] is None for r in missing)
+    assert confidence.report.counts.no_data == 6
+
+
 def test_era5_precipitation_midnight_boundary_and_explicit_coverage(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

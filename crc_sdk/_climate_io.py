@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import math
+import tempfile
 from collections.abc import AsyncIterator, Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
@@ -385,6 +387,23 @@ def _raster_location(uri: str) -> str:
     return uri
 
 
+@contextmanager
+def _gdal_options(etag: str | None) -> Iterator[dict[str, str]]:
+    """GDAL options for one remote read, pinned to `etag` when the server sent one.
+
+    GDAL_HTTP_HEADERS strips an ETag's quotes, which servers then reject with 412;
+    a header file is sent verbatim.
+    """
+    options = {"GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR"}
+    if not etag:
+        yield options
+        return
+    with tempfile.TemporaryDirectory(prefix="crc-gdal-") as directory:
+        headers = Path(directory) / "headers.txt"
+        headers.write_text(f"If-Match: {etag}\n", encoding="utf-8")
+        yield {**options, "GDAL_HTTP_HEADER_FILE": str(headers)}
+
+
 def raster_window_snapshot(
     scope: ExecutionScope,
     uri: str,
@@ -404,10 +423,11 @@ def raster_window_snapshot(
         from rasterio.windows import Window, from_bounds
 
         before = _validator(uri)
-        options = {"GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR"}
-        if before.get("etag"):
-            options["GDAL_HTTP_HEADERS"] = "If-Match: " + before["etag"]
-        with rasterio.Env(**options), rasterio.open(_raster_location(uri)) as source:
+        with (
+            _gdal_options(before.get("etag")) as options,
+            rasterio.Env(**options),
+            rasterio.open(_raster_location(uri)) as source,
+        ):
             if source.crs is None or source.count != 1:
                 raise ValueError("source raster requires one band and an explicit CRS")
             windows = []

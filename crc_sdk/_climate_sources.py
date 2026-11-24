@@ -29,6 +29,7 @@ from ._dataset_schema import (
     ReleaseReference,
     ResourceIdentity,
     SourceIdentity,
+    SourceUnavailable,
     SpatialContract,
     Stage,
     SupportKind,
@@ -105,13 +106,16 @@ def _report(
     source: SourceIdentity,
     *,
     skipped: int = 0,
+    no_data: int = 0,
     diagnostics: tuple[ExecutionDiagnostic, ...] = (),
 ) -> ExecutionReport:
     return ExecutionReport(
         False,
         None,
         diagnostics,
-        ExecutionCounts(requested=count + skipped, produced=count, skipped=skipped),
+        ExecutionCounts(
+            requested=count + skipped, produced=count, skipped=skipped, no_data=no_data
+        ),
         (source,),
     )
 
@@ -815,6 +819,7 @@ class _IDFNode(SourceNode[_IDFMetadata]):
             resources = list(source.resources)
             rows: list[DatasetRow] = []
             records: list[dict[str, object]] = []
+            no_data = 0
             for member, raw, decoded in station_records:
                 station = decoded["station"]
                 geometry = Point(decoded["longitude"], decoded["latitude"]).wkb
@@ -834,6 +839,49 @@ class _IDFNode(SourceNode[_IDFMetadata]):
                     variable = _idf_variable(curve["duration_minutes"])
                     period = _idf_period(decoded)
                     if (variable.id, period.id) not in series:
+                        continue
+                    if curve["intensity"] is None:
+                        no_data += 1
+                        unavailable = SourceUnavailable(
+                            "source_missing",
+                            f"ECCC publishes no {curve['duration_minutes']}-minute "
+                            f"estimate for station {station}.",
+                        )
+                        if self.confidence:
+                            records.extend(
+                                {
+                                    "variable_id": variable.id,
+                                    "scenario_id": None,
+                                    "period_id": period.id,
+                                    "support_id": station,
+                                    "cell_id": cell,
+                                    "geometry": geometry,
+                                    "coordinate": {
+                                        "kind": "return_period",
+                                        "years": return_period,
+                                    },
+                                    "probability": None,
+                                    "value": None,
+                                    "interval": None,
+                                    "failure": {
+                                        "code": unavailable.code,
+                                        "message": unavailable.message,
+                                    },
+                                }
+                                for return_period in decoded["return_periods"]
+                            )
+                            no_data += len(decoded["return_periods"]) - 1
+                        else:
+                            rows.append(
+                                DatasetRow(
+                                    variable_id=variable.id,
+                                    period_id=period.id,
+                                    support_id=station,
+                                    cell_id=cell,
+                                    geometry=geometry,
+                                    failure=unavailable,
+                                )
+                            )
                         continue
                     if self.confidence:
                         for return_period, value, width in zip(
@@ -883,7 +931,9 @@ class _IDFNode(SourceNode[_IDFMetadata]):
                 metadata,
                 source=actual_source,
                 report=_report(
-                    len(records) if self.confidence else len(rows), actual_source
+                    len(records) if self.confidence else len(rows),
+                    actual_source,
+                    no_data=no_data,
                 ),
             )
             table = (
