@@ -9,6 +9,7 @@ import struct
 import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import cast
 
@@ -61,6 +62,13 @@ def _geometry(value: bytes) -> SupportKind:
     """Validate canonical 2D WKB structure and WGS84 coordinates."""
     if not isinstance(value, bytes):
         raise TypeError("geometry must be immutable WKB bytes")
+    return _geometry_kind(value)
+
+
+# A support's geometry repeats across rows and validation passes; the check is a
+# pure function of its bytes, and failures are not cached.
+@lru_cache(maxsize=65536)
+def _geometry_kind(value: bytes) -> SupportKind:
     position = 0
 
     def read(fmt: str) -> tuple[object, ...]:
@@ -228,10 +236,20 @@ def _row(value: object) -> DatasetRow:
 
 
 def validate_rows(
-    rows: Sequence[DatasetRow], metadata: DatasetMetadata
+    rows: Sequence[DatasetRow],
+    metadata: DatasetMetadata,
+    *,
+    stored_fits: Sequence[str | None] | None = None,
 ) -> ExecutionReport:
+    """Validate rows against their metadata.
+
+    ``stored_fits`` holds each row's fit record exactly as stored, when the rows
+    were decoded from it, so the stored text is validated without re-encoding.
+    """
     if not isinstance(metadata, DatasetMetadata):
         raise TypeError("metadata must be DatasetMetadata")
+    if stored_fits is not None and len(stored_fits) != len(rows):
+        raise ValueError("stored_fits must have one entry per row")
     series = {
         (
             s.variable.id,
@@ -244,7 +262,7 @@ def validate_rows(
     supports: dict[str, tuple[bytes | None, int | None]] = {}
     provenance: str | None = None
     failed = 0
-    for row in rows:
+    for position, row in enumerate(rows):
         if not isinstance(row, DatasetRow):
             raise TypeError("rows must contain DatasetRow objects")
         identity = (row.variable_id, row.scenario_id, row.period_id)
@@ -282,8 +300,12 @@ def validate_rows(
             assert isinstance(row.curve, Distribution)
             if provenance is None:
                 provenance = _dump([step._document() for step in metadata.provenance])
+            stored = None if stored_fits is None else stored_fits[position]
             _core.validate_fitted_curve(
-                row.fit.to_json(), row.curve.to_json(), row.variable_id, provenance
+                row.fit.to_json() if stored is None else stored,
+                row.curve.to_json(),
+                row.variable_id,
+                provenance,
             )
     if metadata.report.complete:
         if metadata.report.counts.produced != len(rows):
@@ -507,8 +529,10 @@ def table_to_rows(
     if metadata is not None and metadata.to_json() != stored.to_json():
         raise ValueError("supplied and stored metadata disagree")
     rows = []
+    fits: list[str | None] = []
     for value in table.to_pylist():
         failure = value["failure"]
+        fits.append(value["fit"])
         rows.append(
             DatasetRow(
                 variable_id=value["variable_id"],
@@ -532,7 +556,7 @@ def table_to_rows(
                 ),
             )
         )
-    validate_rows(rows, stored)
+    validate_rows(rows, stored, stored_fits=fits)
     return tuple(rows)
 
 
@@ -570,7 +594,19 @@ def write_parquet(
     os.close(descriptor)
     try:
         pq.write_table(table, temporary)
-        table_to_rows(pq.read_table(temporary))
+        # The table is validated above; a read-back with the same columns, values
+        # and metadata proves the file holds that same valid table. Parquet may
+        # rename list element fields, so columns are compared, not field names.
+        stored = pq.read_table(temporary)
+        if (
+            stored.column_names != table.column_names
+            or stored.schema.metadata != table.schema.metadata
+            or not all(
+                stored.column(name).equals(table.column(name))
+                for name in table.column_names
+            )
+        ):
+            raise OSError(f"{destination} did not read back as written")
         if overwrite:
             os.replace(temporary, destination)
         else:
