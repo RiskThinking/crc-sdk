@@ -63,6 +63,38 @@ def test_isd_tenths_celsius_quality_and_missing_sentinels(tmp_path: Path) -> Non
     assert all(row["station_id"] == "00701800001" for row in rows)
 
 
+def test_isd_keeps_one_report_per_timestamp(tmp_path: Path) -> None:
+    path = tmp_path / "station.csv"
+    header = "STATION,DATE,LATITUDE,LONGITUDE,REPORT_TYPE,TMP\n"
+    reports = [
+        # METAR (whole degrees) and SYNOP (tenths) at the same time: SYNOP wins.
+        ("2020-01-01T00:00:00", "FM-15", "-0010,1"),
+        ("2020-01-01T00:00:00", "FM-12", "-0008,1"),
+        # A failed SYNOP loses to a valid special.
+        ("2020-01-01T01:00:00", "FM-12", "+9999,9"),
+        ("2020-01-01T01:00:00", "FM-16", "+0020,1"),
+        # Unknown report types rank last.
+        ("2020-01-01T02:00:00", "SAO", "+0030,1"),
+        ("2020-01-01T02:00:00", "FM-16", "+0031,1"),
+        # Without any valid report the timestamp stays missing.
+        ("2020-01-01T03:00:00", "FM-15", "+9999,9"),
+        ("2020-01-01T03:00:00", "FM-12", "+9999,9"),
+        ("2020-01-01T04:00:00", "FM-15", "+0040,1"),
+    ]
+    path.write_text(
+        header
+        + "".join(
+            f'00701800001,{when},41.96,-87.93,{kind},"{tmp}"\n'
+            for when, kind, tmp in reports
+        )
+    )
+    superseded: list[int] = []
+    rows = list(isd_rows(path, "00701800001", 2020, superseded))
+    assert [row["value"] for row in rows] == [-0.8, 2.0, 3.1, None, 4.0]
+    assert [row["time"] for row in rows] == sorted(row["time"] for row in rows)
+    assert superseded == [4]
+
+
 def test_station_catalogue_keeps_native_zero_padded_ids_and_unknown_locations(
     tmp_path: Path,
 ) -> None:

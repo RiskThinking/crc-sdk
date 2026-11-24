@@ -258,6 +258,12 @@ Snapshot checks use the absence status of a missing station resource. A new
 HTTP request identifier leaves a missing year pinned to the same absence.
 Raw GHCNh/ISD reports remain irregular. Their named annual recipes require all
 24 distinct hours for a complete day and then apply the declared annual rule.
+ISD often publishes several reports at one timestamp (for example a SYNOP and a
+METAR that disagree by rounding). `ISD` keeps one per timestamp: a report with a
+valid temperature first, then FM-12 (SYNOP, tenths of a degree), FM-15 (METAR),
+FM-16 (special) and other types. The number of dropped reports is reported as
+the `isd_superseded_reports` diagnostic. GHCNh has already merged these reports
+at source and is the recommended station source.
 
 An inspected `SeriesReference` selects the indicator and supplies the
 observation years when it contains a dated window. Its inventory release

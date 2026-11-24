@@ -1179,6 +1179,46 @@ def test_relaxed_annual_coverage_requires_complete_daily_hours(
     assert len(result.metadata.provenance) >= 2
 
 
+def test_isd_same_time_reports_read_once_with_a_diagnostic(
+    transport: NativeTransport, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    download = transport.__call__
+
+    def duplicated(uri: str, path: Path) -> int:
+        if urlsplit(uri).path.endswith("/12345678901.csv"):
+            content = "STATION,DATE,LATITUDE,LONGITUDE,REPORT_TYPE,TMP\n"
+            for hour in range(24):
+                for kind, tenths in (("FM-15", hour * 10), ("FM-12", hour * 10 + 3)):
+                    content += (
+                        f"12345678901,2020-01-01T{hour:02d}:00:00,"
+                        f'43.7,-79.4,{kind},"+{tenths:04d},1"\n'
+                    )
+            path.write_text(content)
+            return 200
+        return download(uri, path)
+
+    monkeypatch.setattr(_source_io, "_download", duplicated)
+    hourly = ISD().select(stations="12345678901", time=_year()).observations().read()
+    assert hourly.table.num_rows == 24
+    assert hourly.table["value"].to_pylist()[0] == 0.3
+    from crc_sdk._aggregation import Coverage
+
+    annual = (
+        ISD(
+            indicator=ISD.Indicator.ANNUAL_MAXIMUM_DAILY_MAXIMUM_TEMPERATURE,
+            coverage=Coverage.minimum_fraction(1 / 366),
+        )
+        .select(stations="12345678901", time=_year())
+        .read()
+    )
+    assert annual.table["value"].to_pylist() == [23.3]
+    for result in (hourly, annual):
+        (diagnostic,) = [
+            d for d in result.report.diagnostics if d.code == "isd_superseded_reports"
+        ]
+        assert diagnostic.message.startswith("24 ISD reports")
+
+
 def test_noaa_rounded_probabilities_remain_distinct_from_confidence(
     transport: NativeTransport, monkeypatch: pytest.MonkeyPatch
 ) -> None:

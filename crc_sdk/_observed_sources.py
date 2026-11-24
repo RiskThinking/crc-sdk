@@ -1083,7 +1083,10 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
         return replace(publication, release=release, resources=tuple(resources))
 
     def _raw(
-        self, prepared: _Prepared, parts: tuple[_Part, ...] | None = None
+        self,
+        prepared: _Prepared,
+        parts: tuple[_Part, ...] | None = None,
+        superseded: list[int] | None = None,
     ) -> Iterator[dict[str, object]]:
         locations = {}
         if self.provider not in ("ghcnh", "isd", "ibtracs"):
@@ -1112,7 +1115,10 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
                 )
             elif self.provider == "isd":
                 yield from isd_rows(
-                    part.path, cast(str, part.station), cast(int, part.year)
+                    part.path,
+                    cast(str, part.station),
+                    cast(int, part.year),
+                    superseded,
                 )
             elif self.provider == "ibtracs":
                 yield from ibtracs_rows(part.path, self.agency)
@@ -1328,6 +1334,22 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
 
         final = with_source(actual, actual.source)
         count = missing = 0
+        superseded: list[int] = []
+
+        def superseded_diagnostics() -> tuple[ExecutionDiagnostic, ...]:
+            if not sum(superseded):
+                return ()
+            return (
+                ExecutionDiagnostic(
+                    "isd_superseded_reports",
+                    cf.DiagnosticSeverity.INFO,
+                    Stage.DECODING,
+                    f"{sum(superseded)} ISD reports shared a timestamp with another "
+                    "report and were dropped; one report per timestamp is kept "
+                    "(valid temperature first, then FM-12, FM-15, FM-16, others).",
+                    source=self.provider,
+                ),
+            )
 
         def parts() -> Iterator[_Part]:
             nonlocal final
@@ -1356,14 +1378,15 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
                 usable = incomplete = unavailable = 0
                 # A station-year is an explicit blocking reduction, not a global
                 # materialization of every requested station and year.
-                decode = ghcnh_rows if self.provider == "ghcnh" else isd_rows
                 for part in parts():
                     station, year = part.station, part.year
                     assert station is not None and year is not None
                     raw = (
                         []
                         if part.path is None
-                        else list(decode(part.path, station, year))
+                        else list(ghcnh_rows(part.path, station, year))
+                        if self.provider == "ghcnh"
+                        else list(isd_rows(part.path, station, year, superseded))
                     )
                     if not raw:
                         incomplete += 1
@@ -1390,7 +1413,10 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
                             final,
                             report=replace(
                                 final.report,
-                                diagnostics=tuple(diagnostic_records),
+                                diagnostics=(
+                                    *diagnostic_records,
+                                    *superseded_diagnostics(),
+                                ),
                                 counts=ExecutionCounts(
                                     requested=count + unavailable,
                                     produced=count,
@@ -1467,7 +1493,10 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
                         report=ExecutionReport(
                             False,
                             None,
-                            diagnostics=tuple(diagnostic_records),
+                            diagnostics=(
+                                *diagnostic_records,
+                                *superseded_diagnostics(),
+                            ),
                             counts=ExecutionCounts(
                                 requested=count + unavailable,
                                 produced=count,
@@ -1484,7 +1513,7 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
                 return
             pending = []
             groups = (
-                (self._raw(prepared, (part,)) for part in parts())
+                (self._raw(prepared, (part,), superseded) for part in parts())
                 if weather
                 else iter((self._raw(prepared),))
             )
@@ -1531,16 +1560,19 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
             return ExecutionReport(
                 False,
                 None,
-                diagnostics=tuple(
-                    ExecutionDiagnostic(
-                        "station_year_unavailable",
-                        cf.DiagnosticSeverity.WARNING,
-                        Stage.ACQUISITION,
-                        f"The source has no observation file for {part.station} "
-                        f"in {part.year}.",
-                        source=self.provider,
-                    )
-                    for part in absent
+                diagnostics=(
+                    *(
+                        ExecutionDiagnostic(
+                            "station_year_unavailable",
+                            cf.DiagnosticSeverity.WARNING,
+                            Stage.ACQUISITION,
+                            f"The source has no observation file for {part.station} "
+                            f"in {part.year}.",
+                            source=self.provider,
+                        )
+                        for part in absent
+                    ),
+                    *superseded_diagnostics(),
                 ),
                 counts=ExecutionCounts(
                     requested=count + len(absent),

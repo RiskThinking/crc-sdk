@@ -321,7 +321,23 @@ _GHCN_ISD_SOURCES = {"313", "314", "315", "322", "335", "343", "344", "346"}
 _GHCN_SOURCES = _GHCN_ISD_SOURCES | {"220", "221", "222", "223", "347", "348"}
 
 
-def isd_rows(path: Path, station: str, year: int) -> Iterator[dict[str, object]]:
+# One report is kept per timestamp. SYNOP (FM-12) carries tenths of a degree, METAR
+# (FM-15) whole degrees and specials (FM-16) are event-driven, so this order keeps
+# the most precise routine report. Other types (SAO, AUTO, ...) come last.
+_ISD_REPORT_PRIORITY = {"FM-12": 0, "FM-15": 1, "FM-16": 2}
+
+
+def isd_rows(
+    path: Path, station: str, year: int, superseded: list[int] | None = None
+) -> Iterator[dict[str, object]]:
+    """Decode one ISD station-year with one report per timestamp.
+
+    Among reports sharing a timestamp, the highest-priority report with a valid
+    temperature wins (a missing value only when none is valid). The number of
+    reports dropped this way is appended to ``superseded`` when it is given.
+    """
+    chosen: dict[str, tuple[tuple[int, int], dict[str, object]]] = {}
+    dropped = 0
     with path.open(newline="", encoding="utf-8-sig") as handle:
         reader = csv.DictReader(handle)
         if not {"STATION", "DATE", "LATITUDE", "LONGITUDE", "TMP"}.issubset(
@@ -343,7 +359,13 @@ def isd_rows(path: Path, station: str, year: int) -> Iterator[dict[str, object]]
                 and pieces[1] in _ISD_ACCEPTED
                 and -932 <= temperature <= 618
             )
-            yield observed_record(
+            rank = (
+                0 if valid else 1,
+                _ISD_REPORT_PRIORITY.get(
+                    (row.get("REPORT_TYPE") or "").strip(), len(_ISD_REPORT_PRIORITY)
+                ),
+            )
+            record = observed_record(
                 "noaa:hourly_air_temperature",
                 station,
                 lon,
@@ -354,6 +376,15 @@ def isd_rows(path: Path, station: str, year: int) -> Iterator[dict[str, object]]
                     "ISD temperature is missing or fails the source quality policy."
                 ),
             )
+            if when in chosen:
+                dropped += 1
+                if rank >= chosen[when][0]:
+                    continue
+            chosen[when] = (rank, record)
+    if superseded is not None:
+        superseded.append(dropped)
+    for _, record in chosen.values():
+        yield record
 
 
 def ghcnh_rows(path: Path, station: str, year: int) -> Iterator[dict[str, object]]:
