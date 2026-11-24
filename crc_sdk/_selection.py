@@ -13,6 +13,8 @@ from enum import Enum
 from typing import TYPE_CHECKING, TypeAlias, TypeVar, cast
 
 import crc_framework
+import pyarrow as pa  # type: ignore[import-untyped]
+import pyarrow.compute as pc  # type: ignore[import-untyped]
 from crc_framework import _core
 from h3.api import basic_int as h3  # type: ignore[import-untyped]
 from shapely import from_wkb  # type: ignore[import-untyped]
@@ -394,6 +396,51 @@ class ResolvedSelection:
                 "geometry": row.geometry,
             }
         )
+
+    def record_mask(
+        self, batch: pa.RecordBatch, cache: dict[object, bool] | None = None
+    ) -> pa.BooleanArray:
+        """`matches_record` for every row of a Dataset batch, without per-row Python
+        for the series keys and stations. The exact support/area test runs once per
+        distinct cell or geometry; pass the same `cache` across a dataset's batches.
+        """
+        if self.time is not None:
+            return pa.array(
+                [self.matches_record(row) for row in batch.to_pylist()],
+                type=pa.bool_(),
+            )
+        names = ("variable_id", "scenario_id", "period_id")
+        mask = pa.array([False] * batch.num_rows, type=pa.bool_())
+        for key in self.keys:
+            match = pa.array([True] * batch.num_rows, type=pa.bool_())
+            for name, value in zip(names, key, strict=True):
+                column = batch.column(name)
+                test = (
+                    pc.is_null(column)
+                    if value is None
+                    else pc.fill_null(pc.equal(column, value), False)
+                )
+                match = pc.and_(match, test)
+            mask = pc.or_(mask, match)
+        if self.stations is not None:
+            stations = pa.array(self.stations, type=pa.string())
+            mask = pc.and_(mask, pc.is_in(batch.column("support_id"), stations))
+        if self.area is None or not pc.any(mask).as_py():
+            return mask
+        cache = {} if cache is None else cache
+        area = self.area
+        geometries = batch.column("geometry").to_pylist()
+        cells = batch.column("cell_id").to_pylist()
+        selected = mask.to_pylist()
+        for index, keep in enumerate(selected):
+            if not keep:
+                continue
+            geometry, cell = geometries[index], cells[index]
+            token = ("g", geometry) if geometry is not None else ("c", cell)
+            if token not in cache:
+                cache[token] = support_intersects(area, geometry=geometry, cell_id=cell)
+            selected[index] = cache[token]
+        return pa.array(selected, type=pa.bool_())
 
     def matches_record(
         self, row: Mapping[str, object], *, sampling: Sampling | None = None

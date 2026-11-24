@@ -6,7 +6,6 @@ import json
 import os
 import urllib.parse
 from collections.abc import Iterator, Mapping
-from contextlib import closing
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path, PurePosixPath
@@ -41,7 +40,7 @@ from ._declarations import (
 )
 from ._graph import ExecutionScope, NodeStream
 from ._inspection import Capability, Inspection, Operation, SeriesReference
-from ._recipes import Dataset, _Checked, _checked_stream, _key, _sources
+from ._recipes import Dataset, _checked_stream, _key, _sources
 from ._runtime import LocalPath
 from ._selection import (
     ResolvedSelection,
@@ -471,36 +470,28 @@ class _CRCNode(SourceNode[DatasetMetadata]):
                             "release dataset produced count disagrees with "
                             "the Parquet footer"
                         )
-                    checked = _Checked(scope, entry.metadata)
-                    with closing(checked.db):
-                        for batch in reader.iter_batches(
-                            batch_size=scope.runtime.batch_rows
-                        ):
-                            batch = checked.check(batch)
-                            coordinates = batch.select(
-                                [
-                                    "variable_id",
-                                    "scenario_id",
-                                    "period_id",
-                                    "support_id",
-                                    "cell_id",
-                                    "geometry",
-                                ]
+                    # The checksum pins every byte to an index entry whose rows
+                    # were fully validated when written, so the whole file is
+                    # checked by its counts here and the delivered rows keep
+                    # identity and support checks without decoding each curve.
+                    produced = no_data = 0
+                    supports: dict[object, bool] = {}
+                    for batch in reader.iter_batches(
+                        batch_size=scope.runtime.batch_rows
+                    ):
+                        produced += batch.num_rows
+                        failures = batch.column("failure")
+                        no_data += len(failures) - failures.null_count
+                        selected_batch = batch.filter(
+                            resolved.record_mask(batch, supports)
+                        )
+                        if selected_batch.num_rows:
+                            yield selected_batch.replace_schema_metadata(
+                                schema.metadata
                             )
-                            selected_batch = batch.filter(
-                                pa.array(
-                                    [
-                                        resolved.matches_record(row)
-                                        for row in coordinates.to_pylist()
-                                    ],
-                                    type=pa.bool_(),
-                                )
-                            )
-                            if selected_batch.num_rows:
-                                yield selected_batch
                     if (
-                        checked.produced != report.counts.produced
-                        or checked.no_data != report.counts.no_data
+                        produced != report.counts.produced
+                        or no_data != report.counts.no_data
                     ):
                         raise ValueError(
                             "release dataset report counts disagree with "
@@ -510,7 +501,7 @@ class _CRCNode(SourceNode[DatasetMetadata]):
                         replace(report, source_identities=_sources(entry.metadata))
                     )
 
-        stream = _checked_stream(scope, metadata, batches())
+        stream = _checked_stream(scope, metadata, batches(), payload_verified=True)
         stream.verify_before_yield = True
         original = stream.report
 
@@ -541,23 +532,26 @@ class _CRCNode(SourceNode[DatasetMetadata]):
 
 class CRCOpen(Dataset):
     class Variable(str, Enum):
-        ANNUAL_MAXIMUM_DAILY_MAXIMUM_TEMPERATURE = "crc:txx"
-        ANNUAL_MINIMUM_DAILY_MAXIMUM_TEMPERATURE = "crc:txn"
-        ANNUAL_MAXIMUM_DAILY_MINIMUM_TEMPERATURE = "crc:tnx"
-        ANNUAL_MINIMUM_DAILY_MINIMUM_TEMPERATURE = "crc:tnn"
+        """Common published CRC Open variables.
+
+        Select any other published variable by its exact ID, such as
+        ``"crc:hot_days"``; ``inspect()`` lists them all.
+        """
+
+        ANNUAL_MAXIMUM_DAILY_MAXIMUM_TEMPERATURE = "crc:tx_max"
+        ANNUAL_MINIMUM_DAILY_MAXIMUM_TEMPERATURE = "crc:tx_min"
+        ANNUAL_MAXIMUM_DAILY_MINIMUM_TEMPERATURE = "crc:tn_max"
+        ANNUAL_MINIMUM_DAILY_MINIMUM_TEMPERATURE = "crc:tn_min"
         ANNUAL_MAXIMUM_DAILY_PRECIPITATION = "crc:rx1day"
         ANNUAL_MAXIMUM_FIVE_DAY_PRECIPITATION = "crc:rx5day"
         ANNUAL_MEAN_WET_DAY_PRECIPITATION = "crc:sdii"
-        ANNUAL_MAXIMUM_CONSECUTIVE_DRY_DAYS = "crc:cdd"
-        ANNUAL_MAXIMUM_CONSECUTIVE_WET_DAYS = "crc:cwd"
-        ANNUAL_FROST_DAY_COUNT = "crc:fd"
-        ANNUAL_SUMMER_DAY_COUNT = "crc:su"
-        ANNUAL_TROPICAL_NIGHT_COUNT = "crc:tr"
+        ANNUAL_MAXIMUM_CONSECUTIVE_DRY_DAYS = "crc:max_consecutive_dry_days"
+        ANNUAL_MAXIMUM_CONSECUTIVE_WET_DAYS = "crc:maximum_consecutive_wet_days"
+        ANNUAL_FROST_DAY_COUNT = "crc:frost_days"
+        ANNUAL_SUMMER_DAY_COUNT = "crc:summer_days"
+        ANNUAL_TROPICAL_NIGHT_COUNT = "crc:tropical_nights"
         ANNUAL_MEAN_DAILY_TEMPERATURE_RANGE = "crc:dtr"
         ANNUAL_TOTAL_WET_DAY_PRECIPITATION = "crc:prcptot"
-        ANNUAL_PRECIPITATION_DAYS_AT_LEAST_TEN_MILLIMETRES = "crc:r10mm"
-        ANNUAL_PRECIPITATION_DAYS_AT_LEAST_TWENTY_MILLIMETRES = "crc:r20mm"
-        ANNUAL_PRECIPITATION_ABOVE_BASELINE_WET_DAY_NINETY_FIFTH_PERCENTILE = "crc:r95p"
 
     class Scenario(str, Enum):
         SSP585 = "ssp585"

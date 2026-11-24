@@ -216,15 +216,23 @@ class CanonicalReader(ABC):
 
 
 class _Checked:
-    """Incremental global invariants, with identity indexes owned on disk."""
+    """Incremental global invariants, with identity indexes owned on disk.
+
+    `payload_verified` streams carry rows whose bytes a checksum pins to an
+    artifact validated when it was written; their numerical objects are not
+    decoded again, while identities, supports and counts are still checked.
+    """
 
     def __init__(
         self,
         scope: ExecutionScope,
         metadata: DatasetMetadata | EvidenceMetadata,
+        *,
+        payload_verified: bool = False,
     ) -> None:
         self.scope = scope
         self.metadata = metadata
+        self.payload_verified = payload_verified
         self.produced = 0
         self.no_data = 0
         descriptor, filename = tempfile.mkstemp(
@@ -234,6 +242,10 @@ class _Checked:
 
         os.close(descriptor)
         self.db = sqlite3.connect(filename)
+        # A scratch index for one execution: durability is not needed.
+        self.db.execute("PRAGMA journal_mode=OFF")
+        self.db.execute("PRAGMA synchronous=OFF")
+        self.db.execute("PRAGMA cache_size=-65536")
         self.db.execute("CREATE TABLE row_keys (identity TEXT PRIMARY KEY)")
         self.db.execute(
             "CREATE TABLE supports (id TEXT PRIMARY KEY, geometry BLOB, cell TEXT)"
@@ -241,31 +253,61 @@ class _Checked:
         scope.callback(self.db.close)
 
     def _remember(
-        self, identity: str, support_id: str, geometry: bytes | None, cell_id: int
+        self,
+        identities: list[str],
+        supports: list[tuple[str, bytes | None, object]],
     ) -> None:
         try:
-            self.db.execute("INSERT INTO row_keys VALUES (?)", (identity,))
-        except sqlite3.IntegrityError as error:
-            raise ValueError(f"duplicate scientific row key: {identity}") from error
-        found = self.db.execute(
-            "SELECT geometry,cell FROM supports WHERE id=?", (support_id,)
-        ).fetchone()
-        cell = str(cell_id) if geometry is None else None
-        if found is None:
-            self.db.execute(
-                "INSERT INTO supports VALUES (?,?,?)", (support_id, geometry, cell)
-            )
-        elif found != (geometry, cell):
-            old_geometry, old_cell = found
-            if (
-                old_cell != cell
-                or old_geometry is None
-                or geometry is None
-                or not from_wkb(old_geometry).equals(from_wkb(geometry))
-            ):
-                raise ValueError(
-                    f"support_id {support_id!r} identifies conflicting source geometry"
+            with self.db:
+                self.db.executemany(
+                    "INSERT INTO row_keys VALUES (?)", ((i,) for i in identities)
                 )
+        except sqlite3.IntegrityError:
+            seen: set[str] = set()
+            for identity in identities:
+                if (
+                    identity in seen
+                    or self.db.execute(
+                        "SELECT 1 FROM row_keys WHERE identity=?", (identity,)
+                    ).fetchone()
+                ):
+                    raise ValueError(
+                        f"duplicate scientific row key: {identity}"
+                    ) from None
+                seen.add(identity)
+            raise
+        batch: dict[str, tuple[bytes | None, str | None]] = {}
+        for support_id, geometry, cell_id in supports:
+            value = (geometry, str(cell_id) if geometry is None else None)
+            if batch.setdefault(support_id, value) != value:
+                self._conflict(support_id, batch[support_id], value)
+        for support_id, value in batch.items():
+            found = self.db.execute(
+                "SELECT geometry,cell FROM supports WHERE id=?", (support_id,)
+            ).fetchone()
+            if found is None:
+                self.db.execute(
+                    "INSERT INTO supports VALUES (?,?,?)", (support_id, *value)
+                )
+            elif found != value:
+                self._conflict(support_id, found, value)
+
+    @staticmethod
+    def _conflict(
+        support_id: str,
+        old: tuple[bytes | None, str | None],
+        new: tuple[bytes | None, str | None],
+    ) -> None:
+        (old_geometry, old_cell), (geometry, cell) = old, new
+        if (
+            old_cell != cell
+            or old_geometry is None
+            or geometry is None
+            or not from_wkb(old_geometry).equals(from_wkb(geometry))
+        ):
+            raise ValueError(
+                f"support_id {support_id!r} identifies conflicting source geometry"
+            )
 
     def check(self, batch: pa.RecordBatch) -> pa.RecordBatch:
         planned = replace(
@@ -279,40 +321,52 @@ class _Checked:
         table = pa.Table.from_batches([batch]).replace_schema_metadata(
             _schema(planned).metadata
         )
-        retained = 0
         try:
             if isinstance(planned, DatasetMetadata):
-                rows = table_to_rows(table)
-                for row in rows:
-                    identity = json.dumps(
-                        [
-                            row.variable_id,
-                            row.scenario_id,
-                            row.period_id,
-                            row.support_id,
-                            row.cell_id,
-                        ],
-                        ensure_ascii=False,
+                if not self.payload_verified:
+                    table_to_rows(table)
+                columns = {
+                    name: table.column(name).to_pylist()
+                    for name in (
+                        "variable_id",
+                        "scenario_id",
+                        "period_id",
+                        "support_id",
+                        "cell_id",
+                        "geometry",
                     )
-                    self._remember(identity, row.support_id, row.geometry, row.cell_id)
-                    retained += int(row.failure is not None)
+                }
+                identities = [
+                    json.dumps(list(key), ensure_ascii=False)
+                    for key in zip(
+                        columns["variable_id"],
+                        columns["scenario_id"],
+                        columns["period_id"],
+                        columns["support_id"],
+                        columns["cell_id"],
+                    )
+                ]
+                supports = list(
+                    zip(columns["support_id"], columns["geometry"], columns["cell_id"])
+                )
             else:
                 validate_evidence(table, planned, check_counts=False)
-                for record in table.to_pylist():
-                    identity = json.dumps(
-                        evidence_row_key(record, planned), ensure_ascii=False
-                    )
-                    retained += int(record.get("failure") is not None)
-                    self._remember(
-                        identity,
-                        record["support_id"],
-                        record["geometry"],
-                        record["cell_id"],
-                    )
+                records = table.to_pylist()
+                identities = [
+                    json.dumps(evidence_row_key(record, planned), ensure_ascii=False)
+                    for record in records
+                ]
+                supports = [
+                    (record["support_id"], record["geometry"], record["cell_id"])
+                    for record in records
+                ]
+            self._remember(identities, supports)
         except (ValueError, TypeError) as error:
             raise _invalid(error) from error
+        if "failure" in table.column_names:
+            failures = table.column("failure")
+            self.no_data += len(failures) - failures.null_count
         self.produced += batch.num_rows
-        self.no_data += retained
         self.scope.emit(Stage.VALIDATION, self.produced)
         return batch.replace_schema_metadata(_schema(planned).metadata)
 
@@ -330,8 +384,10 @@ def _checked_stream(
     scope: ExecutionScope,
     metadata: MetadataT,
     batches: Iterator[pa.RecordBatch],
+    *,
+    payload_verified: bool = False,
 ) -> NodeStream[MetadataT]:
-    state = _Checked(scope, metadata)
+    state = _Checked(scope, metadata, payload_verified=payload_verified)
 
     def checked() -> Iterator[pa.RecordBatch]:
         for batch in batches:

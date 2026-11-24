@@ -8,6 +8,8 @@ from typing import Any
 
 ROOT = "https://collaboration.cmc.ec.gc.ca/cmc/climate/Engineer_Climate/IDF"
 LICENCE = "OGL-Canada-2.0"
+# Rates and confidence limits of a duration ECCC did not estimate for a station.
+MISSING = -99.9
 ATTRIBUTION = (
     "Derived from Environment and Climate Change Canada rainfall IDF. "
     "Contains information licensed under the Open Government Licence – Canada."
@@ -74,9 +76,11 @@ def parse_station(raw: bytes, station: str, province: str) -> dict[str, Any]:
             tokens = match[3].split()
             if len(tokens) != len(periods) + 1:
                 raise ValueError(f"mismatched ECCC rainfall rate axis for {station}")
-            rates = [float(value) for value in tokens[:-1]]
+            values = [float(value) for value in tokens[:-1]]
             count = int(tokens[-1])
-            if (
+            # ECCC publishes no estimate for some durations at some stations.
+            rates = None if all(v == MISSING for v in values) else values
+            if rates is not None and (
                 any(not math.isfinite(v) or v < 0 for v in rates)
                 or any(a > b for a, b in zip(rates, rates[1:]))
                 or not 1 <= count <= end - start + 1
@@ -96,6 +100,13 @@ def parse_station(raw: bytes, station: str, province: str) -> dict[str, Any]:
             if len(tokens) != len(periods) + 1:
                 raise ValueError(f"mismatched ECCC confidence axis for {station}")
             widths = [float(value) for value in tokens[:-1]]
+            if curves[-1]["intensity"] is None:
+                if (
+                    any(v != MISSING for v in widths)
+                    or int(tokens[-1]) != (curves[-1]["record_years"])
+                ):
+                    raise ValueError(f"invalid ECCC confidence limits for {station}")
+                continue
             if (
                 any(not math.isfinite(v) or v < 0 for v in widths)
                 or int(tokens[-1]) != curves[-1]["record_years"]
@@ -105,7 +116,8 @@ def parse_station(raw: bytes, station: str, province: str) -> dict[str, Any]:
             curves[-1]["confidence_half_width"] = widths
     durations = [curve["duration_minutes"] for curve in curves]
     if sorted(durations) != sorted(DURATIONS.values()) or any(
-        curve["confidence_half_width"] is None for curve in curves
+        curve["intensity"] is not None and curve["confidence_half_width"] is None
+        for curve in curves
     ):
         raise ValueError(f"incomplete or duplicate ECCC durations for {station}")
     return {

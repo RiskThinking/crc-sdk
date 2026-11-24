@@ -10,7 +10,10 @@ PERIODS = [2, 5, 10, 25, 50, 100]
 STATION = "6158731"
 
 
-def station_text(station: str = STATION, start: int = 1950) -> bytes:
+def station_text(
+    station: str = STATION, start: int = 1950, missing: tuple[str, ...] = ()
+) -> bytes:
+    """A station file; durations in `missing` carry ECCC's -99.9 "no estimate" rows."""
     lines = [
         f"SYNTHETIC A                       ON        {station}",
         "Latitude:  43 41'N    Longitude: 79 38'W    Elevation/Altitude: 173 m",
@@ -30,6 +33,10 @@ def station_text(station: str = STATION, start: int = 1950) -> bytes:
             for t in PERIODS
         ]
         label = duration.replace("min", " min").replace("h", " h")
+        if duration in missing:
+            lines.append(f"{label} " + " ".join(["-99.9"] * len(PERIODS)) + " 9")
+            lines.append(" ".join(["+/--99.9"] * len(PERIODS)) + " 9")
+            continue
         lines.append(f"{label} " + " ".join(map(str, rates)) + " 40")
         lines.append(" ".join(["+/- 0.5"] * len(PERIODS)) + " 40")
     lines.append("Table 3 : Interpolation Equation")
@@ -62,3 +69,18 @@ def test_malformed_scientific_input_rejected(old: str, new: str) -> None:
     raw = station_text().decode("cp1252").replace(old, new).encode("cp1252")
     with pytest.raises(ValueError):
         provider.parse_station(raw, STATION, "ON")
+
+
+def test_durations_eccc_did_not_estimate_are_kept_as_missing() -> None:
+    record = provider.parse_station(station_text(missing=("5min",)), STATION, "ON")
+    first, *rest = record["curves"]
+    assert (first["duration_minutes"], first["intensity"]) == (5, None)
+    assert first["confidence_half_width"] is None
+    assert all(curve["intensity"] is not None for curve in rest)
+    # Only a complete row of sentinels means "not estimated".
+    raw = station_text().decode("cp1252")
+    label = "5 min "
+    start = raw.index(label) + len(label)
+    partial = raw[:start] + "-99.9 " + raw[start:].split(" ", 1)[1]
+    with pytest.raises(ValueError, match="rainfall rates"):
+        provider.parse_station(partial.encode("cp1252"), STATION, "ON")

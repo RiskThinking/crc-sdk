@@ -437,9 +437,12 @@ to `select(...)`.
 | `AgriculturalLayer` | `USDACropland`, `FieldsOfTheWorld` |
 | `OSClimateProvider`, `HazardDataset.from_zarr` | Removed |
 
-CRC Open hazard names are enum members, for example
-`CRCOpen.Variable.ANNUAL_MAXIMUM_DAILY_PRECIPITATION` (formerly `"rx1day"`) and
-`CRCOpen.Scenario.SSP585`.
+A 0.x CRC Open hazard name becomes the variable ID `crc:<name>`: `"hot_days"` is
+`"crc:hot_days"`. Common ones also have enum members, for example
+`CRCOpen.Variable.ANNUAL_MAXIMUM_DAILY_PRECIPITATION` (`"rx1day"`) and
+`CRCOpen.Variable.ANNUAL_MAXIMUM_DAILY_MAXIMUM_TEMPERATURE` (`"tx_max"`). The
+scenario is `CRCOpen.Scenario.SSP585`, and `horizon` becomes one of the
+release's periods (for most variables, four-year windows), which `inspect()` lists.
 
 **Note:** 0.11 downloaded the public CRC Open release by default. A production
 CRC Open release in Dataset 2.0 format is not yet published, so 1.0 needs an
@@ -617,13 +620,13 @@ installed with the SDK.
 | `read_hazard_dataset`, `read_hazard_metadata`, `write_hazard_dataset`, `write_hazard_stream` | `Dataset.open(path)`, `.metadata`, `.write(path)` | Writes are atomic and typed through the recipe. |
 | `HazardDatasetMetadata`, `GeometryMetadata`, `SourceProvenance`, `CurveFitProvenance`, `StorageLocation`, `PARQUET_METADATA_KEY` | `DatasetMetadata`, `ResourceIdentity`, `SourceIdentity`, the row's `fit` record | Typed metadata replaces the JSON footer. |
 | `ProbabilitySemantics`, `ReturnPeriodConvention`, `TemporalWindow`, `EnsembleDescriptor` | `Probability.annual(tail=...)`, `Period`, `Scenario`, `select(series=...)` | Typed declarations replace free text. |
-| `CurveParameters`, `NoDataCurveError`, `curve_parameters_from_row`, `CURVE_COLUMNS`, `return_period_value_columns` | The `curve` struct and `failure` column; long-format evaluation rows | There are no flat `curve_*` columns or wide `value_rp*` columns any more. |
+| `CurveParameters`, `NoDataCurveError`, `curve_parameters_from_row`, `CURVE_COLUMNS`, `return_period_value_columns` | `decode_curves(rows)` for the `curve` struct, the `failure` column, and long-format evaluation rows | There are no flat `curve_*` columns or wide `value_rp*` columns any more. |
 
 ### Curves, warnings, and constants
 
 | 0.11 | Use instead | Why |
 | --- | --- | --- |
-| `curve_quantiles`, `curve_quantiles_at`, `distribution_from_hazard_row` | `evaluate(...).return_periods(...)` or `.probabilities(...)` | Evaluation reads the curve and records failures per row. |
+| `curve_quantiles`, `curve_quantiles_at`, `distribution_from_hazard_row` | `evaluate(...).return_periods(...)` or `.probabilities(...)`; `decode_curves(rows)` for the framework objects themselves | Evaluation reads the curve and records failures per row. |
 | `return_periods_to_probabilities` | `1 - 1 / T`, or pass return periods to `.return_periods(...)` | One line of arithmetic. |
 | `ProbabilitySemanticsWarning`, `ReturnPeriodExtrapolationWarning`, `HorizonExtrapolationWarning`, `check_return_period_semantics`, `warn_if_extrapolated`, `warn_if_outside_window` | Typed `Probability` and `Period`; `query_outside_support` failure rows | Invalid queries now fail when you build them. Out-of-range queries return a failure row instead of a warning. |
 | `NoDataRateError`, `NoDataRateWarning` | `FitFailure.SKIP` / `FitFailure.KEEP_NO_DATA`, and missing-data counts in `ExecutionReport` | No-data handling is part of the fit spec, and the counts reach every terminal. |

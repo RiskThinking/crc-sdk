@@ -480,3 +480,49 @@ def test_inspection_records_are_immutable_and_validate_typed_inventories() -> No
         operation.description = "changed"  # type: ignore[misc]
     with pytest.raises(TypeError, match="immutable typed tuple"):
         Inspection(capabilities=[Capability.READ])  # type: ignore[arg-type]
+
+
+def test_record_mask_matches_the_per_row_selection() -> None:
+    import pyarrow as pa  # type: ignore[import-untyped]
+
+    from crc_sdk._selection import ResolvedSelection
+
+    inside = h3.latlng_to_cell(43.65, -79.38, 5)
+    outside = h3.latlng_to_cell(10.0, 10.0, 5)
+    rows = [
+        {
+            "variable_id": v,
+            "scenario_id": s,
+            "period_id": p,
+            "support_id": support,
+            "cell_id": cell,
+            "geometry": geometry,
+        }
+        for v in ("crc:a", "crc:b")
+        for s in ("ssp585", None)
+        for p in ("period:x", None)
+        for support, cell, geometry in (
+            ("h3:in", inside, None),
+            ("h3:out", outside, None),
+            ("point:in", inside, Point(-79.38, 43.65).wkb),
+            ("point:out", outside, Point(10.0, 10.0).wkb),
+        )
+    ]
+    batch = pa.RecordBatch.from_pylist(rows)
+    area = Bounds(west=-79.5, south=43.5, east=-79.2, north=43.8)
+    for keys, stations, bounds in (
+        ({("crc:a", "ssp585", "period:x")}, None, None),
+        ({("crc:a", None, None), ("crc:b", "ssp585", None)}, None, area),
+        ({("crc:b", None, "period:x")}, ("h3:in", "point:out"), area),
+        (set(), None, area),
+    ):
+        selection = ResolvedSelection(
+            spec=DataSpec([Variable("crc:a")], series=[SeriesSpec(Variable("crc:a"))]),
+            keys=frozenset(keys),
+            area=bounds,
+            stations=stations,
+        )
+        cache: dict[object, bool] = {}
+        expected = [selection.matches_record(row) for row in rows]
+        assert selection.record_mask(batch, cache).to_pylist() == expected
+        assert selection.record_mask(batch, cache).to_pylist() == expected

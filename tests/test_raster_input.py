@@ -72,6 +72,26 @@ def _recipe(paths: dict[float, Path]) -> Dataset:
     return Dataset.from_raster(paths, variable=_VARIABLE, probability=_PROBABILITY)
 
 
+def test_published_maps_skip_pixels_whose_values_fall_with_probability(
+    tmp_path: Path,
+) -> None:
+    from crc_sdk._climate_io import raster_quantile_rows
+
+    # Published JRC GloFAS maps contain pixels like 1.0, 1.0, 0.34 m at rising
+    # return periods; one such pixel must not reject every other pixel.
+    paths = {q: tmp_path / f"q-{q}.tif" for q in (0.5, 0.9, 0.99)}
+    for offset, (q, path) in enumerate(paths.items()):
+        values = np.arange(1, 7, dtype=np.float64).reshape(2, 3) + offset
+        values[1, 2] = {0.5: 3.0, 0.9: 3.0, 0.99: 0.5}[q]
+        _write(path, values)
+    rows, skipped = raster_quantile_rows(
+        paths, variable=_VARIABLE, support_prefix="jrc:test", skip_decreasing=True
+    )
+    assert (len(rows), skipped) == (5, 1)
+    with pytest.raises(ValueError, match="nondecreasing"):
+        raster_quantile_rows(paths, variable=_VARIABLE, support_prefix="jrc:test")
+
+
 def test_raster_quantiles_do_not_require_annual_probability_meaning(
     rasters: dict[float, Path],
 ) -> None:

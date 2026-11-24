@@ -434,3 +434,16 @@ def test_historical_indexes_are_not_admitted_and_empty_does_not_acquire(
     assert recipe.read().report.complete
     assert recipe.inspect().series == ()
     assert recipe.explain().operations
+
+
+def test_release_rows_repeated_across_datasets_are_rejected(tmp_path: Path) -> None:
+    _, index, artifact = release(tmp_path)
+    document = json.loads(index.read_text())
+    copy = artifact.with_name("copy.parquet")
+    copy.write_bytes(artifact.read_bytes())
+    document["datasets"].append(
+        {**document["datasets"][0], "id": "copy", "uri": copy.name}
+    )
+    index.write_text(json.dumps(document))
+    with pytest.raises(ValidationError, match="duplicate scientific row key"):
+        CRCOpen(catalog=index).read()

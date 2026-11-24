@@ -25,6 +25,7 @@ from ._collection_schema import (
 from ._contextual_impact import ContextualImpact, ResponseContext
 from ._crc_open import CRCOpen
 from ._cropland_source import USDACropland
+from ._curves import decode_curves
 from ._dataset_schema import (
     DatasetMetadata,
     ExecutionCounts,
@@ -208,5 +209,6 @@ __all__ = [
     "UnitConversion",
     "ValidationError",
     "Variable",
+    "decode_curves",
     "scientific_identity",
 ]

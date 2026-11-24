@@ -44,6 +44,38 @@ Inactive branches remain null. Recursive numerical children and fitting records
 use canonical JSON validated by the framework's exact loaders. Parquet round
 trips preserve those types and declarations.
 
+## Use the curves directly
+
+Evaluation answers return-period and probability queries for you. For anything
+else, such as a CDF, a custom statistic, or a map that evaluates curves in the
+browser, `decode_curves` turns the `curve` column of rows you read into
+framework objects. Failure rows decode to `None`.
+
+```python
+from crc_framework import DepthAboveGround, LengthUnit, Tail
+from crc_sdk import Dataset, Probability, Variable, decode_curves
+
+rows = Dataset.from_quantiles(
+    {
+        "support_id": ["site-a"] * 3,
+        "longitude": [6.96] * 3,
+        "latitude": [50.94] * 3,
+        "probability": [0.5, 0.9, 0.99],
+        "value": [0.0, 0.3, 1.2],
+    },
+    variable=Variable(
+        "company:flood-depth", measurement=DepthAboveGround(unit=LengthUnit.METRE)
+    ),
+    probability=Probability.annual(tail=Tail.UPPER),
+).read().table
+(curve,) = decode_curves(rows)
+assert curve is not None
+assert abs(curve.quantile(0.95) - 0.8) < 1e-9
+document = curve.to_json()  # canonical JSON, also read by the JavaScript package
+```
+
+It works on any `read()` table or `batches()` batch of Dataset 2.0 rows.
+
 ## Supply quantile rasters
 
 `Dataset.from_raster` accepts one same-grid, single-band raster per supplied

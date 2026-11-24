@@ -258,6 +258,12 @@ Snapshot checks use the absence status of a missing station resource. A new
 HTTP request identifier leaves a missing year pinned to the same absence.
 Raw GHCNh/ISD reports remain irregular. Their named annual recipes require all
 24 distinct hours for a complete day and then apply the declared annual rule.
+ISD often publishes several reports at one timestamp (for example a SYNOP and a
+METAR that disagree by rounding). `ISD` keeps one per timestamp: a report with a
+valid temperature first, then FM-12 (SYNOP, tenths of a degree), FM-15 (METAR),
+FM-16 (special) and other types. The number of dropped reports is reported as
+the `isd_superseded_reports` diagnostic. GHCNh has already merged these reports
+at source and is the recommended station source.
 
 An inspected `SeriesReference` selects the indicator and supplies the
 observation years when it contains a dated window. Its inventory release
@@ -315,16 +321,19 @@ assert replayed.table.equals(published.table, check_metadata=False)
 ```
 
 A read checks each participating file's checksum, Arrow schema, indexed
-scientific metadata, and complete row counts before delivering rows. It
-retains each verified file's source identities, diagnostics, and missing-data
+scientific metadata, and complete row counts before delivering rows. The
+checksum pins rows that were validated when the release was written, so a read
+checks row identities and supports across files but does not decode every
+curve again; use `decode_curves` on the rows you need. It retains each verified file's source identities, diagnostics, and missing-data
 counts. Produced and no-data counts describe the selected rows. The read also
 retains the transformation history needed to replay fitted curves. Files
 combined in one read must agree on the history of any shared variable or
 scenario identity. Pass a returned series reference directly to `select` to
-pin that exact choice. For a known published variable or scenario, use a
-provider enum such as `CRCOpen.Variable.ANNUAL_MAXIMUM_DAILY_PRECIPITATION` or
-`CRCOpen.Scenario.SSP585` in the corresponding selector. User-owned IDs in a
-release can be selected by their exact values.
+pin that exact choice. Common published variables have provider enum members,
+such as `CRCOpen.Variable.ANNUAL_MAXIMUM_DAILY_PRECIPITATION` (`crc:rx1day`),
+and the scenario is `CRCOpen.Scenario.SSP585`. Select any other published
+variable by its exact ID, such as `"crc:hot_days"`; `inspect()` lists them all.
+User-owned IDs in a release are also selected by their exact values.
 
 ## Define asset inputs
 
