@@ -470,9 +470,10 @@ class _CRCNode(SourceNode[DatasetMetadata]):
                             "release dataset produced count disagrees with "
                             "the Parquet footer"
                         )
-                    # The checksum pins every byte to the index, so the whole
-                    # file is checked by its counts here; the rows actually
-                    # delivered are fully validated by the checked stream below.
+                    # The checksum pins every byte to an index entry whose rows
+                    # were fully validated when written, so the whole file is
+                    # checked by its counts here and the delivered rows keep
+                    # identity and support checks without decoding each curve.
                     produced = no_data = 0
                     supports: dict[object, bool] = {}
                     for batch in reader.iter_batches(
@@ -500,7 +501,7 @@ class _CRCNode(SourceNode[DatasetMetadata]):
                         replace(report, source_identities=_sources(entry.metadata))
                     )
 
-        stream = _checked_stream(scope, metadata, batches())
+        stream = _checked_stream(scope, metadata, batches(), payload_verified=True)
         stream.verify_before_yield = True
         original = stream.report
 

@@ -321,8 +321,10 @@ assert replayed.table.equals(published.table, check_metadata=False)
 ```
 
 A read checks each participating file's checksum, Arrow schema, indexed
-scientific metadata, and complete row counts before delivering rows. It
-retains each verified file's source identities, diagnostics, and missing-data
+scientific metadata, and complete row counts before delivering rows. The
+checksum pins rows that were validated when the release was written, so a read
+checks row identities and supports across files but does not decode every
+curve again; use `decode_curves` on the rows you need. It retains each verified file's source identities, diagnostics, and missing-data
 counts. Produced and no-data counts describe the selected rows. The read also
 retains the transformation history needed to replay fitted curves. Files
 combined in one read must agree on the history of any shared variable or

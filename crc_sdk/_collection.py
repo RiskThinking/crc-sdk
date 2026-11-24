@@ -759,15 +759,21 @@ class _CollectionNode(Node[CollectionMetadata]):
                         if member_check is not None:
                             # The resource streams already validate their own models.
                             try:
-                                for row in batch.select(
-                                    (*_ROW_KEY, "geometry")
-                                ).to_pylist():
-                                    member_check._remember(
-                                        _dump(tuple(row[key] for key in _ROW_KEY)),
-                                        row["support_id"],
-                                        row["geometry"],
-                                        row["cell_id"],
-                                    )
+                                rows = batch.select((*_ROW_KEY, "geometry")).to_pylist()
+                                member_check._remember(
+                                    [
+                                        _dump(tuple(row[key] for key in _ROW_KEY))
+                                        for row in rows
+                                    ],
+                                    [
+                                        (
+                                            row["support_id"],
+                                            row["geometry"],
+                                            row["cell_id"],
+                                        )
+                                        for row in rows
+                                    ],
+                                )
                             except (ValueError, TypeError) as error:
                                 raise _invalid(error) from error
                         result = pa.RecordBatch.from_arrays(
