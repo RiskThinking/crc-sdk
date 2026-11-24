@@ -526,3 +526,69 @@ def test_record_mask_matches_the_per_row_selection() -> None:
         expected = [selection.matches_record(row) for row in rows]
         assert selection.record_mask(batch, cache).to_pylist() == expected
         assert selection.record_mask(batch, cache).to_pylist() == expected
+
+
+def test_record_mask_prefilter_keeps_every_intersecting_cell() -> None:
+    import random
+
+    import pyarrow as pa
+
+    from crc_sdk._selection import ResolvedSelection
+
+    rng = random.Random(7)
+    cells = {
+        h3.latlng_to_cell(rng.uniform(-90, 90), rng.uniform(-180, 180), resolution)
+        for resolution in (1, 3, 5, 7)
+        for _ in range(400)
+    }
+    for pentagon in h3.get_pentagons(5):
+        cells.update(h3.grid_disk(pentagon, 2))
+    areas = [
+        Bounds(west=-79.40, south=43.64, east=-79.38, north=43.66),
+        Bounds(west=179.5, south=-10.0, east=-179.5, north=10.0),
+        Bounds(west=-180.0, south=85.0, east=180.0, north=90.0),
+        Bounds(west=-180.0, south=-90.0, east=180.0, north=-80.0),
+    ]
+    for cell in rng.sample(sorted(cells), 40):
+        latitude, longitude = h3.cell_to_latlng(cell)
+        size = rng.choice((1e-4, 0.05, 2.0, 20.0))
+        areas.append(
+            Bounds(
+                west=max(-180.0, longitude - size),
+                south=max(-90.0, latitude - size),
+                east=min(180.0, longitude + size),
+                north=min(90.0, latitude + size),
+            )
+        )
+    rows = [
+        {
+            "variable_id": "crc:a",
+            "scenario_id": None,
+            "period_id": None,
+            "support_id": f"h3:{cell:x}",
+            "cell_id": cell,
+            "geometry": None,
+        }
+        for cell in sorted(cells)
+    ]
+    batch = pa.RecordBatch.from_pylist(
+        rows,
+        schema=pa.schema(
+            [
+                ("variable_id", pa.string()),
+                ("scenario_id", pa.string()),
+                ("period_id", pa.string()),
+                ("support_id", pa.string()),
+                ("cell_id", pa.uint64()),
+                ("geometry", pa.binary()),
+            ]
+        ),
+    )
+    for area in areas:
+        selection = ResolvedSelection(
+            spec=DataSpec([Variable("crc:a")], series=[SeriesSpec(Variable("crc:a"))]),
+            keys=frozenset({("crc:a", None, None)}),
+            area=area,
+        )
+        expected = [selection.matches_record(row) for row in rows]
+        assert selection.record_mask(batch, {}).to_pylist() == expected
