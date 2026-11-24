@@ -6,7 +6,6 @@ import json
 import os
 import urllib.parse
 from collections.abc import Iterator, Mapping
-from contextlib import closing
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path, PurePosixPath
@@ -41,7 +40,7 @@ from ._declarations import (
 )
 from ._graph import ExecutionScope, NodeStream
 from ._inspection import Capability, Inspection, Operation, SeriesReference
-from ._recipes import Dataset, _Checked, _checked_stream, _key, _sources
+from ._recipes import Dataset, _checked_stream, _key, _sources
 from ._runtime import LocalPath
 from ._selection import (
     ResolvedSelection,
@@ -471,36 +470,27 @@ class _CRCNode(SourceNode[DatasetMetadata]):
                             "release dataset produced count disagrees with "
                             "the Parquet footer"
                         )
-                    checked = _Checked(scope, entry.metadata)
-                    with closing(checked.db):
-                        for batch in reader.iter_batches(
-                            batch_size=scope.runtime.batch_rows
-                        ):
-                            batch = checked.check(batch)
-                            coordinates = batch.select(
-                                [
-                                    "variable_id",
-                                    "scenario_id",
-                                    "period_id",
-                                    "support_id",
-                                    "cell_id",
-                                    "geometry",
-                                ]
+                    # The checksum pins every byte to the index, so the whole
+                    # file is checked by its counts here; the rows actually
+                    # delivered are fully validated by the checked stream below.
+                    produced = no_data = 0
+                    supports: dict[object, bool] = {}
+                    for batch in reader.iter_batches(
+                        batch_size=scope.runtime.batch_rows
+                    ):
+                        produced += batch.num_rows
+                        failures = batch.column("failure")
+                        no_data += len(failures) - failures.null_count
+                        selected_batch = batch.filter(
+                            resolved.record_mask(batch, supports)
+                        )
+                        if selected_batch.num_rows:
+                            yield selected_batch.replace_schema_metadata(
+                                schema.metadata
                             )
-                            selected_batch = batch.filter(
-                                pa.array(
-                                    [
-                                        resolved.matches_record(row)
-                                        for row in coordinates.to_pylist()
-                                    ],
-                                    type=pa.bool_(),
-                                )
-                            )
-                            if selected_batch.num_rows:
-                                yield selected_batch
                     if (
-                        checked.produced != report.counts.produced
-                        or checked.no_data != report.counts.no_data
+                        produced != report.counts.produced
+                        or no_data != report.counts.no_data
                     ):
                         raise ValueError(
                             "release dataset report counts disagree with "
