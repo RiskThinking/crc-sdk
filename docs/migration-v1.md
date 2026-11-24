@@ -444,9 +444,9 @@ A 0.x CRC Open hazard name becomes the variable ID `crc:<name>`: `"hot_days"` is
 scenario is `CRCOpen.Scenario.SSP585`, and `horizon` becomes one of the
 release's periods (for most variables, four-year windows), which `inspect()` lists.
 
-**Note:** 0.11 downloaded the public CRC Open release by default. A production
-CRC Open release in Dataset 2.0 format is not yet published, so 1.0 needs an
-explicit release index: `CRCOpen(catalog="path-or-url/release-index.json")`.
+**Note:** like 0.11, 1.0 reads the public CRC Open release by default, now in
+Dataset 2.0 format. To pin another release, pass its index:
+`CRCOpen(catalog="path-or-url/release-index.json")`.
 See [Release notes](release-notes.md#crc-open-availability).
 
 **Before**

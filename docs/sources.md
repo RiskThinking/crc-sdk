@@ -295,10 +295,11 @@ archive. Use those series references directly in `select(series=...)`.
 
 ## Discover a CRC Open release
 
-Pass the local path or HTTPS URL of a release index or pointer to
+`CRCOpen()` reads the current public release through its pointer,
+`https://data.riskthinking.ai/crc-open/_CURRENT.json`. To read another release,
+pass the local path or HTTPS URL of its release index or pointer to
 `CRCOpen(catalog=...)`. The index must use release-index format 1.0 and
-point to Dataset 2.0 files. Use the index supplied with your release.
-Publication of a matching production CRC Open dataset is pending.
+point to Dataset 2.0 files.
 [Release notes](release-notes.md#crc-open-availability)
 
 Inspection reads the index and returns actual series combinations, including
