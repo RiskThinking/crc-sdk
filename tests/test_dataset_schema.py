@@ -456,6 +456,41 @@ def test_parquet_round_trip_is_validated_and_does_not_overwrite_by_default(
         write_parquet("s3://bucket/key", table)
 
 
+def test_parquet_write_requires_an_identical_read_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    table = rows_to_table([row(QuantileCurve([0.9, 0.99], [1, 2]))], metadata())
+    altered = table.set_column(
+        table.column_names.index("support_id"),
+        "support_id",
+        pa.array(["other"], pa.string()),
+    )
+    monkeypatch.setattr("crc_sdk._schema.dataset.pq.read_table", lambda path: altered)
+    path = tmp_path / "dataset.parquet"
+    with pytest.raises(OSError, match="did not read back"):
+        write_parquet(path, table)
+    assert not path.exists() and not list(tmp_path.glob(".*.parquet"))
+
+
+def test_stored_fit_records_are_validated_against_their_curves() -> None:
+    def fitted(family: DistributionFamily) -> DatasetRow:
+        fit = fit_samples(
+            [1, 2, 3, 4, 5, 6, 7, 8],
+            SampleFit(family=family, estimator=SampleEstimator.L_MOMENTS),
+        )
+        return row(fit.distribution, fit=fit.record)
+
+    table = rows_to_table([fitted(DistributionFamily.GUMBEL_RIGHT)], metadata())
+    other = rows_to_table([fitted(DistributionFamily.GUMBEL_LEFT)], metadata())
+    # The stored record text is what gets checked against the stored curve.
+    swapped = table.set_column(
+        table.column_names.index("fit"), "fit", other.column("fit")
+    )
+    assert table_to_rows(table)
+    with pytest.raises(ValueError, match="contradicts the selected fit"):
+        table_to_rows(swapped)
+
+
 def test_empty_canonical_data_keeps_schema_and_complete_typed_report() -> None:
     info = replace(metadata(), report=ExecutionReport(complete=True, valid=True))
     table = rows_to_table([], info)
