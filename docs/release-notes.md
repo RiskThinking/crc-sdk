@@ -28,8 +28,7 @@ files in these formats. [Version ledger](../crc_sdk/contracts/api/release.json)
 
 ### CRC Open availability
 
-Production publication of CRC Open Dataset 2.0 resources and their release
-index is pending. Use `CRCOpen(catalog=...)` with a release-index 1.0 document
-or pointer for a current-format release that you can access. To work with your
-own curves without a CRC Open release, use `Dataset.from_quantiles`.
-[CRC Open discovery](sources.md#discover-a-crc-open-release)
+CRC Open is published in Dataset 2.0 format. `CRCOpen()` follows the public
+release pointer, and every file is pinned by checksum in the release index.
+Pass `CRCOpen(catalog=...)` to read a different release-index 1.0 document or
+pointer. [CRC Open discovery](sources.md#discover-a-crc-open-release)
