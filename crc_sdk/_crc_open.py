@@ -9,6 +9,7 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path, PurePosixPath
+from typing import cast
 
 import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
@@ -39,14 +40,22 @@ from ._declarations import (
     scientific_identity,
 )
 from ._graph import ExecutionScope, NodeStream
-from ._inspection import Capability, Inspection, Operation, SeriesReference
+from ._inspection import (
+    Bounds,
+    Capability,
+    Inspection,
+    Operation,
+    SeriesReference,
+)
 from ._recipes import Dataset, _checked_stream, _key, _sources
 from ._runtime import LocalPath
 from ._selection import (
     ResolvedSelection,
     SelectionState,
+    bounds_intersect,
     participating_spec,
     selected_metadata,
+    support_extent,
 )
 from ._source_io import SourceNode, check_release, fetch, fetch_json, native_data
 from ._terminals import _schema
@@ -89,21 +98,41 @@ class ReleaseDataset:
     uri: str
     sha256: str
     metadata: DatasetMetadata
+    extent: Bounds | None
 
     @classmethod
     def parse(cls, value: object) -> ReleaseDataset:
-        obj = _object(value, {"id", "uri", "sha256", "metadata"})
+        obj = _object(value, {"id", "uri", "sha256", "metadata", "extent"})
         return cls(
             _identifier(obj["id"], "release dataset id"),
             _relative(obj["uri"]),
             _digest(obj["sha256"]),
             DatasetMetadata.from_json(json.dumps(obj["metadata"], allow_nan=False)),
+            _extent(obj["extent"]),
+        )
+
+
+def _extent(value: object) -> Bounds | None:
+    if value is None:
+        return None
+    obj = _object(value, {"west", "south", "east", "north"})
+    try:
+        return Bounds(**cast(dict[str, float], obj))
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"invalid release dataset extent: {error}") from None
+
+
+def release_extent(path: LocalPath) -> Bounds | None:
+    """The conservative extent to record for a Dataset file in a release index."""
+    with pq.ParquetFile(path) as reader:
+        return support_extent(
+            reader.iter_batches(columns=["cell_id", "geometry"], batch_size=65_536)
         )
 
 
 def release_index(value: object) -> tuple[str, tuple[ReleaseDataset, ...]]:
     obj = _object(value, {"schema_version", "id", "datasets"})
-    if obj["schema_version"] != "1.0":
+    if obj["schema_version"] != "1.1":
         raise ValueError(
             "CRC Open requires a current release index and dataset format 2.0"
         )
@@ -117,6 +146,24 @@ def release_index(value: object) -> tuple[str, tuple[ReleaseDataset, ...]]:
     return _identifier(obj["id"], "release id"), entries
 
 
+# Parsed release indexes by content checksum. An index is immutable once its
+# checksum is known, so repeated inspections and reads reuse the parse.
+_PARSED_INDEXES: dict[str, tuple[str, tuple[ReleaseDataset, ...]]] = {}
+_PARSED_INDEX_LIMIT = 4
+
+
+def _parsed_index(
+    document: object, sha256: str
+) -> tuple[str, tuple[ReleaseDataset, ...]]:
+    parsed = _PARSED_INDEXES.get(sha256)
+    if parsed is None:
+        parsed = release_index(document)
+        while len(_PARSED_INDEXES) >= _PARSED_INDEX_LIMIT:
+            _PARSED_INDEXES.pop(next(iter(_PARSED_INDEXES)), None)
+        _PARSED_INDEXES[sha256] = parsed
+    return parsed
+
+
 def _series_key(item: SeriesSpec) -> tuple[str, str | None, str | None]:
     return (
         item.variable.id,
@@ -128,9 +175,32 @@ def _series_key(item: SeriesSpec) -> tuple[str, str | None, str | None]:
 def _selected(
     entries: tuple[ReleaseDataset, ...], state: SelectionState, source: SourceIdentity
 ) -> tuple[tuple[ReleaseDataset, DatasetMetadata, ResolvedSelection], ...]:
+    # Only entries declaring a requested variable can participate; skipping the
+    # rest before merging keeps a one-variable read from merging the whole index.
+    for wanted in (
+        None
+        if state.variables is None
+        else {getattr(item, "id", item) for item in state.variables},
+        None if state.series is None else {item.variable.id for item in state.series},
+    ):
+        if wanted is not None:
+            entries = tuple(
+                entry
+                for entry in entries
+                if any(v.id in wanted for v in entry.metadata.spec.variables)
+            )
     resolved = state.resolve(
         _merged_spec(tuple(entry.metadata for entry in entries)), source=source
     )
+    # Requested identities resolve against every entry declaring them; only
+    # then are files whose extent misses the area left out.
+    if state.area is not None:
+        area = state.area
+        entries = tuple(
+            entry
+            for entry in entries
+            if entry.extent is None or bounds_intersect(entry.extent, area)
+        )
     result = []
     for entry in entries:
         spec = entry.metadata.spec
@@ -161,9 +231,11 @@ def _merged_spec(parts: tuple[DatasetMetadata, ...]) -> DataSpec:
             _merge_descriptor(period, periods)
         for item in metadata.spec.series:
             key = _series_key(item)
-            if key in series and scientific_identity(
-                series[key]
-            ) != scientific_identity(item):
+            if (
+                key in series
+                and series[key] != item
+                and scientific_identity(series[key]) != scientific_identity(item)
+            ):
                 raise ValueError(
                     "participating release series have conflicting "
                     "scientific definitions"
@@ -355,7 +427,7 @@ class _CRCNode(SourceNode[DatasetMetadata]):
                 resources.append(resource)
             else:
                 uri = self.catalog
-            id, entries = release_index(document)
+            id, entries = _parsed_index(document, resource.sha256)
             if pointer_id is not None and pointer_id != id:
                 raise ValueError("release pointer identity differs from its index")
             actual = ReleaseReference(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import re
@@ -12,9 +13,15 @@ from tempfile import TemporaryDirectory
 from crc_framework import DepthAboveGround, LengthUnit, Tail
 
 from crc_sdk import Dataset, Period, Probability, Variable
+from crc_sdk._crc_open import release_extent
 
 PYTHON_FENCE = re.compile(r"^```python[ \t]*\n(.*?)^```[ \t]*$", re.M | re.S)
 LIVE_EXAMPLE = "<!-- live-example -->"
+
+
+def _extent(path: Path) -> dict[str, float] | None:
+    extent = release_extent(path)
+    return None if extent is None else dataclasses.asdict(extent)
 
 
 def write_example_release() -> None:
@@ -37,7 +44,7 @@ def write_example_release() -> None:
     assert dataset.path is not None and dataset.metadata is not None
     digest = hashlib.sha256(dataset.path.read_bytes()).hexdigest()
     document = {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "id": "example-release",
         "datasets": [
             {
@@ -45,6 +52,7 @@ def write_example_release() -> None:
                 "uri": dataset.path.name,
                 "sha256": f"sha256:{digest}",
                 "metadata": json.loads(dataset.metadata.to_json()),
+                "extent": _extent(dataset.path),
             }
         ],
     }

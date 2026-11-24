@@ -526,3 +526,165 @@ def test_record_mask_matches_the_per_row_selection() -> None:
         expected = [selection.matches_record(row) for row in rows]
         assert selection.record_mask(batch, cache).to_pylist() == expected
         assert selection.record_mask(batch, cache).to_pylist() == expected
+
+
+def test_record_mask_prefilter_keeps_every_intersecting_cell() -> None:
+    import random
+
+    import pyarrow as pa
+
+    from crc_sdk._selection import ResolvedSelection
+
+    rng = random.Random(7)
+    cells = {
+        h3.latlng_to_cell(rng.uniform(-90, 90), rng.uniform(-180, 180), resolution)
+        for resolution in (1, 3, 5, 7)
+        for _ in range(400)
+    }
+    for pentagon in h3.get_pentagons(5):
+        cells.update(h3.grid_disk(pentagon, 2))
+    areas = [
+        Bounds(west=-79.40, south=43.64, east=-79.38, north=43.66),
+        Bounds(west=179.5, south=-10.0, east=-179.5, north=10.0),
+        Bounds(west=-180.0, south=85.0, east=180.0, north=90.0),
+        Bounds(west=-180.0, south=-90.0, east=180.0, north=-80.0),
+    ]
+    for cell in rng.sample(sorted(cells), 40):
+        latitude, longitude = h3.cell_to_latlng(cell)
+        size = rng.choice((1e-4, 0.05, 2.0, 20.0))
+        areas.append(
+            Bounds(
+                west=max(-180.0, longitude - size),
+                south=max(-90.0, latitude - size),
+                east=min(180.0, longitude + size),
+                north=min(90.0, latitude + size),
+            )
+        )
+    rows = [
+        {
+            "variable_id": "crc:a",
+            "scenario_id": None,
+            "period_id": None,
+            "support_id": f"h3:{cell:x}",
+            "cell_id": cell,
+            "geometry": None,
+        }
+        for cell in sorted(cells)
+    ]
+    batch = pa.RecordBatch.from_pylist(
+        rows,
+        schema=pa.schema(
+            [
+                ("variable_id", pa.string()),
+                ("scenario_id", pa.string()),
+                ("period_id", pa.string()),
+                ("support_id", pa.string()),
+                ("cell_id", pa.uint64()),
+                ("geometry", pa.binary()),
+            ]
+        ),
+    )
+    for area in areas:
+        selection = ResolvedSelection(
+            spec=DataSpec([Variable("crc:a")], series=[SeriesSpec(Variable("crc:a"))]),
+            keys=frozenset({("crc:a", None, None)}),
+            area=area,
+        )
+        expected = [selection.matches_record(row) for row in rows]
+        assert selection.record_mask(batch, {}).to_pylist() == expected
+
+
+def _arc_points(cell: int, steps: int = 64) -> list[tuple[float, float]]:
+    import math
+
+    from crc_sdk._selection import _angle, _vector
+
+    vertices = [_vector(lat, lng) for lat, lng in h3.cell_to_boundary(cell)]
+    points = []
+    for first, last in zip(vertices, [*vertices[1:], vertices[0]], strict=True):
+        angle = _angle(first, last)
+        for step in range(steps):
+            fraction = step / steps
+            a = math.sin((1 - fraction) * angle) / math.sin(angle)
+            b = math.sin(fraction * angle) / math.sin(angle)
+            x, y, z = (a * p + b * q for p, q in zip(first, last, strict=True))
+            points.append(
+                (
+                    math.degrees(math.asin(max(-1.0, min(1.0, z)))),
+                    math.degrees(math.atan2(y, x)),
+                )
+            )
+    return points
+
+
+def test_support_extent_contains_every_cell_boundary() -> None:
+    import random
+
+    import pyarrow as pa
+
+    from crc_sdk._selection import bounds_intersect, support_extent
+
+    rng = random.Random(3)
+    groups: list[list[int]] = [
+        [h3.latlng_to_cell(rng.uniform(-90, 90), rng.uniform(-180, 180), resolution)]
+        for resolution in (0, 2, 3, 5, 8)
+        for _ in range(25)
+    ]
+    for resolution in (2, 5):
+        groups.extend(list(h3.grid_disk(p, 1)) for p in h3.get_pentagons(resolution))
+        groups.extend(
+            [
+                [h3.latlng_to_cell(latitude, 0.0, resolution)]
+                for latitude in (89.99, -89.99)
+            ]
+        )
+        groups.extend([[h3.latlng_to_cell(-89.8, -31.0, resolution)]])
+        groups.append(
+            [
+                h3.latlng_to_cell(0.0, 179.999, resolution),
+                h3.latlng_to_cell(0.0, -179.999, resolution),
+            ]
+        )
+    for cells in groups:
+        batch = pa.RecordBatch.from_arrays(
+            [pa.array(cells, pa.uint64()), pa.array([None] * len(cells), pa.binary())],
+            names=["cell_id", "geometry"],
+        )
+        extent = support_extent([batch])
+        assert extent is not None
+        for cell in cells:
+            for latitude, longitude in _arc_points(cell):
+                point = Bounds(
+                    west=longitude, south=latitude, east=longitude, north=latitude
+                )
+                assert bounds_intersect(extent, point), (hex(cell), extent)
+
+    geometry = pa.RecordBatch.from_arrays(
+        [pa.array([None], pa.uint64()), pa.array([Point(24.0, 60.0).wkb])],
+        names=["cell_id", "geometry"],
+    )
+    assert support_extent([geometry]) == Bounds(
+        west=24.0, south=60.0, east=24.0, north=60.0
+    )
+    assert support_extent([]) is None
+
+
+def test_bounds_intersect_across_the_antimeridian() -> None:
+    from crc_sdk._selection import bounds_intersect
+
+    crossing = Bounds(west=170.0, south=-5.0, east=-170.0, north=5.0)
+    assert bounds_intersect(
+        crossing, Bounds(west=175.0, south=0.0, east=176.0, north=1.0)
+    )
+    assert bounds_intersect(
+        crossing, Bounds(west=-175.0, south=0.0, east=-174.0, north=1.0)
+    )
+    assert not bounds_intersect(
+        crossing, Bounds(west=0.0, south=0.0, east=1.0, north=1.0)
+    )
+    assert not bounds_intersect(
+        crossing, Bounds(west=175.0, south=6.0, east=176.0, north=7.0)
+    )
+    assert bounds_intersect(
+        crossing, Bounds(west=160.0, south=-90.0, east=-160.0, north=90.0)
+    )

@@ -298,8 +298,11 @@ archive. Use those series references directly in `select(series=...)`.
 `CRCOpen()` reads the current public release through its pointer,
 `https://data.riskthinking.ai/crc-open/_CURRENT.json`. To read another release,
 pass the local path or HTTPS URL of its release index or pointer to
-`CRCOpen(catalog=...)`. The index must use release-index format 1.0 and
-point to Dataset 2.0 files.
+`CRCOpen(catalog=...)`. The index must use release-index format 1.1 and
+point to Dataset 2.0 files. Each index entry records a conservative extent
+(`west`, `south`, `east`, `north`) that contains every support in its file, or
+`null` for a file without rows; an area selection skips files whose extent
+misses the area without downloading them.
 [Release notes](release-notes.md#crc-open-availability)
 
 Inspection reads the index and returns actual series combinations, including

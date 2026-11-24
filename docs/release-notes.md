@@ -30,5 +30,5 @@ files in these formats. [Version ledger](../crc_sdk/contracts/api/release.json)
 
 CRC Open is published in Dataset 2.0 format. `CRCOpen()` follows the public
 release pointer, and every file is pinned by checksum in the release index.
-Pass `CRCOpen(catalog=...)` to read a different release-index 1.0 document or
+Pass `CRCOpen(catalog=...)` to read a different release-index 1.1 document or
 pointer. [CRC Open discovery](sources.md#discover-a-crc-open-release)

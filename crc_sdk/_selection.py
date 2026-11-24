@@ -6,18 +6,20 @@ import json
 import math
 import re
 import types
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, datetime
 from enum import Enum
 from typing import TYPE_CHECKING, TypeAlias, TypeVar, cast
 
 import crc_framework
+import numpy as np
 import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.compute as pc  # type: ignore[import-untyped]
+import shapely  # type: ignore[import-untyped]
 from crc_framework import _core
 from h3.api import basic_int as h3  # type: ignore[import-untyped]
-from shapely import from_wkb  # type: ignore[import-untyped]
+from shapely import from_wkb
 from shapely.affinity import translate  # type: ignore[import-untyped]
 from shapely.geometry import box  # type: ignore[import-untyped]
 
@@ -429,6 +431,14 @@ class ResolvedSelection:
             return mask
         cache = {} if cache is None else cache
         area = self.area
+        cell_rows = pc.and_(
+            pc.is_null(batch.column("geometry")), pc.is_valid(batch.column("cell_id"))
+        )
+        mask = pc.and_not(
+            mask, _outside_ancestors(area, batch, pc.and_(mask, cell_rows), cache)
+        )
+        if not pc.any(mask).as_py():
+            return mask
         geometries = batch.column("geometry").to_pylist()
         cells = batch.column("cell_id").to_pylist()
         selected = mask.to_pylist()
@@ -497,6 +507,197 @@ def _in_time(value: object, period: Period) -> bool:
         )
     assert period.start is not None and period.end is not None
     return period.start <= year <= period.end
+
+
+_H3_RESOLUTION_SHIFT = 52
+_H3_RESOLUTION_MASK = 0xF << _H3_RESOLUTION_SHIFT
+# Ancestors this many resolutions coarser bound a cell's descendants within
+# their one-ring neighbourhood (checked for every resolution 0 and 2 cell).
+_ANCESTOR_LEVELS = 3
+
+
+def _ancestor_cells(cells: np.ndarray, resolution: int) -> np.ndarray:
+    """H3 ancestors at `resolution`, by rewriting the resolution and digit bits."""
+    unused_digits = np.uint64((1 << (3 * (15 - resolution))) - 1)
+    return (
+        (cells & np.uint64(~_H3_RESOLUTION_MASK & (2**64 - 1)))
+        | np.uint64(resolution << _H3_RESOLUTION_SHIFT)
+        | unused_digits
+    )
+
+
+def _outside_ancestors(
+    area: Bounds,
+    batch: pa.RecordBatch,
+    candidates: pa.BooleanArray,
+    cache: dict[object, bool],
+) -> pa.BooleanArray:
+    """Mark cell-supported candidate rows whose coarse ancestor's one-ring cannot
+    reach `area`, so the exact cell test runs only near the area. A cell lies
+    within the one-ring of its ancestor three resolutions coarser, so this never
+    excludes a cell that intersects the area."""
+    outside = np.zeros(batch.num_rows, dtype=bool)
+    rows = np.flatnonzero(candidates.to_numpy(zero_copy_only=False))
+    if not rows.size:
+        return pa.array(outside)
+    cells = (
+        pc.cast(batch.column("cell_id"), pa.uint64())
+        .take(pa.array(rows))
+        .to_numpy(zero_copy_only=False)
+        .astype(np.uint64)
+    )
+    resolutions = (cells >> np.uint64(_H3_RESOLUTION_SHIFT)) & np.uint64(0xF)
+    for resolution in np.unique(resolutions):
+        levels = sorted({0, max(0, int(resolution) - _ANCESTOR_LEVELS)})
+        selected = resolutions == resolution
+        for level in levels:
+            if level >= resolution:
+                continue
+            ancestors = _ancestor_cells(cells, level)
+            reachable = []
+            for ancestor in np.unique(ancestors[selected]).tolist():
+                token = ("ring", ancestor)
+                if token not in cache:
+                    cache[token] = any(
+                        _cell_intersects(area, cell)
+                        for cell in h3.grid_disk(ancestor, 1)
+                    )
+                if cache[token]:
+                    reachable.append(ancestor)
+            selected &= np.isin(ancestors, np.array(reachable, dtype=np.uint64))
+        outside[rows[(resolutions == resolution) & ~selected]] = True
+    return pa.array(outside)
+
+
+# Margin, in degrees, for floating-point error in the cell extent.
+_EXTENT_MARGIN = 1e-6
+
+
+def _cell_box(cell: int) -> tuple[float, float, float, float]:
+    """South, north, west, east of an H3 cell on the sphere. A cell crossing the
+    antimeridian or containing a pole spans every longitude."""
+    resolution = h3.get_resolution(cell)
+    for pole in (90.0, -90.0):
+        if h3.latlng_to_cell(pole, 0.0, resolution) == cell:
+            latitudes = [latitude for latitude, _ in h3.cell_to_boundary(cell)]
+            return (
+                (min(latitudes) - _EXTENT_MARGIN, 90.0, -180.0, 180.0)
+                if pole > 0
+                else (-90.0, max(latitudes) + _EXTENT_MARGIN, -180.0, 180.0)
+            )
+    vertices = h3.cell_to_boundary(cell)
+    latitudes = [latitude for latitude, _ in vertices]
+    longitudes = [longitude for _, longitude in vertices]
+    boundary = [_vector(latitude, longitude) for latitude, longitude in vertices]
+    for first, last in zip(boundary, [*boundary[1:], boundary[0]], strict=True):
+        # An edge's latitude peaks where its great circle is closest to a pole.
+        normal = _cross(first, last)
+        horizontal = math.sqrt(normal[0] ** 2 + normal[1] ** 2)
+        if horizontal <= 1e-15:
+            continue
+        scale = math.sqrt(_dot(normal, normal))
+        for sign in (1, -1):
+            extreme = cast(
+                _Vector,
+                tuple(
+                    sign * value
+                    for value in (
+                        -normal[0] * normal[2] / (scale * horizontal),
+                        -normal[1] * normal[2] / (scale * horizontal),
+                        horizontal / scale,
+                    )
+                ),
+            )
+            if _on_arc(extreme, first, last):
+                latitudes.append(
+                    math.degrees(math.asin(max(-1.0, min(1.0, extreme[2]))))
+                )
+    south = max(-90.0, min(latitudes) - _EXTENT_MARGIN)
+    north = min(90.0, max(latitudes) + _EXTENT_MARGIN)
+    if max(longitudes) - min(longitudes) > 180:
+        return south, north, -180.0, 180.0
+    margin = _EXTENT_MARGIN / max(
+        math.cos(math.radians(max(abs(south), abs(north)))), 1e-6
+    )
+    return (
+        south,
+        north,
+        max(-180.0, min(longitudes) - margin),
+        min(180.0, max(longitudes) + margin),
+    )
+
+
+def support_extent(batches: Iterable[pa.RecordBatch]) -> Bounds | None:
+    """Conservative bounds of every row support in Dataset batches.
+
+    Cell rows are bounded by the one-ring of their ancestor three resolutions
+    coarser (or by the cell itself at resolution 3 and coarser), so the result
+    contains each cell without bounding every cell. Geometry rows use their
+    planar bounds. Returns None when there are no rows.
+    """
+    boxes: list[tuple[float, float, float, float]] = []
+    regions: set[int] = set()
+    for batch in batches:
+        geometry = batch.column("geometry")
+        cells = batch.column("cell_id")
+        cell_rows = pc.and_(pc.is_null(geometry), pc.is_valid(cells))
+        values = (
+            pc.cast(pc.filter(cells, cell_rows), pa.uint64())
+            .to_numpy(zero_copy_only=False)
+            .astype(np.uint64)
+        )
+        if values.size:
+            values = np.unique(values)
+            resolutions = (values >> np.uint64(_H3_RESOLUTION_SHIFT)) & np.uint64(0xF)
+            for resolution in np.unique(resolutions).tolist():
+                selected = values[resolutions == resolution]
+                if resolution <= _ANCESTOR_LEVELS:
+                    regions.update(selected.tolist())
+                    continue
+                for ancestor in np.unique(
+                    _ancestor_cells(selected, resolution - _ANCESTOR_LEVELS)
+                ).tolist():
+                    regions.update(h3.grid_disk(ancestor, 1))
+        shapes = pc.filter(geometry, pc.is_valid(geometry)).to_numpy(
+            zero_copy_only=False
+        )
+        if shapes.size:
+            west, south, east, north = shapely.total_bounds(shapely.from_wkb(shapes))
+            if west < -180 or east > 180:
+                west, east = -180.0, 180.0
+            boxes.append((south, north, west, east))
+        missing = pc.and_(pc.is_null(geometry), pc.is_null(cells))
+        if pc.any(missing).as_py():
+            raise ValueError(
+                "support extent requires actual support geometry or an H3 cell"
+            )
+    boxes.extend(map(_cell_box, sorted(regions)))
+    if not boxes:
+        return None
+    return Bounds(
+        west=min(item[2] for item in boxes),
+        south=min(item[0] for item in boxes),
+        east=max(item[3] for item in boxes),
+        north=max(item[1] for item in boxes),
+    )
+
+
+def bounds_intersect(first: Bounds, second: Bounds) -> bool:
+    """Inclusive intersection of two bounds, either of which may cross the
+    antimeridian."""
+    if first.south > second.north or second.south > first.north:
+        return False
+
+    def spans(bounds: Bounds) -> tuple[tuple[float, float], ...]:
+        if bounds.west <= bounds.east:
+            return ((bounds.west, bounds.east),)
+        return ((bounds.west, 180.0), (-180.0, bounds.east))
+
+    return any(
+        a_west <= b_east and b_west <= a_east
+        for a_west, a_east in spans(first)
+        for b_west, b_east in spans(second)
+    )
 
 
 def support_intersects(

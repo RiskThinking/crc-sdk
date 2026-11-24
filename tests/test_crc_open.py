@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
 import pytest
@@ -38,6 +41,12 @@ from crc_sdk import (
     ValidationError,
     Variable,
 )
+from crc_sdk._crc_open import release_extent
+
+
+def _extent(path: Path) -> dict[str, float] | None:
+    extent = release_extent(path)
+    return None if extent is None else dataclasses.asdict(extent)
 
 
 def _release_index(tmp_path: Path, *datasets: Dataset) -> Path:
@@ -51,12 +60,13 @@ def _release_index(tmp_path: Path, *datasets: Dataset) -> Path:
                 "sha256": "sha256:"
                 + hashlib.sha256(dataset.path.read_bytes()).hexdigest(),
                 "metadata": json.loads(dataset.metadata.to_json()),
+                "extent": _extent(dataset.path),
             }
         )
     index = tmp_path / "_INDEX.json"
     index.write_text(
         json.dumps(
-            {"schema_version": "1.0", "id": "fixture-release", "datasets": resources}
+            {"schema_version": "1.1", "id": "fixture-release", "datasets": resources}
         )
     )
     return index
@@ -212,8 +222,10 @@ def test_release_terminals_keep_verified_dataset_reports(tmp_path: Path) -> None
     with selected.execute() as execution:
         preview = execution.read(limit=1)
         saved = execution.write(tmp_path / "selected.parquet")
+    # The airport file's indexed extent misses the area, so it does not
+    # participate and its report is not combined.
     assert preview.report.counts.produced == 1
-    assert preview.report.counts.skipped == 2
+    assert preview.report.counts.skipped == 1
     assert preview.report.diagnostics == (warning,)
     assert preview.report.source_identities[1:] == (upstream,)
     assert saved.report == preview.report
@@ -414,7 +426,7 @@ def test_selected_release_payload_requires_complete_consistent_counts_and_schema
     with pytest.raises(ValidationError, match=message):
         recipe.read(limit=1)
     with pytest.raises(ValidationError, match=message):
-        recipe.select(area=Bounds(west=-1.0, south=-1.0, east=1.0, north=1.0)).read()
+        recipe.select(area=Bounds(west=23.0, south=59.0, east=25.0, north=61.0)).read()
 
 
 def test_historical_indexes_are_not_admitted_and_empty_does_not_acquire(
@@ -446,4 +458,51 @@ def test_release_rows_repeated_across_datasets_are_rejected(tmp_path: Path) -> N
     )
     index.write_text(json.dumps(document))
     with pytest.raises(ValidationError, match="duplicate scientific row key"):
+        CRCOpen(catalog=index).read()
+
+
+def test_release_files_outside_the_selected_area_are_not_fetched(
+    tmp_path: Path,
+) -> None:
+    recipe, index, artifact = release(tmp_path)
+    document = json.loads(index.read_text())
+    extent = document["datasets"][0]["extent"]
+    assert extent is not None
+    artifact.write_bytes(b"not the indexed file")
+
+    outside = recipe.select(area=Bounds(west=-10.0, south=-10.0, east=-5.0, north=-5.0))
+    assert outside.read().table.num_rows == 0
+    variable = recipe.inspect().series[0].variable.id
+    assert outside.select(variables=[variable]).read().table.num_rows == 0
+    inside = Bounds(
+        west=extent["west"],
+        south=extent["south"],
+        east=extent["east"],
+        north=extent["north"],
+    )
+    with pytest.raises(OSError, match="content identity"):
+        recipe.select(area=inside).read()
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (lambda document: document.update(schema_version="1.0"), "current release"),
+        (lambda document: document["datasets"][0].pop("extent"), "missing"),
+        (
+            lambda document: document["datasets"][0].update(
+                extent={"west": 0.0, "south": 10.0, "east": 1.0, "north": 5.0}
+            ),
+            "extent",
+        ),
+    ],
+)
+def test_release_index_requires_current_extents(
+    tmp_path: Path, change: Callable[[dict[str, Any]], object], message: str
+) -> None:
+    _, index, _ = release(tmp_path)
+    document = json.loads(index.read_text())
+    change(document)
+    index.write_text(json.dumps(document))
+    with pytest.raises(ValidationError, match=message):
         CRCOpen(catalog=index).read()
