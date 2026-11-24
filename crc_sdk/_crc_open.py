@@ -117,6 +117,24 @@ def release_index(value: object) -> tuple[str, tuple[ReleaseDataset, ...]]:
     return _identifier(obj["id"], "release id"), entries
 
 
+# Parsed release indexes by content checksum. An index is immutable once its
+# checksum is known, so repeated inspections and reads reuse the parse.
+_PARSED_INDEXES: dict[str, tuple[str, tuple[ReleaseDataset, ...]]] = {}
+_PARSED_INDEX_LIMIT = 4
+
+
+def _parsed_index(
+    document: object, sha256: str
+) -> tuple[str, tuple[ReleaseDataset, ...]]:
+    parsed = _PARSED_INDEXES.get(sha256)
+    if parsed is None:
+        parsed = release_index(document)
+        while len(_PARSED_INDEXES) >= _PARSED_INDEX_LIMIT:
+            _PARSED_INDEXES.pop(next(iter(_PARSED_INDEXES)), None)
+        _PARSED_INDEXES[sha256] = parsed
+    return parsed
+
+
 def _series_key(item: SeriesSpec) -> tuple[str, str | None, str | None]:
     return (
         item.variable.id,
@@ -128,6 +146,20 @@ def _series_key(item: SeriesSpec) -> tuple[str, str | None, str | None]:
 def _selected(
     entries: tuple[ReleaseDataset, ...], state: SelectionState, source: SourceIdentity
 ) -> tuple[tuple[ReleaseDataset, DatasetMetadata, ResolvedSelection], ...]:
+    # Only entries declaring a requested variable can participate; skipping the
+    # rest before merging keeps a one-variable read from merging the whole index.
+    for wanted in (
+        None
+        if state.variables is None
+        else {getattr(item, "id", item) for item in state.variables},
+        None if state.series is None else {item.variable.id for item in state.series},
+    ):
+        if wanted is not None:
+            entries = tuple(
+                entry
+                for entry in entries
+                if any(v.id in wanted for v in entry.metadata.spec.variables)
+            )
     resolved = state.resolve(
         _merged_spec(tuple(entry.metadata for entry in entries)), source=source
     )
@@ -161,9 +193,11 @@ def _merged_spec(parts: tuple[DatasetMetadata, ...]) -> DataSpec:
             _merge_descriptor(period, periods)
         for item in metadata.spec.series:
             key = _series_key(item)
-            if key in series and scientific_identity(
-                series[key]
-            ) != scientific_identity(item):
+            if (
+                key in series
+                and series[key] != item
+                and scientific_identity(series[key]) != scientific_identity(item)
+            ):
                 raise ValueError(
                     "participating release series have conflicting "
                     "scientific definitions"
@@ -355,7 +389,7 @@ class _CRCNode(SourceNode[DatasetMetadata]):
                 resources.append(resource)
             else:
                 uri = self.catalog
-            id, entries = release_index(document)
+            id, entries = _parsed_index(document, resource.sha256)
             if pointer_id is not None and pointer_id != id:
                 raise ValueError("release pointer identity differs from its index")
             actual = ReleaseReference(

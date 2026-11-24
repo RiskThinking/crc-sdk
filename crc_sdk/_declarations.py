@@ -501,9 +501,11 @@ def _merge_descriptor(
 ) -> None:
     if value is not None:
         existing = descriptors.get(value.id)
-        if existing is not None and scientific_identity(
-            existing
-        ) != scientific_identity(value):
+        if (
+            existing is not None
+            and existing != value
+            and scientific_identity(existing) != scientific_identity(value)
+        ):
             raise ValueError(f"conflicting scientific definition for {value.id!r}")
         descriptors.setdefault(value.id, value)
 
@@ -536,7 +538,9 @@ class DataSpec:
                 raise ValueError(
                     f"series references undeclared variable {item.variable.id!r}"
                 )
-            if scientific_identity(variable) != scientific_identity(item.variable):
+            if variable != item.variable and scientific_identity(
+                variable
+            ) != scientific_identity(item.variable):
                 raise ValueError(
                     f"conflicting measurement for variable {item.variable.id!r}"
                 )
