@@ -11,11 +11,10 @@ and mathematical impacts.
 ## Install
 
 ```sh
-python -m pip install --upgrade --pre "crc-sdk>=1.0.0a1,<2"
+python -m pip install --upgrade crc-sdk
 ```
 
-1.0 is in prerelease; a plain `pip install crc-sdk` installs the latest 0.x
-release. Python 3.11 or later is required. H3 and geometry validation are part of the core
+Python 3.11 or later is required. H3 and geometry validation are part of the core
 package. Source-format extras are `raster`, `netcdf`, and `zarr`.
 Source readers import those dependencies only when needed.
 

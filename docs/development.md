@@ -19,8 +19,7 @@ uv run ruff format --check .
 ```
 
 To install without uv, create a virtual environment and run
-`python -m pip install --pre -e ".[zarr,netcdf,raster,test]"`; `--pre` is
-needed while the framework requirement is a prerelease.
+`python -m pip install -e ".[zarr,netcdf,raster,test]"`.
 
 To work against unreleased framework changes, check out
 [crc-framework-rs](https://github.com/RiskThinking/crc-framework-rs) next to

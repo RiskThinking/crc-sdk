@@ -16,9 +16,7 @@ Read its "Changes that alter results" section too.
 
 ## Upgrade checklist
 
-1. Install `crc-sdk>=1,<2` with `crc-framework>=1,<2` (Python 3.11+). During
-   the 1.0 prerelease, pin `crc-sdk>=1.0.0a1,<2` and install with
-   `pip install --pre`. The
+1. Install `crc-sdk>=1,<2` with `crc-framework>=1,<2` (Python 3.11+). The
    `geometry` and `agriculture` extras are gone: geometry support is built in,
    and the remaining extras are `raster`, `netcdf`, and `zarr`.
 2. Import from `crc_sdk` and `crc_framework` only. Every 0.x submodule
