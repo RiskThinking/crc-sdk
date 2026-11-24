@@ -9,6 +9,7 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path, PurePosixPath
+from typing import cast
 
 import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
@@ -39,14 +40,22 @@ from ._declarations import (
     scientific_identity,
 )
 from ._graph import ExecutionScope, NodeStream
-from ._inspection import Capability, Inspection, Operation, SeriesReference
+from ._inspection import (
+    Bounds,
+    Capability,
+    Inspection,
+    Operation,
+    SeriesReference,
+)
 from ._recipes import Dataset, _checked_stream, _key, _sources
 from ._runtime import LocalPath
 from ._selection import (
     ResolvedSelection,
     SelectionState,
+    bounds_intersect,
     participating_spec,
     selected_metadata,
+    support_extent,
 )
 from ._source_io import SourceNode, check_release, fetch, fetch_json, native_data
 from ._terminals import _schema
@@ -89,21 +98,41 @@ class ReleaseDataset:
     uri: str
     sha256: str
     metadata: DatasetMetadata
+    extent: Bounds | None
 
     @classmethod
     def parse(cls, value: object) -> ReleaseDataset:
-        obj = _object(value, {"id", "uri", "sha256", "metadata"})
+        obj = _object(value, {"id", "uri", "sha256", "metadata", "extent"})
         return cls(
             _identifier(obj["id"], "release dataset id"),
             _relative(obj["uri"]),
             _digest(obj["sha256"]),
             DatasetMetadata.from_json(json.dumps(obj["metadata"], allow_nan=False)),
+            _extent(obj["extent"]),
+        )
+
+
+def _extent(value: object) -> Bounds | None:
+    if value is None:
+        return None
+    obj = _object(value, {"west", "south", "east", "north"})
+    try:
+        return Bounds(**cast(dict[str, float], obj))
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"invalid release dataset extent: {error}") from None
+
+
+def release_extent(path: LocalPath) -> Bounds | None:
+    """The conservative extent to record for a Dataset file in a release index."""
+    with pq.ParquetFile(path) as reader:
+        return support_extent(
+            reader.iter_batches(columns=["cell_id", "geometry"], batch_size=65_536)
         )
 
 
 def release_index(value: object) -> tuple[str, tuple[ReleaseDataset, ...]]:
     obj = _object(value, {"schema_version", "id", "datasets"})
-    if obj["schema_version"] != "1.0":
+    if obj["schema_version"] != "1.1":
         raise ValueError(
             "CRC Open requires a current release index and dataset format 2.0"
         )
@@ -163,6 +192,15 @@ def _selected(
     resolved = state.resolve(
         _merged_spec(tuple(entry.metadata for entry in entries)), source=source
     )
+    # Requested identities resolve against every entry declaring them; only
+    # then are files whose extent misses the area left out.
+    if state.area is not None:
+        area = state.area
+        entries = tuple(
+            entry
+            for entry in entries
+            if entry.extent is None or bounds_intersect(entry.extent, area)
+        )
     result = []
     for entry in entries:
         spec = entry.metadata.spec
