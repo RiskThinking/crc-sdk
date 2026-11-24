@@ -146,8 +146,9 @@ def _stream_rows(
                     "source_no_data",
                     cf.DiagnosticSeverity.WARNING,
                     Stage.DECODING,
-                    f"Skipped {skipped} source supports without "
-                    "at least two valid probability values.",
+                    f"Skipped {skipped} source supports whose values are not a "
+                    "quantile curve: fewer than two valid probability values, or "
+                    "values that decrease as probability rises.",
                     source=source.product,
                 ),
             )
@@ -459,6 +460,9 @@ class _FloodNode(SourceNode[DatasetMetadata]):
                         variable=variable,
                         area=selection.area,
                         support_prefix=f"jrc:{product.value}:{tile or 'continental'}",
+                        # JRC's per-return-period maps are inconsistent at a few
+                        # pixels; those are skipped and counted, not repaired.
+                        skip_decreasing=True,
                     )
                     decoded_rows.extend(decoded)
                     missing += omitted

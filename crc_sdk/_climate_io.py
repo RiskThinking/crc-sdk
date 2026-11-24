@@ -50,8 +50,14 @@ def iter_raster_quantile_rows(
     support_prefix: str | None = None,
     max_pixels: int = 65536,
     counts: RasterReadCounts | None = None,
+    skip_decreasing: bool = False,
 ) -> Iterator[DatasetRow]:
-    """Stream source pixels and their actual valid q knots in bounded windows."""
+    """Stream source pixels and their actual valid q knots in bounded windows.
+
+    With `skip_decreasing`, a pixel whose values fall as probability rises is
+    skipped and counted (published maps contain a few); otherwise it is invalid
+    source data, which for user rasters usually means mislabeled probabilities.
+    """
     import hashlib
     import json
     from contextlib import ExitStack
@@ -172,7 +178,15 @@ def iter_raster_quantile_rows(
                                 if not np.ma.is_masked(a[dy, dx])
                                 and math.isfinite(float(a[dy, dx]))
                             ]
-                            if len(evidence) < 2:
+                            if len(evidence) < 2 or (
+                                skip_decreasing
+                                and any(
+                                    later < earlier
+                                    for (_, earlier), (_, later) in zip(
+                                        evidence, evidence[1:]
+                                    )
+                                )
+                            ):
                                 observed.skipped += 1
                                 continue
                             curve = QuantileCurve(
@@ -209,6 +223,7 @@ def raster_quantile_rows(
     period: Period | None = None,
     area: Bounds | None = None,
     support_prefix: str,
+    skip_decreasing: bool = False,
 ) -> tuple[tuple[DatasetRow, ...], int]:
     counts = RasterReadCounts()
     rows = tuple(
@@ -220,6 +235,7 @@ def raster_quantile_rows(
             area=area,
             support_prefix=support_prefix,
             counts=counts,
+            skip_decreasing=skip_decreasing,
         )
     )
     return rows, counts.skipped
