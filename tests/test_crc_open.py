@@ -484,6 +484,68 @@ def test_release_files_outside_the_selected_area_are_not_fetched(
         recipe.select(area=inside).read()
 
 
+def test_evaluation_fetches_only_files_that_can_cover_its_assets(
+    tmp_path: Path,
+) -> None:
+    recipe, _, artifact = release(tmp_path)
+    original = artifact.read_bytes()
+    artifact.write_bytes(b"not the indexed file")
+
+    away = Assets({"asset_id": ["away"], "longitude": [-7.0], "latitude": [-7.0]})
+    result = recipe.evaluate(away).probabilities([0.9]).read()
+    assert result.table["failure"][0].as_py()["code"] == "no_covering_support"
+    here = Assets({"asset_id": ["here"], "longitude": [24.0], "latitude": [60.0]})
+    with pytest.raises(OSError, match="content identity"):
+        recipe.evaluate(here).probabilities([0.9]).read()
+
+    artifact.write_bytes(original)
+    both = Assets(
+        {
+            "asset_id": ["away", "here"],
+            "longitude": [-7.0, 24.0],
+            "latitude": [-7.0, 60.0],
+        }
+    )
+    evaluated = recipe.evaluate(both).probabilities([0.9]).read()
+    assert evaluated.table["value"].to_pylist() == [None, 0.3]
+
+
+def test_evaluation_keeps_series_whose_only_file_is_not_read(tmp_path: Path) -> None:
+    def dataset(name: str, longitude: float, period: Period) -> Dataset:
+        return Dataset.from_quantiles(
+            {
+                "support_id": [name] * 2,
+                "longitude": [longitude] * 2,
+                "latitude": [60.0] * 2,
+                "probability": [0.9, 0.99],
+                "value": [0.3, 0.85],
+            },
+            variable=Variable(
+                "company:depth", measurement=DepthAboveGround(unit=LengthUnit.METRE)
+            ),
+            probability=Probability.annual(tail=Tail.UPPER),
+            period=period,
+        ).write(tmp_path / f"{name}.parquet")
+
+    near = dataset("near", 24.0, Period.window(2000, 2020))
+    far = dataset("far", -100.0, Period.window(2030, 2050))
+    index = _release_index(tmp_path, near, far)
+    assert far.path is not None
+    far.path.write_bytes(b"never read")
+    assets = Assets({"asset_id": ["site"], "longitude": [24.0], "latitude": [60.0]})
+    result = CRCOpen(catalog=index).evaluate(assets).probabilities([0.9]).read()
+    rows = sorted(
+        result.table.select(["period_id", "value", "failure"]).to_pylist(),
+        key=lambda row: row["value"] is None,
+    )
+    assert [row["value"] for row in rows] == [0.3, None]
+    assert rows[1]["failure"]["code"] == "no_covering_support"
+    assert {row["period_id"] for row in rows} == {
+        Period.window(2000, 2020).id,
+        Period.window(2030, 2050).id,
+    }
+
+
 @pytest.mark.parametrize(
     ("change", "message"),
     [

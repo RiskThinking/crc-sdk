@@ -803,13 +803,25 @@ class _SelectionNode(_ScientificNode[MetadataT]):
             if not resolved.keys or resolved.stations == ():
                 return
             seen_stations: set[str] = set()
+            target = _schema(metadata)
+            supports: dict[object, bool] = {}
             for batch in scope.iter_batches(self.parent):
                 if resolved.stations is not None:
                     seen_stations.update(
                         str(record.get("station_id") or record["support_id"])
                         for record in batch.to_pylist()
                     )
-                if isinstance(metadata, DatasetMetadata):
+                if (
+                    isinstance(metadata, DatasetMetadata)
+                    and resolved.time is None
+                    and batch.schema.equals(target, check_metadata=False)
+                ):
+                    # Dataset rows pass through unchanged: filter the Arrow batch
+                    # instead of decoding every row and encoding the selection.
+                    selected_batch = batch.filter(resolved.record_mask(batch, supports))
+                    if selected_batch.num_rows:
+                        yield selected_batch.replace_schema_metadata(target.metadata)
+                elif isinstance(metadata, DatasetMetadata):
                     table = pa.Table.from_batches([batch]).replace_schema_metadata(
                         _schema(
                             _with_report(
@@ -1402,6 +1414,7 @@ def _bounded_node(
             stations=parent.state.stations
             if parent.state.stations is not None
             else state.stations,
+            cells=parent.state.cells if state.cells is None else state.cells,
         )
         bounded = parent.selected(selected)
         if discover and (state.series or bounded.requirements()):
@@ -2050,6 +2063,16 @@ class Dataset(_RecipeBase[DatasetMetadata, "Dataset"]):
                     + json.dumps(state.document(), ensure_ascii=False, sort_keys=True),
                 ),
             ),
+        )
+
+    def _restricted(self, cells: frozenset[int]) -> Self:
+        """The same recipe reading only rows that cells or geometries can match."""
+        return type(self)._create(
+            self._base,
+            selection=self._selection.restricted(cells),
+            operations=self._operations,
+            path=self._path,
+            metadata=self._metadata,
         )
 
     def fit(
