@@ -1853,7 +1853,11 @@ def _nex_source(
         array = group[variable]
         if array.attrs.get("units") != recipe.source_unit:
             raise ValueError("NEX source units contradict its named indicator")
-        licence = group.attrs.get("license") or group.attrs.get("licence")
+        licence = (
+            group.attrs.get("license")
+            or group.attrs.get("licence")
+            or group.attrs.get("cmip6_license")
+        )
         if licence is not None:
             resources[-1] = replace(
                 resource,

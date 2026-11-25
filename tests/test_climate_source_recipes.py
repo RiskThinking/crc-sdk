@@ -590,6 +590,7 @@ def _netcdf(
     *,
     time_units: str = "days since 2001-01-01",
     calendar: str = "standard",
+    licence_attribute: str = "license",
 ) -> None:
     import h5netcdf  # type: ignore[import-untyped]
 
@@ -606,7 +607,7 @@ def _netcdf(
         file.variables["lat"].attrs["_FillValue"] = np.nan
         file.variables["time"].attrs.update(units=time_units, calendar=calendar)
         file.variables[variable].attrs["units"] = units
-        file.attrs["license"] = "CC-BY-SA-4.0"
+        file.attrs[licence_attribute] = "CC-BY-SA-4.0"
 
 
 @pytest.mark.parametrize(
@@ -640,6 +641,7 @@ def test_nex_real_native_netcdf_view_and_pinned_replay(
             unit,
             np.full((365, 2, 2), source_value),
             time_units=f"days since {year}-01-01",
+            licence_attribute="cmip6_license",
         )
         paths[name] = path
     keys = {
@@ -734,6 +736,8 @@ def test_nex_real_native_netcdf_view_and_pinned_replay(
     release = result.metadata.source.release
     assert release is not None
     assert any("#crc-variable=" in r.uri for r in result.metadata.source.resources)
+    windows = [r for r in result.metadata.source.resources if "#crc-variable=" in r.uri]
+    assert windows and all(r.license == "CC-BY-SA-4.0" for r in windows)
     raw = recipe.observations()
     native = raw.read(runtime=Runtime(cache=Cache.reuse(cache), batch_rows=31))
     assert native.table.num_rows == 730
@@ -776,6 +780,7 @@ def test_nex_real_native_netcdf_view_and_pinned_replay(
         unit,
         np.full((365, 2, 2), source_value * 1.01),
         time_units="days since 2002-01-01",
+        licence_attribute="cmip6_license",
     )
     monkeypatch.setattr("crc_sdk._source_io._download", acquire)
     pinned = recipe.select(series=replace(reference, release=release))
