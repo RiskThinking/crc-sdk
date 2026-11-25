@@ -2,6 +2,19 @@
 
 [Docs index](README.md)
 
+## 1.0.1
+
+Source reads now report what 1.0.0 left silent or misattributed. No interface
+or format changes.
+
+- NEX-GDDP-CMIP6 selections that reach past a scenario's published years add a
+  `source_year_unavailable` warning naming those years.
+- JRC flood reads whose area misses the product extent add an
+  `area_outside_coverage` warning instead of an empty, complete report.
+- NEX-GDDP-CMIP6 resources record the CMIP6 licence that NASA writes in each
+  file's `cmip6_license` attribute.
+- GHCNh and ISD station lists and hourly files are attributed to NOAA NCEI only.
+
 ## 1.0.0
 
 This breaking release requires Python 3.11 or later and `crc-framework` 1.x.
