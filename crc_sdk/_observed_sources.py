@@ -120,6 +120,10 @@ _NOAA_ATTRIBUTION = (
     "NOAA National Centers for Environmental Information and "
     "NOAA CO-OPS; original source records retained."
 )
+_NCEI_ATTRIBUTION = (
+    "NOAA National Centers for Environmental Information; "
+    "original source records retained."
+)
 
 
 MetadataT = TypeVar("MetadataT")
@@ -553,7 +557,7 @@ def _catalogue(
             else "https://noaa-isd-pds.s3.amazonaws.com/isd-history.csv"
         )
         path, identity = fetch(
-            scope, uri, license=_NOAA_TERMS, attribution=_NOAA_ATTRIBUTION
+            scope, uri, license=_NOAA_TERMS, attribution=_NCEI_ATTRIBUTION
         )
         stations = _catalogue_csv(provider, path)
         resources = (identity,)
@@ -905,7 +909,7 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
                     else f"https://noaa-global-hourly-pds.s3.amazonaws.com/{year}/{station.id}.csv"
                 )
                 path, identity = fetch_optional(
-                    scope, uri, license=_NOAA_TERMS, attribution=_NOAA_ATTRIBUTION
+                    scope, uri, license=_NOAA_TERMS, attribution=_NCEI_ATTRIBUTION
                 )
                 yield _Part(path, uri, station.id, year), identity
 

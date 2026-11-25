@@ -569,6 +569,21 @@ def test_hourly_qc_evidence_and_incomplete_predefined_indicator(
     assert annual.report.counts.incomplete_years == 1
 
 
+@pytest.mark.parametrize(
+    "source,station", [(GHCNh(), "TEST0000001"), (ISD(), "12345678901")]
+)
+def test_hourly_station_resources_are_attributed_to_ncei(
+    source: GHCNh | ISD, station: str, transport: NativeTransport
+) -> None:
+    result = source.select(stations=station, time=_year()).observations().read()
+    assert result.metadata.source is not None
+    attributions = {r.attribution for r in result.metadata.source.resources}
+    assert attributions == {
+        "NOAA National Centers for Environmental Information; "
+        "original source records retained."
+    }
+
+
 def test_native_404_is_cached_absence_with_station_year_diagnostic(
     transport: NativeTransport, tmp_path: Path
 ) -> None:
