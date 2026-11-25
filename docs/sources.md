@@ -127,6 +127,9 @@ verified payload release as well as the model, scenario, member, and period.
 An unpinned, dated series can be read over a smaller observation window with
 `select(series=reference, time=...)`. The series retains its declared period
 and the metadata records the narrower observation window.
+Selected years outside the published years of an ERA5, CMIP6, or NEX source
+remain incomplete annual rows at each grid cell, and the report carries a
+`source_year_unavailable` warning naming those years.
 
 ERA5, CMIP6, NEX, JRC, EDO, and USDA Cropland inspection return release
 references for the published inventory. Pass an inspected reference directly to
