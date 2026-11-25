@@ -775,6 +775,28 @@ class _ClimateNode(SourceNode[EvidenceMetadata]):
         source_records = source.records
         assert source_records is not None
         window = _period(time, source.first_year, source.last_year, source.calendar)
+        unpublished = tuple(
+            ExecutionDiagnostic(
+                "source_year_unavailable",
+                cf.DiagnosticSeverity.WARNING,
+                Stage.ACQUISITION,
+                f"The source publishes no data for "
+                f"{first if first == last else f'{first}-{last}'}; its published "
+                f"years are {source.first_year}-{source.last_year}.",
+                source=source.identity.product,
+            )
+            for first, last in (
+                (
+                    cast(int, window.start),
+                    min(cast(int, window.end), source.first_year - 1),
+                ),
+                (
+                    max(cast(int, window.start), source.last_year + 1),
+                    cast(int, window.end),
+                ),
+            )
+            if first <= last
+        )
         period = _period(
             selected_series_period(self.state) or time,
             source.first_year,
@@ -799,7 +821,7 @@ class _ClimateNode(SourceNode[EvidenceMetadata]):
                 actual_source = verify_payload(
                     actual_source, id=source.release_id, expected=pin
                 )
-            diagnostics = (
+            diagnostics = unpublished + (
                 ()
                 if not missing
                 else (

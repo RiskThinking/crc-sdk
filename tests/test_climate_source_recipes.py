@@ -789,6 +789,63 @@ def test_nex_real_native_netcdf_view_and_pinned_replay(
         pinned.read(limit=1, runtime=Runtime(cache=Cache.refresh(cache), batch_rows=1))
 
 
+def test_nex_year_without_a_published_file_is_reported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import urllib.parse
+
+    from crc_sdk import _climate_sampling as module
+    from crc_sdk._climate_io import netcdf_header_snapshot, netcdf_window_snapshot
+
+    directory = module.NEX_PREFIX + "MODEL/historical/r1/tasmax/"
+    name = "tasmax_day_MODEL_historical_r1_gn_2001.nc"
+    path = tmp_path / name
+    _netcdf(path, "tasmax", np.arange(365), "K", np.full((365, 2, 2), 290.0))
+
+    def acquire(uri: str, destination: Path) -> int:
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(uri).query)
+        assert query["prefix"][0] == directory
+        destination.write_text(
+            '<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+            f"<Contents><Key>{directory + name}</Key></Contents>"
+            "<IsTruncated>false</IsTruncated></ListBucketResult>"
+        )
+        return 200
+
+    monkeypatch.setattr(module, "NEX_BUCKET", "https://fixture.test")
+    monkeypatch.setattr("crc_sdk._source_io._download", acquire)
+    monkeypatch.setattr(
+        module,
+        "netcdf_header_snapshot",
+        lambda scope, uri, variable: netcdf_header_snapshot(
+            scope, path.as_uri(), variable
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "netcdf_window_snapshot",
+        lambda scope, uri, **kw: netcdf_window_snapshot(scope, path.as_uri(), **kw),
+    )
+    result = (
+        NEX(
+            indicator=NEX.Indicator.ANNUAL_MAXIMUM_DAILY_MAXIMUM_TEMPERATURE,
+            model="MODEL",
+            scenario="historical",
+            member="r1",
+        )
+        .select(area=AREA, time=Period.window(2001, 2003))
+        .read()
+    )
+    assert result.table["time"].to_pylist() == ["2001", "2002", "2003"]
+    assert result.table["value"].to_pylist() == [pytest.approx(16.85), None, None]
+    assert result.report.counts.incomplete_years == 2
+    (unavailable,) = (
+        d for d in result.report.diagnostics if d.code == "source_year_unavailable"
+    )
+    assert unavailable.stage is Stage.ACQUISITION
+    assert "2002-2003" in unavailable.message and "2001" in unavailable.message
+
+
 def test_edo_native_dekads_are_readable_without_fitting(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
