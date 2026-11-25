@@ -53,6 +53,8 @@ from ._evaluation_spatial import (
     SpatialIndex,
     SpatialMatch,
     SpatialMatchError,
+    SpatialMatchKind,
+    candidate_cells,
 )
 from ._graph import DataValidationError, ExecutionScope, Node, NodeStream
 from ._inspection import (
@@ -505,10 +507,11 @@ class _EvaluationNode(Node[EvaluationMetadata]):
         exposure = plan.selection.responses is None
         groups = _response_series(series, responses, exposure=exposure)
         definitions = _definitions(tuple(groups.values()), responses, query)
+        source = self.source
         if len(groups) < len(series):
             targets = tuple(dict.fromkeys(item.variable.id for item in groups.values()))
-            projected = _restrict_variables(self.source, targets)
-            parent = cast(Node[DatasetMetadata | CollectionMetadata], projected._node)
+            source = _restrict_variables(self.source, targets)
+            parent = cast(Node[DatasetMetadata | CollectionMetadata], source._node)
             declaration = scope.metadata(parent)
             inputs = _inputs(declaration)
         responders = {
@@ -522,6 +525,15 @@ class _EvaluationNode(Node[EvaluationMetadata]):
         )
         with native_data(scope=scope, source="assets"):
             assets = plan.assets._materialize(scope, required_columns=required_columns)
+        if plan.spatial.kind is SpatialMatchKind.COVERING and isinstance(
+            source, Dataset
+        ):
+            # Read only rows whose support can cover an asset: sources skip
+            # files and rows outside these cells instead of decoding them.
+            parent = cast(
+                Node[DatasetMetadata | CollectionMetadata],
+                source._restricted(candidate_cells(assets.geometries))._node,
+            )
         ids = tuple(assets.table[assets.id_column].to_pylist())
         asset_schema = _asset_fields(plan.assets, assets.table.schema)
         assert asset_schema is not None

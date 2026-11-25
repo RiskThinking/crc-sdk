@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from typing import cast
@@ -153,6 +153,33 @@ def _point_key(point: Point) -> tuple[float, float]:
     if abs(latitude) == 90:
         return latitude, 0.0
     return latitude, -180.0 if longitude == 180 else longitude
+
+
+def candidate_cells(geometries: Iterable[bytes]) -> frozenset[int]:
+    """H3 cells, at every resolution, that can cover the given assets.
+
+    A point is covered only by the cell containing it, as `SpatialIndex` finds
+    it. A cell covering a polygon contains the polygon's representative point;
+    the one-ring absorbs the difference between planar cell polygons and H3
+    assignment near cell edges.
+    """
+    cells: set[int] = set()
+    for value in geometries:
+        asset = cast(BaseGeometry, from_wkb(value))
+        if asset.is_empty:
+            continue
+        if isinstance(asset, Point):
+            latitude, longitude = _point_key(asset)
+            cells.update(
+                int(h3.latlng_to_cell(latitude, longitude, resolution))
+                for resolution in range(16)
+            )
+            continue
+        point = asset.representative_point()
+        for resolution in range(16):
+            cell = h3.latlng_to_cell(float(point.y), float(point.x), resolution)
+            cells.update(int(item) for item in h3.grid_disk(cell, 1))
+    return frozenset(cells)
 
 
 def _rectangular_quadrants(point: Point, shape: BaseGeometry) -> set[tuple[bool, bool]]:

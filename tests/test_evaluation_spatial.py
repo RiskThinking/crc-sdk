@@ -18,6 +18,7 @@ from crc_sdk._evaluation_spatial import (
     SpatialIndex,
     SpatialMatch,
     SpatialMatchError,
+    candidate_cells,
     spatial_match_from_document,
 )
 from crc_sdk._schema.dataset import DatasetRow
@@ -235,3 +236,55 @@ def test_nearest_equal_distances_and_nonpoint_assets_fail_explicitly() -> None:
     with pytest.raises(SpatialMatchError) as incompatible:
         spatial.match(box(0, 0, 1, 1).wkb)
     assert incompatible.value.code == "nearest_requires_point_assets"
+
+
+def _cell_row(cell: int) -> DatasetRow:
+    return DatasetRow(
+        variable_id="depth",
+        support_id=f"h3:{cell:x}",
+        cell_id=cell,
+        curve=cf.QuantileCurve([0.2, 0.8], [1, 3]),
+    )
+
+
+@pytest.mark.parametrize("seed", range(4))
+def test_candidate_cells_keep_every_cell_an_asset_can_match(seed: int) -> None:
+    random = np.random.default_rng(seed)
+    centres = [(89.9, 30.0), (-89.9, 0.0), (0.0, 179.99), (0.0, -180.0)] + [
+        (float(random.uniform(-80, 80)), float(random.uniform(-180, 180)))
+        for _ in range(12)
+    ]
+    assets = []
+    for latitude, longitude in centres:
+        assets.append(Point(longitude, latitude).wkb)
+        size = float(random.choice([1e-4, 0.02, 0.3]))
+        assets.append(
+            box(
+                max(-180.0, longitude - size),
+                max(-90.0, latitude - size),
+                min(180.0, longitude + size),
+                min(90.0, latitude + size),
+            ).wkb
+        )
+    candidates = candidate_cells(assets)
+    matched = 0
+    for resolution in (2, 4, 6, 8):
+        cells = {
+            cell
+            for latitude, longitude in centres
+            for cell in h3.grid_disk(
+                h3.latlng_to_cell(latitude, longitude, resolution), 2
+            )
+        }
+        rows = [_cell_row(cell) for cell in sorted(cells)]
+        kept = [row for row in rows if row.cell_id in candidates]
+        assert len(kept) < len(rows)
+        full, restricted = _index(rows), _index(kept)
+        for asset in assets:
+            expected, actual = full.match(asset), restricted.match(asset)
+            assert (actual.row, actual.failure_code) == (
+                expected.row,
+                expected.failure_code,
+            )
+            matched += expected.row is not None
+    assert matched

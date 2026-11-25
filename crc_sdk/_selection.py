@@ -182,6 +182,10 @@ class SelectionState:
     area: Bounds | None = None
     stations: tuple[str, ...] | None = None
     time: Period | None = None
+    # Internal restriction to the H3 cells that requested assets can match.
+    # It removes only rows that cannot match, so it is not a scientific
+    # selection and never appears in metadata or provenance.
+    cells: frozenset[int] | None = None
 
     def updated(
         self,
@@ -223,10 +227,15 @@ class SelectionState:
             area=self.area if area is ... else area,
             stations=self.stations if stations is ... else _stations(stations),
             time=self.time if time is ... else time,
+            cells=self.cells,
         )
 
+    def restricted(self, cells: frozenset[int]) -> SelectionState:
+        """Also keep only cell-supported rows in `cells`; geometry rows are kept."""
+        return replace(self, cells=cells if self.cells is None else self.cells & cells)
+
     def document(self) -> dict[str, object]:
-        return {
+        document: dict[str, object] = {
             "variables": _selection_document(self.variables),
             "scenarios": _selection_document(self.scenarios),
             "periods": _selection_document(self.periods),
@@ -242,6 +251,9 @@ class SelectionState:
             "stations": None if self.stations is None else sorted(set(self.stations)),
             "time": None if self.time is None else self.time._document(),
         }
+        if self.cells is not None:
+            document["cells"] = sorted(self.cells)
+        return document
 
     def resolve(
         self, spec: DataSpec, source: SourceIdentity | None = None
@@ -322,6 +334,7 @@ class SelectionState:
             area=self.area,
             stations=self.stations,
             time=time,
+            cells=self.cells,
         )
 
 
@@ -382,6 +395,7 @@ class ResolvedSelection:
     area: Bounds | None = None
     stations: tuple[str, ...] | None = None
     time: Period | None = None
+    cells: frozenset[int] | None = None
 
     @property
     def empty(self) -> bool:
@@ -427,6 +441,18 @@ class ResolvedSelection:
         if self.stations is not None:
             stations = pa.array(self.stations, type=pa.string())
             mask = pc.and_(mask, pc.is_in(batch.column("support_id"), stations))
+        if self.cells is not None:
+            cell_ids = batch.column("cell_id")
+            outside = pc.and_(
+                pc.and_(pc.is_null(batch.column("geometry")), pc.is_valid(cell_ids)),
+                pc.invert(
+                    pc.is_in(
+                        pc.cast(cell_ids, pa.uint64()),
+                        pa.array(sorted(self.cells), type=pa.uint64()),
+                    )
+                ),
+            )
+            mask = pc.and_not(mask, outside)
         if self.area is None or not pc.any(mask).as_py():
             return mask
         cache = {} if cache is None else cache
@@ -461,6 +487,13 @@ class ResolvedSelection:
         if (
             self.stations is not None
             and (row.get("station_id") or row.get("support_id")) not in self.stations
+        ):
+            return False
+        if (
+            self.cells is not None
+            and row.get("geometry") is None
+            and row.get("cell_id") is not None
+            and int(cast(int, row["cell_id"])) not in self.cells
         ):
             return False
         if self.time is not None:
@@ -625,6 +658,12 @@ def _cell_box(cell: int) -> tuple[float, float, float, float]:
         max(-180.0, min(longitudes) - margin),
         min(180.0, max(longitudes) + margin),
     )
+
+
+def cell_bounds(cell: int) -> Bounds:
+    """Conservative bounds of one H3 cell."""
+    south, north, west, east = _cell_box(cell)
+    return Bounds(west=west, south=south, east=east, north=north)
 
 
 def support_extent(batches: Iterable[pa.RecordBatch]) -> Bounds | None:

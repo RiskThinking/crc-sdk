@@ -189,6 +189,12 @@ to supports with curves.
 The evaluation report carries acquired input checksums, upstream diagnostics,
 skipped counts, and annual completeness counts from the input reports. Reopening
 checks those inherited facts against the embedded input metadata.
+With covering matches, an evaluation reads only rows whose supports can cover
+its assets: CRC Open skips files whose extent misses every asset, and H3 cell
+rows outside the assets' cells are not decoded. Input reports therefore count
+and diagnose the rows read for these assets, not the whole selected source.
+The declared series, and the rows of series no read support covers, are
+unchanged.
 Use `select(responses=...)` to choose named rows explicitly. Source filters also
 limit the responses in the default selection. The returned table has one row
 per asset, participating series, requested coordinate, and exposure or named

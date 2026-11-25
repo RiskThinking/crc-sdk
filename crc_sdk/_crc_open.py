@@ -13,6 +13,7 @@ from typing import cast
 
 import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
+from h3.api import basic_int as h3  # type: ignore[import-untyped]
 
 from ._dataset_schema import (
     DatasetMetadata,
@@ -53,6 +54,7 @@ from ._selection import (
     ResolvedSelection,
     SelectionState,
     bounds_intersect,
+    cell_bounds,
     participating_spec,
     selected_metadata,
     support_extent,
@@ -504,8 +506,27 @@ class _CRCNode(SourceNode[DatasetMetadata]):
         identities = list(source.resources)
         verified_reports: list[ExecutionReport] = []
 
+        # Cells restrict which files are read, not what the release declares:
+        # a finest-resolution candidate cell contains its asset's point, so a
+        # file whose extent misses every such cell cannot cover any asset.
+        boxes = (
+            None
+            if self.state.cells is None
+            else tuple(
+                cell_bounds(cell)
+                for cell in self.state.cells
+                if h3.get_resolution(cell) == 15
+            )
+        )
+
         def batches() -> Iterator[pa.RecordBatch]:
             for entry, _, resolved in selected:
+                if (
+                    boxes is not None
+                    and entry.extent is not None
+                    and not any(bounds_intersect(entry.extent, box) for box in boxes)
+                ):
+                    continue
                 uri = urllib.parse.urljoin(catalog, entry.uri)
                 path, resource = fetch(
                     scope,
