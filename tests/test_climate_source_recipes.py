@@ -21,6 +21,7 @@ from crc_sdk import (
     Period,
     ReleaseReference,
     Runtime,
+    Stage,
     ValidationError,
     Variable,
 )
@@ -1052,6 +1053,79 @@ def test_jrc_preserves_published_quantile_knots_and_native_pixel_support(
     assert curve is not None
     assert curve.quantile([0.9, 0.99]) == pytest.approx([1, 10])
     assert result.table["support_id"].to_pylist()[0].endswith(":1:0")
+
+
+@pytest.mark.parametrize("product", [JRC.Product.EFAS, JRC.Product.GLOFAS])
+def test_jrc_area_outside_the_product_extent_is_reported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, product: JRC.Product
+) -> None:
+    import rasterio
+    from rasterio.transform import from_origin
+
+    from crc_sdk._providers import jrc
+
+    root = tmp_path / "jrc"
+    root.mkdir()
+    tiled = product is JRC.Product.GLOFAS
+    index = root / "tile_extents.geojson"
+    base = jrc.GLOFAS if tiled else jrc.EFAS
+    dataset = replace(
+        base,
+        base_url=root.as_uri(),
+        tile_index_url=index.as_uri() if tiled else None,
+        filename_template=("{tile_id}_" if tiled else "") + "rp{return_period}.tif",
+        available_return_periods=(10, 100),
+    )
+    (root / "README.txt").write_text("Dataset version " + dataset.version)
+    index.write_text(
+        json.dumps(
+            {
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "type": "Feature",
+                        "properties": {"id": 1, "name": "N0_E0"},
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": [
+                                [[-0.125, -0.125], [0.375, -0.125], [0.375, 0.375]]
+                                + [[-0.125, 0.375], [-0.125, -0.125]]
+                            ],
+                        },
+                    }
+                ],
+            }
+        )
+    )
+    for period in (10, 100):
+        folder = root / f"RP{period}" if tiled else root
+        folder.mkdir(exist_ok=True)
+        with rasterio.open(
+            folder / (("ID1_N0_E0_" if tiled else "") + f"rp{period}.tif"),
+            "w",
+            driver="GTiff",
+            height=2,
+            width=2,
+            count=1,
+            dtype="float64",
+            crs="EPSG:4326",
+            transform=from_origin(-0.125, 0.375, 0.25, 0.25),
+        ) as file:
+            file.write(np.full((2, 2), period / 10), 1)
+    monkeypatch.setitem(jrc.JRC_DATASETS, product.value, dataset)
+    covered = JRC(product=product).select(area=AREA).read()
+    assert covered.table.num_rows == 1
+    assert not covered.report.diagnostics
+    outside = (
+        JRC(product=product)
+        .select(area=Bounds(west=-122.15, south=37.42, east=-121.85, north=37.62))
+        .read()
+    )
+    assert outside.table.num_rows == 0
+    (diagnostic,) = outside.report.diagnostics
+    assert diagnostic.code == "area_outside_coverage"
+    assert diagnostic.stage is Stage.ACQUISITION
+    assert diagnostic.severity is cf.DiagnosticSeverity.WARNING
 
 
 def test_jrc_empty_selection_avoids_acquisition(

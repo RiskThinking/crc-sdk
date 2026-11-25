@@ -137,8 +137,8 @@ def _stream_rows(
 
     def batches() -> Iterator[pa.RecordBatch]:
         nonlocal current
-        rows, source, skipped = produce()
-        diagnostics = (
+        rows, source, skipped, covered = produce()
+        diagnostics: tuple[ExecutionDiagnostic, ...] = (
             ()
             if not skipped
             else (
@@ -153,6 +153,17 @@ def _stream_rows(
                 ),
             )
         )
+        if not covered:
+            diagnostics += (
+                ExecutionDiagnostic(
+                    "area_outside_coverage",
+                    cf.DiagnosticSeverity.WARNING,
+                    Stage.ACQUISITION,
+                    f"The selected area lies outside the {source.product} "
+                    "source extent; no source pixels were read.",
+                    source=source.product,
+                ),
+            )
         report = _report(len(rows), source, skipped=skipped, diagnostics=diagnostics)
         publication = metadata.source
         if (
@@ -418,7 +429,7 @@ class _FloodNode(SourceNode[DatasetMetadata]):
                 "JRC raster acquisition requires .select(area=Bounds(...))."
             )
 
-        def produce() -> tuple[tuple[DatasetRow, ...], SourceIdentity, int]:
+        def produce() -> tuple[tuple[DatasetRow, ...], SourceIdentity, int, bool]:
             assert selection.area is not None
             resources = list(source.resources)
             if dataset.layout == "continental":
@@ -440,6 +451,7 @@ class _FloodNode(SourceNode[DatasetMetadata]):
                 )
             rows: list[DatasetRow] = []
             skipped = 0
+            covered = False
             for tile in tiles:
                 paths: dict[float, tuple[Path, ...]] = {}
                 for return_period in dataset.available_return_periods:
@@ -454,6 +466,8 @@ class _FloodNode(SourceNode[DatasetMetadata]):
                     resources.append(identity)
                 decoded_rows: list[DatasetRow] = []
                 missing = 0
+                # A window snapshot holds no views where the area misses the raster.
+                covered = covered or bool(next(iter(paths.values())))
                 for view_index in range(len(next(iter(paths.values())))):
                     decoded, omitted = raster_quantile_rows(
                         {q: views[view_index] for q, views in paths.items()},
@@ -474,7 +488,7 @@ class _FloodNode(SourceNode[DatasetMetadata]):
                 id=dataset.version,
                 expected=pin,
             )
-            return tuple(rows), actual, skipped
+            return tuple(rows), actual, skipped, covered
 
         return _stream_rows(scope, metadata, produce)
 
