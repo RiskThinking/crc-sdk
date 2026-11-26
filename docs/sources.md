@@ -104,6 +104,9 @@ estimate. Cache a deliberate selection before repeating a long calculation.
 CMIP6 and NEX expose published combinations as `SeriesReference` records.
 References from the catalog list the indicator, model, scenario, and member.
 After selecting a combination, inspection reads its calendar and actual period.
+Models on 365-day or 360-day calendars are read in that calendar: their
+periods, daily samples and annual values carry it, so their period IDs differ
+from Gregorian ones.
 This example uses the area and time window from above.
 
 <!-- live-example -->
