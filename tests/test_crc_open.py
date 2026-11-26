@@ -459,6 +459,10 @@ def test_release_rows_repeated_across_datasets_are_rejected(tmp_path: Path) -> N
     index.write_text(json.dumps(document))
     with pytest.raises(ValidationError, match="duplicate scientific row key"):
         CRCOpen(catalog=index).read()
+    # Equal files fetched at once on threads share one owned snapshot.
+    for _ in range(20):
+        with pytest.raises(ValidationError, match="duplicate scientific row key"):
+            CRCOpen(catalog=index).read(runtime=Runtime(workers=4))
 
 
 def test_release_files_outside_the_selected_area_are_not_fetched(

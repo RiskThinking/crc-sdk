@@ -326,6 +326,13 @@ class ExecutionScope:
         self._entered = False
         self._callback_error: BaseException | None = None
         self._deferred_events: deque[ProgressEvent] = deque()
+        self._key_locks: dict[str, threading.Lock] = {}
+        self._key_locks_guard = threading.Lock()
+
+    def _key_lock(self, key: str) -> threading.Lock:
+        """One lock per owned file, for acquisition threads sharing a scope."""
+        with self._key_locks_guard:
+            return self._key_locks.setdefault(key, threading.Lock())
 
     def __enter__(self) -> Self:
         self._active()
@@ -547,6 +554,14 @@ class ExecutionScope:
             raise TypeError("pin requires ResourceIdentity and an acquisition callable")
         if resource.sha256 in self._pins:
             return self._pins[resource.sha256]
+        # Threads pinning equal content share its owned paths: one acquires,
+        # the others then reuse its pin.
+        with self._key_lock(resource.sha256):
+            if resource.sha256 in self._pins:
+                return self._pins[resource.sha256]
+            return self._pin(resource, acquire)
+
+    def _pin(self, resource: ResourceIdentity, acquire: Callable[[Path], None]) -> Path:
         digest = resource.sha256.removeprefix("sha256:")
         private = self.directory / f"source-{digest}"
         cache = self.runtime.cache
@@ -629,6 +644,12 @@ class ExecutionScope:
             return pinned, resource
         name = hashlib.sha256(uri.encode()).hexdigest()
         key = f"local:{name}"
+        with self._key_lock(key):
+            return self._pin_unverified(reader, uri, key, name)
+
+    def _pin_unverified(
+        self, reader: BinaryIO, uri: str, key: str, name: str
+    ) -> tuple[Path, ResourceIdentity]:
         if key in self._pins:
             return self._pins[key], self._local_identities[key]
         private = self.directory / f"local-{name}"
