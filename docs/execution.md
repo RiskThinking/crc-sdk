@@ -170,6 +170,10 @@ resources as needed. `Cache.offline(path)` only reads verified cached
 resources and raises if a required resource is missing. `Cache.refresh(path)`
 reacquires source data. [Offline replay example](sources.md#discover-a-crc-open-release)
 
+`Runtime(workers=n)` acquires up to n CRC Open release files at once, ahead of
+decoding them, and gives DuckDB n threads. Progress callbacks still run on the
+consuming thread.
+
 Direct local inputs are read from their owned snapshots. Temporary joins,
 replay batches, and modelling state remain execution-owned. A borrowed
 database connection remains caller-owned and keeps its configuration. Memory
