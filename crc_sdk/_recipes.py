@@ -970,13 +970,15 @@ class _ParquetSelectionNode(_SelectionNode[DatasetMetadata]):
         cells = None if resolved.cells is None else sorted(resolved.cells)
 
         def batches() -> Iterator[pa.RecordBatch]:
-            if resolved.empty:
-                return
+            # An empty selection still pins the file and counts it from its
+            # footer, so the stored report is checked like any other selection.
             reader, facts.resource = parquet._pinned(scope, schema, handle, discovery)
             target = _schema(metadata)
             groups = []
             for index in range(reader.num_row_groups):
-                if _may_match(reader.metadata.row_group(index), resolved, cells):
+                if not resolved.empty and _may_match(
+                    reader.metadata.row_group(index), resolved, cells
+                ):
                     groups.append(index)
                 else:
                     facts.produced += reader.metadata.row_group(index).num_rows

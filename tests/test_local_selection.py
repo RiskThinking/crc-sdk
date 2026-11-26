@@ -166,6 +166,7 @@ def test_stored_counts_of_unread_row_groups_are_still_checked(
     for dataset in (
         Dataset.open(path),
         Dataset.open(path).select(variables="company:b"),
+        Dataset.open(path).select(variables=[]),
         _restricted(Dataset.open(path), latitude, longitude),
     ):
         report = dataset.validate()
