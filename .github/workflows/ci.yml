@@ -84,7 +84,7 @@ jobs:
         run: .venv/bin/mypy
 
   tests:
-    name: ${{ matrix.os }} Python ${{ matrix.python }}${{ matrix.pyarrow && format(' / PyArrow {0}', matrix.pyarrow) || '' }}
+    name: ${{ matrix.os }} Python ${{ matrix.python }}${{ matrix.pyarrow && format(' / PyArrow {0}', matrix.pyarrow) || '' }}${{ matrix.duckdb && format(' / DuckDB {0}', matrix.duckdb) || '' }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -96,6 +96,7 @@ jobs:
           - {os: ubuntu-latest, python: '3.14'}
           - {os: windows-latest, python: '3.12'}
           - {os: ubuntu-latest, python: '3.12', pyarrow: '18.0.0'}
+          - {os: ubuntu-latest, python: '3.12', duckdb: '1.4.0'}
     defaults:
       run:
         shell: bash
@@ -162,12 +163,16 @@ jobs:
       - name: Run offline tests and guides on installed wheels
         env:
           PYARROW_VERSION: ${{ matrix.pyarrow }}
+          DUCKDB_VERSION: ${{ matrix.duckdb }}
         run: |
           set -euo pipefail
           shopt -s nullglob
           wheels=( "$RUNNER_TEMP"/sdk-wheel/*.whl )
           if [[ -n "$PYARROW_VERSION" ]]; then
             sed -i "/^pyarrow==/s/==[0-9.]*/==$PYARROW_VERSION/" "$RUNNER_TEMP/locked.txt"
+          fi
+          if [[ -n "$DUCKDB_VERSION" ]]; then
+            sed -i "/^duckdb==/s/==[0-9.]*/==$DUCKDB_VERSION/" "$RUNNER_TEMP/locked.txt"
           fi
           uv pip install --python "$WHEEL_PYTHON" -r "$RUNNER_TEMP/locked.txt" "${wheels[0]}[zarr,netcdf,raster,test]" "$RUNNER_TEMP"/framework-wheel/*.whl
           uv pip check --python "$WHEEL_PYTHON"

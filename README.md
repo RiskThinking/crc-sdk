@@ -18,6 +18,16 @@ Python 3.11 or later is required. H3 and geometry validation are part of the cor
 package. Source-format extras are `raster`, `netcdf`, and `zarr`.
 Source readers import those dependencies only when needed.
 
+DuckDB 1.4 through 2.x is supported. It only matters for your own SQL in
+`Assets.sql` and connections passed to `Runtime`:
+
+| DuckDB | Install | Notes |
+| --- | --- | --- |
+| 2.x (default) | `pip install crc-sdk` | Use `lambda x:` lambdas. `//` and `%` by zero raise errors. Read borrowed connections' results to the end. |
+| 1.x | `pip install crc-sdk "duckdb<2"` | Same SDK results. |
+
+[DuckDB versions](docs/duckdb.md)
+
 Upgrading from 0.x? Start with the [1.0 migration guide](docs/migration-v1.md).
 
 ## Query a dataset
@@ -67,6 +77,7 @@ scenario or period when your source establishes those facts. [Evaluation guide](
 - [Collections](docs/collections.md): selected scientific members and portable bundles.
 - [Evaluation](docs/evaluation.md): match assets, query event levels, and add
   calibrated named responses.
+- [DuckDB versions](docs/duckdb.md): supported versions and 2.x SQL changes.
 - [Python interface contract](docs/api-reference.md): canonical imports and
   installed-package enforcement.
 - [Development](docs/development.md): setup, checks, generated contracts, and

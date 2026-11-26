@@ -191,7 +191,7 @@ def test_csv_ids_preserve_leading_zeroes(tmp_path: Path) -> None:
 def test_sql_is_explicit_bounded_and_keeps_external_connection_settings() -> None:
     connection = duckdb.connect(config={"threads": 2})
     try:
-        before = connection.execute("SELECT current_setting('threads')").fetchone()
+        before = connection.execute("SELECT current_setting('threads')").fetchall()
         source = Assets.sql(
             "SELECT i AS asset_id, 1.0 AS longitude, 2.0 AS latitude, "
             "repeat('x',1000) AS extra FROM range(100) t(i)",
@@ -208,14 +208,14 @@ def test_sql_is_explicit_bounded_and_keeps_external_connection_settings() -> Non
         assert data.source.resources[0].uri.startswith("duckdb:query:")
         assert data.source.resources[0].sha256.startswith("sha256:")
         assert (
-            connection.execute("SELECT current_setting('threads')").fetchone() == before
+            connection.execute("SELECT current_setting('threads')").fetchall() == before
         )
         with ExecutionScope(
             Runtime(connection=connection, batch_rows=3, memory_limit=100)
         ) as scope:
             with pytest.raises(MemoryError, match="Assets exceed"):
                 source._materialize(scope)
-        assert connection.execute("SELECT 1").fetchone() == (1,)
+        assert connection.execute("SELECT 1").fetchall() == [(1,)]
     finally:
         connection.close()
 
