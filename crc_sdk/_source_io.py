@@ -92,6 +92,8 @@ class SourceNode(Node[MetadataT]):
             with native_data(scope=scope, source=source):
                 for batch in stream.batches:
                     yield batch if state is None else state.check(batch)
+                if state is not None:
+                    state.finish()
 
         def metadata() -> MetadataT:
             with native_data(scope=scope, source=source):

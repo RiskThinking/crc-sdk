@@ -47,6 +47,9 @@ ItemT = TypeVar("ItemT")
 ResultT = TypeVar("ResultT")
 # Set on threads that acquire sources ahead of the consuming thread.
 _acquiring = threading.local()
+# Replayed batches are written once and read back at least once: LZ4 frames
+# cut their disk use several times at a small fraction of the read cost.
+_SPILL = pa.ipc.IpcWriteOptions(compression="zstd")
 ResourceT = TypeVar("ResourceT")
 
 
@@ -205,7 +208,7 @@ class _Replay(Generic[MetadataT]):
             path = self.directory / f"{len(self.paths):012d}.arrow"
             with (
                 pa.OSFile(str(path), "wb") as sink,
-                pa.ipc.new_file(sink, batch.schema) as writer,
+                pa.ipc.new_file(sink, batch.schema, options=_SPILL) as writer,
             ):
                 writer.write_batch(batch)
             self.paths.append(path)
