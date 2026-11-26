@@ -1288,12 +1288,16 @@ class _AssetTable:
     def same(
         self, asset: AssetId, key: tuple[object, ...], value: object
     ) -> bool | None:
-        """Whether the held value equals `value`; None when nothing is held."""
+        """Whether the held value equals `value`; None when nothing is held.
+
+        Values compare with `==` in memory and in the table alike, so equal
+        numbers such as 0.0 and -0.0 match wherever the first value is held.
+        """
         held = self._recent.get(asset)
         if held is not None and key in held:
             return bool(held[key] == value)
         stored = self._stored(asset, key)
-        return None if stored is None else stored == repr(value)
+        return None if stored is None else bool(ast.literal_eval(stored) == value)
 
     def set(self, asset: AssetId, key: tuple[object, ...], value: object) -> None:
         held = self._recent.get(asset)

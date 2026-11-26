@@ -318,6 +318,43 @@ def test_validator_checks_order_and_matches_after_moving_assets(
         validator.close()
 
 
+@pytest.mark.parametrize("recent", [None, 1])
+def test_matches_compare_by_value_in_memory_and_after_moving(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, recent: int | None
+) -> None:
+    if recent is not None:
+        monkeypatch.setattr(evaluation_schema, "_RECENT_KEYS", recent)
+    initial = replace(_metadata(), asset_ids=("a", "b"))
+    metadata = replace(
+        initial, spatial=SpatialMatch.nearest(max_distance=Distance.metres(10))
+    )
+
+    def check(asset: str, query: float, distance: float) -> None:
+        row = EvaluationRow(
+            asset_id=asset,
+            variable_id=initial.spec.variables[0].id,
+            support_id="s",
+            distance_metres=distance,
+            query_value=query,
+            value=1.0 if query == 100 else 2.0,
+        )
+        validator.check(evaluation_table([row], metadata).to_batches()[0])
+
+    validator = EvaluationValidator(metadata, scope_directory=tmp_path)
+    try:
+        check("a", 100, 0.0)
+        check("b", 100, 0.0)
+        # Matches compare by value whether the first one is still in memory
+        # or was moved: an equal distance is the same match, a different one
+        # is not.
+        with pytest.raises(ValueError, match="matched support changed"):
+            check("a", 10, 1.0)
+        check("a", 10, -0.0)
+        check("b", 10, 0.0)
+    finally:
+        validator.close()
+
+
 def test_unknown_query_and_old_header_are_rejected() -> None:
     info = _metadata()
     document = json.loads(info.to_json())
