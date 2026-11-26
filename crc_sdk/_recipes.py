@@ -997,9 +997,10 @@ class _ParquetSelectionNode(_SelectionNode[DatasetMetadata]):
             facts.complete = True
 
         # A cell restriction exists only for evaluation, which decodes and
-        # validates every row it reads: its curves are decoded there, once.
+        # validates every row it reads for its assets: their curves are decoded
+        # there, once. Without assets nothing is decoded later, so check here.
         stream = _checked_stream(
-            scope, metadata, batches(), payload_verified=self.state.cells is not None
+            scope, metadata, batches(), payload_verified=bool(self.state.cells)
         )
         stream.state = facts
         return self._selection_stream(scope, stream, resolved)

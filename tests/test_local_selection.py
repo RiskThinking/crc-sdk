@@ -235,3 +235,26 @@ def test_evaluation_decodes_the_rows_it_reads_once(
     near = Dataset.open(path).evaluate(_site(0)).probabilities([0.5]).validate()
     assert near.valid is False
     assert {d.code for d in near.diagnostics} == {"invalid_scientific_data"}
+
+
+def test_evaluation_without_assets_still_checks_the_rows_it_reads(
+    stored: tuple[Path, pa.Table, DatasetMetadata], tmp_path: Path
+) -> None:
+    _, table, _ = stored
+    records = table.to_pylist()
+    broken = next(r for r in records if r["curve"])
+    broken["curve"]["quantile_curve"]["values"] = [3.0, 1.0]
+    # A geometry support passes an empty cell restriction.
+    broken["geometry"] = Point(*reversed(h3.cell_to_latlng(broken["cell_id"]))).wkb
+    path = _write(
+        tmp_path / "broken.parquet", pa.Table.from_pylist(records, schema=table.schema)
+    )
+    none = Assets(
+        {
+            "asset_id": pa.array([], pa.string()),
+            "latitude": pa.array([], pa.float64()),
+            "longitude": pa.array([], pa.float64()),
+        }
+    )
+    report = Dataset.open(path).evaluate(none).probabilities([0.5]).validate()
+    assert report.valid is False
