@@ -688,3 +688,43 @@ def test_bounds_intersect_across_the_antimeridian() -> None:
     assert bounds_intersect(
         crossing, Bounds(west=160.0, south=-90.0, east=-160.0, north=90.0)
     )
+
+
+@pytest.mark.parametrize("seed", range(5))
+def test_series_mask_is_exact_for_any_identifiers(seed: int) -> None:
+    import random
+
+    import pyarrow as pa
+
+    from crc_sdk._selection import _series_mask
+
+    rng = random.Random(seed)
+    names = ["crc:a", "a|b", "x\x00y", "é", "a", "b", "crc:a ", "1"]
+    values: list[str | None] = [*names, None]
+    rows = [
+        {
+            "variable_id": rng.choice(names),
+            "scenario_id": rng.choice(values),
+            "period_id": rng.choice(values),
+        }
+        for _ in range(400)
+    ]
+    batch = pa.RecordBatch.from_pylist(
+        rows,
+        schema=pa.schema(
+            [
+                (name, pa.string())
+                for name in ("variable_id", "scenario_id", "period_id")
+            ]
+        ),
+    )
+    for size in (0, 1, 3, 20):
+        keys = frozenset(
+            (rng.choice(names), rng.choice(values), rng.choice(values))
+            for _ in range(size)
+        )
+        expected = [
+            (row["variable_id"], row["scenario_id"], row["period_id"]) in keys
+            for row in rows
+        ]
+        assert _series_mask(batch, keys).to_pylist() == expected

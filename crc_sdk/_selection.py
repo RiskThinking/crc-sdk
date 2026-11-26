@@ -425,19 +425,7 @@ class ResolvedSelection:
                 [self.matches_record(row) for row in batch.to_pylist()],
                 type=pa.bool_(),
             )
-        names = ("variable_id", "scenario_id", "period_id")
-        mask = pa.array([False] * batch.num_rows, type=pa.bool_())
-        for key in self.keys:
-            match = pa.array([True] * batch.num_rows, type=pa.bool_())
-            for name, value in zip(names, key, strict=True):
-                column = batch.column(name)
-                test = (
-                    pc.is_null(column)
-                    if value is None
-                    else pc.fill_null(pc.equal(column, value), False)
-                )
-                match = pc.and_(match, test)
-            mask = pc.or_(mask, match)
+        mask = _series_mask(batch, self.keys)
         if self.stations is not None:
             stations = pa.array(self.stations, type=pa.string())
             mask = pc.and_(mask, pc.is_in(batch.column("support_id"), stations))
@@ -511,6 +499,45 @@ class ResolvedSelection:
             geometry=cast(bytes | None, row.get("geometry")),
             cell_id=cast(int | None, row.get("cell_id")),
         )
+
+
+def _series_mask(batch: pa.RecordBatch, keys: frozenset[SeriesKey]) -> pa.BooleanArray:
+    """Rows whose `(variable_id, scenario_id, period_id)` is one of `keys`.
+
+    Each column maps to integer codes: the position of its value among the
+    selected values, one code for null and one for any other value. One
+    membership test of the combined codes then decides every row, however
+    many keys are selected.
+    """
+    if not keys:
+        return pa.array([False] * batch.num_rows, type=pa.bool_())
+    combined: pa.Array | None = None
+    key_codes = [0] * len(keys)
+    ordered = list(keys)
+    for position, name in enumerate(("variable_id", "scenario_id", "period_id")):
+        column = batch.column(name)
+        values = sorted(
+            {value for key in ordered if (value := key[position]) is not None}
+        )
+        null, other = len(values), len(values) + 1
+        found = pc.index_in(column, value_set=pa.array(values, type=column.type))
+        codes = pc.if_else(
+            pc.is_null(column),
+            pa.scalar(null, pa.int64()),
+            pc.fill_null(pc.cast(found, pa.int64()), other),
+        )
+        index = {value: code for code, value in enumerate(values)}
+        for i, key in enumerate(ordered):
+            value = key[position]
+            key_codes[i] = key_codes[i] * (other + 1) + (
+                null if value is None else index[value]
+            )
+        combined = (
+            codes
+            if combined is None
+            else pc.add(pc.multiply(combined, other + 1), codes)
+        )
+    return pc.is_in(combined, value_set=pa.array(key_codes, type=pa.int64()))
 
 
 def _observation_time(time: Period, calendars: set[Calendar]) -> Period:
