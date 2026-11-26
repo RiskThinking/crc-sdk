@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import shutil
 import uuid
 from collections.abc import Iterable, Iterator
+from pathlib import Path
 from typing import cast
 
 import duckdb
@@ -81,6 +83,7 @@ class RowIdentities:
         self._supports: dict[str, SupportValue] = {}
         self._key_schema: pa.Schema | None = None
         self._db: duckdb.DuckDBPyConnection | None = None
+        self._files: tuple[Path, Path] | None = None
 
     def add(self, keys: pa.Table, supports: pa.Table) -> None:
         """Record one batch: key columns, and `support_id, geometry, cell_id`."""
@@ -108,9 +111,19 @@ class RowIdentities:
             self._db.unregister("batch_supports")
 
     def finish(self) -> None:
-        """Raise for a repeated key or conflicting support not yet reported."""
+        """Raise for a repeated key or conflicting support not yet reported.
+
+        The scratch database is removed afterwards, even when this raises.
+        """
         if self._db is None:
             return
+        try:
+            self._check_database()
+        finally:
+            self._release()
+
+    def _check_database(self) -> None:
+        assert self._db is not None
         columns = ", ".join(
             '"' + name.replace('"', '""') + '"'
             for name in (self._key_schema or pa.schema([])).names
@@ -136,6 +149,17 @@ class RowIdentities:
             old = supports.setdefault(str(support_id), value)  # type: ignore[arg-type]
             if old != value:
                 _conflict(str(support_id), old, value)  # type: ignore[arg-type]
+
+    def _release(self) -> None:
+        db, self._db = self._db, None
+        if db is None:
+            return
+        db.close()
+        assert self._files is not None
+        database, spill = self._files
+        database.unlink(missing_ok=True)
+        Path(f"{database}.wal").unlink(missing_ok=True)
+        shutil.rmtree(spill, ignore_errors=True)
 
     def _remember(
         self,
@@ -183,8 +207,9 @@ class RowIdentities:
                 "preserve_insertion_order": False,
             },
         )
-        self._scope.callback(db.close)
         self._db = db
+        self._files = (directory / f"{name}.duckdb", directory / name)
+        self._scope.callback(self._release)
         keys = pa.Table.from_pylist(
             [dict(zip(self._key_schema.names, key, strict=True)) for key in self._keys],
             schema=self._key_schema,

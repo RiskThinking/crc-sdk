@@ -69,6 +69,8 @@ def test_long_streams_move_keys_to_the_execution_directory() -> None:
         identities.add(*_batch(["e"]))
         assert list(scope.directory.glob("identity-*.duckdb"))
         identities.finish()
+        # The scratch database is removed as soon as its stream is checked.
+        assert not list(scope.directory.glob("identity-*"))
 
 
 def test_a_key_repeated_after_the_spill_fails_when_the_stream_ends() -> None:
