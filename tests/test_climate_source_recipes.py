@@ -4,7 +4,7 @@ import csv
 import json
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import crc_framework as cf
 import numpy as np
@@ -181,6 +181,16 @@ def test_era5_hourly_complete_days_and_owned_offline_replay(
     assert result.report.complete
     assert result.metadata.source is not None
     assert result.metadata.source.resources
+    # Chunks fetched on threads give the same values and the same resources,
+    # in the same order.
+    ahead = recipe.read(
+        runtime=Runtime(cache=Cache.reuse(tmp_path / "ahead"), workers=4)
+    )
+    assert ahead.table.equals(result.table, check_metadata=False)
+    assert ahead.metadata.source is not None
+    assert [(r.uri, r.sha256) for r in ahead.metadata.source.resources] == [
+        (r.uri, r.sha256) for r in result.metadata.source.resources
+    ]
 
     def forbidden(*args: Any, **kwargs: Any) -> None:
         raise AssertionError("offline read attempted source access")
@@ -188,6 +198,41 @@ def test_era5_hourly_complete_days_and_owned_offline_replay(
     monkeypatch.setattr("crc_sdk._source_io._download", forbidden)
     replay = recipe.read(runtime=Runtime(cache=Cache.offline(cache)))
     assert replay.table.equals(result.table, check_metadata=False)
+
+
+@pytest.mark.parametrize("zarr_format", [2, 3])
+def test_threaded_zarr_chunks_keep_request_order_past_zarr_concurrency(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, zarr_format: Literal[2, 3]
+) -> None:
+    import random
+    import time
+
+    from crc_sdk import _source_io
+    from crc_sdk._climate_io import open_zarr_snapshot, zarr_resources
+    from crc_sdk._graph import ExecutionScope
+
+    path = tmp_path / "chunks.zarr"
+    group = zarr.open_group(path, mode="w", zarr_format=zarr_format)
+    # Many more chunks than zarr's default async.concurrency of 10.
+    group.create_array("a", data=np.arange(48 * 2.0).reshape(48, 2), chunks=(1, 2))
+    zarr.consolidate_metadata(path, zarr_format=zarr_format)
+    download = _source_io._download
+    jitter = random.Random(0)
+
+    def late(uri: str, target: Path) -> int:
+        # Downloads finish out of request order.
+        time.sleep(jitter.random() / 100)
+        return download(uri, target)
+
+    monkeypatch.setattr(_source_io, "_download", late)
+    orders = []
+    for workers in (1, 4, 4):
+        with ExecutionScope(Runtime(workers=workers)) as scope:
+            snapshot = open_zarr_snapshot(scope, path.as_uri())
+            assert snapshot.group["a"][:].sum() == sum(range(96))
+            orders.append([r.uri for r in zarr_resources(snapshot)])
+    assert len(orders[0]) > 48
+    assert orders[1] == orders[0] and orders[2] == orders[0]
 
 
 def test_era5_inspection_short_circuits_empty_and_unknown_selectors(

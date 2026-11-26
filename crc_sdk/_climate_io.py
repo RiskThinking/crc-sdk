@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import math
 import tempfile
 from collections.abc import AsyncIterator, Iterable, Iterator, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
@@ -18,7 +20,7 @@ from shapely.geometry import Polygon, box  # type: ignore[import-untyped]
 
 from ._dataset_schema import ResourceIdentity
 from ._declarations import Period, Scenario, Variable
-from ._graph import ExecutionScope
+from ._graph import ExecutionScope, _acquiring
 from ._inspection import Bounds
 from ._schema import DatasetRow
 
@@ -289,7 +291,7 @@ def raster_quantile_rows(
 @dataclass(slots=True)
 class ZarrSnapshot:
     group: Any
-    _resource_map: dict[str, ResourceIdentity]
+    _resource_map: dict[str, ResourceIdentity | None]
 
 
 def open_zarr_snapshot(
@@ -314,7 +316,7 @@ def open_zarr_snapshot(
         ) from error
     from ._source_io import fetch
 
-    resources: dict[str, ResourceIdentity] = {}
+    resources: dict[str, ResourceIdentity | None] = {}
     last_io_error: FileNotFoundError | None = None
     format_version: Literal[2, 3] = 2
     failures: list[OSError] = []
@@ -340,6 +342,26 @@ def open_zarr_snapshot(
     else:
         raise failures[0]
 
+    def acquire(target: str) -> tuple[Path, ResourceIdentity]:
+        return fetch(scope, target, license=license, attribution=attribution)
+
+    def acquire_ahead(target: str) -> tuple[Path, ResourceIdentity]:
+        _acquiring.active = True
+        try:
+            return acquire(target)
+        finally:
+            _acquiring.active = False
+
+    # Zarr requests chunks concurrently; with Runtime(workers=n) up to n
+    # downloads overlap instead of running one after another.
+    pool = (
+        ThreadPoolExecutor(scope.runtime.workers, thread_name_prefix="crc-zarr")
+        if scope.runtime.workers > 1
+        else None
+    )
+    if pool is not None:
+        scope.directory  # noqa: B018 - created once, before threads use it
+
     class SnapshotStore(Store):
         supports_writes = False
         supports_deletes = False
@@ -356,13 +378,23 @@ def open_zarr_snapshot(
             path = PurePosixPath(key)
             if path.is_absolute() or ".." in path.parts:
                 raise ValueError("invalid Zarr resource key")
+            target = uri.rstrip("/") + "/" + key
+            # Zarr starts requests in a fixed order; reserving each resource's
+            # place now keeps the identity independent of completion order.
+            resources.setdefault(target, None)
             try:
-                local, resource = fetch(
-                    scope,
-                    uri.rstrip("/") + "/" + key,
-                    license=license,
-                    attribution=attribution,
-                )
+                if pool is None:
+                    local, resource = acquire(target)
+                else:
+                    try:
+                        (
+                            local,
+                            resource,
+                        ) = await asyncio.get_running_loop().run_in_executor(
+                            pool, acquire_ahead, target
+                        )
+                    finally:
+                        scope.deliver_events()
             except FileNotFoundError as error:
                 last_io_error = error
                 raise
@@ -371,10 +403,10 @@ def open_zarr_snapshot(
                     identity = getattr(error, "resource", None)
                     if isinstance(identity, ResourceIdentity):
                         missing_uri = identity.uri + "#crc-http-status=404"
-                        resources[missing_uri] = replace(identity, uri=missing_uri)
+                        resources[target] = replace(identity, uri=missing_uri)
                     return None
                 raise
-            resources[resource.uri] = resource
+            resources[target] = resource
             value = local.read_bytes()
             if isinstance(byte_range, RangeByteRequest):
                 value = value[byte_range.start : byte_range.end]
@@ -420,6 +452,8 @@ def open_zarr_snapshot(
 
     store = SnapshotStore()
     scope.callback(store.close)
+    if pool is not None:
+        scope.callback(pool.shutdown)
     try:
         group = zarr.open_group(
             store=store, mode="r", use_consolidated=True, zarr_format=format_version
@@ -434,7 +468,7 @@ def open_zarr_snapshot(
 
 
 def zarr_resources(snapshot: ZarrSnapshot) -> tuple[ResourceIdentity, ...]:
-    return tuple(snapshot._resource_map.values())
+    return tuple(r for r in snapshot._resource_map.values() if r is not None)
 
 
 def _raster_location(uri: str) -> str:
