@@ -459,6 +459,10 @@ def test_release_rows_repeated_across_datasets_are_rejected(tmp_path: Path) -> N
     index.write_text(json.dumps(document))
     with pytest.raises(ValidationError, match="duplicate scientific row key"):
         CRCOpen(catalog=index).read()
+    # Equal files fetched at once on threads share one owned snapshot.
+    for _ in range(20):
+        with pytest.raises(ValidationError, match="duplicate scientific row key"):
+            CRCOpen(catalog=index).read(runtime=Runtime(workers=4))
 
 
 def test_release_files_outside_the_selected_area_are_not_fetched(
@@ -635,3 +639,23 @@ def test_a_superseded_reuse_cache_names_the_release_and_the_fix(
         .read(runtime=Runtime(cache=Cache.reuse(cache)))
         .table.equals(refreshed.table)
     )
+
+
+def test_files_acquired_on_worker_threads_read_like_one_worker(
+    tmp_path: Path,
+) -> None:
+    datasets = [
+        _depth(tmp_path / f"{name}.parquet", f"company:{name}", value)
+        for name, value in (("a", 0.1), ("b", 0.2), ("c", 0.3), ("d", 0.4))
+    ]
+    recipe = CRCOpen(catalog=_publish(tmp_path, *datasets))
+    serial = recipe.read(runtime=Runtime(cache=Cache.reuse(tmp_path / "one")))
+    parallel = recipe.read(
+        runtime=Runtime(cache=Cache.reuse(tmp_path / "three"), workers=3)
+    )
+    assert parallel.table.equals(serial.table)
+    assert parallel.report.valid is serial.report.valid is True
+    assert parallel.report.counts == serial.report.counts
+    assert [r.uri for s in parallel.report.source_identities for r in s.resources] == [
+        r.uri for s in serial.report.source_identities for r in s.resources
+    ]

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import csv
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
+from contextlib import closing
 from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
@@ -912,20 +913,33 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
 
     def _station_parts(
         self, scope: ExecutionScope, stations: tuple[StationReference, ...]
-    ) -> Iterator[tuple[_Part, ResourceIdentity]]:
+    ) -> Generator[tuple[_Part, ResourceIdentity], None, None]:
         time = self.state.time
         assert time is not None and time.start is not None and time.end is not None
-        for station in stations:
-            for year in range(time.start, time.end + 1):
-                uri = (
-                    f"https://noaa-ghcnh-pds.s3.amazonaws.com/hourly/access/by-year/{year}/parquet/GHCNh_{station.id}_{year}.parquet"
-                    if self.provider == "ghcnh"
-                    else f"https://noaa-global-hourly-pds.s3.amazonaws.com/{year}/{station.id}.csv"
-                )
-                path, identity = fetch_optional(
-                    scope, uri, license=_NOAA_TERMS, attribution=_NCEI_ATTRIBUTION
-                )
-                yield _Part(path, uri, station.id, year), identity
+        items = tuple(
+            (
+                station.id,
+                year,
+                f"https://noaa-ghcnh-pds.s3.amazonaws.com/hourly/access/by-year/{year}/parquet/GHCNh_{station.id}_{year}.parquet"
+                if self.provider == "ghcnh"
+                else f"https://noaa-global-hourly-pds.s3.amazonaws.com/{year}/{station.id}.csv",
+            )
+            for station in stations
+            for year in range(time.start, time.end + 1)
+        )
+
+        def acquire(
+            item: tuple[str, int, str],
+        ) -> tuple[_Part, ResourceIdentity]:
+            station, year, uri = item
+            path, identity = fetch_optional(
+                scope, uri, license=_NOAA_TERMS, attribution=_NCEI_ATTRIBUTION
+            )
+            return _Part(path, uri, station, year), identity
+
+        # Station-year files are acquired ahead on Runtime(workers=...) threads.
+        with closing(scope.prefetched(items, acquire)) as acquired:
+            yield from acquired
 
     def _prepare(
         self,
@@ -1369,23 +1383,30 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
                 ),
             )
 
-        def parts() -> Iterator[_Part]:
+        def parts() -> Generator[_Part, None, None]:
             nonlocal final
             if not weather:
                 yield from prepared.parts
                 return
             assert publication is not None
-            for part, resource in self._station_parts(scope, prepared.stations):
-                resources.append(resource)
-                if part.path is None:
-                    absent.append(part)
-                final = with_source(
-                    final,
-                    replace(publication, release=None, resources=tuple(resources)),
-                )
-                yield part
+            # Closed with the consumer, so a preview stops acquisitions ahead.
+            with closing(self._station_parts(scope, prepared.stations)) as acquired:
+                for part, resource in acquired:
+                    resources.append(resource)
+                    if part.path is None:
+                        absent.append(part)
+                    final = with_source(
+                        final,
+                        replace(publication, release=None, resources=tuple(resources)),
+                    )
+                    yield part
 
         def produce() -> Iterator[pa.RecordBatch]:
+            # Closed with the stream, so an early stop ends acquisitions ahead.
+            with closing(parts()) as station_parts:
+                yield from produced(station_parts)
+
+        def produced(station_parts: Iterator[_Part]) -> Iterator[pa.RecordBatch]:
             nonlocal final, count, missing
             if not resolved.keys or self.state.stations == ():
                 return
@@ -1396,7 +1417,7 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
                 usable = incomplete = unavailable = 0
                 # A station-year is an explicit blocking reduction, not a global
                 # materialization of every requested station and year.
-                for part in parts():
+                for part in station_parts:
                     station, year = part.station, part.year
                     assert station is not None and year is not None
                     raw = (
@@ -1532,7 +1553,7 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
                 return
             pending = []
             groups = (
-                (self._raw(prepared, (part,), superseded) for part in parts())
+                (self._raw(prepared, (part,), superseded) for part in station_parts)
                 if weather
                 else iter((self._raw(prepared),))
             )

@@ -1719,3 +1719,53 @@ def test_station_recipes_carry_daily_coverage_into_the_node() -> None:
             indicator=ISD.Indicator.ANNUAL_MAXIMUM_DAILY_MAXIMUM_TEMPERATURE,
             daily_coverage=cast(Coverage, invalid),
         )
+
+
+def test_station_years_acquired_on_worker_threads_read_like_one_worker(
+    transport: NativeTransport,
+) -> None:
+    # Four station-years, one of them absent: absences share one cached body.
+    transport.absent_year = 2019
+    recipe = ISD().observations()
+    station = recipe.inspect().stations[0]
+    selected = recipe.select(stations=station, time=Period.window(2018, 2021))
+    one = selected.read()
+    three = selected.read(runtime=Runtime(workers=3))
+    assert three.table.equals(one.table)
+    assert three.report.counts == one.report.counts
+    assert three.report.diagnostics == one.report.diagnostics
+    assert one.metadata.source is not None and three.metadata.source is not None
+    assert [r.uri for r in three.metadata.source.resources] == [
+        r.uri for r in one.metadata.source.resources
+    ]
+
+
+def test_a_preview_leaves_no_station_year_acquisition_running(
+    transport: NativeTransport, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+    import time
+
+    running = 0
+    lock = threading.Lock()
+
+    def slow(uri: str, path: Path) -> int:
+        nonlocal running
+        with lock:
+            running += 1
+        try:
+            if "/12345678901.csv" in uri and "/2018/" not in uri:
+                time.sleep(0.05)
+            return transport(uri, path)
+        finally:
+            with lock:
+                running -= 1
+
+    recipe = ISD().observations()
+    station = recipe.inspect().stations[0]
+    monkeypatch.setattr(_source_io, "_download", slow)
+    preview = recipe.select(stations=station, time=Period.window(2018, 2025)).read(
+        limit=1, runtime=Runtime(workers=3)
+    )
+    assert preview.table.num_rows == 1
+    assert running == 0

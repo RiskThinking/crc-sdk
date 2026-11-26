@@ -7,8 +7,11 @@ import os
 import re
 import shutil
 import tempfile
+import threading
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterator
+from collections import deque
+from collections.abc import Callable, Generator, Iterator, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import AbstractContextManager, ExitStack
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -38,6 +41,10 @@ from ._runtime import (
 )
 
 MetadataT = TypeVar("MetadataT")
+ItemT = TypeVar("ItemT")
+ResultT = TypeVar("ResultT")
+# Set on threads that acquire sources ahead of the consuming thread.
+_acquiring = threading.local()
 ResourceT = TypeVar("ResourceT")
 
 
@@ -318,6 +325,14 @@ class ExecutionScope:
         self._closed = False
         self._entered = False
         self._callback_error: BaseException | None = None
+        self._deferred_events: deque[ProgressEvent] = deque()
+        self._key_locks: dict[str, threading.Lock] = {}
+        self._key_locks_guard = threading.Lock()
+
+    def _key_lock(self, key: str) -> threading.Lock:
+        """One lock per owned file, for acquisition threads sharing a scope."""
+        with self._key_locks_guard:
+            return self._key_locks.setdefault(key, threading.Lock())
 
     def __enter__(self) -> Self:
         self._active()
@@ -376,12 +391,68 @@ class ExecutionScope:
     def emit(self, stage: Stage, completed: int, total: int | None = None) -> None:
         self._active()
         event = ProgressEvent(stage, completed, total)
+        if getattr(_acquiring, "active", False):
+            # Progress callbacks run on the consuming thread, in order.
+            self._deferred_events.append(event)
+            return
+        self.deliver_events()
+        self._deliver(event)
+
+    def deliver_events(self) -> None:
+        """Report progress that acquisition threads recorded."""
+        while self._deferred_events:
+            self._deliver(self._deferred_events.popleft())
+
+    def _deliver(self, event: ProgressEvent) -> None:
         if self.runtime._progress is not None:
             try:
                 self.runtime._progress(event)
             except BaseException as error:
                 self._callback_error = error
                 raise
+
+    def prefetched(
+        self, items: Sequence[ItemT], acquire: Callable[[ItemT], ResultT]
+    ) -> Generator[ResultT, None, None]:
+        """`acquire(item)` for each item in order, acquiring ahead on threads.
+
+        Up to `Runtime(workers=...)` items are acquired at once, never more than
+        that many ahead of the consumer. Results and exceptions arrive in item
+        order on the consuming thread, and progress callbacks run there too.
+        Close the generator to stop early: waiting items are cancelled and
+        running ones finish before it returns.
+        """
+        workers = min(self.runtime.workers, len(items))
+        if workers <= 1:
+            for item in items:
+                yield acquire(item)
+            return
+        self.directory  # noqa: B018 - created once, before threads use it
+
+        def run(item: ItemT) -> ResultT:
+            _acquiring.active = True
+            try:
+                return acquire(item)
+            finally:
+                _acquiring.active = False
+
+        with ThreadPoolExecutor(workers, thread_name_prefix="crc-acquire") as pool:
+            pending: deque[Future[ResultT]] = deque()
+            submitted = 0
+            try:
+                for index in range(len(items)):
+                    while submitted < len(items) and submitted < index + workers:
+                        pending.append(pool.submit(run, items[submitted]))
+                        submitted += 1
+                    future = pending.popleft()
+                    try:
+                        result = future.result()
+                    finally:
+                        self.deliver_events()
+                    yield result
+            finally:
+                for future in pending:
+                    future.cancel()
 
     def enter_context(self, resource: AbstractContextManager[ResourceT]) -> ResourceT:
         self._active()
@@ -483,6 +554,14 @@ class ExecutionScope:
             raise TypeError("pin requires ResourceIdentity and an acquisition callable")
         if resource.sha256 in self._pins:
             return self._pins[resource.sha256]
+        # Threads pinning equal content share its owned paths: one acquires,
+        # the others then reuse its pin.
+        with self._key_lock(resource.sha256):
+            if resource.sha256 in self._pins:
+                return self._pins[resource.sha256]
+            return self._pin(resource, acquire)
+
+    def _pin(self, resource: ResourceIdentity, acquire: Callable[[Path], None]) -> Path:
         digest = resource.sha256.removeprefix("sha256:")
         private = self.directory / f"source-{digest}"
         cache = self.runtime.cache
@@ -565,6 +644,12 @@ class ExecutionScope:
             return pinned, resource
         name = hashlib.sha256(uri.encode()).hexdigest()
         key = f"local:{name}"
+        with self._key_lock(key):
+            return self._pin_unverified(reader, uri, key, name)
+
+    def _pin_unverified(
+        self, reader: BinaryIO, uri: str, key: str, name: str
+    ) -> tuple[Path, ResourceIdentity]:
         if key in self._pins:
             return self._pins[key], self._local_identities[key]
         private = self.directory / f"local-{name}"
