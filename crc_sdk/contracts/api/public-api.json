@@ -2289,6 +2289,12 @@
             "kind": "keyword_only",
             "annotation": "Coverage | None",
             "default": null
+          },
+          {
+            "name": "daily_coverage",
+            "kind": "keyword_only",
+            "annotation": "Coverage | None",
+            "default": null
           }
         ],
         "returns": "Self"
@@ -2406,6 +2412,12 @@
           },
           {
             "name": "coverage",
+            "kind": "keyword_only",
+            "annotation": "Coverage | None",
+            "default": null
+          },
+          {
+            "name": "daily_coverage",
             "kind": "keyword_only",
             "annotation": "Coverage | None",
             "default": null

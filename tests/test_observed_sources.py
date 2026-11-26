@@ -1638,3 +1638,84 @@ def test_published_level_accessors_keep_station_selection_when_further_narrowed(
         .table.num_rows
         == 2
     )
+
+
+def test_daily_coverage_sets_the_hours_a_station_day_needs(
+    transport: NativeTransport,
+) -> None:
+    from datetime import date, timedelta
+
+    from crc_sdk import Coverage
+    from crc_sdk._station_reduction import complete_daily_extrema
+
+    hourly = GHCNh().select(stations="TEST0000001", time=_year()).observations()
+    sample = hourly.read()
+    template = sample.table.to_pylist()[0]
+    year = int(str(template["time"])[:4])
+    records = []
+    day = date(year, 1, 1)
+    while day.year == year:
+        hours = 17 if day.timetuple().tm_yday == 1 else 18
+        for hour in range(hours):
+            records.append(
+                {
+                    **template,
+                    "time": f"{day.isoformat()}T{hour:02d}:00:00",
+                    "value": float(hour),
+                    "failure": None,
+                }
+            )
+        day += timedelta(days=1)
+
+    strict, strict_metadata = complete_daily_extrema(
+        records, sample.metadata, year=year, maximum=True, coverage=Coverage.complete()
+    )
+    assert strict["value"].null_count == strict.num_rows
+    (warning,) = (
+        d for d in strict_metadata.report.diagnostics if d.code == "incomplete_days"
+    )
+    assert "fewer than 24 of 24" in warning.message
+    assert "daily_coverage" in warning.message
+
+    relaxed, relaxed_metadata = complete_daily_extrema(
+        records,
+        sample.metadata,
+        year=year,
+        maximum=True,
+        coverage=Coverage.minimum_fraction(0.75),
+    )
+    values = relaxed["value"].to_pylist()
+    assert values[0] is None and values[1:] == [17.0] * (len(values) - 1)
+    assert relaxed["coverage"].to_pylist()[1] == {
+        "valid": 18,
+        "expected": 24,
+        "minimum_fraction": 0.75,
+    }
+    from crc_sdk import TemporalReduction
+
+    reduction = relaxed_metadata.provenance[-1]
+    assert isinstance(reduction, TemporalReduction)
+    assert reduction.coverage == Coverage.minimum_fraction(0.75)
+
+
+def test_station_recipes_carry_daily_coverage_into_the_node() -> None:
+    from crc_sdk import Coverage
+    from crc_sdk._observed_sources import _ObservedNode
+
+    indicator = GHCNh.Indicator.ANNUAL_MAXIMUM_DAILY_MAXIMUM_TEMPERATURE
+    default = cast(_ObservedNode, GHCNh(indicator=indicator)._base)
+    relaxed_recipe = GHCNh(
+        indicator=indicator, daily_coverage=Coverage.minimum_fraction(0.75)
+    )
+    relaxed = cast(_ObservedNode, relaxed_recipe._base)
+    assert default.daily_coverage == Coverage.complete()
+    assert relaxed.daily_coverage == Coverage.minimum_fraction(0.75)
+    assert default.key != relaxed.key
+    selected = cast(_ObservedNode, relaxed_recipe.select(stations="TEST0000001")._node)
+    assert selected.daily_coverage == Coverage.minimum_fraction(0.75)
+    invalid: object = 0.75
+    with pytest.raises(TypeError, match="daily_coverage"):
+        ISD(
+            indicator=ISD.Indicator.ANNUAL_MAXIMUM_DAILY_MAXIMUM_TEMPERATURE,
+            daily_coverage=cast(Coverage, invalid),
+        )

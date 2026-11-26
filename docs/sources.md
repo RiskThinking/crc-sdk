@@ -262,8 +262,18 @@ requested and incomplete years. Source rows with known support carry their
 actual coverage and any failure directly.
 Snapshot checks use the absence status of a missing station resource. A new
 HTTP request identifier leaves a missing year pinned to the same absence.
-Raw GHCNh/ISD reports remain irregular. Their named annual recipes require all
-24 distinct hours for a complete day and then apply the declared annual rule.
+Raw GHCNh/ISD reports remain irregular. Their named annual recipes apply two
+completeness rules. `daily_coverage` is the share of the 24 hours of a day that
+need an accepted report before the day has a daily maximum or minimum.
+`coverage` is the share of a year's days that need a daily value before the
+year has an annual value. Both default to `Coverage.complete()`, which leaves
+most hourly station-years without a value, because one hour missing on any day
+removes the year. Relax them explicitly. For example,
+`GHCNh(indicator=..., daily_coverage=Coverage.minimum_fraction(0.75),
+coverage=Coverage.minimum_fraction(0.9))` requires 18 of 24 hours and 90% of
+days, the rule crc-sdk 0.11 applied. Both fractions are recorded in the
+reduction provenance, and the `incomplete_days` warning counts the days that
+missed the hour rule.
 ISD often publishes several reports at one timestamp (for example a SYNOP and a
 METAR that disagree by rounding). `ISD` keeps one per timestamp: a report with a
 valid temperature first, then FM-12 (SYNOP, tenths of a degree), FM-15 (METAR),

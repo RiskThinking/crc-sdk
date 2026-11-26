@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import calendar
+import math
 from collections.abc import Sequence
 from dataclasses import replace
 from datetime import date, datetime, timedelta
@@ -28,13 +29,16 @@ def complete_daily_extrema(
     *,
     year: int,
     maximum: bool,
+    coverage: Coverage,
 ) -> tuple[pa.Table, EvidenceMetadata]:
-    """Require an accepted report in every hour before retaining a daily extreme.
+    """Retain a daily extreme when enough distinct hours have an accepted report.
 
-    NOAA station files can contain several reports in an hour. Their exact native
-    timestamps remain available in Observations; hourly coverage is distinct from
-    the number of reports, and several reports never substitute for a missing hour.
+    `coverage` is the fraction of the 24 hours that must have one. NOAA station
+    files can contain several reports in an hour. Their exact native timestamps
+    remain available in Observations; hourly coverage is distinct from the number
+    of reports, and several reports never substitute for a missing hour.
     """
+    required = math.ceil(24 * coverage.fraction - 1e-9)
     groups: dict[tuple[object, ...], dict[date, list[dict[str, object]]]] = {}
     templates: dict[tuple[object, ...], dict[str, object]] = {}
     for row in records:
@@ -70,7 +74,7 @@ def complete_daily_extrema(
             hours = {
                 datetime.fromisoformat(cast(str, row["time"])).hour for row in valid
             }
-            accepted = len(hours) == 24
+            accepted = len(hours) >= required
             values = [cast(float, row["value"]) for row in valid]
             value = (max(values) if maximum else min(values)) if accepted else None
             row = {
@@ -89,7 +93,11 @@ def complete_daily_extrema(
             row.update(
                 time=day.isoformat(),
                 value=value,
-                coverage={"valid": len(hours), "expected": 24, "minimum_fraction": 1.0},
+                coverage={
+                    "valid": len(hours),
+                    "expected": 24,
+                    "minimum_fraction": coverage.fraction,
+                },
                 failure=None
                 if accepted
                 else {
@@ -109,7 +117,7 @@ def complete_daily_extrema(
         operation=ReductionKind.DAILY_MAXIMUM
         if maximum
         else ReductionKind.DAILY_MINIMUM,
-        coverage=Coverage.complete(),
+        coverage=coverage,
         input_sampling=Sampling(
             calendar=Calendar.GREGORIAN, step=cf.Duration(1, unit=cf.TimeUnit.HOUR)
         ),
@@ -123,8 +131,10 @@ def complete_daily_extrema(
                 "incomplete_days",
                 cf.DiagnosticSeverity.WARNING,
                 Stage.REDUCTION,
-                f"{incomplete} station days lack accepted reports "
-                "in all 24 distinct hours.",
+                f"{incomplete} station days have an accepted report in fewer "
+                f"than {required} of 24 distinct hours, so they have no daily "
+                "value. daily_coverage=Coverage.minimum_fraction(...) relaxes "
+                "the day rule; coverage= relaxes the share of days per year.",
             ),
         )
     output = replace(
