@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import base64
 import binascii
 import hashlib
@@ -1253,6 +1254,8 @@ class _AssetTable:
     Rows arrive grouped by asset. Values of the assets seen most recently stay
     in dictionaries; once they hold `capacity` keys, all of them move to the
     table in one statement. Only keys of moved assets are looked up there.
+    Keys and values are tuples of identifiers and numbers, stored as their
+    `repr`: exact, and much cheaper than JSON for this private scratch table.
     """
 
     def __init__(
@@ -1266,17 +1269,35 @@ class _AssetTable:
         self._size = 0
         self._moved: set[AssetId] = set()
 
-    def get(self, asset: AssetId, key: tuple[object, ...]) -> object | None:
-        held = self._recent.get(asset)
-        if held is not None and key in held:
-            return held[key]
+    def _stored(self, asset: AssetId, key: tuple[object, ...]) -> str | None:
         if asset not in self._moved:
             return None
         found = self._db.execute(
             f"SELECT {self._column} FROM {self._table} WHERE identity = ?",
-            (_dump((asset, *key)),),
+            (repr((asset, *key)),),
         ).fetchone()
-        return None if found is None else found[0]
+        return None if found is None else cast(str, found[0])
+
+    def get(self, asset: AssetId, key: tuple[object, ...]) -> object | None:
+        held = self._recent.get(asset)
+        if held is not None and key in held:
+            return held[key]
+        stored = self._stored(asset, key)
+        return None if stored is None else ast.literal_eval(stored)
+
+    def same(
+        self, asset: AssetId, key: tuple[object, ...], value: object
+    ) -> bool | None:
+        """Whether the held value equals `value`; None when nothing is held.
+
+        Values compare with `==` in memory and in the table alike, so equal
+        numbers such as 0.0 and -0.0 match wherever the first value is held.
+        """
+        held = self._recent.get(asset)
+        if held is not None and key in held:
+            return bool(held[key] == value)
+        stored = self._stored(asset, key)
+        return None if stored is None else bool(ast.literal_eval(stored) == value)
 
     def set(self, asset: AssetId, key: tuple[object, ...], value: object) -> None:
         held = self._recent.get(asset)
@@ -1291,7 +1312,7 @@ class _AssetTable:
         self._db.executemany(
             f"INSERT OR REPLACE INTO {self._table} VALUES (?, ?)",
             (
-                (_dump((asset, *key)), value)
+                (repr((asset, *key)), repr(value))
                 for asset, held in self._recent.items()
                 for key, value in held.items()
             ),
@@ -1350,7 +1371,7 @@ class EvaluationValidator:
         self._db = sqlite3.connect(":memory:" if self._path is None else self._path)
         self._db.executescript(
             """
-            CREATE TABLE queries (identity TEXT PRIMARY KEY, next INTEGER NOT NULL);
+            CREATE TABLE queries (identity TEXT PRIMARY KEY, next TEXT NOT NULL);
             CREATE TABLE matches (identity TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE retained_assets (
                 identity TEXT PRIMARY KEY, digest BLOB NOT NULL
@@ -1513,24 +1534,40 @@ class EvaluationValidator:
         metadata: EvaluationMetadata,
         asset: pa.StructScalar | None,
     ) -> None:
-        asset_id = _asset_id(row["asset_id"])
-        if asset_id not in self._assets:
-            raise ValueError(f"row references undeclared asset {asset_id!r}")
-        member = _optional_id(row["member_id"], "member_id")
-        variable = _identifier(row["variable_id"], "variable_id")
-        series = (
-            variable,
-            _optional_id(row["scenario_id"], "scenario_id"),
-            _optional_id(row["period_id"], "period_id"),
+        # Values equal to a declared asset, series or query are valid as
+        # declared; anything else is checked field by field for its error.
+        asset_id = row["asset_id"]
+        if type(asset_id) not in (str, int) or asset_id not in self._assets:
+            asset_id = _asset_id(asset_id)
+            if asset_id not in self._assets:
+                raise ValueError(f"row references undeclared asset {asset_id!r}")
+        member = cast(str | None, row["member_id"])
+        series = cast(
+            tuple[str, str | None, str | None],
+            (row["variable_id"], row["scenario_id"], row["period_id"]),
         )
         if (member, series) not in metadata._series:
-            raise ValueError(
-                f"row references undeclared evaluation series {(member, series)!r}"
+            member = _optional_id(member, "member_id")
+            series = (
+                _identifier(series[0], "variable_id"),
+                _optional_id(series[1], "scenario_id"),
+                _optional_id(series[2], "period_id"),
             )
-        query = _number(row["query_value"], "query_value")
-        query_position = self._coordinates.get(query)
+            if (member, series) not in metadata._series:
+                raise ValueError(
+                    f"row references undeclared evaluation series {(member, series)!r}"
+                )
+        variable = series[0]
+        raw_query = row["query_value"]
+        query_position = (
+            self._coordinates.get(raw_query) if type(raw_query) is float else None
+        )
         if query_position is None:
-            raise ValueError(f"row references unrequested query {query}")
+            raw_query = _number(raw_query, "query_value")
+            query_position = self._coordinates.get(raw_query)
+            if query_position is None:
+                raise ValueError(f"row references unrequested query {raw_query}")
+        query = cast(float, raw_query)
         failure = _read_failure(row["failure"])
         value = row["value"]
         if failure is None:
@@ -1603,13 +1640,14 @@ class EvaluationValidator:
                 failure if response is None else exposure_failure,
             )
         match_key = (member, *series)
-        match_record = _dump(
-            (match, failure.code if match[0] is None and failure is not None else None)
+        match_record = (
+            match,
+            failure.code if match[0] is None and failure is not None else None,
         )
-        previous_match = self._matches.get(asset_id, match_key)
-        if previous_match is None:
+        same = self._matches.same(asset_id, match_key, match_record)
+        if same is None:
             self._matches.set(asset_id, match_key, match_record)
-        elif previous_match != match_record:
+        elif not same:
             raise ValueError("an asset's matched support changed for the same series")
         query_key = (member, *series, response)
         following = self._queries.get(asset_id, query_key)
