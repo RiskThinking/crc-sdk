@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
-import tempfile
 import types
 from abc import ABC, abstractmethod
 from collections.abc import Iterator, Mapping
@@ -18,7 +16,6 @@ from typing import Generic, Literal, Self, TypeAlias, TypeVar, cast
 import crc_framework
 import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
-from shapely import from_wkb  # type: ignore[import-untyped]
 
 import crc_sdk
 
@@ -61,6 +58,7 @@ from ._graph import (
     Node,
     NodeStream,
 )
+from ._identity import SUPPORT_COLUMNS, RowIdentities
 from ._inspection import (
     Bounds,
     Capability,
@@ -78,6 +76,7 @@ from ._schema import (
     rows_to_table,
     table_to_rows,
 )
+from ._schema.dataset import _ROW_KEY
 from ._selection import (
     PeriodSelector,
     ResolvedSelection,
@@ -216,11 +215,13 @@ class CanonicalReader(ABC):
 
 
 class _Checked:
-    """Incremental global invariants, with identity indexes owned on disk.
+    """Incremental global invariants: row counts, unique keys, and supports.
 
     `payload_verified` streams carry rows whose bytes a checksum pins to an
     artifact validated when it was written; their numerical objects are not
     decoded again, while identities, supports and counts are still checked.
+    Call `finish` when the stream ends: long streams check keys out of core
+    and report the remaining repeats only then.
     """
 
     def __init__(
@@ -235,79 +236,13 @@ class _Checked:
         self.payload_verified = payload_verified
         self.produced = 0
         self.no_data = 0
-        descriptor, filename = tempfile.mkstemp(
-            prefix="identity-", suffix=".sqlite", dir=scope.directory
-        )
-        import os
+        self.identities = RowIdentities(scope)
 
-        os.close(descriptor)
-        self.db = sqlite3.connect(filename)
-        # A scratch index for one execution: durability is not needed.
-        self.db.execute("PRAGMA journal_mode=OFF")
-        self.db.execute("PRAGMA synchronous=OFF")
-        self.db.execute("PRAGMA cache_size=-65536")
-        self.db.execute("CREATE TABLE row_keys (identity TEXT PRIMARY KEY)")
-        self.db.execute(
-            "CREATE TABLE supports (id TEXT PRIMARY KEY, geometry BLOB, cell TEXT)"
-        )
-        scope.callback(self.db.close)
-
-    def _remember(
-        self,
-        identities: list[str],
-        supports: list[tuple[str, bytes | None, object]],
-    ) -> None:
+    def finish(self) -> None:
         try:
-            with self.db:
-                self.db.executemany(
-                    "INSERT INTO row_keys VALUES (?)", ((i,) for i in identities)
-                )
-        except sqlite3.IntegrityError:
-            seen: set[str] = set()
-            for identity in identities:
-                if (
-                    identity in seen
-                    or self.db.execute(
-                        "SELECT 1 FROM row_keys WHERE identity=?", (identity,)
-                    ).fetchone()
-                ):
-                    raise ValueError(
-                        f"duplicate scientific row key: {identity}"
-                    ) from None
-                seen.add(identity)
-            raise
-        batch: dict[str, tuple[bytes | None, str | None]] = {}
-        for support_id, geometry, cell_id in supports:
-            value = (geometry, str(cell_id) if geometry is None else None)
-            if batch.setdefault(support_id, value) != value:
-                self._conflict(support_id, batch[support_id], value)
-        for support_id, value in batch.items():
-            found = self.db.execute(
-                "SELECT geometry,cell FROM supports WHERE id=?", (support_id,)
-            ).fetchone()
-            if found is None:
-                self.db.execute(
-                    "INSERT INTO supports VALUES (?,?,?)", (support_id, *value)
-                )
-            elif found != value:
-                self._conflict(support_id, found, value)
-
-    @staticmethod
-    def _conflict(
-        support_id: str,
-        old: tuple[bytes | None, str | None],
-        new: tuple[bytes | None, str | None],
-    ) -> None:
-        (old_geometry, old_cell), (geometry, cell) = old, new
-        if (
-            old_cell != cell
-            or old_geometry is None
-            or geometry is None
-            or not from_wkb(old_geometry).equals(from_wkb(geometry))
-        ):
-            raise ValueError(
-                f"support_id {support_id!r} identifies conflicting source geometry"
-            )
+            self.identities.finish()
+        except (ValueError, TypeError) as error:
+            raise _invalid(error) from error
 
     def check(self, batch: pa.RecordBatch) -> pa.RecordBatch:
         planned = replace(
@@ -325,42 +260,24 @@ class _Checked:
             if isinstance(planned, DatasetMetadata):
                 if not self.payload_verified:
                     table_to_rows(table)
-                columns = {
-                    name: table.column(name).to_pylist()
-                    for name in (
-                        "variable_id",
-                        "scenario_id",
-                        "period_id",
-                        "support_id",
-                        "cell_id",
-                        "geometry",
-                    )
-                }
-                identities = [
-                    json.dumps(list(key), ensure_ascii=False)
-                    for key in zip(
-                        columns["variable_id"],
-                        columns["scenario_id"],
-                        columns["period_id"],
-                        columns["support_id"],
-                        columns["cell_id"],
-                    )
-                ]
-                supports = list(
-                    zip(columns["support_id"], columns["geometry"], columns["cell_id"])
-                )
+                keys = table.select(_ROW_KEY)
             else:
                 validate_evidence(table, planned, check_counts=False)
-                records = table.to_pylist()
-                identities = [
-                    json.dumps(evidence_row_key(record, planned), ensure_ascii=False)
-                    for record in records
-                ]
-                supports = [
-                    (record["support_id"], record["geometry"], record["cell_id"])
-                    for record in records
-                ]
-            self._remember(identities, supports)
+                keys = pa.table(
+                    {
+                        "key": pa.array(
+                            [
+                                json.dumps(
+                                    evidence_row_key(record, planned),
+                                    ensure_ascii=False,
+                                )
+                                for record in table.to_pylist()
+                            ],
+                            type=pa.string(),
+                        )
+                    }
+                )
+            self.identities.add(keys, table.select(SUPPORT_COLUMNS))
         except (ValueError, TypeError) as error:
             raise _invalid(error) from error
         if "failure" in table.column_names:
@@ -392,6 +309,7 @@ def _checked_stream(
     def checked() -> Iterator[pa.RecordBatch]:
         for batch in batches:
             yield state.check(batch)
+        state.finish()
 
     return NodeStream(
         _schema(metadata), metadata, checked(), report=state.report, checked=True
@@ -689,6 +607,7 @@ class _ParquetNode(_ScientificNode[MetadataT]):
                 return
             for batch in reader.iter_batches(batch_size=scope.runtime.batch_rows):
                 yield state.check(batch)
+            state.finish()
 
         def report() -> ExecutionReport:
             return replace(

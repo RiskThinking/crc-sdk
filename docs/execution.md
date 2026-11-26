@@ -159,9 +159,14 @@ refitting. The runtime is selected once, on `execute()`. Separate direct
 terminals are separate executions; reading does not silently warm an
 unspecified source cache.
 
-Streams yield after batch checks. Duplicate identities and other global
-invariants are checked throughout consumption. Breaking early leaves an
-incomplete report and releases scope-owned resources. Tables, metadata, and
+Streams yield after batch checks. Duplicate row keys and support IDs naming
+different geometry are checked across the whole stream. For the first 32,768
+rows the batch that breaks them fails. After that, keys move to a compressed
+scratch database in the execution's temporary directory, which needs a few
+bytes per row and at most 128 MiB of memory (less under a smaller
+`memory_limit`), and a repeat is raised when the stream ends, before its
+report can complete. Breaking early leaves an incomplete report and releases
+scope-owned resources. Tables, metadata, and
 immutable report snapshots remain usable after their execution closes.
 
 `Runtime()` uses ephemeral source storage and one worker. `Cache.reuse(path)`
@@ -175,7 +180,9 @@ decoding them, and gives DuckDB n threads. Progress callbacks still run on the
 consuming thread.
 
 Direct local inputs are read from their owned snapshots. Temporary joins,
-replay batches, and modelling state remain execution-owned. A borrowed
+replay batches, and modelling state remain execution-owned. Replay batches are
+zstd-compressed Arrow files in the execution's temporary directory, removed
+when the execution closes. A borrowed
 database connection remains caller-owned and keeps its configuration. Memory
 limits bound collection and blocking fitting. A selection exceeding the budget
 raises `MemoryError`.

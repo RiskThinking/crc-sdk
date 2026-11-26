@@ -44,12 +44,12 @@ from ._dataset_schema import (
     SourceIdentity,
     Stage,
     _combine_reports,
-    _dump,
     _identifier,
 )
 from ._declarations import Period, Scenario, SeriesSpec, Variable, scientific_identity
 from ._errors import CapabilityError, ValidationError
 from ._graph import DataValidationError, ExecutionScope, Node, NodeStream
+from ._identity import SUPPORT_COLUMNS, RowIdentities
 from ._inspection import (
     Bounds,
     Capability,
@@ -63,7 +63,6 @@ from ._recipes import (
     CanonicalReader,
     Dataset,
     _bounded_node,
-    _Checked,
     _checked_stream,
     _configured_payload_pin,
     _declared_ids,
@@ -745,11 +744,7 @@ class _CollectionNode(Node[CollectionMetadata]):
             nonlocal produced, no_data, completed
             for member in metadata.members:
                 member_check = (
-                    _Checked(
-                        scope, plan.entries[member.resource_ids[0]].resource.metadata
-                    )
-                    if len(member.resource_ids) > 1
-                    else None
+                    RowIdentities(scope) if len(member.resource_ids) > 1 else None
                 )
                 for resource_id in member.resource_ids:
                     entry = plan.entries[resource_id]
@@ -759,20 +754,10 @@ class _CollectionNode(Node[CollectionMetadata]):
                         if member_check is not None:
                             # The resource streams already validate their own models.
                             try:
-                                rows = batch.select((*_ROW_KEY, "geometry")).to_pylist()
-                                member_check._remember(
-                                    [
-                                        _dump(tuple(row[key] for key in _ROW_KEY))
-                                        for row in rows
-                                    ],
-                                    [
-                                        (
-                                            row["support_id"],
-                                            row["geometry"],
-                                            row["cell_id"],
-                                        )
-                                        for row in rows
-                                    ],
+                                table = pa.Table.from_batches([batch])
+                                member_check.add(
+                                    table.select(_ROW_KEY),
+                                    table.select(SUPPORT_COLUMNS),
                                 )
                             except (ValueError, TypeError) as error:
                                 raise _invalid(error) from error
@@ -796,6 +781,11 @@ class _CollectionNode(Node[CollectionMetadata]):
                                 f"collection resource {resource_id!r} is invalid"
                             )
                         )
+                if member_check is not None:
+                    try:
+                        member_check.finish()
+                    except (ValueError, TypeError) as error:
+                        raise _invalid(error) from error
             # A full read verifies the physical bundle independently of the
             # series it decodes. Participating resources reuse their pinned bytes.
             for resource in plan.bundle_resources:
