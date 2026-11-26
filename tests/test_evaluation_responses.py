@@ -98,7 +98,8 @@ def test_custom_impact_checks_qualifiers_and_explicit_unit_conversion() -> None:
 
 
 def test_resolved_builtin_models_keep_published_binding_requirements() -> None:
-    reference = cf.Impact.builtin(cf.BuiltinImpact.HOT_DAYS)
-    response = Response("damage", "user:hot-days", reference.resolve())
+    reference = cf.Impact.builtin(cf.BuiltinImpact.CONSECUTIVE_DRY_DAYS)
+    context = cf.CropContext(country="USA", historic_mean=20.0)
+    response = Response("damage", "user:dry-days", reference.resolve(context))
     with pytest.raises(cf.ImpactError, match="calibration_unestablished"):
         response.bind(reference.requirements.input)

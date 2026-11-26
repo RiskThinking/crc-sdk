@@ -109,7 +109,7 @@ def evaluation_json_schema() -> dict[str, object]:
                 "required": ["context"],
                 "properties": {"context": {"$ref": "#/$defs/response_context"}},
             },
-            "else": {"properties": {"context": science_ref("impact-context-1.0")}},
+            "else": {"properties": {"context": science_ref("impact-context-1.1")}},
         },
         "resolution": _record(
             {

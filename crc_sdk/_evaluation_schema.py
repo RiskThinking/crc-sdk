@@ -1243,7 +1243,11 @@ def _validate_response(
             supplied = asset[binding].as_py()
             if isinstance(supplied, Decimal):
                 supplied = float(supplied)
-            if supplied != actual[field] or isinstance(supplied, bool):
+            recorded = actual[field]
+            # True == 1 in Python: a bool only matches a recorded bool.
+            if supplied != recorded or isinstance(supplied, bool) is not isinstance(
+                recorded, bool
+            ):
                 raise ValueError("row assets contradict the recorded response context")
     return response_id, resolution_id
 
