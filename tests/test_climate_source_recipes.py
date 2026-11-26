@@ -982,6 +982,13 @@ def test_jrc_preserves_published_quantile_knots_and_native_pixel_support(
     release = result.metadata.source.release
     assert release is not None
     assert reference.release != release
+    # Return-period windows fetched ahead on threads give the same result.
+    ahead = recipe.read(runtime=Runtime(workers=4))
+    assert ahead.table.equals(result.table, check_metadata=False)
+    assert ahead.metadata.source is not None
+    assert [(r.uri, r.sha256) for r in ahead.metadata.source.resources] == [
+        (r.uri, r.sha256) for r in result.metadata.source.resources
+    ]
     assets = Assets({"asset_id": ["site"], "longitude": [0.0], "latitude": [0.0]})
     evaluation = recipe.evaluate(assets).return_periods([10]).read()
     assert evaluation.table["value"].to_pylist() == [1.0]
