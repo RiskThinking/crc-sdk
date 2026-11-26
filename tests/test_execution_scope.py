@@ -665,3 +665,45 @@ def test_closing_prefetched_early_waits_for_running_acquisitions() -> None:
         stream.close()
         assert sorted(started) == sorted(finished)
         assert len(started) < 20
+
+
+@pytest.mark.parametrize("clone", [True, False])
+def test_verified_copies_clone_where_supported_and_copy_elsewhere(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clone: bool
+) -> None:
+    import hashlib
+
+    from crc_sdk import _graph
+
+    if not clone:
+        monkeypatch.setattr(_graph, "_clone", lambda source, destination: False)
+    source = tmp_path / "source"
+    source.write_bytes(b"verified bytes" * 1000)
+    digest = "sha256:" + hashlib.sha256(source.read_bytes()).hexdigest()
+    copy = tmp_path / "copy"
+    assert _graph._copy_verified(source, copy, digest) == digest
+    assert copy.read_bytes() == source.read_bytes()
+    # The copy is independent of later writes to its source.
+    source.write_bytes(b"changed")
+    assert copy.read_bytes() == b"verified bytes" * 1000
+    wrong = tmp_path / "wrong"
+    with pytest.raises(_graph.SourceContentChanged):
+        _graph._copy_verified(copy, wrong, "sha256:" + "0" * 64)
+    assert not wrong.exists()
+
+
+def test_downloaded_bytes_become_the_snapshot_without_a_copy(tmp_path: Path) -> None:
+    import hashlib
+
+    from crc_sdk import _graph
+
+    acquired = tmp_path / "acquiring"
+    acquired.write_bytes(b"payload")
+    digest = "sha256:" + hashlib.sha256(b"payload").hexdigest()
+    with pytest.raises(_graph.SourceContentChanged):
+        _graph._move_verified(acquired, tmp_path / "bad", "sha256:" + "0" * 64)
+    assert acquired.exists() and not (tmp_path / "bad").exists()
+    inode = acquired.stat().st_ino
+    _graph._move_verified(acquired, tmp_path / "snapshot", digest)
+    assert (tmp_path / "snapshot").stat().st_ino == inode
+    assert not acquired.exists()

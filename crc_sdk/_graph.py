@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import os
 import re
 import shutil
+import sys
 import tempfile
 import threading
 from abc import ABC, abstractmethod
@@ -16,7 +18,7 @@ from contextlib import AbstractContextManager, ExitStack
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import BinaryIO, Generic, Self, TypeVar, cast
+from typing import Any, BinaryIO, Generic, Self, TypeVar, cast
 
 import duckdb
 import pyarrow as pa  # type: ignore[import-untyped]
@@ -298,9 +300,90 @@ def _copy_handle_verified(
         reader.seek(position)
 
 
+def _clone(source: Path, destination: Path) -> bool:
+    """Make `destination` a copy-on-write clone of `source`, where supported.
+
+    A clone is an independent file, like a copy, but shares the source's
+    blocks until either is written: no data is written and no space is used.
+    APFS (macOS) and Btrfs/XFS (Linux) support it; elsewhere this returns
+    False and nothing is created.
+    """
+    try:
+        if sys.platform == "darwin":
+            clonefile = _clonefile()
+            if clonefile is None:
+                return False
+            if clonefile(os.fsencode(source), os.fsencode(destination), 0) != 0:
+                return False
+            return True
+        if sys.platform.startswith("linux"):
+            import fcntl
+
+            with source.open("rb") as reader, destination.open("xb") as writer:
+                try:
+                    fcntl.ioctl(writer.fileno(), _FICLONE, reader.fileno())
+                except OSError:
+                    destination.unlink(missing_ok=True)
+                    return False
+            return True
+    except OSError:
+        return False
+    return False
+
+
+_FICLONE = 0x40049409
+
+
+@functools.cache
+def _clonefile() -> Any:
+    import ctypes
+
+    try:
+        function = ctypes.CDLL(None, use_errno=True).clonefile
+    except (AttributeError, OSError):
+        return None
+    function.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint32)
+    function.restype = ctypes.c_int
+    return function
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as reader:
+        while chunk := reader.read(1024 * 1024):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
+
+
 def _copy_verified(source: Path, destination: Path, expected: str | None) -> str:
+    """Copy `source` to a new `destination` and return its verified checksum.
+
+    A clone is used where the filesystem supports one; the clone itself is
+    then read and verified, so the checksum is of the file that remains.
+    """
+    if _clone(source, destination):
+        try:
+            with destination.open("rb") as clone:
+                os.fsync(clone.fileno())
+            actual = _sha256(destination)
+            if expected is not None and actual != expected:
+                raise SourceContentChanged(expected, actual)
+            return actual
+        except BaseException:
+            destination.unlink(missing_ok=True)
+            raise
     with source.open("rb") as reader:
         return _copy_handle_verified(reader, destination, expected)
+
+
+def _move_verified(source: Path, destination: Path, expected: str) -> None:
+    """Verify `source` and rename it to a new `destination` in the same directory."""
+    actual = _sha256(source)
+    if actual != expected:
+        raise SourceContentChanged(expected, actual)
+    if destination.exists():
+        raise FileExistsError(destination)
+    os.replace(source, destination)
 
 
 class ExecutionScope:
@@ -587,7 +670,8 @@ class ExecutionScope:
                 self.emit(Stage.ACQUISITION, 0, 1)
                 acquire(acquired)
                 try:
-                    _copy_verified(acquired, private, resource.sha256)
+                    # Downloaded bytes become the snapshot without a copy.
+                    _move_verified(acquired, private, resource.sha256)
                 except SourceContentChanged as error:
                     raise SourceContentChanged(
                         error.expected, error.received, uri=resource.uri
