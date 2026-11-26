@@ -12,6 +12,7 @@ guide.
 | [Evaluation](evaluation.md) | Asset matching, probability and return-period queries, named responses, and saved evaluations |
 | [Sources and native evidence](sources.md) | Provider capabilities, discovery, temporal reductions, user evidence, and assets |
 | [Python interface contract](api-reference.md) | Canonical imports, ownership, and installed-package checks |
+| [DuckDB versions](duckdb.md) | Supported DuckDB versions, 2.x SQL changes, and staying on 1.x |
 | [Source resource terms](data-licences.md) | License, attribution, retrieval time, and content identity |
 | [Migrating to 1.0](migration-v1.md) | 0.x to 1.0 changes, with before/after examples |
 | [Release notes](release-notes.md) | Package and artifact versions, and CRC Open availability |
