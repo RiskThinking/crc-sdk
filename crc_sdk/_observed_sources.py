@@ -1383,7 +1383,7 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
                 ),
             )
 
-        def parts() -> Iterator[_Part]:
+        def parts() -> Generator[_Part, None, None]:
             nonlocal final
             if not weather:
                 yield from prepared.parts
@@ -1402,6 +1402,11 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
                     yield part
 
         def produce() -> Iterator[pa.RecordBatch]:
+            # Closed with the stream, so an early stop ends acquisitions ahead.
+            with closing(parts()) as station_parts:
+                yield from produced(station_parts)
+
+        def produced(station_parts: Iterator[_Part]) -> Iterator[pa.RecordBatch]:
             nonlocal final, count, missing
             if not resolved.keys or self.state.stations == ():
                 return
@@ -1412,7 +1417,7 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
                 usable = incomplete = unavailable = 0
                 # A station-year is an explicit blocking reduction, not a global
                 # materialization of every requested station and year.
-                for part in parts():
+                for part in station_parts:
                     station, year = part.station, part.year
                     assert station is not None and year is not None
                     raw = (
@@ -1548,7 +1553,7 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
                 return
             pending = []
             groups = (
-                (self._raw(prepared, (part,), superseded) for part in parts())
+                (self._raw(prepared, (part,), superseded) for part in station_parts)
                 if weather
                 else iter((self._raw(prepared),))
             )

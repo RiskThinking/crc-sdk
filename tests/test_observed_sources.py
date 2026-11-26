@@ -1738,3 +1738,34 @@ def test_station_years_acquired_on_worker_threads_read_like_one_worker(
     assert [r.uri for r in three.metadata.source.resources] == [
         r.uri for r in one.metadata.source.resources
     ]
+
+
+def test_a_preview_leaves_no_station_year_acquisition_running(
+    transport: NativeTransport, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+    import time
+
+    running = 0
+    lock = threading.Lock()
+
+    def slow(uri: str, path: Path) -> int:
+        nonlocal running
+        with lock:
+            running += 1
+        try:
+            if "/12345678901.csv" in uri and "/2018/" not in uri:
+                time.sleep(0.05)
+            return transport(uri, path)
+        finally:
+            with lock:
+                running -= 1
+
+    recipe = ISD().observations()
+    station = recipe.inspect().stations[0]
+    monkeypatch.setattr(_source_io, "_download", slow)
+    preview = recipe.select(stations=station, time=Period.window(2018, 2025)).read(
+        limit=1, runtime=Runtime(workers=3)
+    )
+    assert preview.table.num_rows == 1
+    assert running == 0
