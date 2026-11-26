@@ -115,6 +115,8 @@ class NodeStream(Generic[MetadataT]):
     close: Callable[[], None] | None = None
     checked: bool = False
     verify_before_yield: bool = False
+    # Producer facts that the node's own report views read back.
+    state: object | None = None
 
 
 class Node(ABC, Generic[MetadataT]):
@@ -630,6 +632,14 @@ class ExecutionScope:
     def metadata(self, node: Node[MetadataT]) -> MetadataT:
         replay = self._replay(node)
         return node._view_metadata(self, replay.metadata())
+
+    def stream_state(self, node: Node[MetadataT]) -> object | None:
+        """The producer facts the node's open stream published."""
+        return self._replay(node).stream.state
+
+    def checked(self, node: Node[MetadataT]) -> bool:
+        """Whether the node's rows pass a global row check before they are read."""
+        return self._replay(node).stream.checked
 
     def computation_metadata(self, node: Node[MetadataT]) -> MetadataT:
         """Read scope-local producer metadata without applying branch views."""

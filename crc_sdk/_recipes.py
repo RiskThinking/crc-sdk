@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
+import bisect
 import hashlib
 import json
 import types
 from abc import ABC, abstractmethod
 from collections.abc import Iterator, Mapping
 from contextlib import AbstractContextManager
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
-from typing import Generic, Literal, Self, TypeAlias, TypeVar, cast
+from typing import BinaryIO, Generic, Literal, Self, TypeAlias, TypeVar, cast
 
 import crc_framework
 import pyarrow as pa  # type: ignore[import-untyped]
@@ -534,75 +535,98 @@ class _ParquetNode(_ScientificNode[MetadataT]):
             ),
         )
 
-    def open(self, scope: ExecutionScope) -> NodeStream[MetadataT]:
-        handle = None
-        discovery = None
-        if self.metadata_value is None:
-            handle = scope.enter_context(self.path.open("rb"))
-            try:
-                discovery = scope.enter_context(pq.ParquetFile(handle))
-                schema = discovery.schema_arrow
-                empty = pa.Table.from_batches([], schema=schema)
-                metadata = cast(
-                    MetadataT,
-                    metadata_from_table(empty)
-                    if self.metadata_type is DatasetMetadata
-                    else metadata_from_evidence_table(empty),
+    def selected(self, state: SelectionState) -> Node[MetadataT]:
+        if (
+            self.metadata_type is DatasetMetadata
+            and state.time is None
+            and state.stations is None
+        ):
+            return cast(
+                Node[MetadataT],
+                _ParquetSelectionNode(cast(_ParquetNode[DatasetMetadata], self), state),
+            )
+        return _SelectionNode(self, state)
+
+    def _discover(
+        self, scope: ExecutionScope
+    ) -> tuple[MetadataT, pa.Schema, BinaryIO | None, pq.ParquetFile | None]:
+        """Read declared metadata from the footer, or use the supplied metadata."""
+        if self.metadata_value is not None:
+            return self.metadata_value, _schema(self.metadata_value), None, None
+        handle = scope.enter_context(self.path.open("rb"))
+        try:
+            discovery = scope.enter_context(pq.ParquetFile(handle))
+            schema = discovery.schema_arrow
+            empty = pa.Table.from_batches([], schema=schema)
+            metadata = cast(
+                MetadataT,
+                metadata_from_table(empty)
+                if self.metadata_type is DatasetMetadata
+                else metadata_from_evidence_table(empty),
+            )
+            if not schema.equals(_schema(metadata), check_metadata=False):
+                raise ValueError(
+                    "Persisted Arrow schema contradicts its declared artifact kind"
                 )
-                if not schema.equals(_schema(metadata), check_metadata=False):
-                    raise ValueError(
-                        "Persisted Arrow schema contradicts its declared artifact kind"
-                    )
-                if (
-                    isinstance(metadata, EvidenceMetadata)
-                    and metadata.kind is not self.expected_kind
-                ):
-                    raise ValueError(
-                        f"This reader requires {self.expected_kind.value} evidence"
-                    )
-                if (
-                    metadata.report.complete
-                    and discovery.metadata.num_rows != metadata.report.counts.produced
-                ):
-                    raise ValueError(
-                        "Stored complete report count disagrees with the Parquet footer"
-                    )
-            except (ValueError, TypeError) as error:
-                raise _invalid(error) from error
+            if (
+                isinstance(metadata, EvidenceMetadata)
+                and metadata.kind is not self.expected_kind
+            ):
+                raise ValueError(
+                    f"This reader requires {self.expected_kind.value} evidence"
+                )
+            if (
+                metadata.report.complete
+                and discovery.metadata.num_rows != metadata.report.counts.produced
+            ):
+                raise ValueError(
+                    "Stored complete report count disagrees with the Parquet footer"
+                )
+        except (ValueError, TypeError) as error:
+            raise _invalid(error) from error
+        return metadata, schema, handle, discovery
+
+    def _pinned(
+        self,
+        scope: ExecutionScope,
+        schema: pa.Schema,
+        handle: BinaryIO | None,
+        discovery: pq.ParquetFile | None,
+    ) -> tuple[pq.ParquetFile, SourceIdentity]:
+        """Open the execution's snapshot of the file discovered earlier."""
+        if handle is None:
+            pinned, resource = scope.pin_local(self.path, expected_sha256=self.digest)
         else:
-            metadata = self.metadata_value
-            schema = _schema(metadata)
+            pinned, resource = scope.pin_handle(
+                handle, uri=str(self.path), expected_sha256=self.digest
+            )
+        reader = scope.enter_context(pq.ParquetFile(pinned))
+        if (
+            not reader.schema_arrow.equals(schema, check_metadata=False)
+            or reader.schema_arrow.metadata != schema.metadata
+            or (
+                discovery is not None
+                and reader.metadata.num_rows != discovery.metadata.num_rows
+            )
+        ):
+            raise OSError(
+                "The artifact changed after metadata discovery; no data was "
+                "delivered under the earlier inspection"
+            )
+        return reader, SourceIdentity(
+            provider="local",
+            product=self.metadata_type.__name__,
+            resources=(resource,),
+        )
+
+    def open(self, scope: ExecutionScope) -> NodeStream[MetadataT]:
+        metadata, schema, handle, discovery = self._discover(scope)
         state = _Checked(scope, metadata)
         resource_source: SourceIdentity | None = None
 
         def batches() -> Iterator[pa.RecordBatch]:
             nonlocal resource_source
-            if handle is None:
-                pinned, resource = scope.pin_local(
-                    self.path, expected_sha256=self.digest
-                )
-            else:
-                pinned, resource = scope.pin_handle(
-                    handle, uri=str(self.path), expected_sha256=self.digest
-                )
-            reader = scope.enter_context(pq.ParquetFile(pinned))
-            if (
-                not reader.schema_arrow.equals(schema, check_metadata=False)
-                or reader.schema_arrow.metadata != schema.metadata
-                or (
-                    discovery is not None
-                    and reader.metadata.num_rows != discovery.metadata.num_rows
-                )
-            ):
-                raise OSError(
-                    "The artifact changed after metadata discovery; no data was "
-                    "delivered under the earlier inspection"
-                )
-            resource_source = SourceIdentity(
-                provider="local",
-                product=self.metadata_type.__name__,
-                resources=(resource,),
-            )
+            reader, resource_source = self._pinned(scope, schema, handle, discovery)
             if reader.num_row_groups == 0:
                 return
             for batch in reader.iter_batches(batch_size=scope.runtime.batch_rows):
@@ -615,7 +639,7 @@ class _ParquetNode(_ScientificNode[MetadataT]):
                 source_identities=() if resource_source is None else (resource_source,),
             )
 
-        return NodeStream(schema, metadata, batches(), report=report)
+        return NodeStream(schema, metadata, batches(), report=report, checked=True)
 
 
 def _select_unavailable_years(
@@ -665,10 +689,14 @@ class _SelectionNode(_ScientificNode[MetadataT]):
         )
         return replace(metadata, report=scope.report(self))
 
+    def _parent_report(self, scope: ExecutionScope) -> ExecutionReport:
+        """The report of the rows this selection filters."""
+        return scope.report(self.parent)
+
     def _view_report(
         self, scope: ExecutionScope, shared: ExecutionReport
     ) -> ExecutionReport:
-        parent = scope.report(self.parent)
+        parent = self._parent_report(scope)
         metadata = scope.metadata(self.parent)
         selected = self.state.resolve(metadata.spec, source=metadata.source)
         parent = _select_unavailable_years(parent, selected)
@@ -790,14 +818,31 @@ class _SelectionNode(_ScientificNode[MetadataT]):
                         f"unknown requested station identities {sorted(missing)!r}"
                     )
 
-        stream = _checked_stream(scope, metadata, batches())
+        # Dataset rows of a checked parent pass through as an Arrow filter: a
+        # subset of valid rows needs no second decode, only its keys and counts.
+        stream = _checked_stream(
+            scope,
+            metadata,
+            batches(),
+            payload_verified=isinstance(metadata, DatasetMetadata)
+            and resolved.time is None
+            and scope.checked(self.parent),
+        )
+        return self._selection_stream(scope, stream, resolved)
+
+    def _selection_stream(
+        self,
+        scope: ExecutionScope,
+        stream: NodeStream[MetadataT],
+        resolved: ResolvedSelection,
+    ) -> NodeStream[MetadataT]:
         own_report = stream.report
-        annual = _annual_samples(metadata)
+        annual = _annual_samples(stream.metadata)
 
         def report() -> ExecutionReport:
             assert own_report is not None
             own = own_report()
-            parent = _select_unavailable_years(scope.report(self.parent), resolved)
+            parent = _select_unavailable_years(self._parent_report(scope), resolved)
             unavailable = sum(
                 isinstance(d, UnavailableStationYear) for d in parent.diagnostics
             )
@@ -819,6 +864,139 @@ class _SelectionNode(_ScientificNode[MetadataT]):
 
         stream.report = report
         return stream
+
+
+@dataclass(slots=True)
+class _FileCounts:
+    """Whole-file facts of a selected local read, for the file's own report."""
+
+    produced: int = 0
+    no_data: int = 0
+    resource: SourceIdentity | None = None
+    complete: bool = False
+
+
+def _may_match(
+    group: pq.RowGroupMetaData,
+    resolved: ResolvedSelection,
+    cells: list[int] | None,
+) -> bool:
+    """False only when the row group's statistics exclude every selected row."""
+    stats = {}
+    for index in range(group.num_columns):
+        column = group.column(index)
+        if column.statistics is not None:
+            stats[column.path_in_schema] = column.statistics
+    variable = stats.get("variable_id")
+    if (
+        variable is not None
+        and variable.has_min_max
+        and not any(variable.min <= key[0] <= variable.max for key in resolved.keys)
+    ):
+        return False
+    geometry, cell = stats.get("geometry"), stats.get("cell_id")
+    if (
+        cells is not None
+        and geometry is not None
+        and geometry.has_null_count
+        and geometry.null_count == group.num_rows
+        and cell is not None
+        and cell.has_min_max
+    ):
+        # Every row is cell-supported: one needs a candidate cell in range.
+        first = bisect.bisect_left(cells, cell.min)
+        return first < len(cells) and cells[first] <= cell.max
+    return True
+
+
+def _group_no_data(reader: pq.ParquetFile, index: int) -> int:
+    group = reader.metadata.row_group(index)
+    for column_index in range(group.num_columns):
+        column = group.column(column_index)
+        if column.path_in_schema == "failure.code":
+            # `code` is required inside `failure`: its nulls are rows without one.
+            stats = column.statistics
+            if stats is not None and stats.has_null_count:
+                return int(group.num_rows - stats.null_count)
+    failures = reader.read_row_group(index, columns=["failure"]).column("failure")
+    return int(len(failures) - failures.null_count)
+
+
+class _ParquetSelectionNode(_SelectionNode[DatasetMetadata]):
+    """Select rows of a local Dataset file, decoding only the selected curves.
+
+    The result equals selecting from a whole-file read: the same pinned bytes,
+    the same selected rows with every check of them, and the whole file's row
+    and no-data counts compared with its stored report. Curves of rows outside
+    the selection are not decoded, and row groups whose statistics exclude
+    every selected row are counted from those statistics without being read.
+    """
+
+    parent: _ParquetNode[DatasetMetadata]
+
+    def __init__(
+        self, parent: _ParquetNode[DatasetMetadata], state: SelectionState
+    ) -> None:
+        super().__init__(parent, state)
+        self.key = _key("parquet-select", parent.key, state.document())
+
+    def _parent_report(self, scope: ExecutionScope) -> ExecutionReport:
+        facts = scope.stream_state(self)
+        assert isinstance(facts, _FileCounts)
+        whole = ExecutionReport(
+            facts.complete,
+            True if facts.complete else None,
+            counts=ExecutionCounts(
+                requested=facts.produced,
+                produced=facts.produced,
+                no_data=facts.no_data,
+            ),
+            source_identities=() if facts.resource is None else (facts.resource,),
+        )
+        return self.parent._view_report(scope, whole)
+
+    def open(self, scope: ExecutionScope) -> NodeStream[DatasetMetadata]:
+        parquet = self.parent
+        original, schema, handle, discovery = parquet._discover(scope)
+        resolved = self.state.resolve(original.spec, source=original.source)
+        metadata = selected_metadata(original, resolved)
+        metadata = _with_report(
+            metadata,
+            replace(
+                metadata.report, complete=False, valid=None, counts=ExecutionCounts()
+            ),
+        )
+        facts = _FileCounts()
+        cells = None if resolved.cells is None else sorted(resolved.cells)
+
+        def batches() -> Iterator[pa.RecordBatch]:
+            if resolved.empty:
+                return
+            reader, facts.resource = parquet._pinned(scope, schema, handle, discovery)
+            target = _schema(metadata)
+            groups = []
+            for index in range(reader.num_row_groups):
+                if _may_match(reader.metadata.row_group(index), resolved, cells):
+                    groups.append(index)
+                else:
+                    facts.produced += reader.metadata.row_group(index).num_rows
+                    facts.no_data += _group_no_data(reader, index)
+            supports: dict[object, bool] = {}
+            if groups:
+                for batch in reader.iter_batches(
+                    batch_size=scope.runtime.batch_rows, row_groups=groups
+                ):
+                    facts.produced += batch.num_rows
+                    failures = batch.column("failure")
+                    facts.no_data += len(failures) - failures.null_count
+                    selected = batch.filter(resolved.record_mask(batch, supports))
+                    if selected.num_rows:
+                        yield selected.replace_schema_metadata(target.metadata)
+            facts.complete = True
+
+        stream = _checked_stream(scope, metadata, batches())
+        stream.state = facts
+        return self._selection_stream(scope, stream, resolved)
 
 
 def _annual_samples(metadata: Metadata) -> bool:
@@ -1365,6 +1543,8 @@ def _bounded_node(
             parent.operation,
             parent.arguments,
         )
+    if isinstance(parent, _ParquetSelectionNode):
+        return cast(Node[MetadataT], parent)
     if isinstance(parent, _SelectionNode):
         return _SelectionNode(
             _bounded_node(parent.parent, state, discover=discover), parent.state
@@ -1425,7 +1605,7 @@ def _select_node(parent: Node[MetadataT], state: SelectionState) -> Node[Metadat
         if parent.state != SelectionState():
             return _SelectionNode(_bounded_node(parent, state), state)
         return parent.selected(state)
-    if isinstance(parent, _FitNode):
+    if isinstance(parent, (_FitNode, _ParquetNode)):
         return cast(Node[MetadataT], parent.selected(state))
     return _SelectionNode(_bounded_node(parent, state), state)
 
