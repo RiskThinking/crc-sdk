@@ -5,7 +5,7 @@ from __future__ import annotations
 import pyarrow as pa  # type: ignore[import-untyped]
 from crc_framework import Distribution, QuantileCurve
 
-from ._schema.dataset import _curve_from_arrow
+from ._schema.dataset import _curves_from_arrow
 
 
 def decode_curves(
@@ -16,7 +16,4 @@ def decode_curves(
         raise TypeError("rows must be a pyarrow Table or RecordBatch")
     if "curve" not in rows.schema.names:
         raise ValueError("rows have no curve column; pass Dataset 2.0 rows")
-    return tuple(
-        None if value is None else _curve_from_arrow(value)
-        for value in rows.column("curve").to_pylist()
-    )
+    return tuple(_curves_from_arrow(rows.column("curve")))
