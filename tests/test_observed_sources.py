@@ -1719,3 +1719,22 @@ def test_station_recipes_carry_daily_coverage_into_the_node() -> None:
             indicator=ISD.Indicator.ANNUAL_MAXIMUM_DAILY_MAXIMUM_TEMPERATURE,
             daily_coverage=cast(Coverage, invalid),
         )
+
+
+def test_station_years_acquired_on_worker_threads_read_like_one_worker(
+    transport: NativeTransport,
+) -> None:
+    # Four station-years, one of them absent: absences share one cached body.
+    transport.absent_year = 2019
+    recipe = ISD().observations()
+    station = recipe.inspect().stations[0]
+    selected = recipe.select(stations=station, time=Period.window(2018, 2021))
+    one = selected.read()
+    three = selected.read(runtime=Runtime(workers=3))
+    assert three.table.equals(one.table)
+    assert three.report.counts == one.report.counts
+    assert three.report.diagnostics == one.report.diagnostics
+    assert one.metadata.source is not None and three.metadata.source is not None
+    assert [r.uri for r in three.metadata.source.resources] == [
+        r.uri for r in one.metadata.source.resources
+    ]
