@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import urllib.parse
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from contextlib import closing
 from dataclasses import dataclass, field, replace
 from enum import Enum
@@ -61,7 +61,7 @@ from ._selection import (
     selected_metadata,
     support_extent,
 )
-from ._source_io import SourceNode, check_release, fetch, fetch_json, native_data
+from ._source_io import SourceNode, _json, check_release, fetch, native_data
 from ._terminals import _schema
 
 CRC_OPEN_ROOT = "https://data.riskthinking.ai/crc-open"
@@ -96,13 +96,33 @@ def _location(value: LocalPath | None, requested: ReleaseReference | None) -> st
     return Path(text).absolute().as_uri()
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, eq=False)
 class ReleaseDataset:
+    """One indexed file. Its metadata is parsed when a selection first needs it."""
+
     id: str
     uri: str
     sha256: str
-    metadata: DatasetMetadata
     extent: Bounds | None
+    # Exact variable IDs read from the raw declaration, to skip unselected
+    # entries without parsing them; None when the declaration is malformed.
+    variable_ids: frozenset[str] | None
+    _document: object = field(repr=False)
+    _parsed: list[DatasetMetadata] = field(default_factory=list, repr=False)
+
+    @property
+    def metadata(self) -> DatasetMetadata:
+        if not self._parsed:
+            self._parsed.append(
+                DatasetMetadata.from_json(json.dumps(self._document, allow_nan=False))
+            )
+        return self._parsed[0]
+
+    def declares(self, variables: Iterable[object]) -> bool:
+        ids = self.variable_ids
+        if ids is None:
+            ids = frozenset(v.id for v in self.metadata.spec.variables)
+        return not ids.isdisjoint(variables)
 
     @classmethod
     def parse(cls, value: object) -> ReleaseDataset:
@@ -111,9 +131,21 @@ class ReleaseDataset:
             _identifier(obj["id"], "release dataset id"),
             _relative(obj["uri"]),
             _digest(obj["sha256"]),
-            DatasetMetadata.from_json(json.dumps(obj["metadata"], allow_nan=False)),
             _extent(obj["extent"]),
+            _variable_ids(obj["metadata"]),
+            obj["metadata"],
         )
+
+
+def _variable_ids(document: object) -> frozenset[str] | None:
+    try:
+        ids = [
+            variable["id"]
+            for variable in document["spec"]["variables"]  # type: ignore[index]
+        ]
+    except (TypeError, KeyError):
+        return None
+    return frozenset(ids) if all(isinstance(i, str) for i in ids) else None
 
 
 def _extent(value: object) -> Bounds | None:
@@ -188,11 +220,7 @@ def _selected(
         None if state.series is None else {item.variable.id for item in state.series},
     ):
         if wanted is not None:
-            entries = tuple(
-                entry
-                for entry in entries
-                if any(v.id in wanted for v in entry.metadata.spec.variables)
-            )
+            entries = tuple(entry for entry in entries if entry.declares(wanted))
     resolved = state.resolve(
         _merged_spec(tuple(entry.metadata for entry in entries)), source=source
     )
@@ -426,30 +454,38 @@ class _CRCNode(SourceNode[DatasetMetadata]):
     ) -> tuple[str, tuple[ReleaseDataset, ...], SourceIdentity]:
         with native_data(scope=scope, source="crc-open"):
             pointer_id: str | None = None
-            document, resource = fetch_json(
+            path, resource = fetch(
                 scope, self.catalog, license="CC-BY-NC-4.0", attribution="RiskThinking"
             )
             resources = [resource]
-            if isinstance(document, Mapping) and set(document) == {
-                "schema_version",
-                "release",
-            }:
-                if document["schema_version"] != "1.0":
-                    raise ValueError("unsupported CRC Open release pointer")
-                pointer = _object(document["release"], {"id", "uri", "sha256"})
-                pointer_id = _identifier(pointer["id"], "release pointer id")
-                uri = urllib.parse.urljoin(self.catalog, _relative(pointer["uri"]))
-                document, resource = fetch_json(
-                    scope,
-                    uri,
-                    expected_sha256=_digest(pointer["sha256"]),
-                    license="CC-BY-NC-4.0",
-                    attribution="RiskThinking",
-                )
-                resources.append(resource)
-            else:
-                uri = self.catalog
-            id, entries = _parsed_index(document, resource.sha256)
+            uri = self.catalog
+            # A parsed index is reused by checksum before its JSON is read again.
+            parsed = _PARSED_INDEXES.get(resource.sha256)
+            if parsed is None:
+                document = _json(path.read_text(encoding="utf-8-sig"))
+                if isinstance(document, Mapping) and set(document) == {
+                    "schema_version",
+                    "release",
+                }:
+                    if document["schema_version"] != "1.0":
+                        raise ValueError("unsupported CRC Open release pointer")
+                    pointer = _object(document["release"], {"id", "uri", "sha256"})
+                    pointer_id = _identifier(pointer["id"], "release pointer id")
+                    uri = urllib.parse.urljoin(self.catalog, _relative(pointer["uri"]))
+                    path, resource = fetch(
+                        scope,
+                        uri,
+                        expected_sha256=_digest(pointer["sha256"]),
+                        license="CC-BY-NC-4.0",
+                        attribution="RiskThinking",
+                    )
+                    resources.append(resource)
+                    parsed = _PARSED_INDEXES.get(resource.sha256)
+                    if parsed is None:
+                        document = _json(path.read_text(encoding="utf-8-sig"))
+                if parsed is None:
+                    parsed = _parsed_index(document, resource.sha256)
+            id, entries = parsed
             if pointer_id is not None and pointer_id != id:
                 raise ValueError("release pointer identity differs from its index")
             actual = ReleaseReference(
@@ -483,7 +519,8 @@ class _CRCNode(SourceNode[DatasetMetadata]):
             ] = ()
         else:
             _, entries, source = self._resolve(scope)
-            selected = _selected(entries, self.state, source)
+            with native_data(scope=scope, source="crc-open"):
+                selected = _selected(entries, self.state, source)
         metadata = _merge(tuple(part for _, part, _ in selected), source)
         return Inspection(
             schema=_schema(metadata),
@@ -516,7 +553,8 @@ class _CRCNode(SourceNode[DatasetMetadata]):
                 iter(()),
             )
         catalog, entries, source = self._resolve(scope)
-        selected = _selected(entries, self.state, source)
+        with native_data(scope=scope, source="crc-open"):
+            selected = _selected(entries, self.state, source)
         parts = tuple(part for _, part, _ in selected)
         metadata = _merge(parts, source)
         with native_data(scope=scope, source=source.product):

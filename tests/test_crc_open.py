@@ -659,3 +659,37 @@ def test_files_acquired_on_worker_threads_read_like_one_worker(
     assert [r.uri for s in parallel.report.source_identities for r in s.resources] == [
         r.uri for s in serial.report.source_identities for r in s.resources
     ]
+
+
+def test_only_entries_a_selection_can_use_are_parsed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    index = _release_index(
+        tmp_path,
+        _depth(tmp_path / "first.parquet", "company:first", 0.3),
+        _depth(tmp_path / "second.parquet", "company:second", 0.3),
+    )
+    document = json.loads(index.read_text())
+    del document["datasets"][1]["metadata"]["report"]
+    index.write_text(json.dumps(document))
+    first = CRCOpen(catalog=index).select(variables="company:first")
+    assert first.read().report.valid
+    with pytest.raises(ValidationError):
+        CRCOpen(catalog=index).select(variables="company:second").read()
+    with pytest.raises(ValidationError):
+        CRCOpen(catalog=index).inspect()
+    # A parsed index is reused by checksum without reading its JSON again.
+    from crc_sdk._source_io import _json
+
+    parses: list[str] = []
+
+    def parse(text: str) -> object:
+        parses.append(text)
+        return _json(text)
+
+    monkeypatch.setattr("crc_sdk._crc_open._json", parse)
+    assert first.read().report.valid
+    assert parses == []
+    monkeypatch.setattr("crc_sdk._crc_open._PARSED_INDEXES", {})
+    assert first.read().report.valid
+    assert len(parses) == 1
