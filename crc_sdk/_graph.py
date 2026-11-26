@@ -47,9 +47,29 @@ ItemT = TypeVar("ItemT")
 ResultT = TypeVar("ResultT")
 # Set on threads that acquire sources ahead of the consuming thread.
 _acquiring = threading.local()
-# Replayed batches are written once and read back at least once: LZ4 frames
+# Replayed batches are written once and read back at least once: zstd frames
 # cut their disk use several times at a small fraction of the read cost.
 _SPILL = pa.ipc.IpcWriteOptions(compression="zstd")
+_PLAIN = pa.ipc.IpcWriteOptions()
+
+
+def _spill_options(schema: pa.Schema) -> pa.ipc.IpcWriteOptions:
+    """Compressed frames, except for view types: Arrow 18 crashes compressing them."""
+
+    def view(value: pa.DataType) -> bool:
+        if pa.types.is_dictionary(value):
+            return view(value.value_type)
+        return (
+            pa.types.is_string_view(value)
+            or pa.types.is_binary_view(value)
+            or pa.types.is_list_view(value)
+            or pa.types.is_large_list_view(value)
+            or any(view(value.field(i).type) for i in range(value.num_fields))
+        )
+
+    return _PLAIN if any(view(field.type) for field in schema) else _SPILL
+
+
 ResourceT = TypeVar("ResourceT")
 
 
@@ -136,6 +156,7 @@ class _Replay(Generic[MetadataT]):
         self.failure: BaseException | None = None
         self._metadata_snapshot = stream.metadata
         self._report_snapshot = ExecutionReport(False, None)
+        self._options = _spill_options(stream.schema)
 
     def metadata(self) -> MetadataT:
         if not self.closed and self.stream.final_metadata is not None:
@@ -208,7 +229,7 @@ class _Replay(Generic[MetadataT]):
             path = self.directory / f"{len(self.paths):012d}.arrow"
             with (
                 pa.OSFile(str(path), "wb") as sink,
-                pa.ipc.new_file(sink, batch.schema, options=_SPILL) as writer,
+                pa.ipc.new_file(sink, batch.schema, options=self._options) as writer,
             ):
                 writer.write_batch(batch)
             self.paths.append(path)
