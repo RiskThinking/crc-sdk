@@ -396,3 +396,57 @@ def test_unsupported_query_keeps_no_data_without_resolving_asset_context() -> No
     assert {row["failure"]["code"] for row in result.table.to_pylist()} == {
         "query_outside_support"
     }
+
+
+@pytest.mark.parametrize("kept", [[], ["wui"]])
+def test_fire_weather_damage_is_decided_per_asset_by_a_boolean_column(
+    tmp_path: Path, kept: list[str]
+) -> None:
+    reference = cf.Impact.builtin(cf.BuiltinImpact.FIRE_WEATHER_INDEX)
+    fwi = "company:fwi"
+    dataset = Dataset.from_quantiles(
+        {
+            "support_id": ["station", "station"],
+            "longitude": [24.0, 24.0],
+            "latitude": [60.0, 60.0],
+            "probability": [0.2, 0.8],
+            "value": [20.0, 40.0],
+        },
+        variable=Variable(fwi, measurement=reference.requirements.input),
+        probability=Probability.annual(tail=cf.Tail.UPPER),
+    )
+    assets = Assets(
+        {
+            "asset_id": ["A01", "A02"],
+            "longitude": [24.0, 24.0],
+            "latitude": [60.0, 60.0],
+            "wui": [True, False],
+        },
+        columns=kept,
+    )
+    evaluation = dataset.evaluate(assets).probabilities([0.5])
+    with pytest.raises(cf.ImpactError, match="missing_context.*WildfireContext"):
+        evaluation.impact("fire", reference, variable=fwi)
+    path = tmp_path / "fire.parquet"
+    (
+        evaluation.impact(
+            "fire",
+            reference,
+            variable=fwi,
+            context=cf.WildfireContext(wildland_urban_interface=assets.column("wui")),
+        )
+        .select(responses="fire")
+        .write(path)
+    )
+    reopened = EvaluationArtifact.open(path).read()
+    rows = {r["asset_id"]: r["value"] for r in reopened.table.to_pylist()}
+    inside = reference.resolve(cf.WildfireContext(wildland_urban_interface=True))
+    assert rows["A01"] == pytest.approx(inside.evaluate(30.0))
+    assert rows["A01"] > 0
+    assert rows["A02"] == 0.0
+    contexts = {r.asset_ids: r.context for r in reopened.metadata.resolutions}
+    assert contexts == {
+        ("A01",): cf.WildfireContext(wildland_urban_interface=True),
+        ("A02",): cf.WildfireContext(wildland_urban_interface=False),
+    }
+    assert EvaluationArtifact.open(path).validate().valid

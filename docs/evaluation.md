@@ -169,6 +169,11 @@ Arrow attributes preserve their types and precision in memory and in saved
 results, including nested values and nanosecond timestamps and durations.
 [Framework measurement and model requirements](https://github.com/RiskThinking/crc-framework-rs/blob/main/docs/measurements.md)
 
+Fire-weather damage applies only in the wildland-urban interface.
+`BuiltinImpact.FIRE_WEATHER_INDEX` requires
+`WildfireContext(wildland_urban_interface=assets.column("in_wui"))`, with a
+boolean asset column. Assets outside the interface get zero damage.
+
 Exposure rows are included by default and have a null `response_id`. Named
 response rows identify their definition in `response_id`. A referenced
 model's concrete numerical model, context, and asset assignments are stored
