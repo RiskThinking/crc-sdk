@@ -647,24 +647,37 @@ def test_prefetched_acquires_ahead_on_threads_and_reports_in_order() -> None:
         assert callbacks and set(callbacks) == {consumer}
 
 
-def test_closing_prefetched_early_waits_for_running_acquisitions() -> None:
-    import time
+def test_closing_prefetched_never_waits_and_the_scope_joins_its_threads() -> None:
+    import threading
 
+    running = threading.Event()
+    release = threading.Event()
     started: list[int] = []
     finished: list[int] = []
 
     def acquire(item: int) -> int:
         started.append(item)
-        time.sleep(0.02)
+        if item:
+            running.set()
+            release.wait(10)
         finished.append(item)
         return item
 
     with ExecutionScope(Runtime(workers=2)) as scope:
         stream = scope.prefetched(list(range(20)), acquire)
         assert next(stream) == 0
-        stream.close()
-        assert sorted(started) == sorted(finished)
+        assert running.wait(5)
+        # The garbage collector may close an abandoned generator on another
+        # thread, one that may hold a lock the running acquisitions need.
+        closer = threading.Thread(target=stream.close)
+        closer.start()
+        closer.join(5)
+        assert not closer.is_alive()
         assert len(started) < 20
+        release.set()
+    # Running acquisitions finish before the scope closes; waiting ones never start.
+    assert sorted(started) == sorted(finished)
+    assert len(started) < 20
 
 
 @pytest.mark.parametrize("clone", [True, False])
