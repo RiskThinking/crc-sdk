@@ -258,25 +258,27 @@ def _merged_spec(parts: tuple[DatasetMetadata, ...]) -> DataSpec:
     scenarios: dict[str, Scenario] = {}
     periods: dict[str, Period] = {}
     series: dict[tuple[str, str | None, str | None], SeriesSpec] = {}
-    for metadata in parts:
-        for value in metadata.spec.variables:
-            _merge_descriptor(value, variables)
-        for scenario in metadata.spec.scenarios:
-            _merge_descriptor(scenario, scenarios)
-        for period in metadata.spec.periods:
-            _merge_descriptor(period, periods)
-        for item in metadata.spec.series:
-            key = _series_key(item)
-            if (
-                key in series
-                and series[key] != item
-                and scientific_identity(series[key]) != scientific_identity(item)
-            ):
-                raise ValueError(
-                    "participating release series have conflicting "
-                    "scientific definitions"
-                )
-            series[key] = item
+    # Index entries that disagree about one identity are malformed source data.
+    with native_data(source="crc-open"):
+        for metadata in parts:
+            for value in metadata.spec.variables:
+                _merge_descriptor(value, variables)
+            for scenario in metadata.spec.scenarios:
+                _merge_descriptor(scenario, scenarios)
+            for period in metadata.spec.periods:
+                _merge_descriptor(period, periods)
+            for item in metadata.spec.series:
+                key = _series_key(item)
+                if (
+                    key in series
+                    and series[key] != item
+                    and scientific_identity(series[key]) != scientific_identity(item)
+                ):
+                    raise ValueError(
+                        "participating release series have conflicting "
+                        "scientific definitions"
+                    )
+                series[key] = item
     return DataSpec(
         tuple(variables.values()),
         series=tuple(series.values()),

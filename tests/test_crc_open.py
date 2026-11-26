@@ -696,3 +696,37 @@ def test_only_entries_a_selection_can_use_are_parsed(
     monkeypatch.setattr("crc_sdk._crc_open._PARSED_INDEXES", {})
     assert first.read().report.valid
     assert len(parses) == 1
+
+
+def test_index_entries_that_disagree_about_a_variable_are_source_data(
+    tmp_path: Path,
+) -> None:
+    def written(name: str, unit: LengthUnit, period: Period) -> Dataset:
+        return Dataset.from_quantiles(
+            {
+                "support_id": [name] * 2,
+                "longitude": [24.0] * 2,
+                "latitude": [60.0] * 2,
+                "probability": [0.9, 0.99],
+                "value": [0.3, 0.85],
+            },
+            variable=Variable("company:depth", measurement=DepthAboveGround(unit=unit)),
+            probability=Probability.annual(tail=Tail.UPPER),
+            period=period,
+        ).write(tmp_path / f"{name}.parquet")
+
+    index = _release_index(
+        tmp_path,
+        written("metres", LengthUnit.METRE, Period.window(2000, 2020)),
+        written("centimetres", LengthUnit.CENTIMETRE, Period.window(2021, 2040)),
+    )
+    for terminal in (
+        lambda: CRCOpen(catalog=index).inspect(),
+        lambda: CRCOpen(catalog=index).read(),
+        lambda: CRCOpen(catalog=index).select(variables="company:depth").read(),
+    ):
+        with pytest.raises(ValidationError, match="conflicting") as raised:
+            terminal()
+        assert [d.code for d in raised.value.report.diagnostics] == [
+            "invalid_source_data"
+        ]
