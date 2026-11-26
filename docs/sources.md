@@ -134,6 +134,17 @@ Selected years outside the published years of an ERA5, CMIP6, or NEX source
 remain incomplete annual rows at each grid cell, and the report carries a
 `source_year_unavailable` warning naming those years.
 
+JRC flood maps give one water depth map per return period. Each is a separate
+simulation, depths of at least 0.1 m are mapped, and the flood extents are
+nested: a pixel flooded at one return period is also flooded at every rarer one.
+`JRC` returns each pixel flooded at some return period with a knot at every
+return period. Return periods at which the pixel is not mapped are read as 0 m,
+so a pixel flooded only at 500 years evaluates to 0 m at more frequent return
+periods. The report's `unmapped_depth_as_zero` note counts these pixels. Pixels
+whose depth decreases as the return period rises are left out unrepaired and
+counted in a `source_no_data` warning. Pixels flooded at no return period are
+not returned and are counted in a `dry_pixels` note, not as skipped.
+
 ERA5, CMIP6, NEX, JRC, EDO, and USDA Cropland inspection return release
 references for the published inventory. Pass an inspected reference directly to
 `select(series=...)` to check that inventory while choosing an area or observation

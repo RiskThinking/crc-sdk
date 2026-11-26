@@ -21,6 +21,7 @@ from crc_sdk import (
     Variable,
     _source_io,
 )
+from crc_sdk._climate_io import RasterReadCounts
 from crc_sdk._schema import table_to_rows
 
 _VARIABLE = Variable(
@@ -84,12 +85,68 @@ def test_published_maps_skip_pixels_whose_values_fall_with_probability(
         values = np.arange(1, 7, dtype=np.float64).reshape(2, 3) + offset
         values[1, 2] = {0.5: 3.0, 0.9: 3.0, 0.99: 0.5}[q]
         _write(path, values)
-    rows, skipped = raster_quantile_rows(
-        paths, variable=_VARIABLE, support_prefix="jrc:test", skip_decreasing=True
+    counts = RasterReadCounts()
+    rows = raster_quantile_rows(
+        paths,
+        variable=_VARIABLE,
+        support_prefix="jrc:test",
+        counts=counts,
+        skip_decreasing=True,
     )
-    assert (len(rows), skipped) == (5, 1)
-    with pytest.raises(ValueError, match="nondecreasing"):
-        raster_quantile_rows(paths, variable=_VARIABLE, support_prefix="jrc:test")
+    assert (len(rows), counts.skipped, counts.decreasing) == (5, 1, 1)
+    with pytest.raises(ValueError, match=r"nondecreasing.*row 1, column 2"):
+        raster_quantile_rows(
+            paths,
+            variable=_VARIABLE,
+            support_prefix="jrc:test",
+            counts=RasterReadCounts(),
+        )
+
+
+def test_flood_maps_read_unmapped_return_periods_of_flooded_pixels_as_zero(
+    tmp_path: Path,
+) -> None:
+    from crc_sdk._climate_io import raster_quantile_rows
+
+    # Row 0: dry everywhere; flooded only at the rarest period; flooded from
+    # the middle period. Row 1: depth falling; flooded everywhere; dry.
+    nan = -9999.0
+    depths = {
+        0.9: [[nan, nan, nan], [2.0, 0.2, nan]],
+        0.99: [[nan, nan, 0.4], [1.0, 0.5, nan]],
+        0.998: [[nan, 0.3, 0.6], [1.5, 0.9, nan]],
+    }
+    paths = {q: tmp_path / f"rp-{q}.tif" for q in depths}
+    for q, path in paths.items():
+        _write(path, depths[q])
+
+    def read(counts: RasterReadCounts, *, flood_map: bool) -> dict[str, str]:
+        rows = raster_quantile_rows(
+            paths,
+            variable=_VARIABLE,
+            support_prefix="jrc:test",
+            counts=counts,
+            skip_decreasing=True,
+            unmapped_as_zero=flood_map,
+            skip_dry=flood_map,
+        )
+        return {
+            row.support_id: row.curve.to_json() for row in rows if row.curve is not None
+        }
+
+    flood = RasterReadCounts()
+    knots = [0.9, 0.99, 0.998]
+    assert read(flood, flood_map=True) == {
+        "jrc:test:0:1": cf.QuantileCurve(knots, [0.0, 0.0, 0.3]).to_json(),
+        "jrc:test:0:2": cf.QuantileCurve(knots, [0.0, 0.4, 0.6]).to_json(),
+        "jrc:test:1:1": cf.QuantileCurve(knots, [0.2, 0.5, 0.9]).to_json(),
+    }
+    assert (flood.dry, flood.filled, flood.decreasing, flood.skipped) == (2, 2, 1, 1)
+    # Without the flood-map reading, pixels keep only their published knots,
+    # and dry or single-value pixels are skipped.
+    plain = RasterReadCounts()
+    assert set(read(plain, flood_map=False)) == {"jrc:test:0:2", "jrc:test:1:1"}
+    assert (plain.dry, plain.sparse, plain.decreasing, plain.skipped) == (2, 1, 1, 4)
 
 
 def test_raster_quantiles_do_not_require_annual_probability_meaning(

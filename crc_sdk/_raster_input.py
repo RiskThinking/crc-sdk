@@ -202,7 +202,8 @@ class _RasterNode(SourceNode[DatasetMetadata]):
                         cf.DiagnosticSeverity.WARNING,
                         Stage.DECODING,
                         f"Skipped {counts.skipped} raster supports with fewer "
-                        "than two valid probability knots.",
+                        f"than two valid probability knots: {counts.dry} without "
+                        f"a valid value and {counts.sparse} with one.",
                         source="quantile_rasters",
                     ),
                 )

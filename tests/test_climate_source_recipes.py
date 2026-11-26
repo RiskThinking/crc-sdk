@@ -2145,3 +2145,63 @@ def test_nex_files_of_one_series_must_share_a_calendar(
     ).select(area=AREA)
     with pytest.raises(ValidationError, match="2002 uses the gregorian calendar"):
         recipe.read()
+
+
+def test_jrc_reads_flooded_pixels_and_reports_left_out_pixels_by_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import rasterio
+    from rasterio.transform import from_origin
+
+    from crc_sdk._providers import jrc
+
+    root = tmp_path / "jrc"
+    root.mkdir()
+    dataset = replace(
+        jrc.EFAS,
+        base_url=root.as_uri(),
+        filename_template="rp{return_period}.tif",
+        available_return_periods=(10, 100, 500),
+    )
+    (root / "README.txt").write_text("Dataset version " + dataset.version)
+    # Pixels: dry; flooded only at 500 years; depth falling; flooded throughout.
+    nodata = -9999.0
+    depths = {
+        10: [[nodata, nodata], [2.0, 0.2]],
+        100: [[nodata, nodata], [1.0, 0.5]],
+        500: [[nodata, 0.3], [1.5, 0.9]],
+    }
+    for period, values in depths.items():
+        with rasterio.open(
+            root / f"rp{period}.tif",
+            "w",
+            driver="GTiff",
+            height=2,
+            width=2,
+            count=1,
+            dtype="float64",
+            crs="EPSG:4326",
+            transform=from_origin(-0.125, 0.375, 0.25, 0.25),
+            nodata=nodata,
+        ) as file:
+            file.write(np.array(values), 1)
+    monkeypatch.setitem(jrc.JRC_DATASETS, "efas", dataset)
+    grid = Bounds(west=-0.1, south=-0.1, east=0.35, north=0.35)
+    result = JRC(product=JRC.Product.EFAS).select(area=grid).read()
+    assert result.table.num_rows == 2
+    counts = result.report.counts
+    assert (counts.requested, counts.produced, counts.skipped) == (3, 2, 1)
+    codes = {d.code: d for d in result.report.diagnostics}
+    assert codes["source_no_data"].severity is cf.DiagnosticSeverity.WARNING
+    assert "1 flooded pixels whose depth decreases" in codes["source_no_data"].message
+    assert codes["unmapped_depth_as_zero"].message.startswith("1 flooded pixels")
+    assert codes["dry_pixels"].message.startswith("1 pixels")
+    assets = Assets({"asset_id": ["rare"], "longitude": [0.25], "latitude": [0.25]})
+    evaluated = (
+        JRC(product=JRC.Product.EFAS)
+        .select(area=grid)
+        .evaluate(assets)
+        .return_periods([10, 500])
+        .read()
+    )
+    assert evaluated.table["value"].to_pylist() == pytest.approx([0.0, 0.3])
