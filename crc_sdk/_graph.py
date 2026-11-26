@@ -502,8 +502,8 @@ class ExecutionScope:
         Up to `Runtime(workers=...)` items are acquired at once, never more than
         that many ahead of the consumer. Results and exceptions arrive in item
         order on the consuming thread, and progress callbacks run there too.
-        Close the generator to stop early: waiting items are cancelled and
-        running ones finish before it returns.
+        Close the generator to stop early: waiting items are cancelled at
+        once, and the scope waits for running ones when it closes.
         """
         workers = min(self.runtime.workers, len(items))
         if workers <= 1:
@@ -519,23 +519,27 @@ class ExecutionScope:
             finally:
                 _acquiring.active = False
 
-        with ThreadPoolExecutor(workers, thread_name_prefix="crc-acquire") as pool:
-            pending: deque[Future[ResultT]] = deque()
-            submitted = 0
-            try:
-                for index in range(len(items)):
-                    while submitted < len(items) and submitted < index + workers:
-                        pending.append(pool.submit(run, items[submitted]))
-                        submitted += 1
-                    future = pending.popleft()
-                    try:
-                        result = future.result()
-                    finally:
-                        self.deliver_events()
-                    yield result
-            finally:
-                for future in pending:
-                    future.cancel()
+        pool = ThreadPoolExecutor(workers, thread_name_prefix="crc-acquire")
+        # Closing this generator never waits for its threads. The garbage
+        # collector can close an abandoned generator on any thread, including
+        # one that holds a lock the pool's threads need. The scope waits for
+        # them when it closes instead.
+        self._resources.callback(pool.shutdown)
+        pending: deque[Future[ResultT]] = deque()
+        submitted = 0
+        try:
+            for index in range(len(items)):
+                while submitted < len(items) and submitted < index + workers:
+                    pending.append(pool.submit(run, items[submitted]))
+                    submitted += 1
+                future = pending.popleft()
+                try:
+                    result = future.result()
+                finally:
+                    self.deliver_events()
+                yield result
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
 
     def enter_context(self, resource: AbstractContextManager[ResourceT]) -> ResourceT:
         self._active()
