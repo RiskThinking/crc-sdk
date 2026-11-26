@@ -6,6 +6,7 @@ import json
 import os
 import urllib.parse
 from collections.abc import Iterator, Mapping
+from contextlib import closing
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path, PurePosixPath
@@ -21,6 +22,7 @@ from ._dataset_schema import (
     IdentityKind,
     IdentityRename,
     ReleaseReference,
+    ResourceIdentity,
     SourceIdentity,
     SpatialContract,
     Stage,
@@ -537,25 +539,37 @@ class _CRCNode(SourceNode[DatasetMetadata]):
             )
         )
 
+        read = tuple(
+            (entry, resolved)
+            for entry, _, resolved in selected
+            if boxes is None
+            or entry.extent is None
+            or any(bounds_intersect(entry.extent, box) for box in boxes)
+        )
+
+        def acquire(
+            item: tuple[ReleaseDataset, ResolvedSelection],
+        ) -> tuple[Path, ResourceIdentity]:
+            try:
+                return fetch(
+                    scope,
+                    urllib.parse.urljoin(catalog, item[0].uri),
+                    expected_sha256=item[0].sha256,
+                    license="CC-BY-NC-4.0",
+                    attribution="RiskThinking",
+                )
+            except SourceContentChanged as error:
+                raise _superseded(scope, source, error) from error
+
         def batches() -> Iterator[pa.RecordBatch]:
-            for entry, _, resolved in selected:
-                if (
-                    boxes is not None
-                    and entry.extent is not None
-                    and not any(bounds_intersect(entry.extent, box) for box in boxes)
-                ):
-                    continue
-                uri = urllib.parse.urljoin(catalog, entry.uri)
-                try:
-                    path, resource = fetch(
-                        scope,
-                        uri,
-                        expected_sha256=entry.sha256,
-                        license="CC-BY-NC-4.0",
-                        attribution="RiskThinking",
-                    )
-                except SourceContentChanged as error:
-                    raise _superseded(scope, source, error) from error
+            # Files are acquired ahead on Runtime(workers=...) threads.
+            with closing(scope.prefetched(read, acquire)) as acquired:
+                yield from verified(acquired)
+
+        def verified(
+            acquired: Iterator[tuple[Path, ResourceIdentity]],
+        ) -> Iterator[pa.RecordBatch]:
+            for (entry, resolved), (path, resource) in zip(read, acquired, strict=True):
                 identities.append(resource)
                 with pq.ParquetFile(path) as reader:
                     schema = reader.schema_arrow

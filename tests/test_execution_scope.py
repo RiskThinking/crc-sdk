@@ -604,3 +604,64 @@ def test_shared_computation_keeps_requested_branch_metadata_and_reports() -> Non
     assert report_first.source_identities[0].product == "first-attribution"
     assert events.count("open:same-scientific-computation") == 1
     assert events.count("batch:0") == 1
+
+
+def test_prefetched_acquires_ahead_on_threads_and_reports_in_order() -> None:
+    import threading
+    import time
+
+    from crc_sdk._dataset_schema import Stage
+
+    consumer = threading.get_ident()
+    callbacks: list[int] = []
+    workers: set[int] = set()
+    running = 0
+    peak = 0
+    lock = threading.Lock()
+
+    def acquire(item: int) -> int:
+        nonlocal running, peak
+        with lock:
+            running += 1
+            peak = max(peak, running)
+        workers.add(threading.get_ident())
+        time.sleep(0.01 * ((7 * item) % 3))
+        scope.emit(Stage.ACQUISITION, item, 10)
+        with lock:
+            running -= 1
+        if item == 6:
+            raise OSError("item 6 is unavailable")
+        return item * item
+
+    def progress(event: ProgressEvent) -> None:
+        callbacks.append(threading.get_ident())
+
+    runtime = Runtime(workers=3, progress=progress)
+    with ExecutionScope(runtime) as scope:
+        results = []
+        with pytest.raises(OSError, match="item 6"):
+            for result in scope.prefetched(list(range(10)), acquire):
+                results.append(result)
+        assert results == [i * i for i in range(6)]
+        assert consumer not in workers and 1 < peak <= 3
+        assert callbacks and set(callbacks) == {consumer}
+
+
+def test_closing_prefetched_early_waits_for_running_acquisitions() -> None:
+    import time
+
+    started: list[int] = []
+    finished: list[int] = []
+
+    def acquire(item: int) -> int:
+        started.append(item)
+        time.sleep(0.02)
+        finished.append(item)
+        return item
+
+    with ExecutionScope(Runtime(workers=2)) as scope:
+        stream = scope.prefetched(list(range(20)), acquire)
+        assert next(stream) == 0
+        stream.close()
+        assert sorted(started) == sorted(finished)
+        assert len(started) < 20
