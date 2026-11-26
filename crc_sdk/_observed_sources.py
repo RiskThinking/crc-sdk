@@ -716,6 +716,7 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
         release: ReleaseReference | None = None,
         indicator: str | None = None,
         coverage: Coverage | None = None,
+        daily_coverage: Coverage | None = None,
         agency: str | None = None,
         state: SelectionState = SelectionState(),
         raw: bool = False,
@@ -754,6 +755,11 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
         if coverage is not None and not isinstance(coverage, Coverage):
             raise TypeError("coverage must be Coverage or None")
         self.coverage = Coverage.complete() if coverage is None else coverage
+        if daily_coverage is not None and not isinstance(daily_coverage, Coverage):
+            raise TypeError("daily_coverage must be Coverage or None")
+        self.daily_coverage = (
+            Coverage.complete() if daily_coverage is None else daily_coverage
+        )
         self.agency, self.state = agency, state
         self.period = period
         self.key = _key(
@@ -765,6 +771,13 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
             agency,
             state.document(),
             raw,
+            # Only a relaxed day rule extends the key, so complete-day keys
+            # stay as they were.
+            *(
+                ()
+                if self.daily_coverage == Coverage.complete()
+                else (("daily_coverage", self.daily_coverage.fraction),)
+            ),
         )
 
     def selected(self, state: SelectionState) -> _ObservedNode:
@@ -773,6 +786,7 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
             release=self.release,
             indicator=self.indicator,
             coverage=self.coverage,
+            daily_coverage=self.daily_coverage,
             agency=self.agency,
             state=state,
             raw=self.raw,
@@ -1470,6 +1484,7 @@ class _ObservedNode(SourceNode[EvidenceMetadata]):
                         raw_metadata,
                         year=year,
                         maximum=self.indicator == _ANNUAL_MAXIMUM,
+                        coverage=self.daily_coverage,
                     )
                     table, reduced = aggregate_table(
                         daily_table, daily_metadata, reduction
@@ -2101,15 +2116,16 @@ class GHCNh(Samples):
         indicator: GHCNh.Indicator | IndicatorReference | None = None,
         release: ReleaseReference | None = None,
         coverage: Coverage | None = None,
+        daily_coverage: Coverage | None = None,
     ) -> None:
         _release(release)
-        selected = _indicator(indicator)
-        if selected is None:
-            node = _ObservedNode("ghcnh", release=release, coverage=coverage)
-        else:
-            node = _ObservedNode(
-                "ghcnh", release=release, indicator=selected, coverage=coverage
-            )
+        node = _ObservedNode(
+            "ghcnh",
+            release=release,
+            indicator=_indicator(indicator),
+            coverage=coverage,
+            daily_coverage=daily_coverage,
+        )
         _init(
             self,
             node,
@@ -2134,6 +2150,7 @@ class ISD(Samples):
         indicator: ISD.Indicator | IndicatorReference | None = None,
         release: ReleaseReference | None = None,
         coverage: Coverage | None = None,
+        daily_coverage: Coverage | None = None,
     ) -> None:
         _release(release)
         _init(
@@ -2143,6 +2160,7 @@ class ISD(Samples):
                 release=release,
                 indicator=_indicator(indicator),
                 coverage=coverage,
+                daily_coverage=daily_coverage,
             ),
             (
                 "Acquire ISD source snapshots; named indicators reduce "
