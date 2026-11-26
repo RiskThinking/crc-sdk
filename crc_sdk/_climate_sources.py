@@ -8,6 +8,7 @@ import json
 import re
 import zipfile
 from collections.abc import Iterator
+from contextlib import closing
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
@@ -481,40 +482,60 @@ class _FloodNode(SourceNode[DatasetMetadata]):
             rows: list[DatasetRow] = []
             counts = RasterReadCounts()
             covered = False
-            for tile in tiles:
-                paths: dict[float, tuple[Path, ...]] = {}
-                for return_period in dataset.available_return_periods:
-                    bundle, identity = raster_window_snapshot(
-                        scope,
-                        dataset.raster_url(return_period, tile_id=tile),
-                        area=selection.area,
-                        license="ODbL-1.0",
-                        attribution=source.resources[0].attribution,
-                    )
-                    paths[1 - 1 / return_period] = raster_views(scope, bundle)
-                    resources.append(identity)
-                decoded_rows: list[DatasetRow] = []
-                # A window snapshot holds no views where the area misses the raster.
-                covered = covered or bool(next(iter(paths.values())))
-                for view_index in range(len(next(iter(paths.values())))):
-                    decoded = raster_quantile_rows(
-                        {q: views[view_index] for q, views in paths.items()},
-                        variable=variable,
-                        area=selection.area,
-                        support_prefix=f"jrc:{product.value}:{tile or 'continental'}",
-                        counts=counts,
-                        # Each return period is a separate JRC simulation, so a
-                        # few pixels lose depth as the period rises; those are
-                        # skipped and counted, not repaired.
-                        skip_decreasing=True,
-                        # JRC maps depths of at least 0.1 m in nested extents:
-                        # an unmapped return period of a flooded pixel is dry.
-                        unmapped_as_zero=True,
-                        # Pixels flooded at no return period are not data loss.
-                        skip_dry=True,
-                    )
-                    decoded_rows.extend(decoded)
-                rows.extend(decoded_rows)
+            area = selection.area
+
+            def acquire(
+                item: tuple[str | None, int],
+            ) -> tuple[Path, ResourceIdentity]:
+                tile, return_period = item
+                return raster_window_snapshot(
+                    scope,
+                    dataset.raster_url(return_period, tile_id=tile),
+                    area=area,
+                    license="ODbL-1.0",
+                    attribution=source.resources[0].attribution,
+                )
+
+            # Each tile's return-period windows are separate remote reads;
+            # Runtime(workers=...) fetches them ahead, in this same order.
+            items = [
+                (tile, return_period)
+                for tile in tiles
+                for return_period in dataset.available_return_periods
+            ]
+            with closing(scope.prefetched(items, acquire)) as snapshots:
+                windows = iter(snapshots)
+                for tile in tiles:
+                    paths: dict[float, tuple[Path, ...]] = {}
+                    for return_period in dataset.available_return_periods:
+                        bundle, identity = next(windows)
+                        paths[1 - 1 / return_period] = raster_views(scope, bundle)
+                        resources.append(identity)
+                    decoded_rows: list[DatasetRow] = []
+                    # A window snapshot holds no views where the area misses
+                    # the raster.
+                    covered = covered or bool(next(iter(paths.values())))
+                    for view_index in range(len(next(iter(paths.values())))):
+                        decoded = raster_quantile_rows(
+                            {q: views[view_index] for q, views in paths.items()},
+                            variable=variable,
+                            area=selection.area,
+                            support_prefix=(
+                                f"jrc:{product.value}:{tile or 'continental'}"
+                            ),
+                            counts=counts,
+                            # Each return period is a separate JRC simulation, so a
+                            # few pixels lose depth as the period rises; those are
+                            # skipped and counted, not repaired.
+                            skip_decreasing=True,
+                            # JRC maps depths of at least 0.1 m in nested extents:
+                            # an unmapped return period of a flooded pixel is dry.
+                            unmapped_as_zero=True,
+                            # Pixels flooded at no return period are not data loss.
+                            skip_dry=True,
+                        )
+                        decoded_rows.extend(decoded)
+                    rows.extend(decoded_rows)
             actual = verify_payload(
                 replace(source, resources=tuple(resources)),
                 id=dataset.version,
