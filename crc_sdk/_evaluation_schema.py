@@ -69,6 +69,8 @@ _COVERING_FAILURES = frozenset({"no_covering_support", "overlapping_supports"})
 _UNMATCHED = _COVERING_FAILURES | {"outside_max_distance"}
 _EXPOSURE_FAILURES_WITHOUT_FIT = _UNMATCHED | {"query_outside_support"}
 _RELATIVE_RESULT_TOLERANCE = 1e-12
+# Matches and query positions the evaluation validator keeps in memory.
+_RECENT_KEYS = 1 << 16
 
 
 class QueryKind(Enum):
@@ -1245,6 +1247,60 @@ def _validate_response(
     return response_id, resolution_id
 
 
+class _AssetTable:
+    """Write-once values keyed by asset: recent assets in memory, older in SQLite.
+
+    Rows arrive grouped by asset. Values of the assets seen most recently stay
+    in dictionaries; once they hold `capacity` keys, all of them move to the
+    table in one statement. Only keys of moved assets are looked up there.
+    """
+
+    def __init__(
+        self, db: sqlite3.Connection, table: str, column: str, capacity: int
+    ) -> None:
+        self._db = db
+        self._table = table
+        self._column = column
+        self._capacity = capacity
+        self._recent: dict[AssetId, dict[tuple[object, ...], object]] = {}
+        self._size = 0
+        self._moved: set[AssetId] = set()
+
+    def get(self, asset: AssetId, key: tuple[object, ...]) -> object | None:
+        held = self._recent.get(asset)
+        if held is not None and key in held:
+            return held[key]
+        if asset not in self._moved:
+            return None
+        found = self._db.execute(
+            f"SELECT {self._column} FROM {self._table} WHERE identity = ?",
+            (_dump((asset, *key)),),
+        ).fetchone()
+        return None if found is None else found[0]
+
+    def set(self, asset: AssetId, key: tuple[object, ...], value: object) -> None:
+        held = self._recent.get(asset)
+        if held is None:
+            if self._size >= self._capacity:
+                self._move()
+            held = self._recent[asset] = {}
+        self._size += key not in held
+        held[key] = value
+
+    def _move(self) -> None:
+        self._db.executemany(
+            f"INSERT OR REPLACE INTO {self._table} VALUES (?, ?)",
+            (
+                (_dump((asset, *key)), value)
+                for asset, held in self._recent.items()
+                for key, value in held.items()
+            ),
+        )
+        self._moved.update(self._recent)
+        self._recent.clear()
+        self._size = 0
+
+
 class EvaluationValidator:
     """Verify row references, the ordered grid, and saved response calculations."""
 
@@ -1296,7 +1352,6 @@ class EvaluationValidator:
             """
             CREATE TABLE queries (identity TEXT PRIMARY KEY, next INTEGER NOT NULL);
             CREATE TABLE matches (identity TEXT PRIMARY KEY, record TEXT NOT NULL);
-            CREATE TABLE matched_assets (identity TEXT PRIMARY KEY);
             CREATE TABLE retained_assets (
                 identity TEXT PRIMARY KEY, digest BLOB NOT NULL
             );
@@ -1320,6 +1375,12 @@ class EvaluationValidator:
             );
             """
         )
+
+        # Matches and query positions of recent assets stay in memory; the set
+        # of matched assets is bounded by the declared assets held above.
+        self._matches = _AssetTable(self._db, "matches", "record", _RECENT_KEYS)
+        self._queries = _AssetTable(self._db, "queries", "next", _RECENT_KEYS)
+        self._matched_assets: set[AssetId] = set()
 
     def close(self) -> None:
         if not self._closed:
@@ -1541,37 +1602,26 @@ class EvaluationValidator:
                 value if response is None else exposure_value,
                 failure if response is None else exposure_failure,
             )
-        match_key = _dump((asset_id, member, *series))
+        match_key = (member, *series)
         match_record = _dump(
             (match, failure.code if match[0] is None and failure is not None else None)
         )
-        self._db.execute(
-            "INSERT OR IGNORE INTO matches VALUES (?, ?)", (match_key, match_record)
-        )
-        previous_match = self._db.execute(
-            "SELECT record FROM matches WHERE identity = ?", (match_key,)
-        ).fetchone()
-        if previous_match is None or previous_match[0] != match_record:
+        previous_match = self._matches.get(asset_id, match_key)
+        if previous_match is None:
+            self._matches.set(asset_id, match_key, match_record)
+        elif previous_match != match_record:
             raise ValueError("an asset's matched support changed for the same series")
-        query_key = _dump((asset_id, member, *series, response))
-        if query_position == 0:
-            try:
-                self._db.execute("INSERT INTO queries VALUES (?, 1)", (query_key,))
-            except sqlite3.IntegrityError as error:
-                raise ValueError("duplicate evaluation row identity") from error
-        else:
-            updated = self._db.execute(
-                "UPDATE queries SET next = next + 1 WHERE identity = ? AND next = ?",
-                (query_key, query_position),
+        query_key = (member, *series, response)
+        following = self._queries.get(asset_id, query_key)
+        if query_position == 0 and following is not None:
+            raise ValueError("duplicate evaluation row identity")
+        if query_position != 0 and following != query_position:
+            raise ValueError(
+                "evaluation queries are duplicated, missing, or out of order"
             )
-            if updated.rowcount != 1:
-                raise ValueError(
-                    "evaluation queries are duplicated, missing, or out of order"
-                )
+        self._queries.set(asset_id, query_key, query_position + 1)
         if match[0] is not None:
-            self._db.execute(
-                "INSERT OR IGNORE INTO matched_assets VALUES (?)", (_dump(asset_id),)
-            )
+            self._matched_assets.add(asset_id)
         if response is not None and resolution is not None:
             # Live execution verifies its final assignments at finish, while
             # replay can check against its published resolution inventory now.
@@ -1770,9 +1820,7 @@ class EvaluationValidator:
         if self._response_variables:
             self._check_response_values(current)
         if current.report.complete:
-            matched = self._db.execute(
-                "SELECT count(*) FROM matched_assets"
-            ).fetchone()[0]
+            matched = len(self._matched_assets)
             unmatched = len(self._assets) - matched if result_series else 0
             counts = current.report.counts
             if (
