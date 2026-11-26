@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+import json
 import math
 import os
 import re
@@ -13,9 +15,17 @@ from functools import lru_cache
 from pathlib import Path
 from typing import cast
 
+import numpy
+import numpy.typing
 import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
-from crc_framework import Distribution, FitRecord, QuantileCurve, _core
+from crc_framework import (
+    Distribution,
+    DistributionFamily,
+    FitRecord,
+    QuantileCurve,
+    _core,
+)
 from h3.api import basic_int as h3  # type: ignore[import-untyped]
 from shapely import from_wkb, is_valid, is_valid_reason  # type: ignore[import-untyped]
 
@@ -175,6 +185,21 @@ class DatasetRow:
                 _identifier(getattr(self, name), name)
         if self.geometry is not None:
             _geometry(self.geometry)
+        self._check_payload()
+
+    @classmethod
+    def _decoded(cls, values: tuple[object, ...]) -> DatasetRow:
+        """A row whose identity columns the caller has already validated.
+
+        Values follow the field order; the payload is checked as usual.
+        """
+        row = object.__new__(cls)
+        for name, value in zip(_FIELDS, values, strict=True):
+            object.__setattr__(row, name, value)
+        row._check_payload()
+        return row
+
+    def _check_payload(self) -> None:
         if (self.curve is None) == (self.failure is None):
             raise ValueError("a row requires exactly one of curve or failure")
         if self.curve is not None and not isinstance(
@@ -212,6 +237,9 @@ class DatasetRow:
         if self.failure is not None:
             result["failure"] = self.failure._document()
         return result
+
+
+_FIELDS = tuple(field.name for field in dataclasses.fields(DatasetRow))
 
 
 def _row(value: object) -> DatasetRow:
@@ -374,6 +402,153 @@ def _curve_from_arrow(value: object) -> Distribution | QuantileCurve:
     return _curve(document)
 
 
+_FAMILIES = {family.value: family for family in DistributionFamily}
+_PARAMETRIC_KEYS = (
+    frozenset({"family", "kind", "location", "scale"}),
+    frozenset({"family", "kind", "location", "scale", "shape"}),
+)
+
+
+def _valid(array: pa.Array) -> numpy.typing.NDArray[numpy.bool_]:
+    return cast(
+        "numpy.typing.NDArray[numpy.bool_]",
+        array.is_valid().to_numpy(zero_copy_only=False),
+    )
+
+
+def _parametric(text: str) -> Distribution | None:
+    """The parametric law of a canonically written hurdle base, if it is one.
+
+    Only text equal to its own canonical form (sorted compact JSON, as written
+    by this module) is read here: such text holds no duplicate field and no
+    non-finite number. Anything else returns None and is read through the
+    framework's JSON validation instead.
+    """
+    data = json.loads(text)
+    if type(data) is not dict or frozenset(data) not in _PARAMETRIC_KEYS:
+        return None
+    family = _FAMILIES.get(data["family"])
+    location, scale, shape = data["location"], data["scale"], data.get("shape")
+    if (
+        family is None
+        or type(location) is not float
+        or type(scale) is not float
+        or (shape is not None and type(shape) is not float)
+    ):
+        return None
+    # JSON writes a float as its repr, and family values need no escaping.
+    canonical = (
+        f'{{"family":"{family.value}","kind":"parametric",'
+        f'"location":{location!r},"scale":{scale!r}'
+        + ("" if shape is None else f',"shape":{shape!r}')
+        + "}"
+    )
+    if text != canonical:
+        return None
+    return Distribution.parametric(family, location=location, scale=scale, shape=shape)
+
+
+def _curves_from_arrow(
+    array: pa.Array | pa.ChunkedArray,
+) -> list[Distribution | QuantileCurve | None]:
+    """Decode a column of Arrow curves into framework objects.
+
+    The common variants are built from their typed columns with the
+    framework's typed constructors, which admit exactly what their JSON
+    representations admit. Every other row, and any row a typed constructor
+    rejects, is decoded by `_curve_from_arrow`, so admission and errors are
+    those of the row-wise decoding.
+    """
+    if isinstance(array, pa.ChunkedArray):
+        return [curve for chunk in array.chunks for curve in _curves_from_arrow(chunk)]
+    present = _valid(array)
+    kinds = array.field("kind").to_pylist()
+    branches = {name: array.field(name) for name in _VARIANTS}
+    populated = {name: _valid(branch) for name, branch in branches.items()}
+    # A row is typed only when exactly its own branch is populated and it
+    # carries no modelling evidence.
+    single = sum(mask.astype(numpy.int8) for mask in populated.values()) == 1
+    plain = single & ~_valid(array.field("evidence"))
+    columns: dict[str, dict[str, list[object]]] = {}
+    # Hurdle bases repeat across a batch; a law is immutable, so rows share it.
+    bases: dict[str, Distribution | None] = {}
+
+    def column(kind: str, *names: str) -> dict[str, list[object]]:
+        if kind not in columns:
+            branch = branches[kind]
+            columns[kind] = {name: branch.field(name).to_pylist() for name in names}
+        return columns[kind]
+
+    def typed(index: int, kind: str) -> Distribution | QuantileCurve | None:
+        if kind == "parametric":
+            c = column("parametric", "family", "location", "scale", "shape")
+            family = _FAMILIES.get(cast(str, c["family"][index]))
+            if family is None:
+                return None
+            return Distribution.parametric(
+                family,
+                location=cast(float, c["location"][index]),
+                scale=cast(float, c["scale"][index]),
+                shape=cast(float | None, c["shape"][index]),
+            )
+        if kind == "point_mass":
+            value = column("point_mass", "value")["value"][index]
+            return (
+                None if value is None else Distribution.point_mass(cast(float, value))
+            )
+        if kind == "hurdle":
+            c = column("hurdle", "base", "atom_probability", "atom_location")
+            text = cast(str | None, c["base"][index])
+            probability = c["atom_probability"][index]
+            location = c["atom_location"][index]
+            if text is None or probability is None or location is None:
+                return None
+            if text in bases:
+                base = bases[text]
+            else:
+                base = bases[text] = _parametric(text)
+            if base is None:
+                return None
+            return Distribution.hurdle(
+                base,
+                atom_probability=cast(float, probability),
+                atom_location=cast(float, location),
+            )
+        if kind == "quantile_curve":
+            c = column("quantile_curve", "probabilities", "values")
+            probabilities, values = c["probabilities"][index], c["values"][index]
+            if (
+                probabilities is None
+                or values is None
+                or None in cast(list[object], probabilities)
+                or None in cast(list[object], values)
+            ):
+                return None
+            return QuantileCurve(
+                cast(list[float], probabilities), cast(list[float], values)
+            )
+        return None
+
+    result: list[Distribution | QuantileCurve | None] = []
+    for index, kind in enumerate(kinds):
+        if not present[index]:
+            result.append(None)
+            continue
+        curve = None
+        if plain[index] and kind in _TYPED and populated[kind][index]:
+            try:
+                curve = typed(index, kind)
+            except (TypeError, ValueError):
+                curve = None
+        result.append(
+            curve if curve is not None else _curve_from_arrow(array[index].as_py())
+        )
+    return result
+
+
+_TYPED = frozenset({"parametric", "point_mass", "hurdle", "quantile_curve"})
+
+
 def dataset_arrow_schema(metadata: DatasetMetadata | None = None) -> pa.Schema:
     numbers = pa.list_(pa.float64())
     curve_type = pa.struct(
@@ -528,34 +703,52 @@ def table_to_rows(
     stored = metadata_from_table(table)
     if metadata is not None and metadata.to_json() != stored.to_json():
         raise ValueError("supplied and stored metadata disagree")
-    rows = []
-    fits: list[str | None] = []
-    for value in table.to_pylist():
-        failure = value["failure"]
-        fits.append(value["fit"])
-        rows.append(
-            DatasetRow(
-                variable_id=value["variable_id"],
-                scenario_id=value["scenario_id"],
-                period_id=value["period_id"],
-                support_id=value["support_id"],
-                cell_id=value["cell_id"],
-                geometry=value["geometry"],
-                curve=None
-                if value["curve"] is None
-                else _curve_from_arrow(value["curve"]),
-                fit=None if value["fit"] is None else FitRecord.from_json(value["fit"]),
-                failure=None
-                if failure is None
-                else SourceUnavailable(failure["code"], failure["message"])
-                if failure["record"] is None
-                else RetainedFailure(
-                    failure["code"],
-                    failure["message"],
-                    FitRecord.from_json(failure["record"]),
-                ),
-            )
+    columns = {
+        name: table.column(name).to_pylist()
+        for name in table.schema.names
+        if name != "curve"
+    }
+    # Identity columns repeat few distinct values: each is validated once.
+    for name in ("variable_id", "support_id", "scenario_id", "period_id"):
+        for value in set(columns[name]):
+            if value is not None or name in ("variable_id", "support_id"):
+                _identifier(value, name)
+    for cell in set(columns["cell_id"]):
+        _cell(cell)
+    for geometry in set(columns["geometry"]) - {None}:
+        _geometry(geometry)
+    curves = _curves_from_arrow(table.column("curve"))
+    fits: list[str | None] = columns["fit"]
+    records = {
+        text: FitRecord.from_json(text) for text in set(fits) if text is not None
+    }
+    failures = [
+        None
+        if failure is None
+        else SourceUnavailable(failure["code"], failure["message"])
+        if failure["record"] is None
+        else RetainedFailure(
+            failure["code"],
+            failure["message"],
+            FitRecord.from_json(failure["record"]),
         )
+        for failure in columns["failure"]
+    ]
+    rows = [
+        DatasetRow._decoded(values)
+        for values in zip(
+            columns["variable_id"],
+            columns["support_id"],
+            columns["cell_id"],
+            columns["scenario_id"],
+            columns["period_id"],
+            columns["geometry"],
+            curves,
+            [None if text is None else records[text] for text in fits],
+            failures,
+            strict=True,
+        )
+    ]
     validate_rows(rows, stored, stored_fits=fits)
     return tuple(rows)
 
