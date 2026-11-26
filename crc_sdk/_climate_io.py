@@ -36,8 +36,20 @@ def _parts(area: Bounds | None) -> tuple[Any, ...]:
 
 @dataclass(slots=True)
 class RasterReadCounts:
+    """Pixels read, and why pixels were left out.
+
+    `skipped` counts every pixel left out. `dry` pixels have no valid value,
+    `sparse` ones a single value, and `decreasing` ones values that fall as
+    probability rises. `filled` counts returned pixels whose unmapped knots
+    were read as zero.
+    """
+
     requested: int = 0
     skipped: int = 0
+    dry: int = 0
+    sparse: int = 0
+    decreasing: int = 0
+    filled: int = 0
 
 
 def iter_raster_quantile_rows(
@@ -51,12 +63,18 @@ def iter_raster_quantile_rows(
     max_pixels: int = 65536,
     counts: RasterReadCounts | None = None,
     skip_decreasing: bool = False,
+    unmapped_as_zero: bool = False,
+    skip_dry: bool = False,
 ) -> Iterator[DatasetRow]:
     """Stream source pixels and their actual valid q knots in bounded windows.
 
     With `skip_decreasing`, a pixel whose values fall as probability rises is
     skipped and counted (published maps contain a few); otherwise it is invalid
     source data, which for user rasters usually means mislabeled probabilities.
+    With `unmapped_as_zero`, a pixel with a value at some probability reads its
+    no-data knots as 0, for maps that only record values above a threshold.
+    With `skip_dry`, pixels without any value are counted as dry but not as
+    skipped.
     """
     import hashlib
     import json
@@ -178,24 +196,48 @@ def iter_raster_quantile_rows(
                                 if not np.ma.is_masked(a[dy, dx])
                                 and math.isfinite(float(a[dy, dx]))
                             ]
-                            if len(evidence) < 2 or (
-                                skip_decreasing
-                                and any(
-                                    later < earlier
-                                    for (_, earlier), (_, later) in zip(
-                                        evidence, evidence[1:]
-                                    )
-                                )
-                            ):
+                            if not evidence:
+                                observed.dry += 1
+                                if not skip_dry:
+                                    observed.skipped += 1
+                                continue
+                            filled = unmapped_as_zero and len(evidence) < len(
+                                probabilities
+                            )
+                            if filled:
+                                mapped = dict(evidence)
+                                evidence = [
+                                    (q, mapped.get(q, 0.0)) for q in probabilities
+                                ]
+                            if len(evidence) < 2:
+                                observed.sparse += 1
                                 observed.skipped += 1
                                 continue
-                            curve = QuantileCurve(
-                                [q for q, _ in evidence], [v for _, v in evidence]
+                            decreasing = any(
+                                later < earlier
+                                for (_, earlier), (_, later) in zip(
+                                    evidence, evidence[1:]
+                                )
                             )
+                            if skip_decreasing and decreasing:
+                                observed.decreasing += 1
+                                observed.skipped += 1
+                                continue
                             centre = source_transform @ (column + 0.5, row + 0.5)
                             lon, lat = project(
                                 first.crs, "EPSG:4326", [centre[0]], [centre[1]]
                             )
+                            try:
+                                curve = QuantileCurve(
+                                    [q for q, _ in evidence], [v for _, v in evidence]
+                                )
+                            except ValueError as error:
+                                raise ValueError(
+                                    f"{error} (raster row {row}, column {column}; "
+                                    f"longitude {float(lon[0]):.6f}, "
+                                    f"latitude {float(lat[0]):.6f})"
+                                ) from error
+                            observed.filled += int(filled)
                             support = (
                                 f"{support_prefix}:{row}:{column}"
                                 if support_prefix is not None
@@ -223,10 +265,12 @@ def raster_quantile_rows(
     period: Period | None = None,
     area: Bounds | None = None,
     support_prefix: str,
+    counts: RasterReadCounts,
     skip_decreasing: bool = False,
-) -> tuple[tuple[DatasetRow, ...], int]:
-    counts = RasterReadCounts()
-    rows = tuple(
+    unmapped_as_zero: bool = False,
+    skip_dry: bool = False,
+) -> tuple[DatasetRow, ...]:
+    return tuple(
         iter_raster_quantile_rows(
             paths,
             variable=variable,
@@ -236,9 +280,10 @@ def raster_quantile_rows(
             support_prefix=support_prefix,
             counts=counts,
             skip_decreasing=skip_decreasing,
+            unmapped_as_zero=unmapped_as_zero,
+            skip_dry=skip_dry,
         )
     )
-    return rows, counts.skipped
 
 
 @dataclass(slots=True)

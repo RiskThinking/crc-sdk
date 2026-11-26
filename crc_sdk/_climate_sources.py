@@ -20,7 +20,12 @@ from shapely.geometry import Point, shape  # type: ignore[import-untyped]
 
 import crc_sdk
 
-from ._climate_io import raster_quantile_rows, raster_views, raster_window_snapshot
+from ._climate_io import (
+    RasterReadCounts,
+    raster_quantile_rows,
+    raster_views,
+    raster_window_snapshot,
+)
 from ._dataset_schema import (
     DatasetMetadata,
     ExecutionCounts,
@@ -137,22 +142,44 @@ def _stream_rows(
 
     def batches() -> Iterator[pa.RecordBatch]:
         nonlocal current
-        rows, source, skipped, covered = produce()
-        diagnostics: tuple[ExecutionDiagnostic, ...] = (
-            ()
-            if not skipped
-            else (
+        rows, source, counts, covered = produce()
+        skipped = counts.skipped
+        diagnostics: tuple[ExecutionDiagnostic, ...] = ()
+        if counts.decreasing:
+            diagnostics += (
                 ExecutionDiagnostic(
                     "source_no_data",
                     cf.DiagnosticSeverity.WARNING,
                     Stage.DECODING,
-                    f"Skipped {skipped} source supports whose values are not a "
-                    "quantile curve: fewer than two valid probability values, or "
-                    "values that decrease as probability rises.",
+                    f"Skipped {counts.decreasing} flooded pixels whose depth "
+                    "decreases as the return period rises. JRC simulates each "
+                    "return period separately; these pixels are not repaired.",
                     source=source.product,
                 ),
             )
-        )
+        if counts.filled:
+            diagnostics += (
+                ExecutionDiagnostic(
+                    "unmapped_depth_as_zero",
+                    cf.DiagnosticSeverity.INFO,
+                    Stage.DECODING,
+                    f"{counts.filled} flooded pixels have no mapped depth at some "
+                    "return periods. JRC maps depths of at least 0.1 m in nested "
+                    "flood extents, so those return periods are read as 0 m.",
+                    source=source.product,
+                ),
+            )
+        if counts.dry:
+            diagnostics += (
+                ExecutionDiagnostic(
+                    "dry_pixels",
+                    cf.DiagnosticSeverity.INFO,
+                    Stage.DECODING,
+                    f"{counts.dry} pixels are not flooded at any return period "
+                    "and are not returned.",
+                    source=source.product,
+                ),
+            )
         if not covered:
             diagnostics += (
                 ExecutionDiagnostic(
@@ -429,7 +456,9 @@ class _FloodNode(SourceNode[DatasetMetadata]):
                 "JRC raster acquisition requires .select(area=Bounds(...))."
             )
 
-        def produce() -> tuple[tuple[DatasetRow, ...], SourceIdentity, int, bool]:
+        def produce() -> tuple[
+            tuple[DatasetRow, ...], SourceIdentity, RasterReadCounts, bool
+        ]:
             assert selection.area is not None
             resources = list(source.resources)
             if dataset.layout == "continental":
@@ -450,7 +479,7 @@ class _FloodNode(SourceNode[DatasetMetadata]):
                     if _area_intersects(selection.area, shape(f["geometry"]))
                 )
             rows: list[DatasetRow] = []
-            skipped = 0
+            counts = RasterReadCounts()
             covered = False
             for tile in tiles:
                 paths: dict[float, tuple[Path, ...]] = {}
@@ -465,30 +494,33 @@ class _FloodNode(SourceNode[DatasetMetadata]):
                     paths[1 - 1 / return_period] = raster_views(scope, bundle)
                     resources.append(identity)
                 decoded_rows: list[DatasetRow] = []
-                missing = 0
                 # A window snapshot holds no views where the area misses the raster.
                 covered = covered or bool(next(iter(paths.values())))
                 for view_index in range(len(next(iter(paths.values())))):
-                    decoded, omitted = raster_quantile_rows(
+                    decoded = raster_quantile_rows(
                         {q: views[view_index] for q, views in paths.items()},
                         variable=variable,
                         area=selection.area,
                         support_prefix=f"jrc:{product.value}:{tile or 'continental'}",
-                        # JRC's per-return-period maps are inconsistent at a few
-                        # pixels; those are skipped and counted, not repaired.
+                        counts=counts,
+                        # Each return period is a separate JRC simulation, so a
+                        # few pixels lose depth as the period rises; those are
+                        # skipped and counted, not repaired.
                         skip_decreasing=True,
+                        # JRC maps depths of at least 0.1 m in nested extents:
+                        # an unmapped return period of a flooded pixel is dry.
+                        unmapped_as_zero=True,
+                        # Pixels flooded at no return period are not data loss.
+                        skip_dry=True,
                     )
                     decoded_rows.extend(decoded)
-                    missing += omitted
-                decoded = tuple(decoded_rows)
-                rows.extend(decoded)
-                skipped += missing
+                rows.extend(decoded_rows)
             actual = verify_payload(
                 replace(source, resources=tuple(resources)),
                 id=dataset.version,
                 expected=pin,
             )
-            return tuple(rows), actual, skipped, covered
+            return tuple(rows), actual, counts, covered
 
         return _stream_rows(scope, metadata, produce)
 
