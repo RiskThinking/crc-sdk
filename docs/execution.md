@@ -206,7 +206,12 @@ cancellation preserves an existing destination. No separate validation call or
 intermediate output artifact is needed. `Dataset.open(path)` and
 `Samples.open(path)` reopen the corresponding current format in another process.
 Reopened handles expose their saved metadata and report through header-only
-discovery; reading data still performs the execution's validation.
+discovery; reading data still performs the execution's validation. A selection
+from a reopened Dataset, including the cells an evaluation can match, decodes
+and validates the rows it selects and checks the whole file's row and no-data
+counts against the saved report. It does not decode the curves of other rows,
+and it skips row groups whose Parquet statistics exclude every selected row.
+Read or validate without a selection to check every curve in the file.
 
 When a provider knows the original spatial supports for an empty observation
 window, collected results and `Observations.open(path)` preserve those
