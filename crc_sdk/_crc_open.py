@@ -113,9 +113,13 @@ class ReleaseDataset:
     @property
     def metadata(self) -> DatasetMetadata:
         if not self._parsed:
-            self._parsed.append(
-                DatasetMetadata.from_json(json.dumps(self._document, allow_nan=False))
-            )
+            # A malformed entry is source data, as when the index was parsed whole.
+            with native_data(source="crc-open"):
+                self._parsed.append(
+                    DatasetMetadata.from_json(
+                        json.dumps(self._document, allow_nan=False)
+                    )
+                )
         return self._parsed[0]
 
     def declares(self, variables: Iterable[object]) -> bool:
@@ -519,8 +523,7 @@ class _CRCNode(SourceNode[DatasetMetadata]):
             ] = ()
         else:
             _, entries, source = self._resolve(scope)
-            with native_data(scope=scope, source="crc-open"):
-                selected = _selected(entries, self.state, source)
+            selected = _selected(entries, self.state, source)
         metadata = _merge(tuple(part for _, part, _ in selected), source)
         return Inspection(
             schema=_schema(metadata),
@@ -553,8 +556,7 @@ class _CRCNode(SourceNode[DatasetMetadata]):
                 iter(()),
             )
         catalog, entries, source = self._resolve(scope)
-        with native_data(scope=scope, source="crc-open"):
-            selected = _selected(entries, self.state, source)
+        selected = _selected(entries, self.state, source)
         parts = tuple(part for _, part, _ in selected)
         metadata = _merge(parts, source)
         with native_data(scope=scope, source=source.product):

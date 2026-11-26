@@ -246,8 +246,11 @@ def test_exact_typed_selectors_reject_conflicting_science(tmp_path: Path) -> Non
         recipe.select(variables=conflicting).read()
     assert reference.period is not None
     assert recipe.select(periods=reference.period).read().table.num_rows == 1
-    with pytest.raises(ValueError, match="unknown"):
-        recipe.select(variables="unknown").read()
+    # A usage error, not invalid release data.
+    for terminal in ("read", "inspect"):
+        with pytest.raises(ValueError, match="unknown") as raised:
+            getattr(recipe.select(variables="unknown"), terminal)()
+        assert not isinstance(raised.value, ValidationError)
 
 
 def test_dataset_checksum_and_header_must_match_index(tmp_path: Path) -> None:
