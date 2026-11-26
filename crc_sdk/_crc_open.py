@@ -40,7 +40,7 @@ from ._declarations import (
     _merge_descriptor,
     scientific_identity,
 )
-from ._graph import ExecutionScope, NodeStream
+from ._graph import ExecutionScope, NodeStream, SourceContentChanged
 from ._inspection import (
     Bounds,
     Capability,
@@ -49,7 +49,7 @@ from ._inspection import (
     SeriesReference,
 )
 from ._recipes import Dataset, _checked_stream, _key, _sources
-from ._runtime import LocalPath
+from ._runtime import CacheMode, LocalPath
 from ._selection import (
     ResolvedSelection,
     SelectionState,
@@ -377,6 +377,24 @@ def _merge(
     )
 
 
+def _superseded(
+    scope: ExecutionScope, source: SourceIdentity, error: SourceContentChanged
+) -> OSError:
+    """Explain a release file whose published bytes differ from the release index."""
+    release = "" if source.release is None else f" {source.release.id}"
+    if scope.runtime.cache.mode is CacheMode.REUSE:
+        return OSError(
+            f"CRC Open release{release} in the reuse cache is no longer published "
+            f"({error}). Cache.reuse keeps the release it first recorded, and this "
+            "file was never cached. Read once with Cache.refresh(path) to move the "
+            "cache to the current release."
+        )
+    return OSError(
+        f"CRC Open file differs from its release index{release} ({error}). The "
+        "release may have been replaced while it was read; read it again."
+    )
+
+
 @dataclass(frozen=True)
 class _CRCNode(SourceNode[DatasetMetadata]):
     catalog: str
@@ -528,13 +546,16 @@ class _CRCNode(SourceNode[DatasetMetadata]):
                 ):
                     continue
                 uri = urllib.parse.urljoin(catalog, entry.uri)
-                path, resource = fetch(
-                    scope,
-                    uri,
-                    expected_sha256=entry.sha256,
-                    license="CC-BY-NC-4.0",
-                    attribution="RiskThinking",
-                )
+                try:
+                    path, resource = fetch(
+                        scope,
+                        uri,
+                        expected_sha256=entry.sha256,
+                        license="CC-BY-NC-4.0",
+                        attribution="RiskThinking",
+                    )
+                except SourceContentChanged as error:
+                    raise _superseded(scope, source, error) from error
                 identities.append(resource)
                 with pq.ParquetFile(path) as reader:
                     schema = reader.schema_arrow

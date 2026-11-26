@@ -568,3 +568,70 @@ def test_release_index_requires_current_extents(
     index.write_text(json.dumps(document))
     with pytest.raises(ValidationError, match=message):
         CRCOpen(catalog=index).read()
+
+
+def _depth(path: Path, variable: str, value: float) -> Dataset:
+    return Dataset.from_quantiles(
+        {
+            "support_id": ["harbour"] * 2,
+            "longitude": [24.0] * 2,
+            "latitude": [60.0] * 2,
+            "probability": [0.9, 0.99],
+            "value": [value, value + 0.5],
+        },
+        variable=Variable(
+            variable, measurement=DepthAboveGround(unit=LengthUnit.METRE)
+        ),
+        probability=Probability.annual(tail=Tail.UPPER),
+        period=Period.window(2000, 2020),
+    ).write(path, overwrite=True)
+
+
+def _publish(tmp_path: Path, *datasets: Dataset) -> Path:
+    index = _release_index(tmp_path, *datasets)
+    pointer = tmp_path / "_CURRENT.json"
+    pointer.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "release": {
+                    "id": "fixture-release",
+                    "uri": index.name,
+                    "sha256": "sha256:"
+                    + hashlib.sha256(index.read_bytes()).hexdigest(),
+                },
+            }
+        )
+    )
+    return pointer
+
+
+def test_a_superseded_reuse_cache_names_the_release_and_the_fix(
+    tmp_path: Path,
+) -> None:
+    first = _depth(tmp_path / "first.parquet", "company:first", 0.3)
+    second = _depth(tmp_path / "second.parquet", "company:second", 0.3)
+    pointer = _publish(tmp_path, first, second)
+    cache = tmp_path / "cache"
+    recipe = CRCOpen(catalog=pointer)
+    reused = recipe.select(variables="company:first").read(
+        runtime=Runtime(cache=Cache.reuse(cache))
+    )
+    assert reused.report.valid
+    # The publisher replaces the release; the cache never held `second`.
+    _publish(
+        tmp_path, first, _depth(tmp_path / "second.parquet", "company:second", 0.6)
+    )
+    with pytest.raises(OSError, match="release fixture-release in the reuse cache"):
+        recipe.select(variables="company:second").read(
+            runtime=Runtime(cache=Cache.reuse(cache))
+        )
+    refreshed = recipe.select(variables="company:second").read(
+        runtime=Runtime(cache=Cache.refresh(cache))
+    )
+    assert refreshed.report.valid
+    assert (
+        recipe.select(variables="company:second")
+        .read(runtime=Runtime(cache=Cache.reuse(cache)))
+        .table.equals(refreshed.table)
+    )

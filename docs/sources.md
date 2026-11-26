@@ -366,6 +366,11 @@ and the scenario is `CRCOpen.Scenario.SSP585`. Select any other published
 variable by its exact ID, such as `"crc:hot_days"`; `inspect()` lists them all.
 User-owned IDs in a release are also selected by their exact values.
 
+`Cache.reuse` keeps the release it first recorded, so repeated reads are
+reproducible. After the publisher replaces that release, its files that were
+never cached can no longer be read, and the error names the cached release.
+Read once with `Cache.refresh(path)` to move the cache to the current release.
+
 ## Define asset inputs
 
 ```python

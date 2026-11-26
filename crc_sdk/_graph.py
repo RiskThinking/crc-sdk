@@ -57,6 +57,22 @@ class DataValidationError(Exception):
         super().__init__("; ".join(d.message for d in diagnostics))
 
 
+class SourceContentChanged(OSError):
+    """Acquired bytes differ from the content identity they were requested by."""
+
+    def __init__(self, expected: str, received: str, *, uri: str | None = None) -> None:
+        self.expected = expected
+        self.received = received
+        self.uri = uri
+        served = "" if uri is None else f"{uri} served {received}, "
+        super().__init__(
+            f"source content identity mismatch: {served}"
+            f"expected {expected}, received {received}"
+            if uri is None
+            else f"source content identity mismatch: {served}expected {expected}"
+        )
+
+
 @dataclass(slots=True)
 class NodeStream(Generic[MetadataT]):
     schema: pa.Schema
@@ -265,10 +281,7 @@ def _copy_handle_verified(
             os.fsync(writer.fileno())
         actual = "sha256:" + digest.hexdigest()
         if expected is not None and actual != expected:
-            raise OSError(
-                "source content identity mismatch: "
-                f"expected {expected}, received {actual}"
-            )
+            raise SourceContentChanged(expected, actual)
         return actual
     except BaseException:
         if created:
@@ -494,7 +507,12 @@ class ExecutionScope:
             try:
                 self.emit(Stage.ACQUISITION, 0, 1)
                 acquire(acquired)
-                _copy_verified(acquired, private, resource.sha256)
+                try:
+                    _copy_verified(acquired, private, resource.sha256)
+                except SourceContentChanged as error:
+                    raise SourceContentChanged(
+                        error.expected, error.received, uri=resource.uri
+                    ) from None
                 self.emit(Stage.ACQUISITION, 1, 1)
                 if cached is not None:
                     self._retain_snapshot(private, resource.sha256)
