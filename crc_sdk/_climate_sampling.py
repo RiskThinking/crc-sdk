@@ -1834,9 +1834,9 @@ def _nex_source(
         scope, NEX_BUCKET + "/" + files[min(files)][0], variable
     )
     resources.append(header_resource)
+    # NEX-GDDP-CMIP6 keeps each model's native CF calendar (Gregorian, 365-day
+    # or 360-day); days are decoded and years reduced in that calendar.
     calendar = calendar_name(header.get("calendar"))
-    if calendar not in {Calendar.GREGORIAN, Calendar.PROLEPTIC_GREGORIAN}:
-        raise ValueError("NEX source does not use its published Gregorian calendar")
     actual_scenario = (
         node.scenario if isinstance(node.scenario, Scenario) else Scenario(scenario)
     )
@@ -1868,7 +1868,8 @@ def _nex_source(
         actual_calendar = calendar_name(group["time"].attrs.get("calendar"))
         if actual_calendar is not calendar:
             raise ValueError(
-                "NEX publication calendar contradicts its declared Gregorian recipe"
+                f"NEX file for {source_year} uses the {actual_calendar.value} "
+                f"calendar; the series declares {calendar.value}"
             )
         native = _OPERATIONS[selected]
         recipe = cmip.INDICATOR_VARIABLES[native]

@@ -2042,3 +2042,106 @@ def test_offline_native_chunk_cache_miss_does_not_become_a_source_fill_value(
     )
     with pytest.raises(FileNotFoundError, match="offline cache"):
         raw.read(runtime=Runtime(cache=Cache.offline(cache)))
+
+
+def _nex_calendar_fixture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    calendars: dict[int, tuple[str, int]],
+) -> None:
+    import urllib.parse
+
+    from crc_sdk import _climate_sampling as module
+    from crc_sdk._climate_io import netcdf_header_snapshot, netcdf_window_snapshot
+
+    directory = module.NEX_PREFIX + "MODEL/historical/r1/tasmax/"
+    paths: dict[str, Path] = {}
+    for year, (label, days) in calendars.items():
+        name = f"tasmax_day_MODEL_historical_r1_gn_{year}.nc"
+        values = np.full((days, 2, 2), 280.0)
+        values[days - 1] = 280.0 + year - 2000
+        _netcdf(
+            tmp_path / name,
+            "tasmax",
+            np.arange(days),
+            "K",
+            values,
+            time_units=f"days since {year}-01-01",
+            calendar=label,
+        )
+        paths[name] = tmp_path / name
+
+    def acquire(uri: str, destination: Path) -> int:
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(uri).query)
+        assert query["prefix"][0] == directory
+        destination.write_text(
+            '<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+            + "".join(f"<Contents><Key>{directory + n}</Key></Contents>" for n in paths)
+            + "<IsTruncated>false</IsTruncated></ListBucketResult>"
+        )
+        return 200
+
+    monkeypatch.setattr(module, "NEX_BUCKET", "https://fixture.test")
+    monkeypatch.setattr("crc_sdk._source_io._download", acquire)
+    monkeypatch.setattr(
+        module,
+        "netcdf_header_snapshot",
+        lambda scope, uri, variable: netcdf_header_snapshot(
+            scope, paths[uri.rsplit("/", 1)[-1]].as_uri(), variable
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "netcdf_window_snapshot",
+        lambda scope, uri, **kw: netcdf_window_snapshot(
+            scope, paths[uri.rsplit("/", 1)[-1]].as_uri(), **kw
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("label", "days", "calendar"),
+    [("365_day", 365, Calendar.NO_LEAP), ("360_day", 360, Calendar.DAYS_360)],
+)
+def test_nex_reads_models_on_their_native_calendar(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    label: str,
+    days: int,
+    calendar: Calendar,
+) -> None:
+    _nex_calendar_fixture(
+        tmp_path, monkeypatch, {2001: (label, days), 2002: (label, days)}
+    )
+    recipe = NEX(
+        indicator=NEX.Indicator.ANNUAL_MAXIMUM_DAILY_MAXIMUM_TEMPERATURE,
+        model="MODEL",
+        scenario="historical",
+        member="r1",
+    ).select(area=AREA)
+    result = recipe.read()
+    assert result.table["value"].to_pylist() == pytest.approx([7.85, 8.85])
+    (series,) = result.metadata.spec.series
+    assert series.period is not None and series.period.calendar is calendar
+    assert result.metadata.sampling is not None
+    assert result.metadata.sampling.calendar is calendar
+    daily = recipe.observations().read()
+    assert daily.table.num_rows == 2 * days
+    assert daily.metadata.sampling is not None
+    assert daily.metadata.sampling.calendar is calendar
+
+
+def test_nex_files_of_one_series_must_share_a_calendar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _nex_calendar_fixture(
+        tmp_path, monkeypatch, {2001: ("365_day", 365), 2002: ("standard", 365)}
+    )
+    recipe = NEX(
+        indicator=NEX.Indicator.ANNUAL_MAXIMUM_DAILY_MAXIMUM_TEMPERATURE,
+        model="MODEL",
+        scenario="historical",
+        member="r1",
+    ).select(area=AREA)
+    with pytest.raises(ValidationError, match="2002 uses the gregorian calendar"):
+        recipe.read()
