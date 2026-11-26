@@ -181,6 +181,16 @@ def test_era5_hourly_complete_days_and_owned_offline_replay(
     assert result.report.complete
     assert result.metadata.source is not None
     assert result.metadata.source.resources
+    # Chunks fetched on threads give the same values and the same resources,
+    # in the same order.
+    ahead = recipe.read(
+        runtime=Runtime(cache=Cache.reuse(tmp_path / "ahead"), workers=4)
+    )
+    assert ahead.table.equals(result.table, check_metadata=False)
+    assert ahead.metadata.source is not None
+    assert [(r.uri, r.sha256) for r in ahead.metadata.source.resources] == [
+        (r.uri, r.sha256) for r in result.metadata.source.resources
+    ]
 
     def forbidden(*args: Any, **kwargs: Any) -> None:
         raise AssertionError("offline read attempted source access")
