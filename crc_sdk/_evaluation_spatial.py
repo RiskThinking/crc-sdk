@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import cast
 
@@ -251,6 +251,9 @@ class SpatialIndex:
             support: rank for rank, support in enumerate(policy.preferred_supports)
         }
         self._rows = _source_supports(rows)
+        # Matching reads only supports, so series with this layout match alike.
+        self.layout = tuple((r.support_id, r.cell_id, r.geometry) for r in self._rows)
+        self._positions = {id(row): index for index, row in enumerate(self._rows)}
         self._points: dict[tuple[float, float], list[int]] = {}
         self._cells: dict[int, dict[int, list[int]]] = {}
         self._areas: list[BaseGeometry] = []
@@ -457,6 +460,12 @@ class SpatialIndex:
                 else "Select a series with unambiguous spatial support."
             ),
         )
+
+    def translated(self, result: MatchResult, source: SpatialIndex) -> MatchResult:
+        """The same match in this index, for a `source` index with this layout."""
+        if result.row is None or source is self:
+            return result
+        return replace(result, row=self._rows[source._positions[id(result.row)]])
 
     def match(self, asset_geometry: bytes) -> MatchResult:
         asset = cast(BaseGeometry, from_wkb(asset_geometry))

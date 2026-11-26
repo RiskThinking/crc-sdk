@@ -65,7 +65,7 @@ from ._inspection import (
     Operation,
     Requirement,
 )
-from ._recipes import Dataset, _key
+from ._recipes import Dataset, _invalid, _key
 from ._runtime import LocalPath, Runtime, _local_path, _memory_bytes
 from ._schema import DatasetRow, dataset_arrow_schema, table_to_rows
 from ._selection import (
@@ -663,10 +663,23 @@ class _EvaluationNode(Node[EvaluationMetadata]):
             pending_assets: list[int] = []
             asset_values = assets.table.select(asset_columns) if asset_columns else None
             contexts = assets.context
+            # Series delivered on the same supports match an asset alike: match
+            # once per layout and take each series' row at the same position.
+            layouts: dict[object, _EvaluationKey] = {}
+            shared = {
+                key: layouts.setdefault(index.layout, key)
+                for key, index in indices.items()
+            }
             for i, asset_id in enumerate(ids):
                 context = {name: contexts[name][i].as_py() for name in required_columns}
-                matches = {}
+                matches: dict[_EvaluationKey, MatchResult] = {}
                 for key, index in indices.items():
+                    source = shared[key]
+                    if source in matches:
+                        matches[key] = index.translated(
+                            matches[source], indices[source]
+                        )
+                        continue
                     try:
                         matches[key] = index.match(assets.geometries[i])
                     except SpatialMatchError as error:
@@ -695,9 +708,7 @@ class _EvaluationNode(Node[EvaluationMetadata]):
                         if support is None
                         else resources[(key, support.support_id, support.cell_id)]
                     )
-                    exposures = tuple(
-                        _value(query, value, item, match) for value in query.values
-                    )
+                    exposures = _values(query, item, match)
                     finite_exposure = any(
                         level is not None and math.isfinite(level)
                         for level, _ in exposures
@@ -869,12 +880,39 @@ def _index_inputs(
                 schema = dataset_arrow_schema(
                     _replace(metadata, report=ExecutionReport(False, None))
                 )
-                for row in table_to_rows(rows.replace_schema_metadata(schema.metadata)):
+                try:
+                    decoded = table_to_rows(
+                        rows.replace_schema_metadata(schema.metadata)
+                    )
+                except (ValueError, TypeError) as error:
+                    # This decode is the only one of rows read for evaluation.
+                    raise _invalid(error) from error
+                for row in decoded:
                     key = (member, (row.variable_id, row.scenario_id, row.period_id))
                     if key in groups:
                         grouped.setdefault(key, []).append(row)
                         resources[(key, row.support_id, row.cell_id)] = resource
     return grouped, resources
+
+
+def _values(
+    query: EvaluationQuery, series: SeriesSpec, match: MatchResult
+) -> tuple[tuple[float | None, EvaluationFailure | None], ...]:
+    """`_value` for every query value, with one quantile call per curve."""
+    row = match.row
+    if row is not None and row.curve is not None and len(query.values) > 1:
+        coordinates = [query._coordinate(value, series) for value in query.values]
+        if all(tail is not cf.Tail.UPPER for _, tail in coordinates):
+            points = [coordinate for coordinate, _ in coordinates]
+            curve = row.curve
+            inside = True
+            if isinstance(curve, cf.QuantileCurve):
+                lo, hi = curve.probability_interval
+                inside = all(lo <= point <= hi for point in points)
+            if inside:
+                quantiles = cast(Sequence[float], curve.quantile(points))
+                return tuple((float(value), None) for value in quantiles)
+    return tuple(_value(query, value, series, match) for value in query.values)
 
 
 def _value(

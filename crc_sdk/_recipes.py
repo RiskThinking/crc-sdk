@@ -996,7 +996,11 @@ class _ParquetSelectionNode(_SelectionNode[DatasetMetadata]):
                         yield selected.replace_schema_metadata(target.metadata)
             facts.complete = True
 
-        stream = _checked_stream(scope, metadata, batches())
+        # A cell restriction exists only for evaluation, which decodes and
+        # validates every row it reads: its curves are decoded there, once.
+        stream = _checked_stream(
+            scope, metadata, batches(), payload_verified=self.state.cells is not None
+        )
         stream.state = facts
         return self._selection_stream(scope, stream, resolved)
 
@@ -2167,7 +2171,11 @@ class Dataset(_RecipeBase[DatasetMetadata, "Dataset"]):
         )
 
     def _restricted(self, cells: frozenset[int]) -> Self:
-        """The same recipe reading only rows that cells or geometries can match."""
+        """The same recipe reading only rows that cells or geometries can match.
+
+        Only evaluation restricts by cells, and it decodes and validates every
+        row it reads; a local file selected this way skips its own curve decode.
+        """
         return type(self)._create(
             self._base,
             selection=self._selection.restricted(cells),

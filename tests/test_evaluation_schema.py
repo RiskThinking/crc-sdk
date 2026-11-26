@@ -16,6 +16,7 @@ import pytest
 from jsonschema import Draft202012Validator, FormatChecker
 from referencing import Registry, Resource
 
+from crc_sdk import _evaluation_schema as evaluation_schema
 from crc_sdk._assets import Assets
 from crc_sdk._dataset_schema import (
     ExecutionReport,
@@ -279,6 +280,42 @@ def test_nearest_bound_and_duplicate_rows_across_batches(tmp_path: Path) -> None
     finally:
         validator.close()
     assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("recent", [None, 1])
+def test_validator_checks_order_and_matches_after_moving_assets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, recent: int | None
+) -> None:
+    if recent is not None:
+        # Every new asset moves the previous ones from memory to SQLite.
+        monkeypatch.setattr(evaluation_schema, "_RECENT_KEYS", recent)
+    metadata = replace(_metadata(), asset_ids=("a", "b"))
+    variable = metadata.spec.variables[0].id
+
+    def check(asset: str, query: float, *, support: str = "s") -> None:
+        row = EvaluationRow(
+            asset_id=asset,
+            variable_id=variable,
+            support_id=support,
+            query_value=query,
+            value=1.0 if query == 100 else 2.0,
+        )
+        validator.check(evaluation_table([row], metadata).to_batches()[0])
+
+    validator = EvaluationValidator(metadata, scope_directory=tmp_path)
+    try:
+        with pytest.raises(ValueError, match="out of order"):
+            check("a", 10)
+        check("a", 100)
+        check("b", 100)
+        with pytest.raises(ValueError, match="matched support changed"):
+            check("a", 10, support="t")
+        with pytest.raises(ValueError, match="duplicate evaluation row"):
+            check("a", 100)
+        check("a", 10)
+        check("b", 10)
+    finally:
+        validator.close()
 
 
 def test_unknown_query_and_old_header_are_rejected() -> None:

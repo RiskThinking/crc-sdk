@@ -12,7 +12,7 @@ import pytest
 from h3.api import basic_int as h3  # type: ignore[import-untyped]
 from shapely.geometry import Point  # type: ignore[import-untyped]
 
-from crc_sdk import Bounds, Dataset, Runtime
+from crc_sdk import Assets, Bounds, Dataset, Runtime
 from crc_sdk._dataset_schema import (
     DatasetMetadata,
     ExecutionCounts,
@@ -187,3 +187,51 @@ def test_curves_outside_the_selection_are_not_decoded(
     assert Dataset.open(path).validate().valid is False
     assert Dataset.open(path).select(variables="company:b").validate().valid is False
     assert Dataset.open(path).select(variables="company:a").validate().valid is True
+
+
+def _site(index: int) -> Assets:
+    latitude, longitude = h3.cell_to_latlng(h3.latlng_to_cell(*_CENTRES[index], 5))
+    return Assets(
+        {
+            "asset_id": [f"site-{index}"],
+            "latitude": [latitude],
+            "longitude": [longitude],
+        }
+    )
+
+
+def test_evaluation_matches_each_support_layout(tmp_path: Path) -> None:
+    rows = _rows()
+    # `company:b` lacks the cells around the last centre: another layout.
+    last = h3.grid_disk(h3.latlng_to_cell(*_CENTRES[2], 5), 1)
+    rows = [r for r in rows if r.variable_id == "company:a" or r.cell_id not in last]
+    metadata = _metadata(rows)
+    path = _write(tmp_path / "layouts.parquet", rows_to_table(rows, metadata))
+    result = Dataset.open(path).evaluate(_site(2)).probabilities([0.5]).read()
+    codes = {
+        r["variable_id"]: None if r["failure"] is None else r["failure"]["code"]
+        for r in result.table.to_pylist()
+    }
+    assert codes["company:a"] != "no_covering_support"
+    assert codes["company:b"] == "no_covering_support"
+    assert result.report.counts.matched_assets == 1
+
+
+def test_evaluation_decodes_the_rows_it_reads_once(
+    stored: tuple[Path, pa.Table, DatasetMetadata], tmp_path: Path
+) -> None:
+    _, table, _ = stored
+    centre = h3.latlng_to_cell(*_CENTRES[0], 5)
+    records = table.to_pylist()
+    for record in records:
+        if record["cell_id"] == centre and record["curve"]:
+            record["curve"]["quantile_curve"]["values"] = [3.0, 1.0]
+    path = _write(
+        tmp_path / "broken.parquet", pa.Table.from_pylist(records, schema=table.schema)
+    )
+    # Rows outside the asset's candidate cells are not decoded.
+    far = Dataset.open(path).evaluate(_site(1)).probabilities([0.5]).validate()
+    assert far.valid is True
+    near = Dataset.open(path).evaluate(_site(0)).probabilities([0.5]).validate()
+    assert near.valid is False
+    assert {d.code for d in near.diagnostics} == {"invalid_scientific_data"}
