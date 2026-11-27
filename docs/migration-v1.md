@@ -230,10 +230,12 @@ fitted = rain.fit(QuantileFit(family=DistributionFamily.GUMBEL_RIGHT))
 fitted.write("rx1day-gumbel.parquet")  # optional parametric fit
 ```
 
-The input is any table (mapping, Arrow, or pandas) with one row per knot.
+The input is any table (mapping, Arrow, or pandas) with one row per knot, or
+one list of knots per curve with `QuantileColumns(probabilities=...)`.
 `h3_resolution`, `producer`, `source_id`, and the free-text unit and semantics
-fields are gone: the support ID and typed measurement carry that meaning, and
-the H3 delivery index is chosen by the SDK. Censored and hurdle fits use
+fields are gone: the support ID and typed measurement carry that meaning. The
+SDK chooses the H3 delivery index for points; curves already keyed by H3 cells
+keep their cells and resolution with `QuantileColumns(cell=...)`. Censored and hurdle fits use
 `CensoredQuantileFit` and `HurdleQuantileFit`; `FitFailure.KEEP_NO_DATA` or
 `FitFailure.SKIP` replace `short_axis_action` and no-data thresholds.
 
@@ -541,7 +543,7 @@ is gone.
 | --- | --- | --- |
 | `PMTilesBuild`, `PMTilesLayer`, `PMTilesResult`, `TippecanoePreset` and the `AREAS`/`POINTS`/`POLYGONS` presets, `tippecanoe_command`, `require_tippecanoe`, `require_tile_join` | [tippecanoe](https://github.com/felt/tippecanoe) fed GeoJSONSeq (recipe below); GDAL ≥ 3.8 `ogr2ogr -f PMTiles` when you don't need tippecanoe's feature dropping | The 0.x builder only wrapped one tippecanoe process. Its presets were one map's styling choices. |
 | `TilingBudget`, `check_tiling_budget`, `measure_source`, `ZoomRange`, `coerce_zoom_range`, `nearest_power_of_two` | tippecanoe's own `-z`/`-Z`, `--drop-densest-as-needed` and `-M` limits | These only sized inputs for that wrapper. |
-| `tile_bounds`, `run_tiled_canonicalization`, `stream_curve_quantiles_to_parquet`, `stream_curve_quantiles_wide_to_parquet`, `OSClimateSelectionSpec` | `select(area=Bounds(...))` per tile in your own loop, and `batches()` for bounded memory | 0.x needed tiles to keep canonicalization in memory. 1.0 recipes stream with `batches()` and `Runtime(memory_limit=...)`. |
+| `tile_bounds`, `run_tiled_canonicalization`, `stream_curve_quantiles_to_parquet`, `stream_curve_quantiles_wide_to_parquet`, `OSClimateSelectionSpec` | `select(area=Bounds(...))` per tile in your own loop, and `batches()` for bounded memory; wide quantile tables through `QuantileColumns(probabilities=...)` | 0.x needed tiles to keep canonicalization in memory. 1.0 recipes stream with `batches()` and `Runtime(memory_limit=...)`. |
 
 A map layer is ordinary GeoJSON built from a dataset and its evaluation. This
 recipe evaluates each support at its own footprint and writes one feature per
@@ -659,7 +661,7 @@ The SDK-only impact plumbing is gone:
 | `ImpactRegistry`, `impacts.for_factor`, `RegistryLookup`, `RegistryOverrides`, `RegistryImpactReference`, the `*Origin` classes, `CalibrationMatch` | `Impact.builtin(...)` and `crc_framework.ImpactReference` |
 | `ImpactEvaluationRecord`, `ImpactEvaluationResult`, `ResponseLabels`, `check_response_labels` | Response rows (`response_id`) in the evaluation output |
 | `normalize_unit`, `units_equivalent` | Typed measurement units; `convert_units(...)` on a recipe |
-| `fit_cdf_quantile_batches`, `CDFFitResult`, `CDFFitSummary` | `Dataset.from_quantiles(...).fit(QuantileFit(...))`, with the per-row `fit` record |
+| `fit_cdf_quantile_batches`, `CDFFitResult`, `CDFFitSummary` | `Dataset.from_quantiles(...).fit(QuantileFit(...))`, with the per-row `fit` record; `Runtime(workers=n)` fits batches in n processes |
 
 ## New in 1.0
 
