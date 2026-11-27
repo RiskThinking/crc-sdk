@@ -97,6 +97,12 @@ def fit_batch(
                 "fit() requires supplied quantile evidence. "
                 "Existing distributions are already models."
             )
+        values = row.curve.values
+        if values[0] == values[-1]:
+            # Constant evidence is exactly a point mass, so nothing is fitted.
+            point = crc_framework.Distribution.point_mass(float(values[0]))
+            result.append(replace(row, curve=point, fit=None))
+            continue
         try:
             fitted = crc_framework.fit_quantiles(row.curve, spec)
         except crc_framework.FitError as error:
@@ -117,6 +123,8 @@ def fit_batch(
                         failure=RetainedFailure.from_error(error),
                     )
                 )
+            elif mode is FitFailure.KEEP_EVIDENCE:
+                result.append(row)
             continue
         result.append(replace(row, curve=fitted.distribution, fit=fitted.record))
     return FittedBatch(rows_to_table(result, declared), len(rows), tuple(failures))

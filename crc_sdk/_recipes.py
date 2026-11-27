@@ -47,6 +47,7 @@ from ._evidence import (
     EvidenceKind,
     EvidenceMetadata,
     FitFailure,
+    _sample_failure,
     _SampleFitError,
     evidence_row_key,
     fit_sample_table,
@@ -1189,7 +1190,7 @@ class _FitNode(_ScientificNode[DatasetMetadata], Generic[MetadataT]):
                 produced += fitted.table.num_rows
                 if self.failure is FitFailure.SKIP:
                     skipped += len(fitted.failures)
-                else:
+                elif self.failure is FitFailure.KEEP_NO_DATA:
                     no_data += len(fitted.failures)
                 scope.emit(Stage.FITTING, produced)
                 yield from fitted.table.to_batches(
@@ -2346,6 +2347,7 @@ class Samples(_RecipeBase[EvidenceMetadata[Literal[EvidenceKind.SAMPLES]], "Samp
         self, spec: SampleFitSpec, *, on_failure: FitFailure = FitFailure.RAISE
     ) -> Dataset:
         _fit_kind(spec, samples=True)
+        _sample_failure(on_failure)
         return Dataset._create(
             _FitNode(self._base, spec, on_failure),
             selection=self._selection,

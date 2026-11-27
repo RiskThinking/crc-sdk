@@ -147,6 +147,15 @@ class FitFailure(Enum):
     RAISE = "raise"
     KEEP_NO_DATA = "keep_no_data"
     SKIP = "skip"
+    KEEP_EVIDENCE = "keep_evidence"
+
+
+def _sample_failure(on_failure: FitFailure) -> None:
+    if on_failure is FitFailure.KEEP_EVIDENCE:
+        raise ValueError(
+            "FitFailure.KEEP_EVIDENCE keeps quantile evidence; "
+            "sample fits use RAISE, KEEP_NO_DATA or SKIP"
+        )
 
 
 class _SampleFitError(FitError):
@@ -783,6 +792,7 @@ def fit_sample_table(
         raise ValueError("invalid sample evidence cannot be fitted")
     if not isinstance(on_failure, FitFailure):
         raise TypeError("on_failure must be FitFailure")
+    _sample_failure(on_failure)
     if not isinstance(specification, (SampleFit, ModelSelection)):
         raise TypeError("sample evidence requires SampleFit or sample ModelSelection")
     if isinstance(specification, ModelSelection) and any(

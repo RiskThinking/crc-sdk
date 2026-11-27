@@ -28,6 +28,7 @@ from crc_sdk import (
     EDO,
     ERA5,
     CRCOpen,
+    FitFailure,
     Layer,
     NOAASeaLevel,
     Observations,
@@ -194,6 +195,11 @@ def test_samples_fit_executes_its_complete_upstream_graph_automatically() -> Non
     assert result.metadata.spec.variables[0].id == "my:rainfall"
     assert result.metadata.spec.series[0].scenario is None
     assert result.metadata.spec.series[0].period is None
+
+
+def test_kept_evidence_applies_only_to_quantile_evidence() -> None:
+    with pytest.raises(ValueError, match="KEEP_EVIDENCE"):
+        sample_recipe().fit(fit_specification(), on_failure=FitFailure.KEEP_EVIDENCE)
 
 
 def test_quantile_constructor_uses_supplied_evidence_without_any_fit(

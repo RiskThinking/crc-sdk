@@ -2256,7 +2256,8 @@
       "members": {
         "RAISE": "raise",
         "KEEP_NO_DATA": "keep_no_data",
-        "SKIP": "skip"
+        "SKIP": "skip",
+        "KEEP_EVIDENCE": "keep_evidence"
       }
     },
     "FittingDiagnostic": {
