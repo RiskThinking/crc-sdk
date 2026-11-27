@@ -469,22 +469,22 @@
             "curve": {
               "family": "weibull_min",
               "kind": "parametric",
-              "location": -1.6853725757227294,
+              "location": -1.6853726158495377,
               "object": "distribution",
-              "scale": 5.219205254580983,
+              "scale": 5.21920529692371,
               "schema_version": "1.0",
-              "shape": 3.4356298627501207
+              "shape": 3.4356299034256494
             },
             "fit": {
               "attempts": [
                 {
                   "diagnostic": {
-                    "evaluations": 707,
-                    "iterations": 280,
-                    "maximum_absolute_residual": 0.05438938459077658,
+                    "evaluations": 126,
+                    "iterations": 43,
+                    "maximum_absolute_residual": 0.054389384569256016,
                     "normalization_scale": 4.0,
-                    "normalized_rmse": 0.009722260171152821,
-                    "rmse": 0.038889040684611284,
+                    "normalized_rmse": 0.009722260171152824,
+                    "rmse": 0.0388890406846113,
                     "weighted_r_squared": 0.9992438212573154
                   },
                   "specification": {
@@ -5464,20 +5464,20 @@
               "kind": "parametric",
               "location": 100,
               "object": "distribution",
-              "scale": 5.219205254580983,
+              "scale": 5.21920529692371,
               "schema_version": "1.0",
-              "shape": 3.4356298627501207
+              "shape": 3.4356299034256494
             },
             "fit": {
               "attempts": [
                 {
                   "diagnostic": {
-                    "evaluations": 707,
-                    "iterations": 280,
-                    "maximum_absolute_residual": 0.05438938459077658,
+                    "evaluations": 126,
+                    "iterations": 43,
+                    "maximum_absolute_residual": 0.054389384569256016,
                     "normalization_scale": 4.0,
-                    "normalized_rmse": 0.009722260171152821,
-                    "rmse": 0.038889040684611284,
+                    "normalized_rmse": 0.009722260171152824,
+                    "rmse": 0.0388890406846113,
                     "weighted_r_squared": 0.9992438212573154
                   },
                   "specification": {

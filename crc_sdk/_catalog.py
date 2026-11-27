@@ -267,7 +267,7 @@ def _schema_document() -> dict[str, object]:
                 "type": "object",
                 "propertyNames": {"minLength": 1, "pattern": r"^\S(?:[\s\S]*\S)?$"},
                 "additionalProperties": {
-                    "$ref": "https://climateriskcommons.org/schemas/fitting/1.0#/$defs/specification"
+                    "$ref": "https://climateriskcommons.org/schemas/fitting/1.1#/$defs/specification"
                 },
             },
         },

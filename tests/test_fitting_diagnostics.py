@@ -88,7 +88,7 @@ def test_report_schema_accepts_fitting_records_only_for_fitting_diagnostics() ->
     )
     schema = json.loads(
         files("crc_framework")
-        .joinpath("contracts/numerical/fitting-1.0.schema.json")
+        .joinpath("contracts/numerical/fitting-1.1.schema.json")
         .read_text()
     )
     registry = Registry().with_resource(schema["$id"], Resource.from_contents(schema))

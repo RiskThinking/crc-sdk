@@ -334,7 +334,7 @@
               "minLength": 1
             },
             "record": {
-              "$ref": "https://climateriskcommons.org/schemas/fitting/1.0"
+              "$ref": "https://climateriskcommons.org/schemas/fitting/1.1"
             }
           },
           "required": [
