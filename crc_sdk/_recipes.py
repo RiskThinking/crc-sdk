@@ -42,7 +42,7 @@ from ._declarations import (
     Variable,
     scientific_identity,
 )
-from ._errors import CapabilityError, ValidationError
+from ._errors import ValidationError
 from ._evidence import (
     EvidenceKind,
     EvidenceMetadata,
@@ -180,18 +180,37 @@ def _fit_invalid(
     support_id: str | None = None,
     variable_id: str | None = None,
 ) -> DataValidationError:
+    return _fit_failure(
+        error.code,
+        error.message,
+        error.record,
+        source=source,
+        support_id=support_id,
+        variable_id=variable_id,
+    )
+
+
+def _fit_failure(
+    code: str,
+    message: str,
+    record: crc_framework.FitRecord,
+    *,
+    source: str | None = None,
+    support_id: str | None = None,
+    variable_id: str | None = None,
+) -> DataValidationError:
     return DataValidationError(
         (
             FittingDiagnostic(
-                error.code,
+                code,
                 crc_framework.DiagnosticSeverity.ERROR,
                 Stage.FITTING,
-                error.message
+                message
                 if variable_id is None
-                else f"variable {variable_id!r}: {error.message}",
+                else f"variable {variable_id!r}: {message}",
                 source=source,
                 support_id=support_id,
-                record=error.record,
+                record=record,
             ),
         )
     )
@@ -1107,6 +1126,103 @@ class _FitNode(_ScientificNode[DatasetMetadata], Generic[MetadataT]):
         )
         result_metadata = metadata
 
+        def quantile_batches() -> Iterator[pa.RecordBatch]:
+            nonlocal result_metadata
+            from ._fit_stream import QuantileFitSpec, fitted_batches
+
+            spec = self.specification
+
+            def nonempty() -> Iterator[pa.RecordBatch]:
+                checked = False
+                for batch in scope.iter_batches(self.parent):
+                    if batch.num_rows == 0:
+                        continue
+                    if not checked:
+                        _quantile_spec(spec)
+                        checked = True
+                    yield batch
+
+            evidence = cast(DatasetMetadata, original)
+            source = None if evidence.source is None else evidence.source.product
+            requested = produced = skipped = no_data = 0
+            failures: list[FittingDiagnostic] = []
+            started = False
+            for fitted in fitted_batches(
+                nonempty(),
+                metadata.to_json(),
+                cast(QuantileFitSpec, spec),
+                self.failure.value,
+                workers=scope.runtime.workers,
+                on_close=scope.callback,
+            ):
+                if not started:
+                    scope.emit(Stage.FITTING, 0)
+                    started = True
+                if fitted.raised is not None:
+                    failed = fitted.raised
+                    raise _fit_failure(
+                        failed.code,
+                        failed.message,
+                        failed.fit_record(),
+                        source=source,
+                        support_id=failed.support_id,
+                        variable_id=failed.variable_id,
+                    )
+                for failed in fitted.failures:
+                    failures.append(
+                        FittingDiagnostic(
+                            failed.code,
+                            crc_framework.DiagnosticSeverity.WARNING,
+                            Stage.FITTING,
+                            f"variable {failed.variable_id!r}: {failed.message}",
+                            source=source,
+                            support_id=failed.support_id,
+                            record=failed.fit_record(),
+                        )
+                    )
+                requested += fitted.requested
+                produced += fitted.table.num_rows
+                if self.failure is FitFailure.SKIP:
+                    skipped += len(fitted.failures)
+                else:
+                    no_data += len(fitted.failures)
+                scope.emit(Stage.FITTING, produced)
+                yield from fitted.table.to_batches(
+                    max_chunksize=scope.runtime.batch_rows
+                )
+            parent_report = scope.report(self.parent)
+            if not started:
+                result_metadata = replace(
+                    metadata,
+                    report=ExecutionReport(
+                        True,
+                        True,
+                        parent_report.diagnostics,
+                        ExecutionCounts(
+                            usable_years=parent_report.counts.usable_years,
+                            incomplete_years=parent_report.counts.incomplete_years,
+                        ),
+                        parent_report.source_identities,
+                    ),
+                )
+                return
+            result_metadata = replace(
+                cast(DatasetMetadata, scope.metadata(self.parent)),
+                report=ExecutionReport(
+                    True,
+                    True,
+                    (*parent_report.diagnostics, *failures),
+                    ExecutionCounts(
+                        requested=requested,
+                        produced=produced,
+                        skipped=skipped,
+                        no_data=no_data,
+                    ),
+                    parent_report.source_identities,
+                ),
+            )
+            scope.emit(Stage.FITTING, produced, produced)
+
         def batches() -> Iterator[pa.RecordBatch]:
             nonlocal result_metadata
             parts: list[pa.RecordBatch] = []
@@ -1187,10 +1303,6 @@ class _FitNode(_ScientificNode[DatasetMetadata], Generic[MetadataT]):
                         if isinstance(error, _SampleFitError)
                         else None,
                     ) from error
-            else:
-                rows, result_metadata = _fit_quantiles(
-                    table, actual, self.specification, self.failure
-                )
             scope.emit(Stage.FITTING, len(rows), len(rows))
             yield from rows_to_table(rows, result_metadata).to_batches(
                 max_chunksize=scope.runtime.batch_rows
@@ -1199,88 +1311,21 @@ class _FitNode(_ScientificNode[DatasetMetadata], Generic[MetadataT]):
         return NodeStream(
             dataset_arrow_schema(metadata),
             metadata,
-            batches(),
+            batches() if isinstance(original, EvidenceMetadata) else quantile_batches(),
             report=lambda: result_metadata.report,
             final_metadata=lambda: result_metadata,
         )
 
 
-def _fit_quantiles(
-    table: pa.Table,
-    metadata: DatasetMetadata,
-    spec: crc_framework.FitSpec,
-    failure: FitFailure,
-) -> tuple[tuple[DatasetRow, ...], DatasetMetadata]:
-    from ._dataset_schema import RetainedFailure
+def _quantile_spec(spec: crc_framework.FitSpec) -> None:
+    from ._fit_stream import QUANTILE_FIT_SPECS
 
-    if not isinstance(
-        spec,
-        (
-            crc_framework.QuantileFit,
-            crc_framework.CensoredQuantileFit,
-            crc_framework.HurdleQuantileFit,
-            crc_framework.ModelSelection,
-        ),
-    ):
+    if not isinstance(spec, QUANTILE_FIT_SPECS):
         raise TypeError("quantile evidence requires a quantile fitting specification")
     if isinstance(spec, crc_framework.ModelSelection) and any(
         isinstance(candidate, crc_framework.SampleFit) for candidate in spec.candidates
     ):
         raise TypeError("quantile model selection requires quantile fitting candidates")
-    rows = table_to_rows(table)
-    result: list[DatasetRow] = []
-    diagnostics = list(metadata.report.diagnostics)
-    skipped = no_data = 0
-    for row in rows:
-        if not isinstance(row.curve, crc_framework.QuantileCurve):
-            raise CapabilityError(
-                "fit() requires supplied quantile evidence. "
-                "Existing distributions are already models."
-            )
-        try:
-            fitted = crc_framework.fit_quantiles(row.curve, spec)
-            result.append(replace(row, curve=fitted.distribution, fit=fitted.record))
-        except crc_framework.FitError as error:
-            if failure is FitFailure.RAISE:
-                raise _fit_invalid(
-                    error,
-                    source=None if metadata.source is None else metadata.source.product,
-                    support_id=row.support_id,
-                    variable_id=row.variable_id,
-                ) from error
-            diagnostics.append(
-                FittingDiagnostic(
-                    error.code,
-                    crc_framework.DiagnosticSeverity.WARNING,
-                    Stage.FITTING,
-                    f"variable {row.variable_id!r}: {error.message}",
-                    source=None if metadata.source is None else metadata.source.product,
-                    support_id=row.support_id,
-                    record=error.record,
-                )
-            )
-            if failure is FitFailure.SKIP:
-                skipped += 1
-            else:
-                no_data += 1
-                result.append(
-                    replace(
-                        row,
-                        curve=None,
-                        fit=None,
-                        failure=RetainedFailure.from_error(error),
-                    )
-                )
-    report = ExecutionReport(
-        True,
-        True,
-        tuple(diagnostics),
-        ExecutionCounts(
-            requested=len(rows), produced=len(result), skipped=skipped, no_data=no_data
-        ),
-        metadata.report.source_identities,
-    )
-    return tuple(result), replace(metadata, report=report)
 
 
 class _TransformNode(_ScientificNode[MetadataT]):

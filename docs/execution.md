@@ -176,7 +176,11 @@ resources and raises if a required resource is missing. `Cache.refresh(path)`
 reacquires source data. [Offline replay example](sources.md#discover-a-crc-open-release)
 
 `Runtime(workers=n)` acquires up to n CRC Open release files at once, ahead of
-decoding them, and gives DuckDB n threads. Progress callbacks still run on the
+decoding them, and gives DuckDB n threads. Fitting quantile evidence uses up to
+n worker processes, each fitting one batch of `batch_rows` curves. Output keeps
+the input order and is identical for every `n`. Worker processes start only
+when the evidence spans more than one batch; scripts that use them need the
+usual `if __name__ == "__main__":` guard. Progress callbacks still run on the
 consuming thread.
 
 Direct local inputs are read from their owned snapshots. Temporary joins,
@@ -184,8 +188,9 @@ replay batches, and modelling state remain execution-owned. Replay batches are
 zstd-compressed Arrow files in the execution's temporary directory, removed
 when the execution closes. A borrowed
 database connection remains caller-owned and keeps its configuration. Memory
-limits bound collection and blocking fitting. A selection exceeding the budget
-raises `MemoryError`.
+limits bound collection and sample fitting. A selection exceeding the budget
+raises `MemoryError`. Quantile fitting streams: it holds at most n + 1 batches
+of evidence and fitted rows at once, so it needs no collection budget.
 
 `Runtime(progress=callback)` receives typed `ProgressEvent` values. Raising from
 the callback cancels execution and closes owned resources.
