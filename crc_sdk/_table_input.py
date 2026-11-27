@@ -10,6 +10,7 @@ from typing import Literal, Protocol, TypeAlias, cast, runtime_checkable
 
 import numpy as np
 import pyarrow as pa  # type: ignore[import-untyped]
+import pyarrow.compute  # type: ignore[import-untyped]  # noqa: F401
 from crc_framework import QuantileCurve
 from h3.api import basic_int as h3  # type: ignore[import-untyped]
 from numpy.typing import NDArray
@@ -34,7 +35,7 @@ from ._declarations import (
     Variable,
 )
 from ._evidence import EvidenceKind, EvidenceMetadata, _sample_time, evidence_table
-from ._schema.dataset import DatasetRow, _geometry, validate_rows
+from ._schema.dataset import _geometry, dataset_arrow_schema
 
 Scalar: TypeAlias = str | int | float | bool | bytes | date | None
 
@@ -87,9 +88,47 @@ class QuantileColumns:
     variable_id: str | None = None
     scenario_id: str | None = None
     period_id: str | None = None
+    cell: str | None = None
+    probabilities: tuple[float, ...] | None = None
 
     def __post_init__(self) -> None:
-        _columns(self)
+        if self.probabilities is not None:
+            levels = (
+                None
+                if isinstance(self.probabilities, (str, bytes))
+                else np.asarray(self.probabilities)
+            )
+            if levels is None or levels.ndim != 1 or levels.dtype.kind not in "iuf":
+                raise TypeError("probabilities must be a sequence of numbers")
+            if not np.isfinite(levels).all():
+                raise ValueError("probabilities must be finite")
+            object.__setattr__(self, "probabilities", tuple(float(p) for p in levels))
+            if not self.probabilities:
+                raise ValueError("probabilities must not be empty")
+            if len(set(self.probabilities)) != len(self.probabilities):
+                raise ValueError("probabilities must be distinct")
+        for name in self.__dataclass_fields__:
+            value = getattr(self, name)
+            if value is not None and name != "probabilities":
+                _identifier(value, "column name")
+        read = self._read()
+        if len(set(read)) != len(read):
+            raise ValueError("column mappings must name distinct columns")
+
+    def _read(self) -> tuple[str, ...]:
+        """The input columns this mapping reads."""
+        names = [self.support_id, self.value]
+        names += (
+            [self.cell] if self.cell is not None else [self.longitude, self.latitude]
+        )
+        if self.probabilities is None:
+            names.append(self.probability)
+        names += [
+            name
+            for name in (self.variable_id, self.scenario_id, self.period_id)
+            if name is not None
+        ]
+        return tuple(names)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -150,7 +189,7 @@ class LayerColumns:
 
 
 def _columns(
-    record: TimeSeriesColumns | QuantileColumns | ProjectionColumns | LayerColumns,
+    record: TimeSeriesColumns | ProjectionColumns | LayerColumns,
 ) -> None:
     names = [
         getattr(record, name)
@@ -585,7 +624,13 @@ def normalize_quantiles(
     period: Period | None = None,
     spec: DataSpec | None = None,
     columns: QuantileColumns | None = None,
-) -> tuple[tuple[DatasetRow, ...], DatasetMetadata]:
+) -> tuple[pa.Table, DatasetMetadata]:
+    """Group supplied knots into canonical quantile-curve rows.
+
+    Rows keep the order in which each curve first appears, and knots are
+    sorted by probability. Values are checked column by column; each curve is
+    then validated once by the framework.
+    """
     declarations = input_spec(
         variable=variable,
         probability=probability,
@@ -597,56 +642,267 @@ def normalize_quantiles(
     if not isinstance(columns, QuantileColumns):
         raise TypeError("columns must be QuantileColumns")
     source = snapshot_table(table)
-    _require_columns(
-        source,
-        [
-            getattr(columns, name)
-            for name in columns.__dataclass_fields__
-            if getattr(columns, name) is not None
-        ],
-    )
-    groups: dict[
-        tuple[str, str | None, str | None, str, int, bytes], list[tuple[float, float]]
-    ] = {}
-    for record in source.to_pylist():
-        identity = _series_identity(
-            record,
-            declarations,
-            columns.variable_id,
-            columns.scenario_id,
-            columns.period_id,
-        )
-        cell, geometry = _point(record, columns.longitude, columns.latitude)
-        support = _identifier(record[columns.support_id], columns.support_id)
-        q = _number(record[columns.probability], columns.probability)
-        value = _number(record[columns.value], columns.value)
-        groups.setdefault((*identity, support, cell, geometry), []).append((q, value))
-    rows: list[DatasetRow] = []
-    for (
-        variable_id,
-        scenario_id,
-        period_id,
-        support_id,
-        cell_id,
-        geometry,
-    ), knots in groups.items():
-        knots.sort()
-        curve = QuantileCurve([q for q, _ in knots], [value for _, value in knots])
-        rows.append(
-            DatasetRow(
-                variable_id=variable_id,
-                scenario_id=scenario_id,
-                period_id=period_id,
-                support_id=support_id,
-                cell_id=cell_id,
-                geometry=geometry,
-                curve=curve,
+    _require_columns(source, list(columns._read()))
+    count = source.num_rows
+    identities, identity_codes = _series_codes(source, declarations, columns)
+    support_names, support_codes = _codes(source.column(columns.support_id))
+    for name in support_names:
+        _identifier(name, columns.support_id)
+    if columns.cell is None:
+        longitude = _finite(source.column(columns.longitude), columns.longitude)
+        latitude = _finite(source.column(columns.latitude), columns.latitude)
+        if (np.abs(longitude) > 180).any() or (np.abs(latitude) > 90).any():
+            raise ValueError(
+                "point coordinates must be finite WGS84 longitude/latitude"
             )
+        location: NDArray[np.float64] | NDArray[np.uint64] = np.stack(
+            [longitude, latitude], axis=1
         )
+    else:
+        location = _cells(source.column(columns.cell), columns.cell)[:, None]
+    places, place_codes = np.unique(location, axis=0, return_inverse=True)
+    groups, first, group_codes = np.unique(
+        np.stack([identity_codes, support_codes, place_codes.reshape(-1)], axis=1),
+        axis=0,
+        return_index=True,
+        return_inverse=True,
+    )
+    group_codes = group_codes.reshape(-1)
+    # Rows follow the first appearance of their curve; knots are sorted by
+    # probability, then value.
+    by_appearance = np.argsort(first, kind="stable")
+    ordered = groups[by_appearance]
+    if columns.probabilities is not None and len(groups) == count:
+        # One list per curve: rows keep their order and every row shares one
+        # permutation of the declared probabilities, which are distinct, so
+        # no knot ties on probability.
+        size = len(columns.probabilities)
+        _, flat = _knot_lists(source.column(columns.value), columns.value, size)
+        levels = np.asarray(columns.probabilities, dtype=np.float64)
+        permutation = np.argsort(levels, kind="stable")
+        matrix = flat.reshape(count, size)[:, permutation]
+        q = np.tile(levels[permutation], count)
+        values = matrix.reshape(-1)
+        offsets = np.arange(count + 1, dtype=np.int64) * size
+    else:
+        if columns.probabilities is None:
+            knots = np.ones(count, dtype=np.int64)
+            q = _finite(source.column(columns.probability), columns.probability)
+            values = _finite(source.column(columns.value), columns.value)
+        else:
+            knots, values = _knot_lists(
+                source.column(columns.value), columns.value, len(columns.probabilities)
+            )
+            q = np.tile(np.asarray(columns.probabilities, dtype=np.float64), count)
+        rank = np.empty(len(groups), dtype=np.int64)
+        rank[by_appearance] = np.arange(len(groups))
+        curve_rank = np.repeat(rank[group_codes], knots)
+        order = np.lexsort((values, q, curve_rank))
+        q, values = q[order], values[order]
+        offsets = np.concatenate(
+            [[0], np.cumsum(np.bincount(curve_rank, minlength=len(groups)))]
+        )
+    for index in range(len(ordered)):
+        start, end = offsets[index], offsets[index + 1]
+        QuantileCurve(q[start:end].tolist(), values[start:end].tolist())
+    if columns.cell is None:
+        coordinates = places[ordered[:, 2]]
+        cells = np.fromiter(
+            (h3.latlng_to_cell(lat, lon, 9) for lon, lat in coordinates),
+            dtype=np.uint64,
+            count=len(coordinates),
+        )
+        geometry: list[bytes | None] = [
+            struct.pack("<BIdd", 1, 1, lon, lat) for lon, lat in coordinates
+        ]
+        resolution: int | None = 9
+        kind = SupportKind.POINT
+    else:
+        cells = places[ordered[:, 2], 0].astype(np.uint64)
+        geometry = [None] * len(cells)
+        resolutions = {h3.get_resolution(int(cell)) for cell in np.unique(cells)}
+        if len(resolutions) > 1:
+            raise ValueError(f"{columns.cell} cells must share one H3 resolution")
+        resolution = next(iter(resolutions), None)
+        kind = SupportKind.CELL
+    _unique_rows(ordered, cells, identities, support_names)
     metadata = DatasetMetadata(
         spec=declarations,
-        spatial=SpatialContract(supports=(SupportKind.POINT,), index_resolution=9),
-        report=_report(len(rows)),
+        spatial=SpatialContract(supports=(kind,), index_resolution=resolution),
+        report=_report(len(ordered)),
     )
-    validate_rows(rows, metadata)
-    return tuple(rows), metadata
+    schema = dataset_arrow_schema(metadata)
+    series = [identities[code] for code in ordered[:, 0]]
+    curve_type = schema.field("curve").type
+    knots_type = curve_type.field("quantile_curve").type
+    rows = len(ordered)
+    bounds = pa.array(offsets, pa.int32())
+    branches = {
+        "kind": pa.array(["quantile_curve"] * rows, pa.string()),
+        "quantile_curve": pa.StructArray.from_arrays(
+            [
+                pa.ListArray.from_arrays(bounds, pa.array(q, pa.float64())),
+                pa.ListArray.from_arrays(bounds, pa.array(values, pa.float64())),
+            ],
+            fields=list(knots_type),
+        ),
+    }
+    curve = pa.StructArray.from_arrays(
+        [branches.get(field.name, _absent(rows, field.type)) for field in curve_type],
+        fields=list(curve_type),
+    )
+    table = pa.Table.from_arrays(
+        [
+            pa.array([item[0] for item in series], pa.string()),
+            pa.array([item[1] for item in series], pa.string()),
+            pa.array([item[2] for item in series], pa.string()),
+            pa.array(support_names[ordered[:, 1]].tolist(), pa.string()),
+            pa.array(cells, pa.uint64()),
+            pa.array(geometry, pa.binary()),
+            curve,
+            _absent(rows, schema.field("fit").type),
+            _absent(rows, schema.field("failure").type),
+        ],
+        schema=schema,
+    )
+    return table, metadata
+
+
+def _absent(rows: int, kind: pa.DataType) -> pa.Array:
+    """Nulls whose struct children still satisfy their non-null fields."""
+    return pa.array([None] * rows, type=kind)
+
+
+def _codes(column: pa.ChunkedArray) -> tuple[NDArray[np.object_], NDArray[np.int64]]:
+    """Distinct values, with null last, and each row's code into them."""
+    encoded = column.combine_chunks().dictionary_encode()
+    names = np.array(encoded.dictionary.to_pylist() + [None], dtype=object)
+    codes = encoded.indices.fill_null(len(names) - 1).to_numpy().astype(np.int64)
+    used = np.unique(codes)
+    remap = np.full(len(names), -1, dtype=np.int64)
+    remap[used] = np.arange(len(used))
+    return names[used], remap[codes]
+
+
+def _finite(column: pa.ChunkedArray | pa.Array, name: str) -> NDArray[np.float64]:
+    if isinstance(column, pa.ChunkedArray):
+        column = column.combine_chunks()
+    kind = column.type
+    if not (pa.types.is_integer(kind) or pa.types.is_floating(kind)):
+        raise ValueError(f"{name} must be finite")
+    if column.null_count:
+        raise ValueError(f"{name} must be finite")
+    values: NDArray[np.float64] = column.to_numpy(zero_copy_only=False).astype(
+        np.float64
+    )
+    if not np.isfinite(values).all():
+        raise ValueError(f"{name} must be finite")
+    return values
+
+
+def _knot_lists(
+    column: pa.ChunkedArray, name: str, size: int
+) -> tuple[NDArray[np.int64], NDArray[np.float64]]:
+    lists = column.combine_chunks()
+    if not (
+        pa.types.is_list(lists.type)
+        or pa.types.is_large_list(lists.type)
+        or pa.types.is_fixed_size_list(lists.type)
+    ):
+        raise ValueError(f"{name} must be a list column when probabilities are given")
+    if lists.null_count:
+        raise ValueError(f"{name} must hold one value per probability")
+    lengths = pa.compute.list_value_length(lists).to_numpy(zero_copy_only=False)
+    if (lengths != size).any():
+        raise ValueError(f"{name} must hold one value per probability")
+    return np.full(len(lists), size, dtype=np.int64), _finite(lists.flatten(), name)
+
+
+def _cells(column: pa.ChunkedArray, name: str) -> NDArray[np.uint64]:
+    cells = column.combine_chunks()
+    if not pa.types.is_integer(cells.type) or cells.null_count:
+        raise ValueError(f"{name} must hold valid H3 cell integers")
+    raw = cells.to_numpy(zero_copy_only=False)
+    if raw.dtype.kind == "i" and (raw < 0).any():
+        raise ValueError(f"{name} must hold valid H3 cell integers")
+    values: NDArray[np.uint64] = raw.astype(np.uint64)
+    for cell in np.unique(values):
+        if not h3.is_valid_cell(int(cell)):
+            raise ValueError(f"{name} must hold valid H3 cell integers")
+    return values
+
+
+def _series_codes(
+    source: pa.Table, spec: DataSpec, columns: QuantileColumns
+) -> tuple[list[tuple[str, str | None, str | None]], NDArray[np.int64]]:
+    """Each row's declared scientific series, as a code into the distinct ones."""
+    declared = {
+        (
+            s.variable.id,
+            None if s.scenario is None else s.scenario.id,
+            None if s.period is None else s.period.id,
+        )
+        for s in spec.series
+    }
+    if not declared:
+        raise ValueError("input requires at least one declared scientific series")
+    parts: list[NDArray[np.object_]] = []
+    codes: list[NDArray[np.int64]] = []
+    for index, column in enumerate(
+        (columns.variable_id, columns.scenario_id, columns.period_id)
+    ):
+        if column is None:
+            options = {item[index] for item in declared}
+            if len(options) != 1:
+                raise ValueError(
+                    "multiple scientific identities require an explicit column mapping"
+                )
+            parts.append(np.array([next(iter(options))], dtype=object))
+            codes.append(np.zeros(source.num_rows, dtype=np.int64))
+        else:
+            names, row_codes = _codes(source.column(column))
+            for value in names:
+                if value is not None:
+                    _identifier(value, column)
+            parts.append(names)
+            codes.append(row_codes)
+    if source.num_rows == 0:
+        return [], np.zeros(0, dtype=np.int64)
+    combined, inverse = np.unique(np.stack(codes, axis=1), axis=0, return_inverse=True)
+    identities = [
+        cast(
+            tuple[str, str | None, str | None],
+            tuple(parts[i][code] for i, code in enumerate(row)),
+        )
+        for row in combined
+    ]
+    for identity in identities:
+        if identity not in declared:
+            raise ValueError(
+                f"input refers to an undeclared scientific series: {identity!r}"
+            )
+    return identities, inverse.reshape(-1)
+
+
+def _unique_rows(
+    curves: NDArray[np.int64],
+    cells: NDArray[np.uint64],
+    identities: list[tuple[str, str | None, str | None]],
+    supports: NDArray[np.object_],
+) -> None:
+    """Reject repeated row keys and supports that name two locations."""
+    if not len(curves):
+        return
+    keys = np.stack([curves[:, 0], curves[:, 1], cells.astype(np.int64)], axis=1)
+    distinct, first, counts = np.unique(
+        keys, axis=0, return_index=True, return_counts=True
+    )
+    if (counts > 1).any():
+        identity, support, cell = curves[first[counts > 1][0]][:2].tolist() + [
+            int(cells[first[counts > 1][0]])
+        ]
+        key = (*identities[identity], supports[support], cell)
+        raise ValueError(f"duplicate dataset row key: {key!r}")
+    places = np.unique(curves[:, [1, 2]], axis=0)
+    if len(np.unique(places[:, 0])) != len(places):
+        raise ValueError("one support_id cannot identify different source supports")

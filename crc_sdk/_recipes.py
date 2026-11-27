@@ -450,9 +450,13 @@ class _ScientificNode(Node[MetadataT], Generic[MetadataT]):
 
 
 class _TableNode(_ScientificNode[MetadataT]):
-    def __init__(self, table: pa.Table, metadata: MetadataT) -> None:
+    def __init__(
+        self, table: pa.Table, metadata: MetadataT, *, payload_verified: bool = False
+    ) -> None:
         self.table = table
         self.metadata_value: MetadataT = metadata
+        # Curves validated when the table was built are not decoded again.
+        self.payload_verified = payload_verified
         self.key = _key(
             "table",
             _table_key(table),
@@ -504,6 +508,7 @@ class _TableNode(_ScientificNode[MetadataT]):
             scope,
             self.metadata_value,
             iter(self.table.to_batches(max_chunksize=scope.runtime.batch_rows)),
+            payload_verified=self.payload_verified,
         )
 
 
@@ -2164,7 +2169,7 @@ class Dataset(_RecipeBase[DatasetMetadata, "Dataset"]):
         spec: DataSpec | None = None,
         columns: QuantileColumns | None = None,
     ) -> Dataset:
-        rows, metadata = normalize_quantiles(
+        values, metadata = normalize_quantiles(
             table,
             variable=variable,
             probability=probability,
@@ -2174,7 +2179,7 @@ class Dataset(_RecipeBase[DatasetMetadata, "Dataset"]):
             columns=columns,
         )
         return Dataset._create(
-            _TableNode(rows_to_table(rows, metadata), metadata),
+            _TableNode(values, metadata, payload_verified=True),
             operations=(
                 Operation(Stage.DECODING, "Use supplied quantile evidence directly"),
             ),

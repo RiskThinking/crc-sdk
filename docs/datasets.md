@@ -76,6 +76,46 @@ document = curve.to_json()  # canonical JSON, also read by the JavaScript packag
 
 It works on any `read()` table or `batches()` batch of Dataset 2.0 rows.
 
+## Supply quantile tables
+
+`Dataset.from_quantiles` reads one row per knot by default: a support, its
+longitude and latitude, a non-exceedance probability, and a value. Two
+`QuantileColumns` options describe other layouts:
+
+- `cell` locates each curve by an integer H3 cell column instead of
+  coordinates. All cells must share one resolution, which becomes the
+  dataset's index resolution. Rows keep `support_id` as supplied.
+- `probabilities` declares one fixed probability per list position. The
+  `value` column then holds one list per curve, and no probability column is
+  read.
+
+```python
+from crc_framework import DepthAboveGround, LengthUnit, Tail
+from crc_sdk import Dataset, Probability, QuantileColumns, SupportKind, Variable
+
+cells = [599686042433355775, 599686030622195711]  # H3 resolution 5
+depth = Dataset.from_quantiles(
+    {
+        "support_id": [f"h3:{cell:x}" for cell in cells],
+        "hex_id": cells,
+        "depth": [[0.0, 0.3, 1.2], [0.1, 0.4, 1.5]],
+    },
+    variable=Variable(
+        "company:flood-depth", measurement=DepthAboveGround(unit=LengthUnit.METRE)
+    ),
+    probability=Probability.annual(tail=Tail.UPPER),
+    columns=QuantileColumns(
+        cell="hex_id", value="depth", probabilities=(0.5, 0.9, 0.99)
+    ),
+).read()
+assert depth.metadata.spatial.supports == (SupportKind.CELL,)
+assert depth.metadata.spatial.index_resolution == 5
+```
+
+Values are checked column by column and each curve once, so large tables are
+normalised without per-knot Python work. Curves keep the order in which they
+first appear.
+
 ## Supply quantile rasters
 
 `Dataset.from_raster` accepts one same-grid, single-band raster per supplied

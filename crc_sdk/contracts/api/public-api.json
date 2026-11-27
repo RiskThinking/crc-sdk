@@ -3880,6 +3880,18 @@
             "kind": "keyword_only",
             "annotation": "str | None",
             "default": null
+          },
+          {
+            "name": "cell",
+            "kind": "keyword_only",
+            "annotation": "str | None",
+            "default": null
+          },
+          {
+            "name": "probabilities",
+            "kind": "keyword_only",
+            "annotation": "tuple[float, ...] | None",
+            "default": null
           }
         ],
         "returns": "Self"
@@ -3892,7 +3904,9 @@
         "value": "str",
         "variable_id": "str | None",
         "scenario_id": "str | None",
-        "period_id": "str | None"
+        "period_id": "str | None",
+        "cell": "str | None",
+        "probabilities": "tuple[float, ...] | None"
       }
     },
     "QueryKind": {
