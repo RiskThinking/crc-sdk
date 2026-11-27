@@ -187,11 +187,12 @@ def test_arrow_c_stream_input_uses_the_same_owned_boundary() -> None:
 
 
 def test_quantile_inputs_use_supplied_knots_without_fitting() -> None:
-    rows, metadata = normalize_quantiles(
+    table, metadata = normalize_quantiles(
         quantiles(),
         variable=Variable("my:depth"),
         probability=Probability.annual(tail=Tail.UPPER),
     )
+    rows = table_to_rows(table)
     assert len(rows) == 1 and rows[0].fit is None
     assert isinstance(rows[0].curve, QuantileCurve)
     assert rows[0].curve.quantile(0.9) == 0.8
@@ -215,10 +216,10 @@ def test_custom_quantile_and_sample_columns_share_identity_mapping_rules() -> No
     assert len(metadata.spec.series) == 2
     qtable = quantiles()
     qtable["variable"] = [second.id] * 3
-    rows, _ = normalize_quantiles(
+    values, _ = normalize_quantiles(
         qtable, spec=declarations, columns=QuantileColumns(variable_id="variable")
     )
-    assert rows[0].variable_id == second.id
+    assert values["variable_id"].to_pylist() == [second.id]
     with pytest.raises(ValueError, match="explicit column mapping"):
         normalize_samples(samples(), spec=declarations)
 
