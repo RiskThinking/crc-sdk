@@ -2,6 +2,26 @@
 
 [Docs index](README.md)
 
+## 1.2.0a1
+
+Prerelease of 1.2.0 for large quantile inputs and fits. It requires
+`crc-framework>=1.1,<2`. Dataset, evaluation and other artifact formats keep
+their versions. Full notes come with 1.2.0.
+
+- `QuantileColumns(cell=...)` locates curves by an integer H3 cell column.
+  All cells share one resolution, which becomes the dataset's index
+  resolution. [Supply quantile tables](datasets.md#supply-quantile-tables)
+- `QuantileColumns(probabilities=...)` reads one list of knots per curve.
+- `Dataset.from_quantiles` normalises tables column by column: 200,000 curves
+  of 99 knots take 4.4 s, about 45 times faster than in 1.1.0. Results are
+  unchanged.
+- Quantile fits stream batch by batch, and `Runtime(workers=n)` fits up to n
+  batches in worker processes. Output is identical for every n. Quantile
+  fitting no longer needs a `memory_limit` large enough for the whole
+  selection. Scripts that use more than one worker need an
+  `if __name__ == "__main__":` guard.
+  [Reuse an execution or stream it](execution.md#reuse-an-execution-or-stream-it)
+
 ## 1.1.0
 
 Faster reads and evaluation with less memory and disk, built-in impact models
