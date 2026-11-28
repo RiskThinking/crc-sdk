@@ -2,6 +2,16 @@
 
 [Docs index](README.md)
 
+## 1.2.0a3
+
+Third prerelease of 1.2.0. It requires `crc-framework>=1.2.0a1,<2` and is
+tested with crc-framework 1.2.0a4. Formats are unchanged.
+
+- `Dataset.from_quantiles` checks every curve's knots at once instead of
+  building a `QuantileCurve` per curve: 60,000 curves of 201 knots normalise
+  in 0.46 s instead of 2.05 s. An invalid curve raises the same error as
+  before.
+
 ## 1.2.0a2
 
 Second prerelease of 1.2.0. It requires `crc-framework>=1.2.0a1,<2`; fits
