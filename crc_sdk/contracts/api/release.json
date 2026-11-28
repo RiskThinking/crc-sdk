@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "packages": {
-    "framework": "1.2.0-alpha.2",
+    "framework": "1.2.0-alpha.3",
     "sdk": "1.2.0a1",
     "framework_requirement": "crc-framework>=1.2.0a1,<2"
   },
