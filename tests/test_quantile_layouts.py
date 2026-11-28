@@ -117,3 +117,50 @@ def test_only_the_columns_a_mapping_reads_must_exist_and_differ() -> None:
     assert result.table.num_rows == 3
     with pytest.raises(ValueError, match="distinct"):
         QuantileColumns(cell="support_id")
+
+
+def test_any_unordered_curve_is_rejected_with_the_framework_message() -> None:
+    columns = QuantileColumns(cell="hex_id", value="knots", probabilities=LEVELS)
+    # Later curves may lie below earlier ones; only knots within a curve count.
+    Dataset.from_quantiles(
+        wide([[9.0, 7.0, 8.0], [3.0, 1.0, 2.0], [6.0, 4.0, 5.0]]),
+        variable=VARIABLE,
+        probability=ANNUAL,
+        columns=columns,
+    )
+    with pytest.raises(ValueError, match="quantile evidence requires"):
+        Dataset.from_quantiles(
+            wide([[3.0, 1.0, 2.0], [6.0, 4.0, 7.0], [9.0, 7.0, 8.0]]),
+            variable=VARIABLE,
+            probability=ANNUAL,
+            columns=columns,
+        )
+
+
+def test_vectorized_knot_checks_agree_with_quantile_curve() -> None:
+    from crc_sdk._table_input import _check_curves
+
+    rng = np.random.default_rng(7)
+    for _ in range(400):
+        counts = rng.integers(1, 5, size=rng.integers(1, 5))
+        offsets = np.concatenate([[0], np.cumsum(counts)]).astype(np.int64)
+        q = np.concatenate([np.sort(rng.choice(5, n)) / 4.0 for n in counts])
+        values = np.concatenate([np.sort(rng.integers(0, 3, n)) for n in counts])
+        values = values.astype(np.float64)
+        if rng.random() < 0.3:
+            values[rng.integers(len(values))] += rng.choice([-1.0, 1.0])
+        if rng.random() < 0.1:
+            q[rng.integers(len(q))] = rng.choice([-0.25, 1.25])
+        expected = None
+        for start, end in zip(offsets[:-1], offsets[1:], strict=True):
+            try:
+                QuantileCurve(q[start:end].tolist(), values[start:end].tolist())
+            except ValueError as error:
+                expected = str(error)
+                break
+        if expected is None:
+            _check_curves(q, values, offsets)
+        else:
+            with pytest.raises(ValueError) as raised:
+                _check_curves(q, values, offsets)
+            assert str(raised.value) == expected
