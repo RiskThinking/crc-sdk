@@ -2,6 +2,22 @@
 
 [Docs index](README.md)
 
+## 1.2.0a2
+
+Second prerelease of 1.2.0. It requires `crc-framework>=1.2.0a1,<2`; fits
+are faster and tighter with crc-framework 1.2.0a3. Schemas that embed fit
+records reference fitting format 1.1, which accepts every 1.0 document.
+Full notes come with 1.2.0.
+
+- `FitFailure.KEEP_EVIDENCE` keeps a row's supplied knots when every
+  candidate fails, instead of skipping the row. The report records the same
+  warning and fit record as the other policies.
+- Quantile evidence whose knots all share one value is fitted as a point mass
+  at that value, with no fit record, instead of failing every candidate.
+- `HurdleQuantileFit(atom_probability=None)` reads the point mass from the
+  knots at `atom_location`, so one specification fits curves with and
+  without a run of zeros.
+
 ## 1.2.0a1
 
 Prerelease of 1.2.0 for large quantile inputs and fits. It requires
