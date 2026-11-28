@@ -88,7 +88,11 @@ still uses the complete selected evidence.
 
 `FitFailure.RAISE` is the default. `FitFailure.KEEP_NO_DATA` retains a failed
 fit with its authoritative record and warning; `FitFailure.SKIP` records the
-omission and counts. Neither policy fabricates a numerical law.
+omission and counts. For quantile evidence, `FitFailure.KEEP_EVIDENCE` keeps
+the row's supplied knots in place of a fitted law and records the same warning.
+No policy fabricates a numerical law. Quantile evidence whose knots all share
+one value is a point mass at that value; it is returned without fitting and
+carries no fit record.
 Fitting failures retain their framework execution record on a typed
 `FittingDiagnostic.record`, including when `validate()` returns a failure report.
 Missing observations are excluded before fitting. The fit record counts the

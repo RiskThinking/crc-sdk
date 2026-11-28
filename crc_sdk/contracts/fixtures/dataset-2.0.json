@@ -469,22 +469,22 @@
             "curve": {
               "family": "weibull_min",
               "kind": "parametric",
-              "location": -1.6853725757227294,
+              "location": -1.6853726158495377,
               "object": "distribution",
-              "scale": 5.219205254580983,
+              "scale": 5.21920529692371,
               "schema_version": "1.0",
-              "shape": 3.4356298627501207
+              "shape": 3.4356299034256494
             },
             "fit": {
               "attempts": [
                 {
                   "diagnostic": {
-                    "evaluations": 707,
-                    "iterations": 280,
-                    "maximum_absolute_residual": 0.05438938459077658,
+                    "evaluations": 126,
+                    "iterations": 43,
+                    "maximum_absolute_residual": 0.054389384569256016,
                     "normalization_scale": 4.0,
-                    "normalized_rmse": 0.009722260171152821,
-                    "rmse": 0.038889040684611284,
+                    "normalized_rmse": 0.009722260171152824,
+                    "rmse": 0.0388890406846113,
                     "weighted_r_squared": 0.9992438212573154
                   },
                   "specification": {
@@ -599,8 +599,8 @@
               "base": {
                 "family": "gumbel_r",
                 "kind": "parametric",
-                "location": 3.2927968762676447e-09,
-                "scale": 0.9999999996760226
+                "location": -1.9525725504501943e-09,
+                "scale": 1.0000000002315634
               },
               "kind": "hurdle",
               "object": "distribution",
@@ -611,13 +611,13 @@
                 {
                   "diagnostic": {
                     "atom_count": 3,
-                    "evaluations": 121,
-                    "iterations": 62,
+                    "evaluations": 26,
+                    "iterations": 0,
                     "normalization_scale": 4.771934247457316,
-                    "normalized_rmse": 8.299225591472044e-11,
+                    "normalized_rmse": 4.6311417614972606e-11,
                     "tail_count": 5,
-                    "tail_maximum_absolute_residual": 6.408042985128759e-10,
-                    "tail_rmse": 5.009470504245263e-10,
+                    "tail_maximum_absolute_residual": 3.4120073433285825e-10,
+                    "tail_rmse": 2.7953989781490555e-10,
                     "tail_weighted_r_squared": 1.0
                   },
                   "specification": {
@@ -5050,8 +5050,8 @@
             "curve": {
               "family": "gumbel_r",
               "kind": "parametric",
-              "location": 3.2927968762676447e-09,
-              "scale": 0.9999999996760226,
+              "location": -1.9525725504501943e-09,
+              "scale": 1.0000000002315634,
               "schema_version": "1.0",
               "object": "distribution"
             },
@@ -5060,13 +5060,13 @@
                 {
                   "diagnostic": {
                     "atom_count": 3,
-                    "evaluations": 121,
-                    "iterations": 62,
+                    "evaluations": 26,
+                    "iterations": 0,
                     "normalization_scale": 4.771934247457316,
-                    "normalized_rmse": 8.299225591472044e-11,
+                    "normalized_rmse": 4.6311417614972606e-11,
                     "tail_count": 5,
-                    "tail_maximum_absolute_residual": 6.408042985128759e-10,
-                    "tail_rmse": 5.009470504245263e-10,
+                    "tail_maximum_absolute_residual": 3.4120073433285825e-10,
+                    "tail_rmse": 2.7953989781490555e-10,
                     "tail_weighted_r_squared": 1.0
                   },
                   "specification": {
@@ -5187,8 +5187,8 @@
               "base": {
                 "family": "gumbel_r",
                 "kind": "parametric",
-                "location": 3.2927968762676447e-09,
-                "scale": 0.9999999996760226
+                "location": -1.9525725504501943e-09,
+                "scale": 1.0000000002315634
               },
               "kind": "hurdle",
               "object": "distribution",
@@ -5199,13 +5199,13 @@
                 {
                   "diagnostic": {
                     "atom_count": 3,
-                    "evaluations": 121,
-                    "iterations": 62,
+                    "evaluations": 26,
+                    "iterations": 0,
                     "normalization_scale": 4.771934247457316,
-                    "normalized_rmse": 8.299225591472044e-11,
+                    "normalized_rmse": 4.6311417614972606e-11,
                     "tail_count": 5,
-                    "tail_maximum_absolute_residual": 6.408042985128759e-10,
-                    "tail_rmse": 5.009470504245263e-10,
+                    "tail_maximum_absolute_residual": 3.4120073433285825e-10,
+                    "tail_rmse": 2.7953989781490555e-10,
                     "tail_weighted_r_squared": 1.0
                   },
                   "specification": {
@@ -5326,8 +5326,8 @@
               "base": {
                 "family": "gumbel_r",
                 "kind": "parametric",
-                "location": 3.2927968762676447e-09,
-                "scale": 0.9999999996760226
+                "location": -1.9525725504501943e-09,
+                "scale": 1.0000000002315634
               },
               "kind": "hurdle",
               "object": "distribution",
@@ -5338,13 +5338,13 @@
                 {
                   "diagnostic": {
                     "atom_count": 3,
-                    "evaluations": 121,
-                    "iterations": 62,
+                    "evaluations": 26,
+                    "iterations": 0,
                     "normalization_scale": 4.771934247457316,
-                    "normalized_rmse": 8.299225591472044e-11,
+                    "normalized_rmse": 4.6311417614972606e-11,
                     "tail_count": 5,
-                    "tail_maximum_absolute_residual": 6.408042985128759e-10,
-                    "tail_rmse": 5.009470504245263e-10,
+                    "tail_maximum_absolute_residual": 3.4120073433285825e-10,
+                    "tail_rmse": 2.7953989781490555e-10,
                     "tail_weighted_r_squared": 1.0
                   },
                   "specification": {
@@ -5464,20 +5464,20 @@
               "kind": "parametric",
               "location": 100,
               "object": "distribution",
-              "scale": 5.219205254580983,
+              "scale": 5.21920529692371,
               "schema_version": "1.0",
-              "shape": 3.4356298627501207
+              "shape": 3.4356299034256494
             },
             "fit": {
               "attempts": [
                 {
                   "diagnostic": {
-                    "evaluations": 707,
-                    "iterations": 280,
-                    "maximum_absolute_residual": 0.05438938459077658,
+                    "evaluations": 126,
+                    "iterations": 43,
+                    "maximum_absolute_residual": 0.054389384569256016,
                     "normalization_scale": 4.0,
-                    "normalized_rmse": 0.009722260171152821,
-                    "rmse": 0.038889040684611284,
+                    "normalized_rmse": 0.009722260171152824,
+                    "rmse": 0.0388890406846113,
                     "weighted_r_squared": 0.9992438212573154
                   },
                   "specification": {
@@ -5593,8 +5593,8 @@
               "base": {
                 "family": "gumbel_r",
                 "kind": "parametric",
-                "location": 3.2927968762676447e-09,
-                "scale": 0.9999999996760226
+                "location": -1.9525725504501943e-09,
+                "scale": 1.0000000002315634
               },
               "kind": "hurdle",
               "object": "distribution",
@@ -5605,13 +5605,13 @@
                 {
                   "diagnostic": {
                     "atom_count": 3,
-                    "evaluations": 121,
-                    "iterations": 62,
+                    "evaluations": 26,
+                    "iterations": 0,
                     "normalization_scale": 4.771934247457316,
-                    "normalized_rmse": 8.299225591472044e-11,
+                    "normalized_rmse": 4.6311417614972606e-11,
                     "tail_count": 5,
-                    "tail_maximum_absolute_residual": 6.408042985128759e-10,
-                    "tail_rmse": 5.009470504245263e-10,
+                    "tail_maximum_absolute_residual": 3.4120073433285825e-10,
+                    "tail_rmse": 2.7953989781490555e-10,
                     "tail_weighted_r_squared": 1.0
                   },
                   "specification": {

@@ -6,7 +6,7 @@ from .._aggregation import temporal_reduction_schema
 from .._declarations import _schema_definitions
 
 NUMERICAL_SCHEMA = "https://climateriskcommons.org/schemas/numerical/1.0"
-FITTING_SCHEMA = "https://climateriskcommons.org/schemas/fitting/1.0"
+FITTING_SCHEMA = "https://climateriskcommons.org/schemas/fitting/1.1"
 
 
 def _record(properties: dict[str, object], required: list[str]) -> dict[str, object]:

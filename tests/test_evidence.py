@@ -374,7 +374,7 @@ def test_evidence_metadata_schema_is_current_minimal_and_packaged() -> None:
     assert isinstance(definitions, dict)
     assert not {"row", "failure", "metadata"} & definitions.keys()
     # Fitting records are reachable only through fitting-specific diagnostics.
-    assert "https://climateriskcommons.org/schemas/fitting/1.0" in resource.read_text()
+    assert "https://climateriskcommons.org/schemas/fitting/1.1" in resource.read_text()
     assert "numerical/1.0" not in resource.read_text()
     _, metadata = normalize_samples(samples(), variable=Variable("my:quantity"))
     Draft202012Validator(schema, format_checker=FormatChecker()).validate(
