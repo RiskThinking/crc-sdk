@@ -615,6 +615,37 @@ def normalize_layer(
     return evidence_table(records, metadata), metadata
 
 
+def _check_curves(
+    q: NDArray[np.float64], values: NDArray[np.float64], offsets: NDArray[np.int64]
+) -> None:
+    """Check every curve's knots as `QuantileCurve` does, all curves at once.
+
+    The first invalid curve is rebuilt as a `QuantileCurve`, so the error is
+    the framework's own.
+    """
+    counts = np.diff(offsets)
+    bad = counts < 2
+    starts, ends = offsets[:-1], offsets[1:]
+    present = counts > 0
+    bad[present] |= (q[starts[present]] < 0) | (q[ends[present] - 1] > 1)
+    knots = ~np.isfinite(q) | ~np.isfinite(values)
+    if len(q) > 1:
+        within = np.ones(len(q) - 1, dtype=bool)
+        within[offsets[1:-1][(offsets[1:-1] > 0) & (offsets[1:-1] < len(q))] - 1] = (
+            False
+        )
+        broken = within & ((np.diff(q) <= 0) | (np.diff(values) < 0))
+        knots[:-1] |= broken
+    if knots.any():
+        curve = np.searchsorted(offsets, np.flatnonzero(knots), side="right") - 1
+        bad[curve] = True
+    if bad.any():
+        index = int(np.flatnonzero(bad)[0])
+        start, end = offsets[index], offsets[index + 1]
+        QuantileCurve(q[start:end].tolist(), values[start:end].tolist())
+        raise AssertionError(f"curve {index} failed vectorized knot checks only")
+
+
 def normalize_quantiles(
     table: TableInput,
     *,
@@ -702,9 +733,7 @@ def normalize_quantiles(
         offsets = np.concatenate(
             [[0], np.cumsum(np.bincount(curve_rank, minlength=len(groups)))]
         )
-    for index in range(len(ordered)):
-        start, end = offsets[index], offsets[index + 1]
-        QuantileCurve(q[start:end].tolist(), values[start:end].tolist())
+    _check_curves(q, values, offsets)
     if columns.cell is None:
         coordinates = places[ordered[:, 2]]
         cells = np.fromiter(
